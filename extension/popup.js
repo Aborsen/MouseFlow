@@ -125,7 +125,13 @@ async function renderList() {
 
     const repeat = document.createElement('button');
     repeat.textContent = 'Repeat';
-    repeat.addEventListener('click', () => replay(rec));
+    repeat.title = 'Run through once';
+    repeat.addEventListener('click', () => replay(rec, false));
+
+    const loop = document.createElement('button');
+    loop.textContent = 'Loop ∞';
+    loop.title = 'Restart automatically until you stop it — click the toolbar icon to stop';
+    loop.addEventListener('click', () => replay(rec, true));
 
     const del = document.createElement('button');
     del.className = 'del';
@@ -139,7 +145,7 @@ async function renderList() {
       renderList();
     });
 
-    tools.append(repeat, del);
+    tools.append(repeat, loop, del);
     item.append(name, meta, tools);
     list.appendChild(item);
   });
@@ -153,13 +159,15 @@ function setPlaying(on) {
   playPoll = on ? setInterval(refreshReplay, 300) : null;
 }
 
-async function replay(rec) {
-  $('rec-note').textContent = 'Starting…';
+async function replay(rec, forever) {
+  $('rec-note').textContent = forever ? 'Looping — click the toolbar icon to stop.' : 'Starting…';
   const res = await ask('replay', {
     flow: {
       startDelay: 400,
-      flowRepeat: 1,
-      steps: [{ events: rec.events, repeat: 1, speed: 1, delayAfter: 0 }],
+      // 0 means "until stopped" to the worker.
+      flowRepeat: forever ? 0 : 1,
+      // A breather between passes, so a loop is watchable and does not hammer the page.
+      steps: [{ events: rec.events, repeat: 1, speed: 1, delayAfter: forever ? 1000 : 0 }],
     },
   });
   if (!res.ok) { $('rec-note').textContent = res.error; return; }
@@ -169,7 +177,13 @@ async function replay(rec) {
 
 async function refreshReplay() {
   const s = await ask('replay/status');
-  if (s.playing) { $('rec-note').textContent = 'Repeating ' + s.index + '/' + s.total; return; }
+  if (s.playing) {
+    // flowPasses 0 means looping until stopped; show which pass it is on.
+    const lap = s.flowPasses === 0 ? 'Loop ' + s.flowPass + ' · ' : '';
+    $('rec-note').textContent = lap + 'step ' + s.index + '/' + s.total +
+      (s.flowPasses === 0 ? '\nClick the toolbar icon to stop.' : '');
+    return;
+  }
   setPlaying(false);
 
   if (s.error) { $('rec-note').textContent = 'Stopped: ' + s.error; return; }

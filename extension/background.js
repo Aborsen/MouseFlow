@@ -301,8 +301,14 @@ async function replayStart(flow) {
     index: 0, total: 0, log: [],
   });
   holdWorker(true);
-  await chrome.action.setBadgeText({ text: 'RUN' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#4c8dff' });
+  const looping = !flow.flowRepeat;
+  await chrome.action.setBadgeText({ text: looping ? 'LOOP' : 'RUN' });
+  await chrome.action.setBadgeBackgroundColor({ color: looping ? '#8957e5' : '#4c8dff' });
+  /* Clearing the assigned popup makes the icon fire onClicked instead of opening the
+   * popup, which turns the toolbar icon into the stop button for the duration. That
+   * matters most for a loop: it never ends on its own, and the popup closes the moment
+   * the user clicks anywhere in the page. */
+  await chrome.action.setPopup({ popup: '' });
 
   // Not awaited: the caller gets an immediate ack and polls replay/status.
   runFlow(steps, flow).catch((err) => { play.error = err.message; });
@@ -426,6 +432,7 @@ async function runFlow(steps, flow) {
     holdWorker(false);
     hideCursors(Object.values(ctx.map).concat(ctx.current));
     chrome.action.setBadgeText({ text: '' });
+    chrome.action.setPopup({ popup: 'popup.html' });
     chrome.storage.session.set({
       lastRun: { at: Date.now(), error: play.error, log: play.log.slice(-80) },
     }).catch(() => {});
@@ -521,6 +528,8 @@ async function agentStart(goal) {
   holdWorker(true);
   await chrome.action.setBadgeText({ text: 'AI' });
   await chrome.action.setBadgeBackgroundColor({ color: '#8957e5' });
+  // Same as replay: while it runs, the icon is the stop button.
+  await chrome.action.setPopup({ popup: '' });
 
   runGoal({
     goal: agent.goal,
@@ -543,6 +552,7 @@ async function agentStart(goal) {
         hideCursors(tabs.map((t) => t.id));
       } catch (_) {}
       await chrome.action.setBadgeText({ text: '' });
+      await chrome.action.setPopup({ popup: 'popup.html' });
       // Kept so the popup can show the outcome after the worker is torn down.
       chrome.storage.session.set({ lastAgentRun: { goal: agent.goal, log: agent.log.slice(-40), result: agent.result } }).catch(() => {});
     });
@@ -699,15 +709,32 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
  * needs Chrome 127+; without it the recording is still saved and the next click opens
  * the popup normally. */
 chrome.action.onClicked.addListener(async () => {
-  if (!rec.active) {
+  // Whatever is running, the icon stops it. A loop has no other exit once the popup
+  // has closed, so this is the one control that must always work.
+  if (play.active) {
+    play.abort = true;
     await chrome.action.setPopup({ popup: 'popup.html' });
     try { await chrome.action.openPopup(); } catch (_) {}
     return;
   }
-  const res = await recordStop().catch((err) => ({ ok: false, error: err.message }));
-  if (res && res.saved) {
-    await chrome.action.setBadgeText({ text: String(res.saved.events.length) });
-    await chrome.action.setBadgeBackgroundColor({ color: '#2ea043' });
+
+  if (agent.running) {
+    agent.abort = true;
+    await chrome.action.setPopup({ popup: 'popup.html' });
+    try { await chrome.action.openPopup(); } catch (_) {}
+    return;
   }
+
+  if (rec.active) {
+    const res = await recordStop().catch((err) => ({ ok: false, error: err.message }));
+    if (res && res.saved) {
+      await chrome.action.setBadgeText({ text: String(res.saved.events.length) });
+      await chrome.action.setBadgeBackgroundColor({ color: '#2ea043' });
+    }
+    try { await chrome.action.openPopup(); } catch (_) {}
+    return;
+  }
+
+  await chrome.action.setPopup({ popup: 'popup.html' });
   try { await chrome.action.openPopup(); } catch (_) {}
 });
