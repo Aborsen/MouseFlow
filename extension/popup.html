@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MouseFlow</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    width: 268px;
+    margin: 0;
+    padding: 14px;
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: Canvas;
+    color: CanvasText;
+  }
+  h1 { margin: 0 0 2px; font-size: 14px; }
+  .sub { margin: 0 0 12px; opacity: 0.6; font-size: 11.5px; }
+  button {
+    width: 100%;
+    padding: 9px;
+    margin-bottom: 7px;
+    border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+    border-radius: 7px;
+    background: color-mix(in srgb, CanvasText 5%, transparent);
+    color: inherit;
+    font: inherit;
+    font-weight: 550;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: color-mix(in srgb, CanvasText 45%, transparent); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .primary { background: #4c8dff; border-color: #4c8dff; color: #fff; }
+  .stop { background: color-mix(in srgb, #f85149 16%, transparent); border-color: #f85149; color: #f85149; }
+  .stat { display: flex; justify-content: space-between; padding: 7px 0; font-variant-numeric: tabular-nums; }
+  .stat span:last-child { opacity: 0.65; }
+  a { color: #4c8dff; font-size: 11.5px; }
+  #note { margin: 8px 0 0; font-size: 11.5px; opacity: 0.7; min-height: 1.4em; }
+</style>
+</head>
+<body>
+  <h1>MouseFlow</h1>
+  <p class="sub">Records the active tab.</p>
+
+  <div id="live" hidden>
+    <div class="stat"><span id="count">0</span><span>events</span></div>
+    <div class="stat"><span id="elapsed">0.0s</span><span>elapsed</span></div>
+  </div>
+
+  <button id="record" class="primary" type="button">Start recording</button>
+  <button id="stop" class="stop" type="button" hidden>Stop and save</button>
+
+  <p id="note"></p>
+  <a id="open" href="#" target="_blank" rel="noopener">Open the MouseFlow app</a>
+
+  <script src="popup.js"></script>
+</body>
+</html>
