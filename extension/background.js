@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -207,6 +207,181 @@ function captureFromPage(ev, sender) {
   return { ok: true, count: pushEvent(ev, key) };
 }
 
+/* A batch of motion samples.
+ *
+ * Stored as ONE `path` event per continuous run rather than one event per sample. The page
+ * replays a whole run as a single animation, so this keeps the event stream - and the step
+ * log, and the counts the popup shows - about ACTIONS, with motion as a property of the gap
+ * between them. Ten seconds of mouse movement must not read as six hundred steps.
+ */
+function captureMoves(msg, sender) {
+  if (!rec.active) return { ok: false, error: 'not recording' };
+  const senderTabId = sender && sender.tab && sender.tab.id;
+  if (senderTabId !== rec.activeTabId) return { ok: true, ignored: true };
+  const key = rec.tabKeys[senderTabId];
+  if (key === undefined) return { ok: true, ignored: true };
+
+  const points = (msg.points || [])
+    .filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y))
+    .map((p) => ({ x: p.x, y: p.y, dt: Math.max(0, Math.round(p.dt || 0)) }));
+  if (!points.length) return { ok: true, count: rec.events.length };
+
+  const frame = sender.frameId || 0;
+
+  /* Undo the flush lag. The batch carries how long ago its last sample was taken, so the
+   * run can be placed where it actually happened instead of where it arrived - otherwise
+   * every batch would push a quarter second of dead time into the replay. */
+  const lastAt = Date.now() - Math.max(0, Math.round(msg.age || 0));
+  const span = points.slice(1).reduce((sum, p) => sum + p.dt, 0);
+  const gap = Math.max(0, lastAt - span - rec.lastAt);
+
+  // Consecutive batches from the same frame are one continuous movement; join them so the
+  // page animates a single path instead of restarting four times a second.
+  const last = rec.events[rec.events.length - 1];
+  if (last && last.action === 'path' && last.tab === key && (last.frame || 0) === frame &&
+      gap < MOVE_JOIN_MS && last.points.length + points.length <= PATH_MAX_POINTS) {
+    points[0].dt = gap;
+    last.points.push(...points);
+    rec.lastAt = lastAt;
+    return { ok: true, count: rec.events.length };
+  }
+
+  // First sample's own gap is carried by the event's `delay`, so it must not be waited twice.
+  points[0].dt = 0;
+  const ev = { action: 'path', points, tab: key };
+  if (frame) ev.frame = frame;
+  rec.events.push(Object.assign({ delay: rec.events.length === 0 ? 0 : gap }, ev));
+  rec.lastAt = lastAt;
+  return { ok: true, count: rec.events.length };
+}
+
+/* ------------------------------------------------------------- motion, tidied up */
+
+/* Recorded motion is stored raw and cleaned up once, at save time. Two reasons to bother:
+ * a sample the path would pass through anyway costs storage and buys nothing, and a single
+ * long run is a single animation, which is how long a Stop can take to be noticed. */
+const PATH_MAX_POINTS = 400;   // per stored path event
+const PATH_MAX_MS = 1500;      // and per event, so Stop is never far away
+const MOVE_JOIN_MS = 400;      // gap under which two batches are the same movement
+const SIMPLIFY_PX = 2;         // drop samples this close to the line between their neighbours
+
+// Distance from p to the SEGMENT ab - clamped, not the infinite line, so a sample beyond an
+// endpoint is not credited with being close to a path that never reaches it.
+function distToSegment(p, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+/* Ramer-Douglas-Peucker: keep the samples the shape needs and drop the rest.
+ *
+ * The tolerance has to be measured against the polyline that will REMAIN, which is what
+ * makes this recursive. Comparing each sample to the short line between its immediate
+ * neighbours instead - the obvious cheap version - measures local smoothness, and any
+ * smooth curve passes: an earlier cut of this flattened a 9px hand wobble into a straight
+ * line while nominally enforcing a 2px tolerance.
+ */
+function keepIndices(points, tol) {
+  const keep = new Uint8Array(points.length);
+  keep[0] = 1;
+  keep[points.length - 1] = 1;
+  const stack = [[0, points.length - 1]];
+
+  while (stack.length) {
+    const [lo, hi] = stack.pop();
+    if (hi - lo < 2) continue;
+    let worst = 0;
+    let at = -1;
+    for (let i = lo + 1; i < hi; i++) {
+      const d = distToSegment(points[i], points[lo], points[hi]);
+      if (d > worst) { worst = d; at = i; }
+    }
+    if (worst > tol && at > 0) {
+      keep[at] = 1;
+      stack.push([lo, at], [at, hi]);
+    }
+  }
+  return keep;
+}
+
+/* A dropped sample's time is folded into the next one kept, so the run still takes exactly
+ * as long as it did when recorded - dropping the time along with the point would speed the
+ * replay up in proportion to how straight the movement was. */
+function simplifyPath(points) {
+  if (points.length < 3) return points;
+  const keep = keepIndices(points, SIMPLIFY_PX);
+  const out = [];
+  let carry = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const dt = Math.max(0, p.dt || 0);
+    if (!keep[i]) { carry += dt; continue; }
+    out.push({ x: p.x, y: p.y, dt: dt + carry });
+    carry = 0;
+  }
+  return out;
+}
+
+// Splits a long run into events of bounded length. One event is one animation, and abort is
+// checked between events, so this is what keeps the icon responsive during a long sweep.
+function chunkPath(ev) {
+  const chunks = [];
+  let points = [];
+  let ms = 0;
+  let delay = ev.delay || 0;
+
+  const flush = () => {
+    if (!points.length) return;
+    const out = { action: 'path', delay, tab: ev.tab, points };
+    if (ev.frame) out.frame = ev.frame;
+    chunks.push(out);
+    points = [];
+    ms = 0;
+  };
+
+  for (const p of ev.points) {
+    // Tested BEFORE taking the sample, or a chunk overshoots the bound by one sample's
+    // worth of time. The length guard keeps a lone long-gap sample from looping.
+    if (points.length && (points.length >= PATH_MAX_POINTS || ms + p.dt > PATH_MAX_MS)) {
+      const carried = p.dt;
+      flush();
+      delay = carried;                       // the gap moves onto the new event
+      points.push({ x: p.x, y: p.y, dt: 0 });
+      continue;
+    }
+    points.push(p);
+    ms += p.dt;
+  }
+  flush();
+  return chunks;
+}
+
+function compact(events) {
+  const out = [];
+  let carry = 0;
+  for (const ev of events) {
+    if (ev.action !== 'path') {
+      out.push(carry ? Object.assign({}, ev, { delay: (ev.delay || 0) + carry }) : ev);
+      carry = 0;
+      continue;
+    }
+    const points = simplifyPath(ev.points || []);
+    if (points.length < 2) {
+      // One sample is a twitch, not a movement - but the time it occupied still belongs to
+      // the timeline, so it moves onto whatever comes next.
+      carry += (ev.delay || 0) + points.reduce((sum, p) => sum + p.dt, 0);
+      continue;
+    }
+    out.push(...chunkPath(Object.assign({}, ev, { points, delay: (ev.delay || 0) + carry })));
+    carry = 0;
+  }
+  return out;
+}
+
 async function recordStart(tabId) {
   const tab = tabId ? await chrome.tabs.get(tabId) : await activeTab();
 
@@ -234,17 +409,21 @@ async function recordStart(tabId) {
 
 async function recordStatus() {
   const tabs = new Set(rec.events.map((e) => e.tab)).size;
-  // Distinct fields typed into, surfaced live so the user can see text being captured
-  // while they type rather than discovering afterwards that it wasn't.
-  const fields = new Set(
-    rec.events.filter((e) => e.action === 'fill').map((e) => e.selector)
-  ).size;
+  /* Actions and motion counted apart. Motion arrives at sixty samples a second, so a
+   * single number would race into the thousands while the user is only clicking a few
+   * times - which reads as a bug rather than as a recording going well. */
+  let actions = 0;
+  let motion = 0;
+  for (const e of rec.events) {
+    if (e.action === 'path') motion += e.points.length;
+    else actions++;
+  }
   return {
     ok: true,
     recording: rec.active,
-    count: rec.events.length,
+    count: actions,
+    motion,
     tabs,
-    fields,
     elapsedMs: rec.active ? Date.now() - rec.startedAt : 0,
   };
 }
@@ -260,7 +439,8 @@ async function recordStop() {
   await chrome.action.setBadgeText({ text: '' });
   await chrome.action.setPopup({ popup: 'popup.html' });
 
-  const events = rec.events;
+  // Motion is cleaned up once, here, rather than on every replay.
+  const events = compact(rec.events);
   rec.events = [];
   rec.activeTabId = null;
   if (!events.length) return { ok: true, events: [], saved: null };
@@ -316,8 +496,8 @@ async function replayStart(flow) {
 }
 
 // Carries the logical-tab -> real-tab mapping across the whole flow. `current` is the tab
-// the next non-focus event acts on.
-async function performEvent(ev, ctx) {
+// the next non-focus event acts on, and `cursor` is where the drawn pointer was left.
+async function performEvent(ev, ctx, speed) {
   /* Mirroring, not re-creating.
    *
    * "Record the flow" replays the exact sequence into the tabs that are already open:
@@ -358,14 +538,24 @@ async function performEvent(ev, ctx) {
     return;
   }
 
+  /* The cursor is drawn per tab, in the top frame of that tab, but its POSITION has to be
+   * continuous across tabs and frames or it appears from nowhere at every boundary. So the
+   * position lives here, between steps: each step is told where the pointer was left and
+   * reports back where it ended. */
+  const channel = ev.action === 'path' ? 'replay/path' : 'replay/event';
+  const event = ev.action === 'path' && speed !== 1 ? Object.assign({}, ev, { speed }) : ev;
+
   // Back to the frame that recorded it. A step captured inside an iframed app is
   // meaningless in the shell document, and vice versa.
-  const res = await send(ctx.current, { mf: 'replay/event', event: ev }, ev.frame);
+  const res = await send(ctx.current, { mf: channel, event, from: ctx.cursor }, ev.frame);
   if (!res || !res.ok) throw new Error((res && res.error) || 'no response from the page');
+  if (res.cursor) ctx.cursor = res.cursor;
 }
 
 async function runFlow(steps, flow) {
-  const ctx = { map: {}, current: null };
+  // `cursor` deliberately survives each pass: a loop should look like one continuous run,
+  // not like the pointer being re-summoned at the top of every lap.
+  const ctx = { map: {}, current: null, cursor: null };
   try {
     await sleep(flow.startDelay || 0);
 
@@ -400,7 +590,7 @@ async function runFlow(steps, flow) {
             let ok = false;
             let error = null;
             try {
-              await performEvent(ev, ctx);
+              await performEvent(ev, ctx, speed);
               ok = true;
             } catch (err) {
               error = err.message;
@@ -410,7 +600,9 @@ async function runFlow(steps, flow) {
               n: i + 1,
               action: ev.action,
               tab: ev.tab == null ? 0 : ev.tab,
-              target: ev.selector || ev.url || (ev.action === 'scroll' ? 'window' : '?'),
+              target: ev.selector || ev.url ||
+                (ev.action === 'path' ? ev.points.length + ' samples' : '') ||
+                (ev.action === 'scroll' ? 'window' : '?'),
               ok,
               error,
             };
@@ -457,7 +649,10 @@ function replayStatus() {
 
 /* ------------------------------------------------------- agent mode (describe) */
 
-const agent = { running: false, abort: false, goal: '', log: [], result: null, frameId: null };
+const agent = {
+  running: false, abort: false, goal: '', log: [], result: null, frameId: null,
+  cursor: null,   // where the drawn pointer was left, so it travels instead of teleporting
+};
 
 // One tool call from the model, executed against the active tab.
 async function runAgentTool(name, input) {
@@ -506,9 +701,11 @@ async function runAgentTool(name, input) {
         action: name === 'type_text' ? 'type' : name,
       });
       // Aimed at whichever frame read_page found the elements in - refs only mean
-      // anything in the frame that produced them.
-      const res = await send(tabId, { mf: 'agent/act', command }, agent.frameId);
+      // anything in the frame that produced them. `from` keeps the drawn cursor continuous
+      // across steps, exactly as replay does.
+      const res = await send(tabId, { mf: 'agent/act', command, from: agent.cursor }, agent.frameId);
       if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'no response from the page' };
+      if (res.cursor) agent.cursor = res.cursor;
       // A click often navigates; give the page a moment before the next read_page.
       await sleep(name === 'click' ? 500 : 150);
       return { ok: true, result: { done: name } };
@@ -524,7 +721,9 @@ async function agentStart(goal) {
   if (!apiKey) throw new Error('no API key saved - add one in Create a flow');
   if (!goal || !goal.trim()) throw new Error('describe what you want done');
 
-  Object.assign(agent, { running: true, abort: false, goal: goal.trim(), log: [], result: null });
+  Object.assign(agent, {
+    running: true, abort: false, goal: goal.trim(), log: [], result: null, cursor: null,
+  });
   holdWorker(true);
   await chrome.action.setBadgeText({ text: 'AI' });
   await chrome.action.setBadgeBackgroundColor({ color: '#8957e5' });
@@ -578,6 +777,7 @@ const ROUTES = {
     recording: rec.active, playing: play.active, agentRunning: agent.running,
   }),
   'capture/event': async (msg, sender) => captureFromPage(msg.event, sender),
+  'capture/moves': async (msg, sender) => captureMoves(msg, sender),
   'record/start': (msg) => recordStart(msg.tabId),
   'record/status': () => recordStatus(),
   'record/stop': () => recordStop(),

@@ -5,6 +5,12 @@
  * window moves. Here we record the ELEMENT, plus where inside it the click landed. That
  * survives window resizes, layout shifts, scrolling and different screen resolutions.
  *
+ * Motion is recorded the same way the agent records it - a sample every frame or so - and
+ * replayed as interpolated animation, so a flow looks the same in the browser as it does on
+ * the desktop. The one honest difference is that the agent moves the real pointer, so it
+ * gets hover styling and cross-application reach for free; a page can only draw a pointer
+ * and raise the events, which leaves CSS :hover dark. Everything else matches.
+ *
  * Injected on demand by the background worker, never declared in the manifest, so nothing
  * runs in a page until the user actually starts recording or replaying.
  */
@@ -16,8 +22,18 @@
   if (window.__mouseflowContent) return;
   window.__mouseflowContent = true;
 
-  const MOVE_MIN_MS = 120;      // scroll events fire in floods; thin them
+  const SCROLL_MIN_MS = 120;    // scroll events fire in floods; thin them
   const WAIT_TIMEOUT_MS = 8000; // how long replay waits for a missing element
+
+  /* Motion sampling, mirroring the desktop agent's -MoveThrottleMs / -MoveMinPx.
+   * The agent keeps a sample every 10ms / 3px; one animation frame and 4px is the same
+   * idea at the resolution a browser can actually redraw at. */
+  const MOVE_MIN_MS = 16;
+  const MOVE_MIN_PX = 4;
+  const MOVE_FLUSH_MS = 250;    // motion is batched to the worker; clicks never are
+  const HOVER_MS = 50;          // how often replay re-aims hover events while travelling
+
+  const IS_TOP = window === window.top;
 
   let capturing = false;
   let lastScrollAt = 0;
@@ -128,10 +144,83 @@
     if (!capturing || !ev.isTrusted) return;
     const el = ev.target;
     if (!el || el.nodeType !== 1) return;
+    // Motion recorded so far has to reach the worker before the click does, or the
+    // sequence arrives scrambled. Sends from one frame keep their order, so flushing
+    // first is enough.
+    flushMoves();
     push(Object.assign({
       action: ev.detail > 1 ? 'dblclick' : 'click',
       button: ev.button,
     }, describe(el, ev.clientX, ev.clientY)));
+  }
+
+  /* Motion is recorded, not just the clicks.
+   *
+   * This is the whole reason a replayed flow looked broken next to the desktop agent. The
+   * agent hooks WM_MOUSEMOVE and keeps a sample every 10ms / 3px, so replay walks the real
+   * cursor along the path the user actually took. This script recorded clicks only, which
+   * left replay nothing to draw between them - the same work performed, but unreadable.
+   *
+   * Samples are batched rather than sent one at a time: a click has to reach the worker
+   * before the page can navigate away, but motion is worth at most one flush interval,
+   * and 60 messages a second per frame is not.
+   */
+  let moveBuf = [];
+  let moveTimer = null;
+  let lastMoveAt = 0;           // performance.now() of the last KEPT sample
+  let lastMoveX = 0;
+  let lastMoveY = 0;
+  let haveMove = false;
+
+  function onPointerMove(ev) {
+    if (!capturing || !ev.isTrusted) return;
+    const now = performance.now();
+    const x = ev.clientX;
+    const y = ev.clientY;
+
+    // Far enough apart in time AND space, exactly as the agent filters its hook.
+    if (haveMove) {
+      if (now - lastMoveAt < MOVE_MIN_MS) return;
+      if (Math.abs(x - lastMoveX) < MOVE_MIN_PX && Math.abs(y - lastMoveY) < MOVE_MIN_PX) return;
+    }
+
+    moveBuf.push({
+      x: Math.round(x),
+      y: Math.round(y),
+      dt: haveMove ? Math.round(now - lastMoveAt) : 0,
+    });
+    lastMoveAt = now;
+    lastMoveX = x;
+    lastMoveY = y;
+    haveMove = true;
+
+    if (!moveTimer) moveTimer = setTimeout(flushMoves, MOVE_FLUSH_MS);
+  }
+
+  /* `age` back-dates the batch for the worker.
+   *
+   * The worker owns the clock, because a page's performance.now() restarts on navigation,
+   * so it stamps events as they arrive. A batch arrives up to a flush interval late, and
+   * taking that at face value would insert the lag into the replay. Reporting how long ago
+   * the last sample was taken lets the worker put the run back where it belongs.
+   */
+  function flushMoves() {
+    if (moveTimer) {
+      clearTimeout(moveTimer);
+      moveTimer = null;
+    }
+    if (!moveBuf.length) return;
+    const points = moveBuf;
+    moveBuf = [];
+    try {
+      chrome.runtime.sendMessage({
+        mf: 'capture/moves',
+        points,
+        age: Math.max(0, Math.round(performance.now() - lastMoveAt)),
+      });
+    } catch (_) {
+      // Extension context invalidated (reloaded mid-recording).
+    }
   }
 
   /* Recording is mouse-only, by design.
@@ -153,22 +242,32 @@
   function onScroll() {
     if (!capturing) return;
     const now = performance.now();
-    if (now - lastScrollAt < MOVE_MIN_MS) return;
+    if (now - lastScrollAt < SCROLL_MIN_MS) return;
     lastScrollAt = now;
+    flushMoves();
     push({ action: 'scroll', scrollX: Math.round(scrollX), scrollY: Math.round(scrollY) });
   }
 
   function startCapture() {
     if (capturing) return;
     capturing = true;
+    haveMove = false;
+    moveBuf = [];
     addEventListener('pointerdown', onPointerDown, true);
+    addEventListener('pointermove', onPointerMove, { capture: true, passive: true });
     addEventListener('scroll', onScroll, true);
+    // A frame that is not the top one needs to know where it sits before its samples mean
+    // anything in the tab's coordinate space.
+    trackOffset(true);
   }
 
   function stopCapture() {
+    if (capturing) flushMoves();
     capturing = false;
     removeEventListener('pointerdown', onPointerDown, true);
+    removeEventListener('pointermove', onPointerMove, { capture: true });
     removeEventListener('scroll', onScroll, true);
+    trackOffset(false);
   }
 
   /* ---------------------------------------------------------------- replay */
@@ -260,34 +359,149 @@
     sel.removeAllRanges();
   }
 
+  /* --------------------------------------------- one cursor, one coordinate space */
+
+  /* Where this frame sits inside the top frame.
+   *
+   * The drawn cursor lives in the top frame only (see below), so every coordinate has to
+   * be expressed in that frame's viewport. A frame cannot read its own position when it is
+   * cross-origin - but its PARENT can: the iframe element is in the parent's DOM, and the
+   * parent can tell which of its iframes sent a message by comparing event.source. Each
+   * frame therefore asks its parent, and the parent answers with its own offset already
+   * added, so the value composes all the way up through nested frames.
+   *
+   * Messages here are page-visible, so a hostile page could answer with a wrong offset or
+   * ask us to draw a cursor. Both are cosmetic: nothing in this channel grants a capability
+   * or carries page content.
+   */
+
+  let frameOffset = { x: 0, y: 0, known: IS_TOP };
+  let offsetTimer = null;
+
+  function askOffset() {
+    if (IS_TOP) return;
+    try { parent.postMessage({ __mf: 'offset?' }, '*'); } catch (_) {}
+  }
+
+  // A parent scrolling or resizing moves this frame without anything happening inside it,
+  // so the answer is refreshed on a timer for as long as it is needed.
+  function trackOffset(on) {
+    if (IS_TOP) return;
+    if (on && !offsetTimer) {
+      askOffset();
+      offsetTimer = setInterval(askOffset, 1000);
+    } else if (!on && offsetTimer) {
+      clearInterval(offsetTimer);
+      offsetTimer = null;
+    }
+  }
+
+  function toTop(x, y) {
+    return { x: x + frameOffset.x, y: y + frameOffset.y };
+  }
+
+  function offsetReplyFor(source) {
+    for (const f of document.querySelectorAll('iframe, frame')) {
+      let win = null;
+      try { win = f.contentWindow; } catch (_) { continue; }
+      if (win !== source) continue;
+      const r = f.getBoundingClientRect();
+      // The document starts inside the border and padding, not at the element's edge.
+      let bx = 0;
+      let by = 0;
+      try {
+        const cs = getComputedStyle(f);
+        bx = (parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft)) || 0;
+        by = (parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop)) || 0;
+      } catch (_) {
+        // Unstyleable frame; the rect alone is close enough.
+      }
+      return {
+        __mf: 'offset',
+        x: r.left + bx + frameOffset.x,
+        y: r.top + by + frameOffset.y,
+        known: frameOffset.known,
+      };
+    }
+    return null;
+  }
+
+  addEventListener('message', (ev) => {
+    const data = ev.data;
+    if (!data || typeof data !== 'object' || typeof data.__mf !== 'string') return;
+
+    if (data.__mf === 'offset?') {
+      const reply = offsetReplyFor(ev.source);
+      if (reply) {
+        try { ev.source.postMessage(reply, '*'); } catch (_) {}
+      }
+      return;
+    }
+
+    if (data.__mf === 'offset' && ev.source === parent) {
+      frameOffset = { x: data.x || 0, y: data.y || 0, known: !!data.known };
+      return;
+    }
+
+    // Only the top frame draws. Anything else arriving here is not ours to act on.
+    if (data.__mf === 'cursor' && IS_TOP) paint(data.op, data.x, data.y);
+  });
+
   /* ------------------------------------------------- visible cursor during replay */
 
   /* A drawn cursor, because the real one cannot be moved from a page.
    *
    * Synthetic events arrive instantly and invisibly: the OS pointer never moves, so a
    * replay that is working perfectly looks identical to one doing nothing. This draws a
-   * pointer that travels to each target and pulses where it clicks, which makes a run
-   * legible - and tells you at a glance whether replay reached the page at all.
+   * pointer that travels along the recorded path and pulses where it clicks.
    *
-   * Styles are set through CSSOM rather than markup so a strict style-src CSP cannot
-   * blank it, and the whole thing is pointer-events:none so it never intercepts the
-   * clicks it is illustrating.
+   * Three things make it read like the desktop agent rather than a slideshow:
+   *  - it moves every animation frame, driven by requestAnimationFrame, instead of hopping
+   *    from click to click on a CSS transition;
+   *  - there is exactly ONE per tab, in the top frame, addressed in top-frame coordinates.
+   *    A per-frame cursor stranded a copy in every iframe a flow passed through, and each
+   *    new one animated in from off-screen because it was born at (-200,-200) with the
+   *    transition already attached;
+   *  - it drags a short trail, so the line it travelled is visible and not just where it
+   *    happens to be standing.
+   *
+   * Styles are set through CSSOM rather than markup so a strict style-src CSP cannot blank
+   * it, and everything is pointer-events:none so it never intercepts the clicks it is
+   * illustrating - which also keeps it out of elementFromPoint while aiming hover.
    */
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
-  const TRAVEL_MS = 260;
-  let ghost = null;
+  const TRAIL_MAX = 40;
+  let cursor = null;
+  let cursorPos = { x: -200, y: -200 };
+  let trailTimer = null;
 
-  function ensureGhost() {
-    if (ghost && ghost.root.isConnected) return ghost;
+  function ensureCursor() {
+    if (cursor && cursor.root.isConnected) return cursor;
+
+    const trail = document.createElementNS(SVG_NS, 'svg');
+    Object.assign(trail.style, {
+      position: 'fixed', left: '0px', top: '0px', width: '100%', height: '100%',
+      zIndex: '2147483646', pointerEvents: 'none', overflow: 'visible', opacity: '1',
+      transition: 'opacity 420ms linear',
+    });
+    const line = document.createElementNS(SVG_NS, 'polyline');
+    line.setAttribute('fill', 'none');
+    line.setAttribute('stroke', '#4c8dff');
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('stroke-linecap', 'round');
+    line.setAttribute('stroke-linejoin', 'round');
+    line.setAttribute('opacity', '.45');
+    trail.appendChild(line);
 
     const root = document.createElement('div');
     root.setAttribute('data-mouseflow', 'cursor');
     Object.assign(root.style, {
       position: 'fixed', left: '0px', top: '0px',
       zIndex: '2147483647', pointerEvents: 'none',
-      transform: 'translate(-200px, -200px)',
-      transition: 'transform ' + TRAVEL_MS + 'ms cubic-bezier(.4,0,.2,1)',
+      // No transition on transform: the position is animated frame by frame. A transition
+      // here is what made a freshly created cursor slide in from the corner of the page.
+      transform: 'translate(' + cursorPos.x + 'px, ' + cursorPos.y + 'px)',
       willChange: 'transform',
     });
 
@@ -313,34 +527,232 @@
     arrow.appendChild(path);
 
     root.append(ripple, arrow);
-    (document.body || document.documentElement).appendChild(root);
-    ghost = { root, ripple };
-    return ghost;
+    const host = document.body || document.documentElement;
+    host.append(trail, root);
+    cursor = { root, ripple, trail, line, pts: [] };
+    return cursor;
   }
 
-  function ghostMoveTo(x, y) {
-    const g = ensureGhost();
-    g.root.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
+  // Places the cursor with no trail, for picking up where a previous tab left off.
+  function cursorSeed(x, y) {
+    const c = ensureCursor();
+    cursorPos = { x, y };
+    c.pts = [];
+    c.line.setAttribute('points', '');
+    c.trail.style.opacity = '1';
+    c.root.style.transform = 'translate(' + x.toFixed(1) + 'px, ' + y.toFixed(1) + 'px)';
   }
 
-  function ghostPulse() {
-    const g = ensureGhost();
-    const s = g.ripple.style;
+  function cursorSet(x, y) {
+    const c = ensureCursor();
+    cursorPos = { x, y };
+    c.root.style.transform = 'translate(' + x.toFixed(1) + 'px, ' + y.toFixed(1) + 'px)';
+
+    c.pts.push(x.toFixed(0) + ',' + y.toFixed(0));
+    if (c.pts.length > TRAIL_MAX) c.pts.shift();
+    c.line.setAttribute('points', c.pts.join(' '));
+
+    // The trail is a record of motion, so it fades once motion stops rather than hanging
+    // over a page that looks idle.
+    c.trail.style.opacity = '1';
+    if (trailTimer) clearTimeout(trailTimer);
+    trailTimer = setTimeout(() => {
+      if (cursor) cursor.trail.style.opacity = '0';
+    }, 260);
+  }
+
+  function cursorPulse() {
+    const c = ensureCursor();
+    const s = c.ripple.style;
     // Restart the animation from scratch: kill the transition, reset, force a reflow.
     s.transition = 'none';
     s.transform = 'scale(.3)';
     s.opacity = '.95';
-    void g.ripple.offsetWidth;
+    void c.ripple.offsetWidth;
     s.transition = 'transform 360ms ease-out, opacity 360ms ease-out';
     s.transform = 'scale(2)';
     s.opacity = '0';
   }
 
-  function ghostHide() {
-    if (ghost) {
-      ghost.root.remove();
-      ghost = null;
+  function cursorHide() {
+    if (trailTimer) {
+      clearTimeout(trailTimer);
+      trailTimer = null;
     }
+    if (cursor) {
+      cursor.root.remove();
+      cursor.trail.remove();
+      cursor = null;
+    }
+  }
+
+  function paint(op, x, y) {
+    if (op === 'set') cursorSet(x, y);
+    else if (op === 'seed') cursorSeed(x, y);
+    else if (op === 'pulse') cursorPulse();
+    else if (op === 'hide') cursorHide();
+  }
+
+  /* Steps run in the frame that owns the element, but the cursor is in the top frame, so
+   * a frame that is not the top one paints by proxy. In a page with no iframes - the
+   * common case - this is a direct call and no message is sent at all. */
+  function draw(op, x, y) {
+    if (IS_TOP) { paint(op, x, y); return; }
+    try { top.postMessage({ __mf: 'cursor', op, x, y }, '*'); } catch (_) {}
+  }
+
+  /* ------------------------------------------------------- driving the cursor */
+
+  const MIN_TRAVEL_MS = 140;
+  const MAX_TRAVEL_MS = 620;
+  const TRAVEL_PX_PER_MS = 1.8;
+  const HOVER_SKIP_PX = 6;
+
+  function nextFrame() {
+    return new Promise((done) => requestAnimationFrame(done));
+  }
+
+  function easeInOut(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
+
+  let hoverAt = 0;
+  let hoverEl = null;
+
+  /* Fires the pointer events a real cursor would raise as it passes over the page, so
+   * menus and toolbars that open on hover behave during replay the way they do for a
+   * person - the desktop agent gets this for free by moving the actual pointer.
+   *
+   * CSS :hover does NOT light up: the browser drives that from the real pointer and no
+   * synthetic event can reach it. So hover STYLING stays dark while JS-driven hover works.
+   * That gap cannot be closed from inside a page.
+   */
+  function hover(x, y) {
+    const now = performance.now();
+    if (now - hoverAt < HOVER_MS) return;
+    hoverAt = now;
+
+    let el = null;
+    try { el = document.elementFromPoint(x, y); } catch (_) { return; }
+    if (!el) return;
+
+    // buttons:0 - this is a hover, and a move reporting a held button reads as a drag.
+    const point = { clientX: x, clientY: y };
+    const opts = { pointerId: 1, isPrimary: true, buttons: 0 };
+    if (el !== hoverEl) {
+      if (hoverEl && hoverEl.isConnected) {
+        fire(hoverEl, 'pointerout', point, opts);
+        fire(hoverEl, 'mouseout', point, { buttons: 0 });
+      }
+      fire(el, 'pointerover', point, opts);
+      fire(el, 'mouseover', point, { buttons: 0 });
+      hoverEl = el;
+    }
+    fire(el, 'pointermove', point, opts);
+    fire(el, 'mousemove', point, { buttons: 0 });
+  }
+
+  /* Straight-line travel, for the steps that carry no recorded motion of their own:
+   * older recordings, imported .mmmacro files, and "Create the flow", which works from a
+   * written goal and so has no path by definition.
+   *
+   * Duration scales with distance, so a nudge is quick and a cross-screen sweep is not.
+   * A flat 260ms for both was the other half of why replay looked mechanical.
+   */
+  async function travelTo(target, from) {
+    if (!from || from.x == null) {
+      // Nothing to travel from - first step of a run, or a tab we have not drawn in yet.
+      draw('seed', target.x, target.y);
+      return target;
+    }
+    const dx = target.x - from.x;
+    const dy = target.y - from.y;
+    const dist = Math.hypot(dx, dy);
+    // Already there: a recorded path normally ends on its target, and re-sliding to the
+    // same spot is the stutter it would introduce before every click.
+    if (dist < HOVER_SKIP_PX) {
+      draw('set', target.x, target.y);
+      return target;
+    }
+
+    const ms = Math.max(MIN_TRAVEL_MS, Math.min(MAX_TRAVEL_MS, dist / TRAVEL_PX_PER_MS));
+    const t0 = performance.now();
+    for (;;) {
+      await nextFrame();
+      const k = Math.min(1, (performance.now() - t0) / ms);
+      const e = easeInOut(k);
+      const x = from.x + dx * e;
+      const y = from.y + dy * e;
+      draw('set', x, y);
+      hover(x - frameOffset.x, y - frameOffset.y);
+      if (k >= 1) break;
+    }
+    return target;
+  }
+
+  /* Replays one recorded run of motion.
+   *
+   * Playback is driven by elapsed time against each sample's offset from the start of the
+   * run, not by a chain of sleeps: sleeping per sample would accumulate every timer's
+   * overshoot, so a few hundred samples would finish visibly late. Between samples the
+   * position is interpolated, which is what turns a 60-per-second sample stream into
+   * motion that is smooth regardless of how coarsely it was recorded.
+   *
+   * Samples are frame-local, as captured, and converted to top-frame space at the last
+   * moment - so a frame that has moved since recording takes its cursor with it.
+   */
+  async function performPath(ev, from) {
+    const pts = (ev.points || []).filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (!pts.length) return null;
+    const speed = ev.speed > 0 ? ev.speed : 1;
+
+    const at = [0];
+    for (let i = 1; i < pts.length; i++) {
+      at[i] = at[i - 1] + Math.max(0, (pts[i].dt || 0) / speed);
+    }
+    const total = at[at.length - 1];
+
+    let end = toTop(pts[0].x, pts[0].y);
+
+    /* Continuity: the run starts wherever the last one ended, even in another tab.
+     *
+     * A recorded run does not necessarily begin where the previous step left the pointer -
+     * after a tab switch it begins wherever the mouse happened to be in THAT tab, which can
+     * be most of the screen away. Snapping there is a genuine discontinuity, and it is the
+     * one an end-to-end run showed as a 743px jump. So the gap is travelled, not skipped. */
+    if (from && from.x != null) {
+      draw('seed', from.x, from.y);
+      await travelTo(end, from);
+    }
+
+    draw('set', end.x, end.y);
+
+    const t0 = performance.now();
+    while (pts.length > 1) {
+      await nextFrame();
+      const elapsed = performance.now() - t0;
+      if (elapsed >= total) break;
+
+      let i = 0;
+      // Where are we in the run? Samples are ordered, so walk forward to the current one.
+      while (i < pts.length - 1 && at[i + 1] <= elapsed) i++;
+      const a = pts[i];
+      const b = pts[Math.min(i + 1, pts.length - 1)];
+      const span = at[Math.min(i + 1, at.length - 1)] - at[i];
+      const k = span > 0 ? Math.min(1, (elapsed - at[i]) / span) : 1;
+      const lx = a.x + (b.x - a.x) * k;
+      const ly = a.y + (b.y - a.y) * k;
+
+      end = toTop(lx, ly);
+      draw('set', end.x, end.y);
+      hover(lx, ly);
+    }
+
+    const stop = pts[pts.length - 1];
+    end = toTop(stop.x, stop.y);
+    draw('set', end.x, end.y);
+    hover(stop.x, stop.y);
+    return end;
   }
 
   /* Outlines whatever a step is about to act on.
@@ -364,10 +776,10 @@
     }
   }
 
-  async function perform(ev) {
+  async function perform(ev, from) {
     if (ev.action === 'scroll') {
       scrollTo({ left: ev.scrollX, top: ev.scrollY, behavior: 'instant' });
-      return;
+      return null;
     }
 
     const el = await resolve(ev);
@@ -377,9 +789,8 @@
     // Send the drawn pointer to the target and let it get there before acting, so the
     // click is something the user watches happen rather than infers afterwards.
     const point = pointAt(el, ev);
-    ghostMoveTo(point.clientX, point.clientY);
-    await sleep(TRAVEL_MS + 40);
-    if (ev.action === 'click' || ev.action === 'dblclick') ghostPulse();
+    const target = await travelTo(toTop(point.clientX, point.clientY), from);
+    if (ev.action === 'click' || ev.action === 'dblclick') draw('pulse');
 
     switch (ev.action) {
       case 'click':
@@ -396,7 +807,7 @@
           fire(el, 'click', point, { detail: 2 });
           fire(el, 'dblclick', point, { detail: 2 });
         }
-        return;
+        return target;
       }
       case 'fill':
         if (el.focus) el.focus({ preventScroll: true });
@@ -405,7 +816,7 @@
         } else {
           setValue(el, ev.value);
         }
-        return;
+        return target;
       case 'redacted':
         if (el.focus) el.focus({ preventScroll: true });
         throw new Error('this step recorded a password field and was not stored - type it yourself, then resume');
@@ -413,7 +824,7 @@
         const init = { key: ev.key, code: ev.key, bubbles: true, cancelable: true, composed: true };
         el.dispatchEvent(new KeyboardEvent('keydown', init));
         el.dispatchEvent(new KeyboardEvent('keyup', init));
-        return;
+        return target;
       }
       default:
         throw new Error('unknown action ' + ev.action);
@@ -522,7 +933,7 @@
     return el;
   }
 
-  async function agentAct(cmd) {
+  async function agentAct(cmd, from) {
     if (cmd.action === 'scroll') {
       const by = (cmd.amount || 600) * (cmd.direction === 'up' ? -1 : 1);
       scrollBy({ top: by, behavior: 'instant' });
@@ -546,13 +957,13 @@
     flash(el);
 
     // Same drawn pointer as replay, so watching the agent work looks like watching a
-    // person work rather than fields changing by themselves.
+    // person work rather than fields changing by themselves. There is no recorded path to
+    // follow here, so the cursor travels to the target under its own easing.
     const at = pointAt(el, { rx: 0.5, ry: 0.5 });
-    ghostMoveTo(at.clientX, at.clientY);
-    await sleep(TRAVEL_MS + 40);
+    const cursorEnd = await travelTo(toTop(at.clientX, at.clientY), from);
 
     if (cmd.action === 'click') {
-      ghostPulse();
+      draw('pulse');
       const point = pointAt(el, { rx: 0.5, ry: 0.5 });
       fire(el, 'pointerdown', point, { pointerId: 1, isPrimary: true });
       fire(el, 'mousedown', point);
@@ -560,7 +971,7 @@
       fire(el, 'pointerup', point, { pointerId: 1, isPrimary: true });
       fire(el, 'mouseup', point);
       fire(el, 'click', point, { detail: 1 });
-      return { ok: true };
+      return { ok: true, cursor: cursorEnd };
     }
 
     if (cmd.action === 'type') {
@@ -573,7 +984,7 @@
         el.dispatchEvent(new KeyboardEvent('keyup', init));
         if (el.form && typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
       }
-      return { ok: true };
+      return { ok: true, cursor: cursorEnd };
     }
 
     throw new Error('unknown agent action ' + cmd.action);
@@ -588,15 +999,34 @@
     if (msg.mf === 'capture/start') { startCapture(); respond({ ok: true }); return; }
     if (msg.mf === 'capture/stop') { stopCapture(); respond({ ok: true }); return; }
 
+    /* Every step reports where it left the cursor, and is told where the last one left it.
+     * The worker holds that between steps, because the cursor is per-tab and per-frame
+     * while the position has to be continuous across both - the alternative was each new
+     * frame starting from nowhere, which is what made the cursor appear out of thin air. */
     if (msg.mf === 'replay/event') {
-      perform(msg.event).then(
-        () => respond({ ok: true }),
+      trackOffset(true);
+      perform(msg.event, msg.from).then(
+        (cursor) => respond({ ok: true, cursor: cursor || null }),
         (err) => respond({ ok: false, error: err.message })
       );
       return true;   // async responder
     }
 
-    if (msg.mf === 'cursor/hide') { ghostHide(); respond({ ok: true }); return; }
+    if (msg.mf === 'replay/path') {
+      trackOffset(true);
+      performPath(msg.event, msg.from).then(
+        (cursor) => respond({ ok: true, cursor: cursor || null }),
+        (err) => respond({ ok: false, error: err.message })
+      );
+      return true;
+    }
+
+    if (msg.mf === 'cursor/hide') {
+      cursorHide();
+      trackOffset(false);
+      respond({ ok: true });
+      return;
+    }
 
     /* Self-test: prove this page can be driven, independently of any recording.
      * Walks the drawn cursor around a square and pulses at each corner. If the user
@@ -604,17 +1034,20 @@
      * if they see nothing, the problem is upstream of replay entirely. */
     if (msg.mf === 'cursor/demo') {
       (async () => {
+        trackOffset(true);
         const w = innerWidth, h = innerHeight;
         const corners = [[w * 0.3, h * 0.3], [w * 0.7, h * 0.3], [w * 0.7, h * 0.6], [w * 0.3, h * 0.6]];
-        ensureGhost();
+        // Walks the square with the same animator replay uses, so seeing this pass means
+        // the smooth path works here and not merely that something can be drawn.
+        let from = toTop(corners[3][0], corners[3][1]);
+        draw('seed', from.x, from.y);
         for (const [x, y] of corners) {
-          ghostMoveTo(x, y);
-          await sleep(TRAVEL_MS + 60);
-          ghostPulse();
-          await sleep(160);
+          from = await travelTo(toTop(x, y), from);
+          draw('pulse');
+          await sleep(140);
         }
         await sleep(400);
-        ghostHide();
+        draw('hide');
       })().catch(() => {});
       // Answer immediately - the caller should not wait out the animation.
       respond({ ok: true, url: location.href, viewport: innerWidth + 'x' + innerHeight });
@@ -628,7 +1061,8 @@
     }
 
     if (msg.mf === 'agent/act') {
-      agentAct(msg.command).then(
+      trackOffset(true);
+      agentAct(msg.command, msg.from).then(
         (res) => respond(res),
         (err) => respond({ ok: false, error: err.message })
       );

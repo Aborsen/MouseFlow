@@ -19,18 +19,25 @@ let agentPoll = null;
 const fmt = (ms) => (ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's');
 
 /* What a recording contains, in the user's terms. Recording is mouse-only now, so this
- * counts clicks, scrolls and page changes; `fill`/`key` appear only in older recordings
- * and imported .mmmacro files, which replay still honours. */
+ * counts clicks, motion, scrolls and page changes; `fill`/`key` appear only in older
+ * recordings and imported .mmmacro files, which replay still honours.
+ *
+ * Motion is reported as seconds of movement, not as a sample count: the number of samples
+ * is an implementation detail, while "4.2s of movement" is the thing the user will watch. */
 function summarize(events) {
   const n = { click: 0, scroll: 0, page: 0, legacy: 0 };
+  let moveMs = 0;
   for (const e of events || []) {
     if (e.action === 'click' || e.action === 'dblclick') n.click++;
-    else if (e.action === 'scroll') n.scroll++;
+    else if (e.action === 'path') {
+      moveMs += (e.points || []).reduce((sum, p) => sum + Math.max(0, p.dt || 0), 0);
+    } else if (e.action === 'scroll') n.scroll++;
     else if (e.action === 'focus' || e.action === 'navigate') n.page++;
     else n.legacy++;
   }
   const parts = [];
   parts.push(n.click + ' click' + (n.click === 1 ? '' : 's'));
+  if (moveMs >= 100) parts.push((moveMs / 1000).toFixed(1) + 's of movement');
   if (n.scroll) parts.push(n.scroll + ' scroll' + (n.scroll === 1 ? '' : 's'));
   if (n.page) parts.push(n.page + ' page change' + (n.page === 1 ? '' : 's'));
   if (n.legacy) parts.push(n.legacy + ' text/key step' + (n.legacy === 1 ? '' : 's'));
@@ -68,6 +75,9 @@ function setRecording(on) {
 async function refreshRecording() {
   const s = await ask('record/status');
   $('count').textContent = s.count + (s.tabs > 1 ? ' · ' + s.tabs + ' tabs' : '');
+  // Motion is shown as a live sample count so it is visibly being picked up - the path is
+  // the part with no other outward sign that it is being recorded.
+  $('motion').textContent = s.motion ? s.motion.toLocaleString() : '0';
   $('elapsed').textContent = fmt(s.elapsedMs);
   if (!s.recording) { setRecording(false); renderList(); }
 }
