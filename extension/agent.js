@@ -11,6 +11,19 @@
  */
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
+
+/* The shared demo endpoint.
+ *
+ * One key for everyone at a demo, without each person pasting one in - and without the key
+ * being in the extension, which is shipped as readable source and would publish it to anyone
+ * the extension is handed to. The key sits in a Vercel environment variable behind this
+ * route; see api/claude.js. Rotating or switching it off needs no change here.
+ *
+ * A personal key still takes precedence when one is saved, and then the request goes straight
+ * to Anthropic as before - so a user with their own key does not depend on this deployment
+ * being up, and is not sharing anyone's quota.
+ */
+const SHARED_URL = 'https://mouse-agent.vercel.app/api/claude';
 const MODEL = 'claude-opus-5';
 const MAX_TOKENS = 16000;
 const MAX_TURNS = 40;
@@ -144,10 +157,13 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
     if (isAborted()) return { ok: false, error: 'stopped', steps };
     turns++;
 
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
+    /* Own key: straight to Anthropic. No key: the shared demo proxy, which attaches one
+     * server-side. The credential headers are only sent on the direct path - the proxy has no
+     * use for them and they must not leave the machine that owns the key. */
+    const direct = !!apiKey;
+    const headers = { 'content-type': 'application/json' };
+    if (direct) {
+      Object.assign(headers, {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
         // Required for a request originating in a browser context.
@@ -155,7 +171,12 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
         // Opus 5's safety classifiers can decline a request; this re-runs it on the
         // recommended fallback server-side instead of handing back a dead end.
         'anthropic-beta': 'server-side-fallback-2026-07-01',
-      },
+      });
+    }
+
+    const res = await fetch(direct ? API_URL : SHARED_URL, {
+      method: 'POST',
+      headers,
       body: JSON.stringify({
         model: MODEL,
         max_tokens: MAX_TOKENS,
@@ -170,8 +191,17 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
       const detail = await res.text();
       let message = 'API error ' + res.status;
       try { message = JSON.parse(detail).error.message || message; } catch (_) {}
-      if (res.status === 401) message = 'That API key was rejected.';
-      if (res.status === 429) message = 'Rate limited by the API. Wait a moment and try again.';
+      if (res.status === 401) {
+        message = direct
+          ? 'That API key was rejected.'
+          : 'The shared demo key was rejected. Add your own key to keep working.';
+      }
+      if (res.status === 429) {
+        message = direct
+          ? 'Rate limited by the API. Wait a moment and try again.'
+          : 'The shared demo key is rate limited - everyone is using the same one. ' +
+            'Wait a moment, or add your own key.';
+      }
       return { ok: false, error: message, steps };
     }
 

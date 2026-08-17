@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.4.2';
+const VERSION = '0.5.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -685,15 +685,39 @@ function replayStatus() {
 const agent = {
   running: false, abort: false, goal: '', log: [], result: null, frameId: null,
   cursor: null,   // where the drawn pointer was left, so it travels instead of teleporting
+  tabId: null,    // the tab this run is working in, held so a user tab switch cannot divert it
   opts: DEFAULT_SETTINGS,
 };
 
-// One tool call from the model, executed against the active tab.
-async function runAgentTool(name, input) {
-  const tabId = await activeTabId();
+/* The tab the agent is working in.
+ *
+ * Resolved lazily and then remembered. Lazily, because the agent's first act is often to open
+ * a tab and it would be absurd to refuse the job for want of a usable tab it is about to
+ * create. Remembered, because otherwise every step re-reads whatever is focused now - so the
+ * user switching tabs mid-run would quietly hand the agent a different page to act on.
+ */
+async function agentTab() {
+  if (agent.tabId != null) {
+    const tab = await chrome.tabs.get(agent.tabId).catch(() => null);
+    if (tab) return tab.id;
+    agent.tabId = null;      // closed under us; fall through and adopt another
+  }
+  const tab = await activeTab();
+  agent.tabId = tab.id;
+  return tab.id;
+}
 
+/* One tool call from the model.
+ *
+ * The tab is resolved per case rather than up front. It used to be one call to `activeTabId()`
+ * here - a function that does not exist, so every tool threw ReferenceError before doing
+ * anything and the mode had never once worked. Resolving inside each case also means
+ * `open_tab` no longer needs an existing usable tab, which is exactly the state it is for.
+ */
+async function runAgentTool(name, input) {
   switch (name) {
     case 'read_page': {
+      const tabId = await agentTab();
       /* Read every frame and keep the richest one.
        *
        * In an iframed app - Excel Online, Google Docs, Teams - the top document is a
@@ -719,11 +743,15 @@ async function runAgentTool(name, input) {
       return { ok: true, result: best.page };
     }
     case 'navigate': {
-      await goTo(tabId, input.url);
+      await goTo(await agentTab(), input.url);
       return { ok: true, result: { navigated: input.url } };
     }
     case 'open_tab': {
       const created = await chrome.tabs.create({ url: input.url, active: true });
+      // The new tab becomes the one the agent works in - otherwise the next step would act
+      // on whatever was focused before, which is not the page it just asked for.
+      agent.tabId = created.id;
+      agent.frameId = null;      // refs from the old page mean nothing here
       try { await pollComplete(created.id); } catch (_) { /* the next read_page will show it */ }
       return { ok: true, result: { opened: input.url } };
     }
@@ -731,6 +759,7 @@ async function runAgentTool(name, input) {
     case 'type_text':
     case 'press_key':
     case 'scroll': {
+      const tabId = await agentTab();
       const command = Object.assign({}, input, {
         action: name === 'type_text' ? 'type' : name,
       });
@@ -755,12 +784,15 @@ async function runAgentTool(name, input) {
 
 async function agentStart(goal) {
   if (agent.running) throw new Error('already running');
-  const { apiKey } = await chrome.storage.local.get('apiKey');
-  if (!apiKey) throw new Error('no API key saved - add one in Create a flow');
   if (!goal || !goal.trim()) throw new Error('describe what you want done');
+  /* No key is not an error any more: without one the run goes through the shared demo
+   * endpoint, which attaches a key server-side. A saved key takes precedence and goes direct.
+   * See SHARED_URL in agent.js. */
+  const { apiKey } = await chrome.storage.local.get('apiKey');
 
   Object.assign(agent, {
     running: true, abort: false, goal: goal.trim(), log: [], result: null, cursor: null,
+    tabId: null, frameId: null,
     opts: await loadSettings(),
   });
   holdWorker(true);

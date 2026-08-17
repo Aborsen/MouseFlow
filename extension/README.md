@@ -130,6 +130,36 @@ invariant across a whole replay rather than just the one event that was wrong.
 websites" warning. It is needed to inject into an arbitrary site the user chooses to record.
 Nothing is injected until a recording or replay actually starts.
 
+## The shared demo key
+
+*Create the flow* works with no API key: the request goes to `/api/claude` on the MouseFlow
+deployment, which attaches a key held in a Vercel environment variable. One key for everyone at
+a demo, nobody pasting anything.
+
+The key is **not** in the extension, and must not be. An extension ships as readable source —
+anyone it is handed to can open the folder, or `chrome://extensions`, and read it. A key
+distributed that way is a key published, and it stays valid until someone notices. Anthropic and
+GitHub both scan for exposed keys and revoke them, so an embedded key is also liable to stop
+working mid-demo.
+
+Setup, once, by whoever owns the key:
+
+```bash
+vercel env add ANTHROPIC_API_KEY production
+```
+
+Then redeploy. Rotating or switching it off is a dashboard change and needs no new build.
+
+`api/claude.js` spends money for anyone who can reach it, so it is deliberately narrow: one
+model from an allowlist, `max_tokens` clamped to 16000, at most 120 messages per request, and
+the payload rebuilt field by field rather than forwarded wholesale, so a caller cannot smuggle
+in options it is not meant to pay for. That bounds the damage if the URL gets around; it does
+**not** make the endpoint private. Put auth in front of it for anything past a demo.
+
+Saving a personal key overrides all of this: the run goes straight to `api.anthropic.com` on
+that key, and the proxy is not involved. The popup's key box says which one is in use, because
+it decides whose quota is spent.
+
 ## Message API
 
 The background worker exposes the **same operations as the desktop agent's HTTP API**, so the

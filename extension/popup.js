@@ -365,7 +365,19 @@ $('btn-save-key').addEventListener('click', async () => {
   await chrome.storage.local.set({ apiKey: key });
   $('api-key').value = '';
   $('key-box').open = false;
-  $('ai-note').textContent = 'Key saved.';
+  $('key-box').querySelector('summary').textContent = 'Anthropic API key (using yours)';
+  $('btn-clear-key').hidden = false;
+  $('ai-note').textContent = 'Key saved. Runs now go straight to Anthropic on your quota.';
+});
+
+$('btn-clear-key').addEventListener('click', async () => {
+  await chrome.storage.local.remove('apiKey');
+  $('api-key').value = '';
+  $('api-key').placeholder = 'sk-ant-...';
+  $('key-box').querySelector('summary').textContent =
+    'Anthropic API key (using the shared demo key)';
+  $('btn-clear-key').hidden = true;
+  $('ai-note').textContent = 'Key removed. Runs now use the shared demo key.';
 });
 
 /* ----------------------------------------------------------------------- init */
@@ -380,7 +392,11 @@ $('btn-save-key').addEventListener('click', async () => {
     ask('ping'),
     refreshSettings(),
   ]);
+  // Which key a run will use is worth stating outright, since it decides whose quota is spent.
   $('api-key').placeholder = apiKey ? 'sk-ant-… (saved — paste to replace)' : 'sk-ant-...';
+  $('key-box').querySelector('summary').textContent =
+    apiKey ? 'Anthropic API key (using yours)' : 'Anthropic API key (using the shared demo key)';
+  $('btn-clear-key').hidden = !apiKey;
 
   // Land on whatever is actually happening; otherwise on the last mode used.
   if (ping.recording || ping.playing) { show('record'); refreshRecordView(); }

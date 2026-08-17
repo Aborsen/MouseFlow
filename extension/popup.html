@@ -195,13 +195,19 @@
   <p id="ai-note" class="note"></p>
 
   <details id="key-box">
-    <summary>Anthropic API key</summary>
+    <summary>Anthropic API key (optional)</summary>
     <p class="hint" style="margin-top:8px">
-      Stored in this browser only and sent straight to api.anthropic.com. Anyone with access
-      to this Chrome profile can read it — use a key you can rotate.
+      Without a key this uses a <strong>shared demo key</strong> on the MouseFlow server —
+      fine for trying it out, but everyone shares one rate limit.
+    </p>
+    <p class="hint">
+      Add your own to go straight to api.anthropic.com instead, on your own quota. It is stored
+      in this browser only; anyone with access to this Chrome profile can read it, so use a key
+      you can rotate.
     </p>
     <input id="api-key" type="password" placeholder="sk-ant-...">
     <button id="btn-save-key" class="wide" type="button">Save key</button>
+    <button id="btn-clear-key" class="wide" type="button">Remove key and use the shared one</button>
   </details>
 </section>
 
