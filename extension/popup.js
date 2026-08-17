@@ -61,6 +61,29 @@ $('go-record').addEventListener('click', () => { show('record'); refreshRecordVi
 $('go-create').addEventListener('click', () => { show('create'); refreshAgent(); });
 document.querySelectorAll('[data-home]').forEach((b) => b.addEventListener('click', () => show('home')));
 
+/* ------------------------------------------------------------------- settings */
+
+/* Applies to both modes, so it lives on the mode picker rather than inside one of them.
+ * The worker holds the defaults; this only reflects and edits them. */
+const OPTS = { pointer: 'opt-pointer', trail: 'opt-trail' };
+
+async function refreshSettings() {
+  const res = await ask('settings/get');
+  if (!res || !res.ok) return;
+  for (const [key, id] of Object.entries(OPTS)) $(id).checked = !!res.settings[key];
+}
+
+for (const [key, id] of Object.entries(OPTS)) {
+  $(id).addEventListener('change', async () => {
+    const res = await ask('settings/set', { settings: { [key]: $(id).checked } });
+    if (!res || !res.ok) { $('settings-note').textContent = 'Could not save that.'; return; }
+    // Nothing to restart: settings are read when a run starts, so this takes effect on the
+    // next Repeat rather than mid-flow.
+    $('settings-note').textContent = 'Saved. Applies to the next run.';
+    setTimeout(() => { $('settings-note').textContent = ''; }, 2200);
+  });
+}
+
 /* -------------------------------------------------------------- mode A: record */
 
 function setRecording(on) {
@@ -355,6 +378,7 @@ $('btn-save-key').addEventListener('click', async () => {
     chrome.storage.local.get('apiKey'),
     chrome.storage.session.get('popupView'),
     ask('ping'),
+    refreshSettings(),
   ]);
   $('api-key').placeholder = apiKey ? 'sk-ant-… (saved — paste to replace)' : 'sk-ant-...';
 

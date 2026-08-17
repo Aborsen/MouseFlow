@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -53,6 +53,33 @@ function holdWorker(on) {
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/* ------------------------------------------------------------------- settings */
+
+/* What the drawn pointer does, as user settings rather than as taste baked into the code.
+ *
+ * The pointer is on because a replay is otherwise indistinguishable from one doing nothing.
+ * The trail is off: it reads as ink on a page that has content of its own - a line drawn
+ * across a spreadsheet grid looks like part of the document, not like a cursor.
+ *
+ * Read once when a run starts and passed to the page with each step, so a run cannot change
+ * its own appearance halfway through.
+ */
+const DEFAULT_SETTINGS = { pointer: true, trail: false };
+
+async function loadSettings() {
+  const { settings } = await chrome.storage.local.get('settings');
+  return Object.assign({}, DEFAULT_SETTINGS, settings || {});
+}
+
+async function saveSettings(patch) {
+  const next = Object.assign(await loadSettings(), {});
+  for (const key of Object.keys(DEFAULT_SETTINGS)) {
+    if (typeof patch[key] === 'boolean') next[key] = patch[key];
+  }
+  await chrome.storage.local.set({ settings: next });
+  return next;
+}
 
 const RESTRICTED = /^(chrome|edge|about|chrome-extension|devtools|view-source):/i;
 const isRestricted = (url) => !url || RESTRICTED.test(url);
@@ -547,7 +574,11 @@ async function performEvent(ev, ctx, speed) {
 
   // Back to the frame that recorded it. A step captured inside an iframed app is
   // meaningless in the shell document, and vice versa.
-  const res = await send(ctx.current, { mf: channel, event, from: ctx.cursor }, ev.frame);
+  const res = await send(
+    ctx.current,
+    { mf: channel, event, from: ctx.cursor, opts: ctx.opts },
+    ev.frame
+  );
   if (!res || !res.ok) throw new Error((res && res.error) || 'no response from the page');
   if (res.cursor) ctx.cursor = res.cursor;
 }
@@ -555,8 +586,10 @@ async function performEvent(ev, ctx, speed) {
 async function runFlow(steps, flow) {
   // `cursor` deliberately survives each pass: a loop should look like one continuous run,
   // not like the pointer being re-summoned at the top of every lap.
-  const ctx = { map: {}, current: null, cursor: null };
+  const ctx = { map: {}, current: null, cursor: null, opts: DEFAULT_SETTINGS };
   try {
+    // Read once, so a long run keeps the appearance it started with.
+    ctx.opts = await loadSettings();
     await sleep(flow.startDelay || 0);
 
     const flowForever = !flow.flowRepeat;
@@ -652,6 +685,7 @@ function replayStatus() {
 const agent = {
   running: false, abort: false, goal: '', log: [], result: null, frameId: null,
   cursor: null,   // where the drawn pointer was left, so it travels instead of teleporting
+  opts: DEFAULT_SETTINGS,
 };
 
 // One tool call from the model, executed against the active tab.
@@ -703,7 +737,11 @@ async function runAgentTool(name, input) {
       // Aimed at whichever frame read_page found the elements in - refs only mean
       // anything in the frame that produced them. `from` keeps the drawn cursor continuous
       // across steps, exactly as replay does.
-      const res = await send(tabId, { mf: 'agent/act', command, from: agent.cursor }, agent.frameId);
+      const res = await send(
+        tabId,
+        { mf: 'agent/act', command, from: agent.cursor, opts: agent.opts },
+        agent.frameId
+      );
       if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'no response from the page' };
       if (res.cursor) agent.cursor = res.cursor;
       // A click often navigates; give the page a moment before the next read_page.
@@ -723,6 +761,7 @@ async function agentStart(goal) {
 
   Object.assign(agent, {
     running: true, abort: false, goal: goal.trim(), log: [], result: null, cursor: null,
+    opts: await loadSettings(),
   });
   holdWorker(true);
   await chrome.action.setBadgeText({ text: 'AI' });
@@ -778,6 +817,9 @@ const ROUTES = {
   }),
   'capture/event': async (msg, sender) => captureFromPage(msg.event, sender),
   'capture/moves': async (msg, sender) => captureMoves(msg, sender),
+  // The worker owns the defaults so the popup cannot drift from them.
+  'settings/get': async () => ({ ok: true, settings: await loadSettings() }),
+  'settings/set': async (msg) => ({ ok: true, settings: await saveSettings(msg.settings || {}) }),
   'record/start': (msg) => recordStart(msg.tabId),
   'record/status': () => recordStatus(),
   'record/stop': () => recordStop(),

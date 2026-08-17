@@ -109,6 +109,11 @@
   .item-tools { display: flex; gap: 6px; }
   .item-tools button { flex: 1; padding: 6px; font-size: 12px; font-weight: 500; }
   .item-tools .del { flex: 0 0 34px; color: #f85149; }
+
+  .opt { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; cursor: pointer; }
+  .opt input { margin: 2px 0 0; flex: 0 0 auto; accent-color: #4c8dff; }
+  .opt span { font-size: 12px; }
+  .opt em { display: block; font-style: normal; opacity: 0.6; font-size: 11.5px; margin-top: 1px; }
 </style>
 </head>
 <body>
@@ -124,6 +129,24 @@
     <strong>Create the flow</strong>
     <span>Describe what you need — including what to type — and have it done for you.</span>
   </button>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <label class="opt">
+      <input type="checkbox" id="opt-pointer">
+      <span>Show the pointer
+        <em>Draws a cursor that travels the recorded path, so you can watch a run happen.</em>
+      </span>
+    </label>
+    <label class="opt">
+      <input type="checkbox" id="opt-trail">
+      <span>Trace its path
+        <em>Draws a fading line behind the pointer. Off by default — on a page with content
+        of its own it reads as ink on the document.</em>
+      </span>
+    </label>
+    <p id="settings-note" class="note"></p>
+  </details>
 </section>
 
 <!-- ---------- mode A: record ---------- -->

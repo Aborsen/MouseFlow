@@ -47,6 +47,22 @@ hover-driven menus behave as they do for a person. CSS `:hover` does **not** lig
 browser drives that from the real pointer and no synthetic event can reach it. That is the one
 difference from the desktop agent that cannot be closed from inside a page.
 
+### Settings
+
+Under **Settings** on the mode picker, since both modes draw the same pointer:
+
+| Setting | Default | |
+|---|---|---|
+| Show the pointer | on | A replay is otherwise indistinguishable from one doing nothing |
+| Trace its path | **off** | A line drawn across a page with content of its own — a spreadsheet grid especially — reads as ink on the document rather than as a cursor |
+
+Read once when a run starts and passed to the page with each step, so a run cannot change its
+own appearance halfway through; a change applies from the next run. Turning the pointer off
+suppresses only the **drawing** — pacing, clicks and hover events are unchanged, so a flow
+behaves identically whether or not anyone is watching it. The **Test on this page** diagnostic
+draws regardless, because reporting nothing would look exactly like the failure it exists to
+rule out.
+
 ## Why it records elements, not pixels
 
 The desktop agent records absolute screen coordinates, which break the moment a window moves.
@@ -100,6 +116,8 @@ web app swaps transports rather than growing a second control flow:
 | `{mf:'replay', flow}` | `{ok, tabId}` |
 | `{mf:'replay/status'}` | `{ok, playing, step, steps, pass, passes, flowPass, flowPasses, index, total, error}` |
 | `{mf:'replay/abort'}` | `{ok}` |
+| `{mf:'settings/get'}` | `{ok, settings:{pointer, trail}}` |
+| `{mf:'settings/set', settings}` | `{ok, settings}` — merges; non-boolean and unknown keys ignored |
 
 `flow` is `{startDelay, flowRepeat, steps:[{events, repeat, speed, delayAfter}], tabId?}` —
 the same shape the agent's text protocol encodes. `flowRepeat: 0` means *until stopped*.

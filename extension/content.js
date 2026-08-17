@@ -444,7 +444,12 @@
     }
 
     // Only the top frame draws. Anything else arriving here is not ours to act on.
-    if (data.__mf === 'cursor' && IS_TOP) paint(data.op, data.x, data.y);
+    // The options travel with the message: the top frame may not have run a step itself,
+    // so it cannot be assumed to have been told what to draw.
+    if (data.__mf === 'cursor' && IS_TOP) {
+      applyOptions(data.opts);
+      paint(data.op, data.x, data.y);
+    }
   });
 
   /* ------------------------------------------------- visible cursor during replay */
@@ -462,8 +467,13 @@
    *    A per-frame cursor stranded a copy in every iframe a flow passed through, and each
    *    new one animated in from off-screen because it was born at (-200,-200) with the
    *    transition already attached;
-   *  - it drags a short trail, so the line it travelled is visible and not just where it
-   *    happens to be standing.
+   *  - it can drag a short trail, so the line it travelled is visible and not just where it
+   *    happens to be standing. Off by default: on a page of its own content - a spreadsheet
+   *    grid especially - a line drawn across it reads as part of the document.
+   *
+   * Both the pointer and the trail are user settings, carried in with each step. Turning the
+   * pointer off suppresses only the DRAWING: the run is paced and the hover events raised
+   * exactly as before, so a flow behaves identically whether or not it is being watched.
    *
    * Styles are set through CSSOM rather than markup so a strict style-src CSP cannot blank
    * it, and everything is pointer-events:none so it never intercepts the clicks it is
@@ -476,23 +486,38 @@
   let cursorPos = { x: -200, y: -200 };
   let trailTimer = null;
 
+  let showPointer = true;
+  let showTrail = false;
+
+  function applyOptions(opts) {
+    if (!opts) return;
+    if (typeof opts.pointer === 'boolean') showPointer = opts.pointer;
+    if (typeof opts.trail === 'boolean') showTrail = opts.trail;
+  }
+
   function ensureCursor() {
     if (cursor && cursor.root.isConnected) return cursor;
 
-    const trail = document.createElementNS(SVG_NS, 'svg');
-    Object.assign(trail.style, {
-      position: 'fixed', left: '0px', top: '0px', width: '100%', height: '100%',
-      zIndex: '2147483646', pointerEvents: 'none', overflow: 'visible', opacity: '1',
-      transition: 'opacity 420ms linear',
-    });
-    const line = document.createElementNS(SVG_NS, 'polyline');
-    line.setAttribute('fill', 'none');
-    line.setAttribute('stroke', '#4c8dff');
-    line.setAttribute('stroke-width', '2');
-    line.setAttribute('stroke-linecap', 'round');
-    line.setAttribute('stroke-linejoin', 'round');
-    line.setAttribute('opacity', '.45');
-    trail.appendChild(line);
+    // Built only when wanted - an empty SVG stretched over the viewport is still a node in
+    // every page we touch, and there is no reason to add one nobody asked for.
+    let trail = null;
+    let line = null;
+    if (showTrail) {
+      trail = document.createElementNS(SVG_NS, 'svg');
+      Object.assign(trail.style, {
+        position: 'fixed', left: '0px', top: '0px', width: '100%', height: '100%',
+        zIndex: '2147483646', pointerEvents: 'none', overflow: 'visible', opacity: '1',
+        transition: 'opacity 420ms linear',
+      });
+      line = document.createElementNS(SVG_NS, 'polyline');
+      line.setAttribute('fill', 'none');
+      line.setAttribute('stroke', '#4c8dff');
+      line.setAttribute('stroke-width', '2');
+      line.setAttribute('stroke-linecap', 'round');
+      line.setAttribute('stroke-linejoin', 'round');
+      line.setAttribute('opacity', '.45');
+      trail.appendChild(line);
+    }
 
     const root = document.createElement('div');
     root.setAttribute('data-mouseflow', 'cursor');
@@ -528,7 +553,8 @@
 
     root.append(ripple, arrow);
     const host = document.body || document.documentElement;
-    host.append(trail, root);
+    if (trail) host.append(trail);
+    host.append(root);
     cursor = { root, ripple, trail, line, pts: [] };
     return cursor;
   }
@@ -538,8 +564,10 @@
     const c = ensureCursor();
     cursorPos = { x, y };
     c.pts = [];
-    c.line.setAttribute('points', '');
-    c.trail.style.opacity = '1';
+    if (c.line) {
+      c.line.setAttribute('points', '');
+      c.trail.style.opacity = '1';
+    }
     c.root.style.transform = 'translate(' + x.toFixed(1) + 'px, ' + y.toFixed(1) + 'px)';
   }
 
@@ -547,6 +575,7 @@
     const c = ensureCursor();
     cursorPos = { x, y };
     c.root.style.transform = 'translate(' + x.toFixed(1) + 'px, ' + y.toFixed(1) + 'px)';
+    if (!c.line) return;
 
     c.pts.push(x.toFixed(0) + ',' + y.toFixed(0));
     if (c.pts.length > TRAIL_MAX) c.pts.shift();
@@ -557,7 +586,7 @@
     c.trail.style.opacity = '1';
     if (trailTimer) clearTimeout(trailTimer);
     trailTimer = setTimeout(() => {
-      if (cursor) cursor.trail.style.opacity = '0';
+      if (cursor && cursor.trail) cursor.trail.style.opacity = '0';
     }, 260);
   }
 
@@ -581,7 +610,7 @@
     }
     if (cursor) {
       cursor.root.remove();
-      cursor.trail.remove();
+      if (cursor.trail) cursor.trail.remove();
       cursor = null;
     }
   }
@@ -597,8 +626,16 @@
    * a frame that is not the top one paints by proxy. In a page with no iframes - the
    * common case - this is a direct call and no message is sent at all. */
   function draw(op, x, y) {
+    // `hide` always goes through: it is cleanup, and the setting may have been turned off
+    // while a cursor from an earlier run is still on the page.
+    if (!showPointer && op !== 'hide') return;
     if (IS_TOP) { paint(op, x, y); return; }
-    try { top.postMessage({ __mf: 'cursor', op, x, y }, '*'); } catch (_) {}
+    try {
+      top.postMessage({
+        __mf: 'cursor', op, x, y,
+        opts: { pointer: showPointer, trail: showTrail },
+      }, '*');
+    } catch (_) {}
   }
 
   /* ------------------------------------------------------- driving the cursor */
@@ -1005,6 +1042,7 @@
      * frame starting from nowhere, which is what made the cursor appear out of thin air. */
     if (msg.mf === 'replay/event') {
       trackOffset(true);
+      applyOptions(msg.opts);
       perform(msg.event, msg.from).then(
         (cursor) => respond({ ok: true, cursor: cursor || null }),
         (err) => respond({ ok: false, error: err.message })
@@ -1014,6 +1052,7 @@
 
     if (msg.mf === 'replay/path') {
       trackOffset(true);
+      applyOptions(msg.opts);
       performPath(msg.event, msg.from).then(
         (cursor) => respond({ ok: true, cursor: cursor || null }),
         (err) => respond({ ok: false, error: err.message })
@@ -1035,6 +1074,10 @@
     if (msg.mf === 'cursor/demo') {
       (async () => {
         trackOffset(true);
+        // The point of the self-test is to answer "can this page be drawn in at all", so it
+        // draws regardless of the setting - otherwise turning the pointer off would make the
+        // diagnostic report nothing and look like the failure it exists to rule out.
+        showPointer = true;
         const w = innerWidth, h = innerHeight;
         const corners = [[w * 0.3, h * 0.3], [w * 0.7, h * 0.3], [w * 0.7, h * 0.6], [w * 0.3, h * 0.6]];
         // Walks the square with the same animator replay uses, so seeing this pass means
@@ -1062,6 +1105,7 @@
 
     if (msg.mf === 'agent/act') {
       trackOffset(true);
+      applyOptions(msg.opts);
       agentAct(msg.command, msg.from).then(
         (res) => respond(res),
         (err) => respond({ ok: false, error: err.message })
