@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MouseFlow</title>
+<meta name="description" content="Record mouse actions, replay them, and chain recordings into repeatable flows.">
+<meta name="theme-color" content="#0e1116">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor"/>
+    </svg>
+    <span>MouseFlow</span>
+  </div>
+
+  <button id="agent-pill" class="pill pill--bad" type="button" aria-expanded="false">
+    <span class="dot"></span>
+    <span id="agent-label">Agent offline</span>
+  </button>
+</header>
+
+<section id="agent-setup" class="setup" hidden>
+  <h2>Connect the local agent</h2>
+  <p>
+    A browser tab can only see mouse events inside its own window, and cannot inject real
+    clicks. The agent is the piece that records your desktop and replays it. It runs on your
+    machine and talks to this page over loopback only.
+  </p>
+  <ol>
+    <li>
+      Download <a id="agent-download" href="agent/mouseflow-agent.ps1" download>mouseflow-agent.ps1</a>
+    </li>
+    <li>
+      Open PowerShell in that folder and run:
+      <div class="code-row">
+        <code id="agent-cmd">powershell -ExecutionPolicy Bypass -File .\mouseflow-agent.ps1</code>
+        <button class="btn btn--ghost btn--sm" data-copy="#agent-cmd" type="button">Copy</button>
+      </div>
+    </li>
+    <li>Leave that window open. This page reconnects on its own.</li>
+  </ol>
+  <label class="field field--inline">
+    <span>Agent port</span>
+    <input id="agent-port" type="number" min="1" max="65535" step="1" value="8787">
+  </label>
+  <p class="fineprint">
+    The agent installs a low-level mouse hook while it runs. Events are only stored between
+    Start and Stop. Run it with <code>-AllowOrigin</code> set to this page's origin so other
+    sites cannot reach it.
+  </p>
+</section>
+
+<main class="grid">
+
+  <!-- ---------- recorder ---------- -->
+  <section class="card">
+    <h2 class="card-title">Record</h2>
+
+    <div id="rec-idle" class="rec-idle">
+      <button id="btn-record" class="btn btn--record" type="button" disabled>
+        <span class="rec-dot"></span> Start recording
+      </button>
+      <p class="hint">
+        Everything you click, drag and scroll gets captured until you press Stop.
+      </p>
+    </div>
+
+    <div id="rec-live" class="rec-live" hidden>
+      <div class="rec-live-head">
+        <span class="rec-dot rec-dot--live"></span>
+        <span class="rec-live-title">Recording</span>
+        <span id="rec-elapsed" class="mono">0.0s</span>
+      </div>
+      <div class="rec-stats">
+        <div><strong id="rec-count">0</strong><span>events</span></div>
+        <div><strong id="rec-clicks">0</strong><span>clicks</span></div>
+        <div><strong id="rec-moves">0</strong><span>moves</span></div>
+      </div>
+      <button id="btn-stop-record" class="btn btn--stop" type="button">Stop recording</button>
+    </div>
+  </section>
+
+  <!-- ---------- library ---------- -->
+  <section class="card">
+    <div class="card-head">
+      <h2 class="card-title">Recordings</h2>
+      <div class="card-actions">
+        <button id="btn-import" class="btn btn--ghost btn--sm" type="button">Import .mmmacro</button>
+        <input id="file-import" type="file" accept=".mmmacro,.txt,text/plain" multiple hidden>
+      </div>
+    </div>
+    <ul id="library" class="library"></ul>
+    <p id="library-empty" class="empty">
+      No recordings yet. Press <strong>Start recording</strong>, or import a
+      <code>.mmmacro</code> file from Mini Mouse Macro.
+    </p>
+  </section>
+
+  <!-- ---------- flow ---------- -->
+  <section class="card card--wide">
+    <div class="card-head">
+      <h2 class="card-title">Flow</h2>
+      <div class="card-actions">
+        <button id="btn-clear-flow" class="btn btn--ghost btn--sm" type="button">Clear</button>
+      </div>
+    </div>
+
+    <ol id="flow" class="flow"></ol>
+    <p id="flow-empty" class="empty">
+      Add recordings from the list to build a sequence. Steps run top to bottom.
+    </p>
+
+    <div class="flow-controls">
+      <label class="field">
+        <span>Start delay</span>
+        <span class="input-affix">
+          <input id="start-delay" type="number" min="0" step="500" value="3000">
+          <em>ms</em>
+        </span>
+      </label>
+
+      <label class="field">
+        <span>Repeat whole flow</span>
+        <span class="input-affix">
+          <input id="flow-repeat" type="number" min="1" step="1" value="1">
+          <em>x</em>
+        </span>
+      </label>
+
+      <label class="check">
+        <input id="flow-forever" type="checkbox">
+        <span>Restart forever when it ends</span>
+      </label>
+
+      <div class="flow-run">
+        <button id="btn-run" class="btn btn--primary" type="button" disabled>Run flow</button>
+      </div>
+    </div>
+
+    <div id="replay-panel" class="replay" hidden>
+      <div class="replay-head">
+        <span class="replay-title" id="replay-title">Starting</span>
+        <button id="btn-abort" class="btn btn--stop btn--sm" type="button">Stop</button>
+      </div>
+      <div class="bar"><div id="replay-bar" class="bar-fill"></div></div>
+      <p class="hint">Hold <kbd>Esc</kbd> to abort from anywhere.</p>
+    </div>
+  </section>
+
+</main>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<div id="dropzone" class="dropzone"><span>Drop .mmmacro files to import</span></div>
+
+<script src="app.js"></script>
+</body>
+</html>
