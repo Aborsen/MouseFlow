@@ -127,6 +127,24 @@
     }, describe(el, ev.clientX, ev.clientY)));
   }
 
+  /* Rich-text editors - Gmail's compose body, Notion, most comment boxes - are
+   * contenteditable divs, so they never fire `change` and are invisible to the handler
+   * below. They fire `input` on every keystroke instead, so the text is coalesced into a
+   * single step rather than one step per character. */
+  function onInput(ev) {
+    if (!capturing || !ev.isTrusted) return;
+    const el = ev.target;
+    if (!el || el.nodeType !== 1 || !el.isContentEditable) return;
+
+    const described = describe(el, 0, 0);
+    const last = events[events.length - 1];
+    if (last && last.action === 'fill' && last.editable && last.selector === described.selector) {
+      last.value = el.innerText;   // same field still being typed into
+      return;
+    }
+    push(Object.assign({ action: 'fill', editable: true, value: el.innerText }, described));
+  }
+
   function onChange(ev) {
     if (!capturing || !ev.isTrusted) return;
     const el = ev.target;
@@ -162,6 +180,7 @@
     lastStamp = startedAt;
     capturing = true;
     addEventListener('pointerdown', onPointerDown, true);
+    addEventListener('input', onInput, true);
     addEventListener('change', onChange, true);
     addEventListener('keydown', onKeyDown, true);
     addEventListener('scroll', onScroll, true);
@@ -170,6 +189,7 @@
   function stopCapture() {
     capturing = false;
     removeEventListener('pointerdown', onPointerDown, true);
+    removeEventListener('input', onInput, true);
     removeEventListener('change', onChange, true);
     removeEventListener('keydown', onKeyDown, true);
     removeEventListener('scroll', onScroll, true);
@@ -240,6 +260,31 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  /* Rich-text hosts (Gmail, Notion) keep their own model of the document and ignore a
+   * textContent assignment. execCommand is deprecated but remains the only widely
+   * supported way to make an editor process text as if it were typed - it raises the
+   * beforeinput/input pair the editor is listening for. Falls back to a manual range
+   * edit where execCommand is unavailable. */
+  function setEditableText(el, text) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    let inserted = false;
+    try {
+      inserted = document.execCommand('insertText', false, text);
+    } catch (_) {
+      inserted = false;
+    }
+    if (!inserted) {
+      el.textContent = text;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+    }
+    sel.removeAllRanges();
+  }
+
   async function perform(ev) {
     if (ev.action === 'scroll') {
       scrollTo({ left: ev.scrollX, top: ev.scrollY, behavior: 'instant' });
@@ -270,7 +315,11 @@
       }
       case 'fill':
         if (el.focus) el.focus({ preventScroll: true });
-        setValue(el, ev.value);
+        if (ev.editable || el.isContentEditable) {
+          setEditableText(el, ev.value);
+        } else {
+          setValue(el, ev.value);
+        }
         return;
       case 'redacted':
         if (el.focus) el.focus({ preventScroll: true });
