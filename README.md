@@ -47,11 +47,21 @@ The command in step 1 pipes the agent straight into a scriptblock:
 ```
 
 Nothing is downloaded, unblocked, or exempted from the execution policy — but see
-[the tradeoff](#the-one-liner-tradeoff). To run from a file instead:
+[the tradeoff](#the-one-liner-tradeoff). To run a copy you downloaded and read first:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\mouseflow-agent.ps1 -AllowOrigin https://your-app.vercel.app
+& ([scriptblock]::Create((Get-Content "$env:USERPROFILE\Downloads\mouseflow-agent.ps1" -Raw))) -AllowOrigin https://your-app.vercel.app
 ```
+
+**Do not use `-File`.** On any machine whose execution policy comes from Group Policy — most
+corporate estates — the `MachinePolicy` and `UserPolicy` scopes outrank the
+`-ExecutionPolicy Bypass` argument, so an AllSigned estate refuses an unsigned `.ps1` with
+*"is not digitally signed"* no matter what you pass. Handing the script text to a scriptblock
+never loads a file, so the policy never engages. Check yours with `Get-ExecutionPolicy -List`.
+
+Autostart is unavailable on either path, because both leave `$PSCommandPath` empty and the
+logon launcher needs a real file to point at. A signed installer is the fix; see
+[where this would go next](#where-this-would-go-next).
 
 Locally, any static server works: `npx --yes serve . -l 4321`
 

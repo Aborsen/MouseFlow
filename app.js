@@ -761,10 +761,23 @@ function oneLineCommand() {
     ' -AllowOrigin ' + location.origin;
 }
 
-function fileCommand() {
-  return 'powershell -ExecutionPolicy Bypass -File .\\mouseflow-agent.ps1' +
+/* Runs the downloaded copy WITHOUT `-File`.
+ *
+ * `-File` is what you would expect to use, and it fails on any machine whose execution
+ * policy comes from Group Policy: the MachinePolicy/UserPolicy scopes outrank the
+ * `-ExecutionPolicy Bypass` argument, so an AllSigned estate refuses an unsigned .ps1
+ * outright. Handing the script text to a scriptblock never loads a file, so the policy
+ * never engages - and unlike the piped one-liner, the code being run is the local copy
+ * the user can read first.
+ */
+function localFileCommand() {
+  return '& ([scriptblock]::Create((Get-Content "$env:USERPROFILE\\Downloads\\mouseflow-agent.ps1" -Raw)))' +
     (state.port !== 8787 ? ' -Port ' + state.port : '') +
     ' -AllowOrigin ' + location.origin;
+}
+
+function startCommand() {
+  return state.onboarding.usedDownload ? localFileCommand() : oneLineCommand();
 }
 
 function copyText(text, okMessage) {
@@ -780,8 +793,10 @@ function downloadAgent() {
   a.click();
   a.remove();
   state.onboarding.copied = true;
+  state.onboarding.usedDownload = true;
   save();
   renderOnboarding();
+  toast('Downloaded. The command below now runs your local copy.', 'good');
 }
 
 async function enableAutostart() {
@@ -808,10 +823,10 @@ function onboardingSteps() {
             'nothing to unblock.',
       build: () => [
         h('div', { class: 'code-row' }, [
-          h('code', { text: oneLineCommand() }),
+          h('code', { text: startCommand() }),
           h('button', {
             class: 'btn btn--primary btn--sm', type: 'button', text: 'Copy command',
-            onclick: () => copyText(oneLineCommand(), 'Copied — paste it into PowerShell.').then(() => {
+            onclick: () => copyText(startCommand(), 'Copied — paste it into PowerShell.').then(() => {
               state.onboarding.copied = true;
               save();
               renderOnboarding();
@@ -855,7 +870,7 @@ function onboardingSteps() {
         }
         buttons.push(h('button', {
           class: 'btn btn--ghost btn--sm', type: 'button', text: 'Copy command again',
-          onclick: () => copyText(oneLineCommand()),
+          onclick: () => copyText(startCommand()),
         }));
         actions.push(h('div', { class: 'ob-actions' }, buttons));
 
@@ -864,6 +879,11 @@ function onboardingSteps() {
             'Clicked Block by mistake? Reset it under Settings → Privacy and security → ' +
             'Site settings → Local network access, then press Connect again.'));
         }
+
+        actions.push(h('p', { class: 'ob-note' },
+          '"…is not digitally signed" means your execution policy comes from Group Policy, ' +
+          'which outranks -ExecutionPolicy Bypass. Use the command above as-is — it hands the ' +
+          'script to a scriptblock instead of loading a file, so the policy never applies.'));
 
         return actions;
       },
