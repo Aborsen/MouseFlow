@@ -20,9 +20,6 @@
   const WAIT_TIMEOUT_MS = 8000; // how long replay waits for a missing element
 
   let capturing = false;
-  let events = [];
-  let startedAt = 0;
-  let lastStamp = 0;
   let lastScrollAt = 0;
 
   /* ------------------------------------------------------------- selectors */
@@ -109,12 +106,22 @@
 
   /* --------------------------------------------------------------- capture */
 
+  /* Every event is handed to the background worker the instant it happens, rather than
+   * buffered here and collected at the end.
+   *
+   * The buffer used to live in this script, which meant a page navigation destroyed
+   * everything recorded up to that point - the recording silently kept only whatever
+   * happened after the last page load. Any real flow ("open Gmail, click Compose, send")
+   * navigates, so that was most of the recording. The worker also owns the clock, so
+   * timings stay continuous instead of restarting with each page's performance.now().
+   */
   function push(partial) {
-    const now = performance.now();
-    events.push(Object.assign({
-      delay: events.length === 0 ? 0 : Math.round(now - lastStamp),
-    }, partial));
-    lastStamp = now;
+    if (!capturing) return;
+    try {
+      chrome.runtime.sendMessage({ mf: 'capture/event', event: partial });
+    } catch (_) {
+      // Extension context invalidated (reloaded mid-recording). Nothing useful to do.
+    }
   }
 
   function onPointerDown(ev) {
@@ -136,13 +143,10 @@
     const el = ev.target;
     if (!el || el.nodeType !== 1 || !el.isContentEditable) return;
 
-    const described = describe(el, 0, 0);
-    const last = events[events.length - 1];
-    if (last && last.action === 'fill' && last.editable && last.selector === described.selector) {
-      last.value = el.innerText;   // same field still being typed into
-      return;
-    }
-    push(Object.assign({ action: 'fill', editable: true, value: el.innerText }, described));
+    // Coalescing consecutive keystrokes into one step happens in the worker, which is
+    // the only place that still sees the whole recording.
+    push(Object.assign({ action: 'fill', editable: true, value: el.innerText },
+      describe(el, 0, 0)));
   }
 
   function onChange(ev) {
@@ -175,9 +179,7 @@
   }
 
   function startCapture() {
-    events = [];
-    startedAt = performance.now();
-    lastStamp = startedAt;
+    if (capturing) return;
     capturing = true;
     addEventListener('pointerdown', onPointerDown, true);
     addEventListener('input', onInput, true);
@@ -193,7 +195,6 @@
     removeEventListener('change', onChange, true);
     removeEventListener('keydown', onKeyDown, true);
     removeEventListener('scroll', onScroll, true);
-    return { events, durationMs: Math.round(performance.now() - startedAt) };
   }
 
   /* ---------------------------------------------------------------- replay */
@@ -340,10 +341,9 @@
   chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     if (!msg || typeof msg.mf !== 'string') return;
 
-    if (msg.mf === 'ping') { respond({ ok: true, url: location.href }); return; }
+    if (msg.mf === 'ping') { respond({ ok: true, url: location.href, capturing }); return; }
     if (msg.mf === 'capture/start') { startCapture(); respond({ ok: true }); return; }
-    if (msg.mf === 'capture/count') { respond({ ok: true, count: events.length }); return; }
-    if (msg.mf === 'capture/stop') { respond(Object.assign({ ok: true }, stopCapture())); return; }
+    if (msg.mf === 'capture/stop') { stopCapture(); respond({ ok: true }); return; }
 
     if (msg.mf === 'replay/event') {
       perform(msg.event).then(

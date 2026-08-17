@@ -13,7 +13,7 @@
 const VERSION = '0.1.0';
 const KEEPALIVE_MS = 20000;
 
-const rec = { active: false, tabId: null, startedAt: 0, count: 0 };
+const rec = { active: false, tabId: null, startedAt: 0, lastAt: 0, events: [], origin: null, url: null };
 const play = {
   active: false, abort: false,
   step: 0, steps: 0, pass: 0, passes: 0,
@@ -72,57 +72,112 @@ async function send(tabId, message) {
   return chrome.tabs.sendMessage(tabId, message);
 }
 
+function waitForLoad(tabId, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      reject(new Error('the page did not finish loading in ' + timeoutMs + 'ms'));
+    }, timeoutMs);
+    function onUpdated(id, info) {
+      if (id !== tabId || info.status !== 'complete') return;
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+  });
+}
+
+// Replaying a `navigate` step drives the tab rather than the page: a content script
+// cannot outlive the navigation it triggers.
+async function goTo(tabId, url) {
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.url === url) return;
+  const loaded = waitForLoad(tabId);
+  await chrome.tabs.update(tabId, { url });
+  await loaded;
+}
+
 /* ------------------------------------------------------------------ recording */
 
 async function recordStart(tabId) {
-  const target = tabId || await activeTabId();
-  await send(target, { mf: 'capture/start' });
+  const tab = tabId ? await chrome.tabs.get(tabId) : await activeTab();
+  await send(tab.id, { mf: 'capture/start' });
+
   rec.active = true;
-  rec.tabId = target;
+  rec.tabId = tab.id;
   rec.startedAt = Date.now();
-  rec.count = 0;
+  rec.lastAt = Date.now();
+  rec.events = [];
+  rec.url = tab.url || null;
+  rec.origin = originOf(tab.url);
+
   await chrome.action.setBadgeText({ text: 'REC' });
   await chrome.action.setBadgeBackgroundColor({ color: '#f85149' });
-  return { ok: true, tabId: target };
+  // With no popup assigned, an icon click fires onClicked instead of opening the popup,
+  // which is what lets the icon act as Stop while a recording is running.
+  await chrome.action.setPopup({ popup: '' });
+  return { ok: true, tabId: tab.id };
+}
+
+// One captured event arriving from the page.
+function captureEvent(ev) {
+  if (!rec.active) return { ok: false, error: 'not recording' };
+  const now = Date.now();
+
+  const last = rec.events[rec.events.length - 1];
+  if (last && ev.action === 'fill' && ev.editable && last.action === 'fill' &&
+      last.editable && last.selector === ev.selector) {
+    last.value = ev.value;       // still typing into the same rich-text field
+    return { ok: true, count: rec.events.length };
+  }
+
+  rec.events.push(Object.assign({
+    delay: rec.events.length === 0 ? 0 : now - rec.lastAt,
+  }, ev));
+  rec.lastAt = now;
+  return { ok: true, count: rec.events.length };
 }
 
 async function recordStatus() {
-  if (rec.active && rec.tabId != null) {
-    try {
-      const res = await chrome.tabs.sendMessage(rec.tabId, { mf: 'capture/count' });
-      if (res && res.ok) rec.count = res.count;
-    } catch (_) {
-      // tab navigated or closed; keep the last count
-    }
-  }
   return {
     ok: true,
     recording: rec.active,
-    count: rec.count,
+    count: rec.events.length,
     elapsedMs: rec.active ? Date.now() - rec.startedAt : 0,
   };
 }
 
 async function recordStop() {
-  if (!rec.active) return { ok: true, events: [] };
-  let events = [];
-  try {
-    const res = await chrome.tabs.sendMessage(rec.tabId, { mf: 'capture/stop' });
-    if (res && res.ok) events = res.events || [];
-  } catch (err) {
-    rec.active = false;
-    await chrome.action.setBadgeText({ text: '' });
-    throw new Error('the recorded tab is gone: ' + err.message);
-  }
-  rec.active = false;
-  rec.count = 0;
-  await chrome.action.setBadgeText({ text: '' });
+  if (!rec.active) return { ok: true, events: [], saved: null };
 
-  // Which page this was recorded against. Element selectors are only meaningful on the
-  // site they came from, so the origin travels with the recording and is checked on replay.
-  let url = null;
-  try { url = (await chrome.tabs.get(rec.tabId)).url; } catch (_) {}
-  return { ok: true, events, url, origin: originOf(url) };
+  rec.active = false;
+  try { await chrome.tabs.sendMessage(rec.tabId, { mf: 'capture/stop' }); } catch (_) {
+    // Tab closed or navigated. Events were streamed as they happened, so they are safe.
+  }
+  await chrome.action.setBadgeText({ text: '' });
+  await chrome.action.setPopup({ popup: 'popup.html' });
+
+  const events = rec.events;
+  rec.events = [];
+  if (!events.length) return { ok: true, events: [], saved: null };
+
+  // Persisted here rather than in the popup, because the icon-as-Stop path has no popup
+  // open to do it, and a recording must never depend on a window being visible.
+  const { pending = [] } = await chrome.storage.local.get('pending');
+  const saved = {
+    id: Math.random().toString(36).slice(2, 10),
+    name: 'Web recording ' + (pending.length + 1),
+    created: new Date().toISOString(),
+    kind: 'web',
+    url: rec.url,
+    origin: rec.origin,
+    events,
+  };
+  pending.push(saved);
+  await chrome.storage.local.set({ pending });
+
+  return { ok: true, events, saved, url: rec.url, origin: rec.origin };
 }
 
 /* --------------------------------------------------------------------- replay */
@@ -188,14 +243,22 @@ async function runFlow(tabId, steps, flow) {
             const ev = step.events[i];
             await sleep(Math.round((ev.delay || 0) / speed));
 
-            const res = await send(tabId, { mf: 'replay/event', event: ev });
-            const ok = !!(res && res.ok);
+            let ok = false;
+            let error = null;
+            if (ev.action === 'navigate') {
+              try { await goTo(tabId, ev.url); ok = true; } catch (err) { error = err.message; }
+            } else {
+              const res = await send(tabId, { mf: 'replay/event', event: ev });
+              ok = !!(res && res.ok);
+              error = ok ? null : ((res && res.error) || 'no response from the page');
+            }
+
             const entry = {
               n: i + 1,
               action: ev.action,
-              target: ev.selector || (ev.action === 'scroll' ? 'window' : '?'),
+              target: ev.selector || ev.url || (ev.action === 'scroll' ? 'window' : '?'),
               ok,
-              error: ok ? null : ((res && res.error) || 'no response from the page'),
+              error,
             };
             play.log.push(entry);
             // Mirrored to the worker console so a failing replay can be read from
@@ -245,6 +308,7 @@ function replayStatus() {
 
 const ROUTES = {
   ping: async () => ({ ok: true, version: VERSION, mode: 'extension', recording: rec.active, playing: play.active }),
+  'capture/event': async (msg) => captureEvent(msg.event),
   'record/start': (msg) => recordStart(msg.tabId),
   'record/status': () => recordStatus(),
   'record/stop': () => recordStop(),
@@ -272,11 +336,53 @@ function route(msg, respond) {
 chrome.runtime.onMessage.addListener((msg, sender, respond) => route(msg, respond));
 chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => route(msg, respond));
 
-// A closed or navigated-away tab silently ends a recording; surface it rather than
-// leaving a REC badge and a recording that will never produce events.
-chrome.tabs.onRemoved.addListener((tabId) => {
-  if (rec.active && rec.tabId === tabId) {
-    rec.active = false;
-    chrome.action.setBadgeText({ text: '' });
+/* Keep capturing across page loads.
+ *
+ * A navigation destroys the content script, so without this the recording stops at the
+ * first link or form submit while the badge still says REC. The navigation is also
+ * recorded as its own step, so a replay can put the browser back on the right page
+ * instead of blindly hunting for elements that are not there yet.
+ */
+chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
+  if (!rec.active || tabId !== rec.tabId || info.status !== 'complete') return;
+  if (/^(chrome|edge|about|chrome-extension|devtools):/i.test(tab.url || '')) return;
+
+  const last = rec.events[rec.events.length - 1];
+  if (!last || last.action !== 'navigate' || last.url !== tab.url) {
+    captureEvent({ action: 'navigate', url: tab.url });
   }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    await chrome.tabs.sendMessage(tabId, { mf: 'capture/start' });
+  } catch (err) {
+    console.warn('[MouseFlow] could not resume capture after navigation:', err.message);
+  }
+});
+
+// A closed tab ends the recording. Events already streamed here are kept.
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  if (rec.active && rec.tabId === tabId) {
+    await recordStop().catch(() => {});
+  }
+});
+
+/* Icon click while recording = Stop, then show the result.
+ *
+ * onClicked only fires when no popup is assigned, which recordStart arranges. Stopping
+ * restores the popup and reopens it so the user lands on the saved recording without a
+ * second click. openPopup needs Chrome 127+; if it is unavailable the recording is still
+ * safely saved and the next click opens the popup normally.
+ */
+chrome.action.onClicked.addListener(async () => {
+  if (!rec.active) {
+    await chrome.action.setPopup({ popup: 'popup.html' });
+    try { await chrome.action.openPopup(); } catch (_) {}
+    return;
+  }
+  const res = await recordStop().catch((err) => ({ ok: false, error: err.message }));
+  if (res && res.saved) {
+    await chrome.action.setBadgeText({ text: String(res.saved.events.length) });
+    await chrome.action.setBadgeBackgroundColor({ color: '#2ea043' });
+  }
+  try { await chrome.action.openPopup(); } catch (_) {}
 });

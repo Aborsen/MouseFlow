@@ -47,24 +47,15 @@ $('record').addEventListener('click', async () => {
   refreshRecording();
 });
 
+/* Saving is the worker's job, not the popup's - clicking the icon to stop a recording
+ * never opens a popup, and a recording must not depend on a window being visible. */
 $('stop').addEventListener('click', async () => {
   const res = await ask('record/stop');
   setRecording(false);
   if (!res.ok) { $('note').textContent = res.error; return; }
-  if (!res.events.length) { $('note').textContent = 'Nothing was captured.'; return; }
-
-  const pending = await getPending();
-  pending.push({
-    id: Math.random().toString(36).slice(2, 10),
-    name: 'Web recording ' + (pending.length + 1),
-    created: new Date().toISOString(),
-    kind: 'web',
-    url: res.url || null,
-    origin: res.origin || null,
-    events: res.events,
-  });
-  await chrome.storage.local.set({ pending });
-  $('note').textContent = res.events.length + ' events saved.';
+  $('note').textContent = res.saved
+    ? res.saved.events.length + ' events saved.'
+    : 'Nothing was captured.';
   showSaved();
 });
 
@@ -149,6 +140,8 @@ $('clear').addEventListener('click', async (ev) => {
 
 (async () => {
   $('open').href = APP_URL;
+  // Clear the green "saved N events" badge left by stopping via the icon.
+  chrome.action.setBadgeText({ text: '' }).catch(() => {});
   const s = await ask('ping');
   setRecording(!!s.recording);
   setPlaying(!!s.playing);

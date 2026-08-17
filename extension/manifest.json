@@ -3,7 +3,7 @@
   "name": "MouseFlow",
   "version": "0.1.0",
   "description": "Record clicks and typing in a page, replay them, and chain recordings into repeatable flows.",
-  "minimum_chrome_version": "116",
+  "minimum_chrome_version": "127",
 
   "permissions": ["scripting", "tabs", "storage"],
 
