@@ -191,10 +191,20 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
       const detail = await res.text();
       let message = 'API error ' + res.status;
       try { message = JSON.parse(detail).error.message || message; } catch (_) {}
+
+      /* `recover` names the one action that fixes this, so the UI can offer it instead of
+       * leaving the user at a dead end. A rejected personal key is the case that matters: the
+       * shared key is sitting right there unused, but the only way to reach it is to know that
+       * a saved key takes precedence and to go and delete it. */
+      let recover = null;
       if (res.status === 401) {
-        message = direct
-          ? 'That API key was rejected.'
-          : 'The shared demo key was rejected. Add your own key to keep working.';
+        if (direct) {
+          message = 'The API key saved here was rejected by Anthropic - it may have been ' +
+            'revoked or mistyped. Use the shared demo key instead, or paste a working one.';
+          recover = 'drop-key';
+        } else {
+          message = 'The shared demo key was rejected. Add your own key to keep working.';
+        }
       }
       if (res.status === 429) {
         message = direct
@@ -202,7 +212,7 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
           : 'The shared demo key is rate limited - everyone is using the same one. ' +
             'Wait a moment, or add your own key.';
       }
-      return { ok: false, error: message, steps };
+      return { ok: false, error: message, recover, steps };
     }
 
     const reply = await res.json();

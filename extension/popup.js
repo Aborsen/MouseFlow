@@ -336,14 +336,44 @@ async function refreshAgent() {
 
   if (!result.ok) {
     $('ai-note').textContent = result.error === 'stopped' ? 'Stopped.' : result.error;
+    /* A failure with a known fix offers it here rather than describing it. The saved key wins
+     * over the shared one, so a rejected key is a dead end unless you know to go and delete it -
+     * and the key box is collapsed, so you cannot even see which key is in play. */
+    if (result.recover === 'drop-key') {
+      $('btn-use-shared').hidden = false;
+      $('key-box').open = true;
+    }
     return;
   }
+  $('btn-use-shared').hidden = true;
   $('ai-note').textContent = (result.needsUser ? 'Ready for you: ' : '') + result.summary +
     (result.steps && result.steps.length ? '\n(' + result.steps.length + ' actions taken)' : '');
 }
 
+// Drops the rejected key and re-runs the same goal, so recovery is one click and not a
+// sequence the user has to work out.
+$('btn-use-shared').addEventListener('click', async () => {
+  await chrome.storage.local.remove('apiKey');
+  $('api-key').value = '';
+  $('api-key').placeholder = 'sk-ant-...';
+  $('key-box').querySelector('summary').textContent =
+    'Anthropic API key (using the shared demo key)';
+  $('btn-clear-key').hidden = true;
+  $('btn-use-shared').hidden = true;
+  $('key-box').open = false;
+
+  const goal = $('goal').value.trim();
+  if (!goal) { $('ai-note').textContent = 'Key removed. Runs now use the shared demo key.'; return; }
+  $('ai-note').textContent = 'Key removed. Retrying with the shared demo key…';
+  const res = await ask('agent/start', { goal });
+  if (!res.ok) { $('ai-note').textContent = res.error; return; }
+  setAgentRunning(true);
+  refreshAgent();
+});
+
 $('btn-run-goal').addEventListener('click', async () => {
   $('ai-note').textContent = '';
+  $('btn-use-shared').hidden = true;
   const res = await ask('agent/start', { goal: $('goal').value });
   if (!res.ok) {
     $('ai-note').textContent = res.error;
