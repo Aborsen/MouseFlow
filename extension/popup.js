@@ -59,6 +59,8 @@ $('stop').addEventListener('click', async () => {
     name: 'Web recording ' + (pending.length + 1),
     created: new Date().toISOString(),
     kind: 'web',
+    url: res.url || null,
+    origin: res.origin || null,
     events: res.events,
   });
   await chrome.storage.local.set({ pending });
@@ -75,6 +77,9 @@ async function showSaved() {
   if (!last) return;
   $('saved-name').textContent = last.name;
   $('saved-count').textContent = last.events.length + ' events';
+  // The site it belongs to, since replaying it anywhere else is refused.
+  $('saved-name').title = last.url || 'origin unknown';
+  if (last.origin) $('saved-name').textContent = last.name + ' · ' + last.origin.replace(/^https?:\/\//, '');
 }
 
 function setPlaying(on) {
@@ -88,10 +93,23 @@ async function refreshReplay() {
   const s = await ask('replay/status');
   if (s.playing) {
     $('note').textContent = 'Replaying ' + s.index + '/' + s.total;
-  } else {
-    setPlaying(false);
-    $('note').textContent = s.error ? 'Stopped: ' + s.error : 'Replay finished.';
+    return;
   }
+  setPlaying(false);
+
+  if (s.error) { $('note').textContent = 'Stopped: ' + s.error; return; }
+
+  // "Finished" with nothing performed means the run never really happened - almost
+  // always a worker restart or an empty recording. Say so instead of implying success.
+  if (!s.performed) {
+    const { lastRun } = await chrome.storage.session.get('lastRun');
+    $('note').textContent = lastRun && lastRun.error
+      ? 'Stopped: ' + lastRun.error
+      : 'Nothing was performed. Reload the extension and try once more.';
+    return;
+  }
+  $('note').textContent = 'Replayed ' + s.performed + ' event(s)' +
+    (s.failed ? ', ' + s.failed + ' failed' : ' cleanly') + '.';
 }
 
 $('replay').addEventListener('click', async () => {
@@ -105,6 +123,7 @@ $('replay').addEventListener('click', async () => {
       // Short lead-in so the popup can close and the page settle before the first click.
       startDelay: 400,
       flowRepeat: 1,
+      origin: last.origin || null,
       steps: [{ events: last.events, repeat: 1, speed: 1, delayAfter: 0 }],
     },
   });

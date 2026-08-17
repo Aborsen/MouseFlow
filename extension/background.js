@@ -19,6 +19,7 @@ const play = {
   step: 0, steps: 0, pass: 0, passes: 0,
   flowPass: 0, flowPasses: 0, index: 0, total: 0,
   error: null,
+  log: [],
 };
 
 let keepAlive = null;
@@ -37,13 +38,21 @@ function holdWorker(on) {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
-async function activeTabId() {
+async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab) throw new Error('no active tab');
   if (/^(chrome|edge|about|chrome-extension|devtools):/i.test(tab.url || '')) {
     throw new Error('browser pages cannot be automated - switch to a normal site first');
   }
-  return tab.id;
+  return tab;
+}
+
+async function activeTabId() {
+  return (await activeTab()).id;
+}
+
+function originOf(url) {
+  try { return new URL(url).origin; } catch (_) { return null; }
 }
 
 // Content script is injected on demand, and re-injected after a navigation wipes it.
@@ -108,7 +117,12 @@ async function recordStop() {
   rec.active = false;
   rec.count = 0;
   await chrome.action.setBadgeText({ text: '' });
-  return { ok: true, events };
+
+  // Which page this was recorded against. Element selectors are only meaningful on the
+  // site they came from, so the origin travels with the recording and is checked on replay.
+  let url = null;
+  try { url = (await chrome.tabs.get(rec.tabId)).url; } catch (_) {}
+  return { ok: true, events, url, origin: originOf(url) };
 }
 
 /* --------------------------------------------------------------------- replay */
@@ -118,13 +132,24 @@ async function replayStart(flow) {
   const steps = (flow && flow.steps || []).filter((s) => s.events && s.events.length);
   if (!steps.length) throw new Error('flow contains no events');
 
-  const tabId = flow.tabId || await activeTabId();
+  const tab = await activeTab();
+  const tabId = flow.tabId || tab.id;
+
+  /* Selectors recorded on one site are meaningless on another, and worse than
+   * meaningless: a path like `button:nth-of-type(3)` can resolve on an unrelated page,
+   * click something harmless, and report success. That is a silent wrong answer, so
+   * refuse rather than "succeed" against the wrong origin. */
+  const here = originOf(tab.url);
+  if (flow.origin && here && flow.origin !== here) {
+    throw new Error('recorded on ' + flow.origin + ' but the active tab is ' + here +
+      ' - switch to the right tab and try again');
+  }
 
   Object.assign(play, {
     active: true, abort: false, error: null,
     step: 0, steps: steps.length, pass: 0, passes: 0,
     flowPass: 0, flowPasses: flow.flowRepeat == null ? 1 : flow.flowRepeat,
-    index: 0, total: 0,
+    index: 0, total: 0, log: [],
   });
   holdWorker(true);
   await chrome.action.setBadgeText({ text: 'RUN' });
@@ -162,8 +187,22 @@ async function runFlow(tabId, steps, flow) {
             if (play.abort) break;
             const ev = step.events[i];
             await sleep(Math.round((ev.delay || 0) / speed));
+
             const res = await send(tabId, { mf: 'replay/event', event: ev });
-            if (!res || !res.ok) throw new Error('step ' + (s + 1) + ', event ' + (i + 1) + ': ' + ((res && res.error) || 'no response'));
+            const ok = !!(res && res.ok);
+            const entry = {
+              n: i + 1,
+              action: ev.action,
+              target: ev.selector || (ev.action === 'scroll' ? 'window' : '?'),
+              ok,
+              error: ok ? null : ((res && res.error) || 'no response from the page'),
+            };
+            play.log.push(entry);
+            // Mirrored to the worker console so a failing replay can be read from
+            // chrome://extensions -> service worker without any extra tooling.
+            console[ok ? 'log' : 'warn']('[MouseFlow]', entry);
+
+            if (!ok) throw new Error('step ' + (s + 1) + ', event ' + (i + 1) + ' (' + ev.action + '): ' + entry.error);
             play.index = i + 1;
           }
 
@@ -171,14 +210,23 @@ async function runFlow(tabId, steps, flow) {
         }
       }
     }
+  } catch (err) {
+    // Recorded here, not in the caller's .catch(), so the finally below stores it.
+    play.error = err.message;
   } finally {
     play.active = false;
     holdWorker(false);
     chrome.action.setBadgeText({ text: '' });
+    // Survives the worker being torn down, so the popup can still explain the last run.
+    chrome.storage.session.set({
+      lastRun: { at: Date.now(), error: play.error, log: play.log.slice(-60) },
+    }).catch(() => {});
   }
 }
 
 function replayStatus() {
+  const done = play.log.length;
+  const failed = play.log.filter((e) => !e.ok).length;
   return {
     ok: true,
     playing: play.active,
@@ -187,6 +235,9 @@ function replayStatus() {
     flowPass: play.flowPass, flowPasses: play.flowPasses,
     index: play.index, total: play.total,
     error: play.error,
+    performed: done,
+    failed,
+    log: play.log.slice(-20),
   };
 }
 
