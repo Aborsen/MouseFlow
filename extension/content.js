@@ -598,6 +598,29 @@
 
     if (msg.mf === 'cursor/hide') { ghostHide(); respond({ ok: true }); return; }
 
+    /* Self-test: prove this page can be driven, independently of any recording.
+     * Walks the drawn cursor around a square and pulses at each corner. If the user
+     * sees this, injection and drawing both work and any failure is replay-specific;
+     * if they see nothing, the problem is upstream of replay entirely. */
+    if (msg.mf === 'cursor/demo') {
+      (async () => {
+        const w = innerWidth, h = innerHeight;
+        const corners = [[w * 0.3, h * 0.3], [w * 0.7, h * 0.3], [w * 0.7, h * 0.6], [w * 0.3, h * 0.6]];
+        ensureGhost();
+        for (const [x, y] of corners) {
+          ghostMoveTo(x, y);
+          await sleep(TRAVEL_MS + 60);
+          ghostPulse();
+          await sleep(160);
+        }
+        await sleep(400);
+        ghostHide();
+      })().catch(() => {});
+      // Answer immediately - the caller should not wait out the animation.
+      respond({ ok: true, url: location.href, viewport: innerWidth + 'x' + innerHeight });
+      return;
+    }
+
     if (msg.mf === 'agent/snapshot') {
       try { respond({ ok: true, page: snapshot(msg.limit || 120) }); }
       catch (err) { respond({ ok: false, error: err.message }); }

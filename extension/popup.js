@@ -199,6 +199,19 @@ $('btn-abort').addEventListener('click', async () => {
   $('rec-note').textContent = 'Aborted.';
 });
 
+$('selftest').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  $('rec-note').textContent = 'Testing…';
+  const res = await ask('selftest');
+  if (res.ok) {
+    $('rec-note').textContent = 'Cursor drawn on ' + res.url.replace(/^https?:\/\//, '').slice(0, 40) +
+      ' (' + res.viewport + ').\nIf you did not see it move, tell me — the page is reachable, so the ' +
+      'problem is the drawing, not the connection.';
+  } else {
+    $('rec-note').textContent = 'Failed at the "' + res.stage + '" stage:\n' + res.error;
+  }
+});
+
 $('copy-log').addEventListener('click', async (ev) => {
   ev.preventDefault();
   const pending = await getPending();

@@ -529,6 +529,36 @@ const ROUTES = {
   replay: (msg) => replayStart(msg.flow || {}),
   'replay/status': async () => replayStatus(),
   'replay/abort': async () => { play.abort = true; return { ok: true }; },
+  /* Does the extension reach this page at all?
+   *
+   * Every failure so far has looked the same from the popup - a run that reports
+   * something while the page appears untouched. This separates the layers and names the
+   * one that broke, rather than leaving the user to infer it. */
+  selftest: async () => {
+    let tab;
+    try {
+      tab = await activeTab();
+    } catch (err) {
+      return { ok: false, stage: 'tab', error: err.message };
+    }
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    } catch (err) {
+      return {
+        ok: false, stage: 'inject',
+        error: 'Cannot run on this page: ' + err.message +
+          ' (host permissions, a Web Store page, or a PDF viewer will all do this)',
+      };
+    }
+    await sleep(80);
+    try {
+      const res = await chrome.tabs.sendMessage(tab.id, { mf: 'cursor/demo' });
+      if (!res || !res.ok) return { ok: false, stage: 'respond', error: 'the page did not answer' };
+      return { ok: true, url: res.url, viewport: res.viewport };
+    } catch (err) {
+      return { ok: false, stage: 'message', error: 'Injected, but messaging failed: ' + err.message };
+    }
+  },
   'agent/start': (msg) => agentStart(msg.goal),
   'agent/status': async () => agentStatus(),
   'agent/abort': async () => { agent.abort = true; return { ok: true }; },
