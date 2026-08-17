@@ -286,6 +286,27 @@
     sel.removeAllRanges();
   }
 
+  /* Outlines whatever a step is about to act on.
+   *
+   * Without this a replay is invisible when the page reacts subtly or not at all, and
+   * "it did nothing" is indistinguishable from "it clicked the wrong thing" or "it
+   * clicked the right thing and the app ignored it". The flash answers that instantly.
+   */
+  function flash(el) {
+    try {
+      const outline = el.style.outline;
+      const offset = el.style.outlineOffset;
+      el.style.outline = '2px solid #4c8dff';
+      el.style.outlineOffset = '2px';
+      setTimeout(() => {
+        el.style.outline = outline;
+        el.style.outlineOffset = offset;
+      }, 350);
+    } catch (_) {
+      // inline styles blocked; the step itself still runs
+    }
+  }
+
   async function perform(ev) {
     if (ev.action === 'scroll') {
       scrollTo({ left: ev.scrollX, top: ev.scrollY, behavior: 'instant' });
@@ -294,6 +315,7 @@
 
     const el = await resolve(ev);
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    flash(el);
     await sleep(30);
     const point = pointAt(el, ev);
 

@@ -129,6 +129,30 @@ $('abort').addEventListener('click', async () => {
   $('note').textContent = 'Aborted.';
 });
 
+/* One click to get the whole picture out of the extension: what was recorded and what
+ * each replayed step actually did. Debugging this otherwise means opening the service
+ * worker inspector, which is a lot to ask of anyone reporting a problem. */
+$('log').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  const pending = await getPending();
+  const last = pending[pending.length - 1];
+  const { lastRun } = await chrome.storage.session.get('lastRun');
+  const status = await ask('replay/status');
+
+  const report = {
+    recording: last ? { name: last.name, origin: last.origin, url: last.url, events: last.events } : null,
+    lastRun: lastRun || null,
+    status,
+  };
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+    $('note').textContent = 'Log copied — paste it into the chat.';
+  } catch (_) {
+    console.log('[MouseFlow] report', report);
+    $('note').textContent = 'Clipboard blocked; the log is in this popup’s console.';
+  }
+});
+
 $('clear').addEventListener('click', async (ev) => {
   ev.preventDefault();
   await chrome.storage.local.remove('pending');
