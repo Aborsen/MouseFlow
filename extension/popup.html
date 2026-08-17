@@ -49,8 +49,17 @@
   <button id="record" class="primary" type="button">Start recording</button>
   <button id="stop" class="stop" type="button" hidden>Stop and save</button>
 
+  <div id="saved" hidden>
+    <div class="stat"><span id="saved-name">-</span><span id="saved-count"></span></div>
+    <button id="replay" type="button">Replay it here</button>
+    <button id="abort" class="stop" type="button" hidden>Stop replay</button>
+  </div>
+
   <p id="note"></p>
-  <a id="open" href="#" target="_blank" rel="noopener">Open the MouseFlow app</a>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+    <a id="open" href="#" target="_blank" rel="noopener">Open the MouseFlow app</a>
+    <a id="clear" href="#">Clear saved</a>
+  </div>
 
   <script src="popup.js"></script>
 </body>

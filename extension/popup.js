@@ -1,8 +1,9 @@
-/* Popup: start/stop a recording without leaving the page being recorded.
+/* Popup: record, and replay the last recording, without leaving the page being automated.
  *
- * Recordings are handed to the web app, which owns the library and the flow builder.
- * Saving one here parks it in chrome.storage.local until the app collects it, so a
- * recording is never lost just because the app was not open.
+ * The web app owns the real library and flow builder. This is deliberately the minimum
+ * needed to close the loop on its own - record, stop, replay - so the extension is
+ * testable and useful before the app bridge exists. Recordings are parked in
+ * chrome.storage.local so one is never lost because the app was not open.
  */
 
 'use strict';
@@ -10,7 +11,8 @@
 const APP_URL = 'https://mouse-agent.vercel.app';
 const $ = (id) => document.getElementById(id);
 
-let poll = null;
+let recPoll = null;
+let playPoll = null;
 
 const fmt = (ms) => (ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's');
 
@@ -18,19 +20,23 @@ function ask(mf, extra) {
   return chrome.runtime.sendMessage(Object.assign({ mf }, extra));
 }
 
+const getPending = async () => (await chrome.storage.local.get('pending')).pending || [];
+
+/* ------------------------------------------------------------------ recording */
+
 function setRecording(on) {
   $('live').hidden = !on;
   $('record').hidden = on;
   $('stop').hidden = !on;
-  clearInterval(poll);
-  poll = on ? setInterval(refresh, 400) : null;
+  clearInterval(recPoll);
+  recPoll = on ? setInterval(refreshRecording, 400) : null;
 }
 
-async function refresh() {
+async function refreshRecording() {
   const s = await ask('record/status');
   $('count').textContent = s.count;
   $('elapsed').textContent = fmt(s.elapsedMs);
-  if (!s.recording) setRecording(false);
+  if (!s.recording) { setRecording(false); showSaved(); }
 }
 
 $('record').addEventListener('click', async () => {
@@ -38,7 +44,7 @@ $('record').addEventListener('click', async () => {
   const res = await ask('record/start');
   if (!res.ok) { $('note').textContent = res.error; return; }
   setRecording(true);
-  refresh();
+  refreshRecording();
 });
 
 $('stop').addEventListener('click', async () => {
@@ -47,7 +53,7 @@ $('stop').addEventListener('click', async () => {
   if (!res.ok) { $('note').textContent = res.error; return; }
   if (!res.events.length) { $('note').textContent = 'Nothing was captured.'; return; }
 
-  const { pending = [] } = await chrome.storage.local.get('pending');
+  const pending = await getPending();
   pending.push({
     id: Math.random().toString(36).slice(2, 10),
     name: 'Web recording ' + (pending.length + 1),
@@ -56,16 +62,78 @@ $('stop').addEventListener('click', async () => {
     events: res.events,
   });
   await chrome.storage.local.set({ pending });
-  $('note').textContent = res.events.length + ' events saved. Open the app to build a flow.';
+  $('note').textContent = res.events.length + ' events saved.';
+  showSaved();
 });
+
+/* --------------------------------------------------------------------- replay */
+
+async function showSaved() {
+  const pending = await getPending();
+  const last = pending[pending.length - 1];
+  $('saved').hidden = !last;
+  if (!last) return;
+  $('saved-name').textContent = last.name;
+  $('saved-count').textContent = last.events.length + ' events';
+}
+
+function setPlaying(on) {
+  $('replay').hidden = on;
+  $('abort').hidden = !on;
+  clearInterval(playPoll);
+  playPoll = on ? setInterval(refreshReplay, 300) : null;
+}
+
+async function refreshReplay() {
+  const s = await ask('replay/status');
+  if (s.playing) {
+    $('note').textContent = 'Replaying ' + s.index + '/' + s.total;
+  } else {
+    setPlaying(false);
+    $('note').textContent = s.error ? 'Stopped: ' + s.error : 'Replay finished.';
+  }
+}
+
+$('replay').addEventListener('click', async () => {
+  const pending = await getPending();
+  const last = pending[pending.length - 1];
+  if (!last) return;
+
+  $('note').textContent = 'Starting…';
+  const res = await ask('replay', {
+    flow: {
+      // Short lead-in so the popup can close and the page settle before the first click.
+      startDelay: 400,
+      flowRepeat: 1,
+      steps: [{ events: last.events, repeat: 1, speed: 1, delayAfter: 0 }],
+    },
+  });
+  if (!res.ok) { $('note').textContent = res.error; return; }
+  setPlaying(true);
+  refreshReplay();
+});
+
+$('abort').addEventListener('click', async () => {
+  await ask('replay/abort');
+  setPlaying(false);
+  $('note').textContent = 'Aborted.';
+});
+
+$('clear').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  await chrome.storage.local.remove('pending');
+  $('saved').hidden = true;
+  $('note').textContent = 'Saved recordings cleared.';
+});
+
+/* ----------------------------------------------------------------------- init */
 
 (async () => {
   $('open').href = APP_URL;
-  const s = await ask('record/status');
-  setRecording(s.recording);
-  if (s.recording) refresh();
-  const { pending = [] } = await chrome.storage.local.get('pending');
-  if (pending.length && !s.recording) {
-    $('note').textContent = pending.length + ' recording(s) waiting for the app.';
-  }
+  const s = await ask('ping');
+  setRecording(!!s.recording);
+  setPlaying(!!s.playing);
+  if (s.recording) refreshRecording();
+  if (s.playing) refreshReplay();
+  await showSaved();
 })();
