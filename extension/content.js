@@ -134,46 +134,21 @@
     }, describe(el, ev.clientX, ev.clientY)));
   }
 
-  /* All typing is captured here, on `input`.
+  /* Recording is mouse-only, by design.
    *
-   * This used to listen for `change` on form fields, which only fires when the field
-   * loses focus - so text typed and then immediately followed by Stop was never
-   * recorded at all. `input` fires per keystroke, and the worker coalesces a burst on
-   * one field into a single step, so nothing depends on the user clicking away first.
+   * Text entry used to be captured here. It is not any more: typed text turned out to
+   * be the unreliable half of recording (fields that never fire the events we listened
+   * for, framework-controlled inputs, editors inside iframes), and a recording that
+   * silently drops the text is worse than one that never claimed to carry it. Typing a
+   * value is also the part that most often needs to differ between runs, which a fixed
+   * recording cannot express anyway.
    *
-   * It also covers rich-text editors in the same path: Gmail's compose body, Notion and
-   * most comment boxes are contenteditable divs that never fire `change` at all.
+   * "Create the flow" handles anything involving text - it is told what to write, so it
+   * has no capture step to get wrong.
+   *
+   * Replay still understands `fill`, `redacted` and `key` steps so older recordings and
+   * imported .mmmacro files keep working; nothing produces them any more.
    */
-  function onInput(ev) {
-    if (!capturing || !ev.isTrusted) return;
-    const el = ev.target;
-    if (!el || el.nodeType !== 1) return;
-
-    if (el.isContentEditable) {
-      push(Object.assign({ action: 'fill', editable: true, value: el.innerText },
-        describe(el, 0, 0)));
-      return;
-    }
-
-    if (!/^(input|textarea|select)$/i.test(el.tagName)) return;
-
-    const type = (el.getAttribute('type') || '').toLowerCase();
-    if (type === 'password') {
-      // Never store a typed password. Record the field so the flow still stops here.
-      push(Object.assign({ action: 'redacted' }, describe(el, 0, 0)));
-      return;
-    }
-    if (type === 'checkbox' || type === 'radio') return;   // the click already covers it
-
-    push(Object.assign({ action: 'fill', value: el.value }, describe(el, 0, 0)));
-  }
-
-  function onKeyDown(ev) {
-    if (!capturing || !ev.isTrusted) return;
-    if (!['Enter', 'Tab', 'Escape', 'ArrowDown', 'ArrowUp'].includes(ev.key)) return;
-    const el = ev.target && ev.target.nodeType === 1 ? ev.target : document.body;
-    push(Object.assign({ action: 'key', key: ev.key }, describe(el, 0, 0)));
-  }
 
   function onScroll() {
     if (!capturing) return;
@@ -187,16 +162,12 @@
     if (capturing) return;
     capturing = true;
     addEventListener('pointerdown', onPointerDown, true);
-    addEventListener('input', onInput, true);
-    addEventListener('keydown', onKeyDown, true);
     addEventListener('scroll', onScroll, true);
   }
 
   function stopCapture() {
     capturing = false;
     removeEventListener('pointerdown', onPointerDown, true);
-    removeEventListener('input', onInput, true);
-    removeEventListener('keydown', onKeyDown, true);
     removeEventListener('scroll', onScroll, true);
   }
 

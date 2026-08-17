@@ -18,31 +18,26 @@ let agentPoll = null;
 
 const fmt = (ms) => (ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's');
 
-/* What a recording actually contains, in the user's terms.
- *
- * "13 events" says nothing about whether the thing you cared about was captured. The
- * typed-field count is the one people ask about, so it is always shown - including as a
- * zero, which is the answer to "did it record my text?" without opening any logs. */
+/* What a recording contains, in the user's terms. Recording is mouse-only now, so this
+ * counts clicks, scrolls and page changes; `fill`/`key` appear only in older recordings
+ * and imported .mmmacro files, which replay still honours. */
 function summarize(events) {
-  const n = { click: 0, typed: 0, keys: 0, scroll: 0, tabs: 0, redacted: 0 };
-  const fields = new Set();
+  const n = { click: 0, scroll: 0, page: 0, legacy: 0 };
   for (const e of events || []) {
     if (e.action === 'click' || e.action === 'dblclick') n.click++;
-    else if (e.action === 'fill') { n.typed++; fields.add(e.selector); }
-    else if (e.action === 'key') n.keys++;
     else if (e.action === 'scroll') n.scroll++;
-    else if (e.action === 'focus' || e.action === 'navigate') n.tabs++;
-    else if (e.action === 'redacted') n.redacted++;
+    else if (e.action === 'focus' || e.action === 'navigate') n.page++;
+    else n.legacy++;
   }
   const parts = [];
-  if (n.click) parts.push(n.click + ' click' + (n.click === 1 ? '' : 's'));
-  parts.push(fields.size + ' field' + (fields.size === 1 ? '' : 's') + ' typed');
-  if (n.keys) parts.push(n.keys + ' key' + (n.keys === 1 ? '' : 's'));
+  parts.push(n.click + ' click' + (n.click === 1 ? '' : 's'));
   if (n.scroll) parts.push(n.scroll + ' scroll' + (n.scroll === 1 ? '' : 's'));
-  if (n.tabs) parts.push(n.tabs + ' page change' + (n.tabs === 1 ? '' : 's'));
-  if (n.redacted) parts.push(n.redacted + ' password (not stored)');
+  if (n.page) parts.push(n.page + ' page change' + (n.page === 1 ? '' : 's'));
+  if (n.legacy) parts.push(n.legacy + ' text/key step' + (n.legacy === 1 ? '' : 's'));
   return parts.join(' · ');
 }
+
+const savePending = (list) => chrome.storage.local.set({ pending: list });
 const ask = (mf, extra) => chrome.runtime.sendMessage(Object.assign({ mf }, extra));
 const getPending = async () => (await chrome.storage.local.get('pending')).pending || [];
 
@@ -65,6 +60,7 @@ function setRecording(on) {
   $('live').hidden = !on;
   $('btn-record').hidden = on;
   $('btn-stop').hidden = !on;
+  $('list').hidden = on;
   clearInterval(recPoll);
   recPoll = on ? setInterval(refreshRecording, 400) : null;
 }
@@ -73,8 +69,7 @@ async function refreshRecording() {
   const s = await ask('record/status');
   $('count').textContent = s.count + (s.tabs > 1 ? ' · ' + s.tabs + ' tabs' : '');
   $('elapsed').textContent = fmt(s.elapsedMs);
-  $('typing').textContent = s.fields || 0;
-  if (!s.recording) { setRecording(false); showSaved(); }
+  if (!s.recording) { setRecording(false); renderList(); }
 }
 
 $('btn-record').addEventListener('click', async () => {
@@ -92,39 +87,84 @@ $('btn-stop').addEventListener('click', async () => {
   $('rec-note').textContent = res.saved
     ? 'Saved: ' + summarize(res.saved.events)
     : 'Nothing was captured.';
-  showSaved();
+  renderList();
 });
 
-async function showSaved() {
+/* Every recording, each renameable, repeatable and deletable in place. Showing only the
+ * newest made anything captured before it unreachable from the extension. */
+async function renderList() {
   const pending = await getPending();
-  const last = pending[pending.length - 1];
-  $('saved').hidden = !last;
-  if (!last) return;
-  const tabs = last.tabs || 1;
-  $('saved-name').textContent = last.name + (tabs > 1 ? ' · ' + tabs + ' tabs' : '');
-  $('saved-count').textContent = last.events.length + ' events';
-  $('saved-name').title = (last.origins || []).join('\n') || 'origin unknown';
-  $('saved-breakdown').textContent = summarize(last.events);
+  const list = $('list');
+  list.textContent = '';
+  $('list-empty').hidden = pending.length > 0;
 
-  // The typed text itself, so "did it record what I wrote?" is answerable at a glance.
-  const typed = [...new Map(
-    last.events.filter((e) => e.action === 'fill').map((e) => [e.selector, e])
-  ).values()];
-  const box = $('typed');
-  box.textContent = '';
-  box.hidden = !typed.length;
-  for (const e of typed) {
-    const row = document.createElement('div');
-    row.textContent = (e.name || e.selector) + ' → ' + JSON.stringify(String(e.value).slice(0, 60));
-    box.appendChild(row);
-  }
+  pending.forEach((rec, i) => {
+    const item = document.createElement('li');
+    item.className = 'item';
+
+    const name = document.createElement('input');
+    name.className = 'item-name';
+    name.value = rec.name;
+    name.setAttribute('aria-label', 'Recording name');
+    name.addEventListener('change', async () => {
+      const next = name.value.trim();
+      if (!next) { name.value = rec.name; return; }
+      const all = await getPending();
+      if (all[i]) { all[i].name = next; await savePending(all); }
+      rec.name = next;
+    });
+
+    const meta = document.createElement('div');
+    meta.className = 'item-meta';
+    const tabs = rec.tabs || 1;
+    meta.textContent = summarize(rec.events) + (tabs > 1 ? ' · ' + tabs + ' tabs' : '');
+    meta.title = (rec.origins || []).join('\n') || '';
+
+    const tools = document.createElement('div');
+    tools.className = 'item-tools';
+
+    const repeat = document.createElement('button');
+    repeat.textContent = 'Repeat';
+    repeat.addEventListener('click', () => replay(rec));
+
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '✕';
+    del.title = 'Delete this recording';
+    del.addEventListener('click', async () => {
+      const all = await getPending();
+      all.splice(i, 1);
+      await savePending(all);
+      $('rec-note').textContent = 'Deleted “' + rec.name + '”.';
+      renderList();
+    });
+
+    tools.append(repeat, del);
+    item.append(name, meta, tools);
+    list.appendChild(item);
+  });
 }
 
 function setPlaying(on) {
-  $('btn-replay').hidden = on;
+  $('list').hidden = on;
+  $('btn-record').hidden = on;
   $('btn-abort').hidden = !on;
   clearInterval(playPoll);
   playPoll = on ? setInterval(refreshReplay, 300) : null;
+}
+
+async function replay(rec) {
+  $('rec-note').textContent = 'Starting…';
+  const res = await ask('replay', {
+    flow: {
+      startDelay: 400,
+      flowRepeat: 1,
+      steps: [{ events: rec.events, repeat: 1, speed: 1, delayAfter: 0 }],
+    },
+  });
+  if (!res.ok) { $('rec-note').textContent = res.error; return; }
+  setPlaying(true);
+  refreshReplay();
 }
 
 async function refreshReplay() {
@@ -153,24 +193,6 @@ async function refreshReplay() {
     (detail ? '\n' + detail : '');
 }
 
-$('btn-replay').addEventListener('click', async () => {
-  const pending = await getPending();
-  const last = pending[pending.length - 1];
-  if (!last) return;
-
-  $('rec-note').textContent = 'Starting…';
-  const res = await ask('replay', {
-    flow: {
-      startDelay: 400,
-      flowRepeat: 1,
-      steps: [{ events: last.events, repeat: 1, speed: 1, delayAfter: 0 }],
-    },
-  });
-  if (!res.ok) { $('rec-note').textContent = res.error; return; }
-  setPlaying(true);
-  refreshReplay();
-});
-
 $('btn-abort').addEventListener('click', async () => {
   await ask('replay/abort');
   setPlaying(false);
@@ -195,20 +217,13 @@ $('copy-log').addEventListener('click', async (ev) => {
   }
 });
 
-$('clear-saved').addEventListener('click', async (ev) => {
-  ev.preventDefault();
-  await chrome.storage.local.remove('pending');
-  $('saved').hidden = true;
-  $('rec-note').textContent = 'Saved recordings cleared.';
-});
-
 async function refreshRecordView() {
   const s = await ask('ping');
   setRecording(!!s.recording);
   setPlaying(!!s.playing);
   if (s.recording) refreshRecording();
   if (s.playing) refreshReplay();
-  await showSaved();
+  await renderList();
 }
 
 /* -------------------------------------------------------------- mode B: create */

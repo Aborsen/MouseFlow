@@ -83,6 +83,32 @@
   .feed .act { opacity: 0.7; font-family: ui-monospace, Consolas, monospace; }
   details { margin-top: 10px; }
   summary { font-size: 11.5px; opacity: 0.65; cursor: pointer; }
+
+  .list { list-style: none; margin: 10px 0 0; padding: 0; }
+  .item {
+    padding: 8px;
+    margin-bottom: 6px;
+    border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, CanvasText 4%, transparent);
+  }
+  .item-name {
+    width: 100%;
+    padding: 2px 4px;
+    margin: 0 0 2px -4px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: 600;
+  }
+  .item-name:hover { border-color: color-mix(in srgb, CanvasText 20%, transparent); }
+  .item-name:focus { outline: none; border-color: #4c8dff; background: Canvas; }
+  .item-meta { font-size: 11px; opacity: 0.62; margin-bottom: 7px; }
+  .item-tools { display: flex; gap: 6px; }
+  .item-tools button { flex: 1; padding: 6px; font-size: 12px; font-weight: 500; }
+  .item-tools .del { flex: 0 0 34px; color: #f85149; }
 </style>
 </head>
 <body>
@@ -92,11 +118,11 @@
   <h1>MouseFlow</h1>
   <button class="choice" id="go-record" type="button">
     <strong>Record the flow</strong>
-    <span>Capture exactly what you do, then repeat it in the same tabs.</span>
+    <span>Mirrors your clicks and scrolls, then repeats them. Text is not recorded.</span>
   </button>
   <button class="choice" id="go-create" type="button">
     <strong>Create the flow</strong>
-    <span>Describe what you need and have it done for you.</span>
+    <span>Describe what you need — including what to type — and have it done for you.</span>
   </button>
 </section>
 
@@ -104,31 +130,29 @@
 <section id="record" hidden>
   <button class="back" data-home type="button">&larr; Back</button>
   <h2>Record the flow</h2>
-  <p class="hint">Replays into the tabs you already have open. It never opens new ones.</p>
+  <p class="hint">
+    Mirrors clicks and scrolls into the tabs you already have open — it never opens new
+    ones. Typed text is not recorded; use <em>Create the flow</em> for anything involving
+    text.
+  </p>
 
   <div id="live" hidden>
-    <div class="stat"><span id="count">0</span><span>events</span></div>
-    <div class="stat"><span id="typing">0</span><span>fields typed</span></div>
+    <div class="stat"><span id="count">0</span><span>actions</span></div>
     <div class="stat"><span id="elapsed">0.0s</span><span>elapsed</span></div>
   </div>
 
   <button id="btn-record" class="wide primary" type="button">Start recording</button>
   <button id="btn-stop" class="wide stop" type="button" hidden>Stop and save</button>
+  <button id="btn-abort" class="wide stop" type="button" hidden>Stop replay</button>
 
-  <div id="saved" hidden>
-    <div class="stat"><span id="saved-name">-</span><span id="saved-count"></span></div>
-    <p id="saved-breakdown" class="hint" style="margin:0 0 6px"></p>
-    <div id="typed" class="feed" hidden></div>
-    <button id="btn-replay" class="wide" type="button" style="margin-top:8px">Repeat it here</button>
-    <button id="btn-abort" class="wide stop" type="button" hidden>Stop replay</button>
-  </div>
+  <ul id="list" class="list"></ul>
+  <p id="list-empty" class="hint" hidden>No recordings yet.</p>
 
   <p id="rec-note" class="note"></p>
   <div class="row">
     <a id="open-app" href="#" target="_blank" rel="noopener">Open the MouseFlow app</a>
     <a id="copy-log" href="#">Copy log</a>
   </div>
-  <div class="row"><a id="clear-saved" href="#">Clear saved</a></div>
 </section>
 
 <!-- ---------- mode B: create ---------- -->
