@@ -149,9 +149,19 @@ Setup, once, by whoever owns the key — either the dashboard's
 vercel env add ANTHROPIC_API_KEY production
 ```
 
-Then redeploy: a function reads `process.env` from its own deployment's captured environment, so
-a variable added afterwards does not reach the deployment already serving. Rotating or switching
-it off is a dashboard change plus a redeploy, and needs no new extension build.
+Then **push a commit** to rebuild. Two things make this necessary rather than optional:
+
+- A function reads `process.env` from its own deployment's captured environment, so a variable
+  added afterwards does not reach the deployment already serving. It reports
+  `configured: false` until a new build happens.
+- `vercel redeploy` is the wrong tool. On this project — Framework Preset "Other", static site
+  plus an auto-detected `api/` directory — redeploying the last production deployment produced a
+  Ready build with one static entry and **no serverless function**, so `/api/*` began returning
+  Vercel's `NOT_FOUND` while the site root still served fine. That reads like a routing problem
+  and is actually a missing build step. The Git integration builds the same commit correctly.
+
+Rotating or switching the key off is a dashboard change plus a commit, and needs no new extension
+build.
 
 To check a deployment is ready before relying on it:
 
