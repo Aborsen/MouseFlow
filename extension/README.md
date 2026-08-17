@@ -142,13 +142,25 @@ distributed that way is a key published, and it stays valid until someone notice
 GitHub both scan for exposed keys and revoke them, so an embedded key is also liable to stop
 working mid-demo.
 
-Setup, once, by whoever owns the key:
+Setup, once, by whoever owns the key — either the dashboard's
+**Settings → Environment Variables**, or:
 
 ```bash
 vercel env add ANTHROPIC_API_KEY production
 ```
 
-Then redeploy. Rotating or switching it off is a dashboard change and needs no new build.
+Then redeploy: a function reads `process.env` from its own deployment's captured environment, so
+a variable added afterwards does not reach the deployment already serving. Rotating or switching
+it off is a dashboard change plus a redeploy, and needs no new extension build.
+
+To check a deployment is ready before relying on it:
+
+```bash
+curl https://mouse-agent.vercel.app/api/claude
+```
+
+`{"ok":true,"configured":true,...}` means a key is set. It reports a boolean and nothing else —
+a prefix, a suffix or even a length would narrow a guess — and costs nothing upstream.
 
 `api/claude.js` spends money for anyone who can reach it, so it is deliberately narrow: one
 model from an allowlist, `max_tokens` clamped to 16000, at most 120 messages per request, and
