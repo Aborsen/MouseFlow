@@ -205,11 +205,17 @@ async function recordStart(tabId) {
 
 async function recordStatus() {
   const tabs = new Set(rec.events.map((e) => e.tab)).size;
+  // Distinct fields typed into, surfaced live so the user can see text being captured
+  // while they type rather than discovering afterwards that it wasn't.
+  const fields = new Set(
+    rec.events.filter((e) => e.action === 'fill').map((e) => e.selector)
+  ).size;
   return {
     ok: true,
     recording: rec.active,
     count: rec.events.length,
     tabs,
+    fields,
     elapsedMs: rec.active ? Date.now() - rec.startedAt : 0,
   };
 }

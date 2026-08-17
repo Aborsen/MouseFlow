@@ -108,6 +108,7 @@
 
   <div id="live" hidden>
     <div class="stat"><span id="count">0</span><span>events</span></div>
+    <div class="stat"><span id="typing">0</span><span>fields typed</span></div>
     <div class="stat"><span id="elapsed">0.0s</span><span>elapsed</span></div>
   </div>
 
@@ -116,7 +117,9 @@
 
   <div id="saved" hidden>
     <div class="stat"><span id="saved-name">-</span><span id="saved-count"></span></div>
-    <button id="btn-replay" class="wide" type="button">Repeat it here</button>
+    <p id="saved-breakdown" class="hint" style="margin:0 0 6px"></p>
+    <div id="typed" class="feed" hidden></div>
+    <button id="btn-replay" class="wide" type="button" style="margin-top:8px">Repeat it here</button>
     <button id="btn-abort" class="wide stop" type="button" hidden>Stop replay</button>
   </div>
 

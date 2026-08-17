@@ -17,6 +17,32 @@ let playPoll = null;
 let agentPoll = null;
 
 const fmt = (ms) => (ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's');
+
+/* What a recording actually contains, in the user's terms.
+ *
+ * "13 events" says nothing about whether the thing you cared about was captured. The
+ * typed-field count is the one people ask about, so it is always shown - including as a
+ * zero, which is the answer to "did it record my text?" without opening any logs. */
+function summarize(events) {
+  const n = { click: 0, typed: 0, keys: 0, scroll: 0, tabs: 0, redacted: 0 };
+  const fields = new Set();
+  for (const e of events || []) {
+    if (e.action === 'click' || e.action === 'dblclick') n.click++;
+    else if (e.action === 'fill') { n.typed++; fields.add(e.selector); }
+    else if (e.action === 'key') n.keys++;
+    else if (e.action === 'scroll') n.scroll++;
+    else if (e.action === 'focus' || e.action === 'navigate') n.tabs++;
+    else if (e.action === 'redacted') n.redacted++;
+  }
+  const parts = [];
+  if (n.click) parts.push(n.click + ' click' + (n.click === 1 ? '' : 's'));
+  parts.push(fields.size + ' field' + (fields.size === 1 ? '' : 's') + ' typed');
+  if (n.keys) parts.push(n.keys + ' key' + (n.keys === 1 ? '' : 's'));
+  if (n.scroll) parts.push(n.scroll + ' scroll' + (n.scroll === 1 ? '' : 's'));
+  if (n.tabs) parts.push(n.tabs + ' page change' + (n.tabs === 1 ? '' : 's'));
+  if (n.redacted) parts.push(n.redacted + ' password (not stored)');
+  return parts.join(' · ');
+}
 const ask = (mf, extra) => chrome.runtime.sendMessage(Object.assign({ mf }, extra));
 const getPending = async () => (await chrome.storage.local.get('pending')).pending || [];
 
@@ -47,6 +73,7 @@ async function refreshRecording() {
   const s = await ask('record/status');
   $('count').textContent = s.count + (s.tabs > 1 ? ' · ' + s.tabs + ' tabs' : '');
   $('elapsed').textContent = fmt(s.elapsedMs);
+  $('typing').textContent = s.fields || 0;
   if (!s.recording) { setRecording(false); showSaved(); }
 }
 
@@ -63,7 +90,7 @@ $('btn-stop').addEventListener('click', async () => {
   setRecording(false);
   if (!res.ok) { $('rec-note').textContent = res.error; return; }
   $('rec-note').textContent = res.saved
-    ? res.saved.events.length + ' events saved.'
+    ? 'Saved: ' + summarize(res.saved.events)
     : 'Nothing was captured.';
   showSaved();
 });
@@ -77,6 +104,20 @@ async function showSaved() {
   $('saved-name').textContent = last.name + (tabs > 1 ? ' · ' + tabs + ' tabs' : '');
   $('saved-count').textContent = last.events.length + ' events';
   $('saved-name').title = (last.origins || []).join('\n') || 'origin unknown';
+  $('saved-breakdown').textContent = summarize(last.events);
+
+  // The typed text itself, so "did it record what I wrote?" is answerable at a glance.
+  const typed = [...new Map(
+    last.events.filter((e) => e.action === 'fill').map((e) => [e.selector, e])
+  ).values()];
+  const box = $('typed');
+  box.textContent = '';
+  box.hidden = !typed.length;
+  for (const e of typed) {
+    const row = document.createElement('div');
+    row.textContent = (e.name || e.selector) + ' → ' + JSON.stringify(String(e.value).slice(0, 60));
+    box.appendChild(row);
+  }
 }
 
 function setPlaying(on) {
@@ -99,8 +140,17 @@ async function refreshReplay() {
       : 'Nothing was performed. Reload the extension and try once more.';
     return;
   }
+  // Break the result down by action, so a run that "worked" but skipped the typing
+  // cannot look identical to one that did everything.
+  const byAction = {};
+  for (const entry of s.log || []) {
+    const key = entry.action + (entry.ok ? '' : ' (failed)');
+    byAction[key] = (byAction[key] || 0) + 1;
+  }
+  const detail = Object.entries(byAction).map(([k, v]) => v + ' ' + k).join(', ');
   $('rec-note').textContent = 'Repeated ' + s.performed + ' event(s)' +
-    (s.failed ? ', ' + s.failed + ' failed' : ' cleanly') + '.';
+    (s.failed ? ', ' + s.failed + ' failed' : ' cleanly') + '.' +
+    (detail ? '\n' + detail : '');
 }
 
 $('btn-replay').addEventListener('click', async () => {
