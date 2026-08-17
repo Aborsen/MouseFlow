@@ -34,7 +34,7 @@ function setRecording(on) {
 
 async function refreshRecording() {
   const s = await ask('record/status');
-  $('count').textContent = s.count;
+  $('count').textContent = s.count + (s.tabs > 1 ? ' · ' + s.tabs + ' tabs' : '');
   $('elapsed').textContent = fmt(s.elapsedMs);
   if (!s.recording) { setRecording(false); showSaved(); }
 }
@@ -66,11 +66,11 @@ async function showSaved() {
   const last = pending[pending.length - 1];
   $('saved').hidden = !last;
   if (!last) return;
-  $('saved-name').textContent = last.name;
+  const tabs = last.tabs || 1;
+  $('saved-name').textContent = last.name + (tabs > 1 ? ' · ' + tabs + ' tabs' : '');
   $('saved-count').textContent = last.events.length + ' events';
-  // The site it belongs to, since replaying it anywhere else is refused.
-  $('saved-name').title = last.url || 'origin unknown';
-  if (last.origin) $('saved-name').textContent = last.name + ' · ' + last.origin.replace(/^https?:\/\//, '');
+  // Replay opens the sites it needs; the list is just so the user knows what it will touch.
+  $('saved-name').title = (last.origins || []).join('\n') || 'origin unknown';
 }
 
 function setPlaying(on) {
@@ -111,10 +111,9 @@ $('replay').addEventListener('click', async () => {
   $('note').textContent = 'Starting…';
   const res = await ask('replay', {
     flow: {
-      // Short lead-in so the popup can close and the page settle before the first click.
+      // Short lead-in so the popup can close before the first tab opens.
       startDelay: 400,
       flowRepeat: 1,
-      origin: last.origin || null,
       steps: [{ events: last.events, repeat: 1, speed: 1, delayAfter: 0 }],
     },
   });
