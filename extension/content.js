@@ -134,32 +134,37 @@
     }, describe(el, ev.clientX, ev.clientY)));
   }
 
-  /* Rich-text editors - Gmail's compose body, Notion, most comment boxes - are
-   * contenteditable divs, so they never fire `change` and are invisible to the handler
-   * below. They fire `input` on every keystroke instead, so the text is coalesced into a
-   * single step rather than one step per character. */
+  /* All typing is captured here, on `input`.
+   *
+   * This used to listen for `change` on form fields, which only fires when the field
+   * loses focus - so text typed and then immediately followed by Stop was never
+   * recorded at all. `input` fires per keystroke, and the worker coalesces a burst on
+   * one field into a single step, so nothing depends on the user clicking away first.
+   *
+   * It also covers rich-text editors in the same path: Gmail's compose body, Notion and
+   * most comment boxes are contenteditable divs that never fire `change` at all.
+   */
   function onInput(ev) {
     if (!capturing || !ev.isTrusted) return;
     const el = ev.target;
-    if (!el || el.nodeType !== 1 || !el.isContentEditable) return;
+    if (!el || el.nodeType !== 1) return;
 
-    // Coalescing consecutive keystrokes into one step happens in the worker, which is
-    // the only place that still sees the whole recording.
-    push(Object.assign({ action: 'fill', editable: true, value: el.innerText },
-      describe(el, 0, 0)));
-  }
+    if (el.isContentEditable) {
+      push(Object.assign({ action: 'fill', editable: true, value: el.innerText },
+        describe(el, 0, 0)));
+      return;
+    }
 
-  function onChange(ev) {
-    if (!capturing || !ev.isTrusted) return;
-    const el = ev.target;
-    if (!el || !/^(input|textarea|select)$/i.test(el.tagName)) return;
+    if (!/^(input|textarea|select)$/i.test(el.tagName)) return;
+
     const type = (el.getAttribute('type') || '').toLowerCase();
     if (type === 'password') {
-      // Never store a typed password. Record the focus so the flow still stops here.
+      // Never store a typed password. Record the field so the flow still stops here.
       push(Object.assign({ action: 'redacted' }, describe(el, 0, 0)));
       return;
     }
     if (type === 'checkbox' || type === 'radio') return;   // the click already covers it
+
     push(Object.assign({ action: 'fill', value: el.value }, describe(el, 0, 0)));
   }
 
@@ -183,7 +188,6 @@
     capturing = true;
     addEventListener('pointerdown', onPointerDown, true);
     addEventListener('input', onInput, true);
-    addEventListener('change', onChange, true);
     addEventListener('keydown', onKeyDown, true);
     addEventListener('scroll', onScroll, true);
   }
@@ -192,7 +196,6 @@
     capturing = false;
     removeEventListener('pointerdown', onPointerDown, true);
     removeEventListener('input', onInput, true);
-    removeEventListener('change', onChange, true);
     removeEventListener('keydown', onKeyDown, true);
     removeEventListener('scroll', onScroll, true);
   }

@@ -149,8 +149,14 @@ async function ensureCapturing(tabId) {
 function pushEvent(ev, tabKey) {
   const now = Date.now();
   const last = rec.events[rec.events.length - 1];
-  if (last && ev.action === 'fill' && ev.editable && last.action === 'fill' &&
-      last.editable && last.selector === ev.selector && last.tab === tabKey) {
+
+  /* Typing arrives one event per keystroke. Collapse a burst on the same field into a
+   * single step carrying the final text, so "hello world" is one step and not eleven -
+   * and so the recorded delay is the pause before the field was touched, not the gap
+   * between two letters. Applies to plain inputs and rich-text editors alike. */
+  if (last && ev.action === 'fill' && last.action === 'fill' &&
+      last.selector === ev.selector && last.tab === tabKey &&
+      !!last.editable === !!ev.editable) {
     last.value = ev.value;
     return rec.events.length;
   }
