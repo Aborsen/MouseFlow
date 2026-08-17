@@ -87,6 +87,14 @@ async function send(tabId, message) {
   return chrome.tabs.sendMessage(tabId, message);
 }
 
+// The drawn cursor lives in the page, so it has to be told to go away when a run ends -
+// in every tab the run touched, not just the last one.
+function hideCursors(tabIds) {
+  for (const id of new Set(tabIds.filter((v) => v != null))) {
+    chrome.tabs.sendMessage(id, { mf: 'cursor/hide' }).catch(() => {});
+  }
+}
+
 // Resolves when the tab next reports 'complete'. Listener is attached before the caller
 // triggers navigation, so the load cannot slip through between the two.
 function waitForLoad(tabId, timeoutMs = 20000) {
@@ -393,6 +401,7 @@ async function runFlow(steps, flow) {
   } finally {
     play.active = false;
     holdWorker(false);
+    hideCursors(Object.values(ctx.map).concat(ctx.current));
     chrome.action.setBadgeText({ text: '' });
     chrome.storage.session.set({
       lastRun: { at: Date.now(), error: play.error, log: play.log.slice(-80) },
@@ -483,6 +492,11 @@ async function agentStart(goal) {
     .finally(async () => {
       agent.running = false;
       holdWorker(false);
+      // The agent roams across tabs, so clear the cursor from every one that still has it.
+      try {
+        const tabs = await chrome.tabs.query({});
+        hideCursors(tabs.map((t) => t.id));
+      } catch (_) {}
       await chrome.action.setBadgeText({ text: '' });
       // Kept so the popup can show the outcome after the worker is torn down.
       chrome.storage.session.set({ lastAgentRun: { goal: agent.goal, log: agent.log.slice(-40), result: agent.result } }).catch(() => {});

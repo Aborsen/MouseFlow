@@ -260,6 +260,89 @@
     sel.removeAllRanges();
   }
 
+  /* ------------------------------------------------- visible cursor during replay */
+
+  /* A drawn cursor, because the real one cannot be moved from a page.
+   *
+   * Synthetic events arrive instantly and invisibly: the OS pointer never moves, so a
+   * replay that is working perfectly looks identical to one doing nothing. This draws a
+   * pointer that travels to each target and pulses where it clicks, which makes a run
+   * legible - and tells you at a glance whether replay reached the page at all.
+   *
+   * Styles are set through CSSOM rather than markup so a strict style-src CSP cannot
+   * blank it, and the whole thing is pointer-events:none so it never intercepts the
+   * clicks it is illustrating.
+   */
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const TRAVEL_MS = 260;
+  let ghost = null;
+
+  function ensureGhost() {
+    if (ghost && ghost.root.isConnected) return ghost;
+
+    const root = document.createElement('div');
+    root.setAttribute('data-mouseflow', 'cursor');
+    Object.assign(root.style, {
+      position: 'fixed', left: '0px', top: '0px',
+      zIndex: '2147483647', pointerEvents: 'none',
+      transform: 'translate(-200px, -200px)',
+      transition: 'transform ' + TRAVEL_MS + 'ms cubic-bezier(.4,0,.2,1)',
+      willChange: 'transform',
+    });
+
+    const ripple = document.createElement('div');
+    Object.assign(ripple.style, {
+      position: 'absolute', left: '-14px', top: '-14px',
+      width: '28px', height: '28px', borderRadius: '50%',
+      border: '2px solid #4c8dff', background: 'rgba(76,141,255,.18)',
+      opacity: '0', transform: 'scale(.3)',
+    });
+
+    const arrow = document.createElementNS(SVG_NS, 'svg');
+    arrow.setAttribute('width', '24');
+    arrow.setAttribute('height', '24');
+    arrow.setAttribute('viewBox', '0 0 24 24');
+    arrow.style.filter = 'drop-shadow(0 1px 3px rgba(0,0,0,.55))';
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', 'M5 2.5l14.5 8.2-6.4 1.7L10.6 19z');
+    path.setAttribute('fill', '#ffffff');
+    path.setAttribute('stroke', '#16181d');
+    path.setAttribute('stroke-width', '1.4');
+    path.setAttribute('stroke-linejoin', 'round');
+    arrow.appendChild(path);
+
+    root.append(ripple, arrow);
+    (document.body || document.documentElement).appendChild(root);
+    ghost = { root, ripple };
+    return ghost;
+  }
+
+  function ghostMoveTo(x, y) {
+    const g = ensureGhost();
+    g.root.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
+  }
+
+  function ghostPulse() {
+    const g = ensureGhost();
+    const s = g.ripple.style;
+    // Restart the animation from scratch: kill the transition, reset, force a reflow.
+    s.transition = 'none';
+    s.transform = 'scale(.3)';
+    s.opacity = '.95';
+    void g.ripple.offsetWidth;
+    s.transition = 'transform 360ms ease-out, opacity 360ms ease-out';
+    s.transform = 'scale(2)';
+    s.opacity = '0';
+  }
+
+  function ghostHide() {
+    if (ghost) {
+      ghost.root.remove();
+      ghost = null;
+    }
+  }
+
   /* Outlines whatever a step is about to act on.
    *
    * Without this a replay is invisible when the page reacts subtly or not at all, and
@@ -290,8 +373,13 @@
     const el = await resolve(ev);
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     flash(el);
-    await sleep(30);
+
+    // Send the drawn pointer to the target and let it get there before acting, so the
+    // click is something the user watches happen rather than infers afterwards.
     const point = pointAt(el, ev);
+    ghostMoveTo(point.clientX, point.clientY);
+    await sleep(TRAVEL_MS + 40);
+    if (ev.action === 'click' || ev.action === 'dblclick') ghostPulse();
 
     switch (ev.action) {
       case 'click':
@@ -456,9 +544,15 @@
     const el = elementFor(cmd.ref);
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     flash(el);
-    await sleep(40);
+
+    // Same drawn pointer as replay, so watching the agent work looks like watching a
+    // person work rather than fields changing by themselves.
+    const at = pointAt(el, { rx: 0.5, ry: 0.5 });
+    ghostMoveTo(at.clientX, at.clientY);
+    await sleep(TRAVEL_MS + 40);
 
     if (cmd.action === 'click') {
+      ghostPulse();
       const point = pointAt(el, { rx: 0.5, ry: 0.5 });
       fire(el, 'pointerdown', point, { pointerId: 1, isPrimary: true });
       fire(el, 'mousedown', point);
@@ -501,6 +595,8 @@
       );
       return true;   // async responder
     }
+
+    if (msg.mf === 'cursor/hide') { ghostHide(); respond({ ok: true }); return; }
 
     if (msg.mf === 'agent/snapshot') {
       try { respond({ ok: true, page: snapshot(msg.limit || 120) }); }
