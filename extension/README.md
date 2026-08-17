@@ -83,6 +83,34 @@ a recording that silently drops the text is worse than one that never claimed to
 still understands the old `fill` / `key` / `redacted` steps so earlier recordings and imported
 `.mmmacro` files keep working.
 
+## Reloading the extension is not enough
+
+Reloading an unpacked extension does **not** touch the content scripts already running in open
+tabs. The re-injection guard used to be a bare `window.__mouseflowContent = true`, so a fresh
+copy of a new build injected into such a tab bailed out immediately and the tab went on running
+the old code until the page itself was reloaded — which makes a fix look like it did nothing.
+
+The guard is now keyed on the manifest version (read from `chrome.runtime.getManifest()`, so it
+cannot drift), and a newer build takes over the tab and sweeps away any `[data-mouseflow]`
+overlay the old one left behind — the orphaned script's context is already invalidated, so it
+cannot be asked to clean up after itself.
+
+**Reload the page too** after loading a new build into a tab that was already open.
+
+## Synthetic events must not look like a drag
+
+`buttons` is a bitmask of what is held down *at the moment of the event*, and only a `*down`
+event is such a moment. It used to be computed as `type === 'mouseup' || type === 'click' ? 0 : 1`,
+which missed `pointerup`: every release told the page a button was still held, as did
+`pointerover`. An app that tracks pointer events could therefore conclude the drag had not
+ended. In Excel Online a drag from a cell is a cell drag, which is worth being careful about —
+replay is supposed to click things, not move their contents.
+
+Now `buttons` is 1 only for `pointerdown`/`mousedown`, and pointer events also carry
+`pointerType: 'mouse'` with `pressure` 0.5 while down and 0 otherwise, which is what a real
+mouse reports and what an ink surface reads as "not drawing". `test-buttons.mjs` asserts the
+invariant across a whole replay rather than just the one event that was wrong.
+
 ## What it cannot do
 
 - **Native apps.** Nothing outside a browser tab. That is the whole trade for losing the install.

@@ -18,9 +18,28 @@
 (() => {
   'use strict';
 
-  // Injected repeatedly across recordings; only wire up once.
-  if (window.__mouseflowContent) return;
-  window.__mouseflowContent = true;
+  /* Injected repeatedly across recordings, so it must only wire up once - but the guard is
+   * versioned, because "once" used to mean "once per page, forever".
+   *
+   * Reloading an unpacked extension does not touch the scripts already running in open tabs.
+   * The flag they set was a bare `true`, so a fresh copy of a NEW build injected into such a
+   * tab bailed out immediately and the tab kept running the old code until the page itself
+   * was reloaded - which is how a fix could appear to have no effect at all. Chrome
+   * invalidates the orphaned context, so its message listener is already dead; keying the
+   * flag on the build lets the new copy take over the tab.
+   */
+  // Taken from the manifest rather than written here, so it cannot drift from the real build.
+  let BUILD = 'dev';
+  try { BUILD = chrome.runtime.getManifest().version; } catch (_) { /* orphaned context */ }
+  if (window.__mouseflowContent === BUILD) return;
+  const staleBuild = window.__mouseflowContent;
+  window.__mouseflowContent = BUILD;
+
+  // An older build may have left its cursor or trail behind, and it can no longer be asked
+  // to clean up after itself.
+  if (staleBuild) {
+    for (const node of document.querySelectorAll('[data-mouseflow]')) node.remove();
+  }
 
   const SCROLL_MIN_MS = 120;    // scroll events fire in floods; thin them
   const WAIT_TIMEOUT_MS = 8000; // how long replay waits for a missing element
@@ -306,7 +325,22 @@
     };
   }
 
+  /* `buttons` is a bitmask of what is held DOWN at the moment of the event, and only a
+   * `*down` event is such a moment. Everything else - up, click, move, over, out - happens
+   * with nothing pressed.
+   *
+   * This used to read `type === 'mouseup' || type === 'click' ? 0 : 1`, which missed
+   * `pointerup`: every release told the page a button was still held. An app that tracks
+   * pointer events therefore never saw the drag end, and the next pointer movement extended
+   * it. In Excel Online that is a cell drag - which is what drew a line from the clicked cell
+   * to the pointer and looked like the extension scribbling on the document. It was Excel
+   * being dragged, not anything of ours being drawn.
+   *
+   * `pressure` follows the same rule: a real mouse reports 0.5 while a button is down and 0
+   * otherwise, and an ink surface reads pressure 0 as "not drawing".
+   */
   function fire(el, type, point, extra) {
+    const down = type === 'pointerdown' || type === 'mousedown';
     const init = Object.assign({
       bubbles: true,
       cancelable: true,
@@ -315,9 +349,13 @@
       clientX: point.clientX,
       clientY: point.clientY,
       button: 0,
-      buttons: type === 'mouseup' || type === 'click' ? 0 : 1,
+      buttons: down ? 1 : 0,
     }, extra);
     const Ctor = type.startsWith('pointer') ? PointerEvent : MouseEvent;
+    if (Ctor === PointerEvent) {
+      init.pointerType = init.pointerType || 'mouse';
+      init.pressure = init.pressure == null ? (down ? 0.5 : 0) : init.pressure;
+    }
     el.dispatchEvent(new Ctor(type, init));
   }
 
@@ -504,6 +542,8 @@
     let line = null;
     if (showTrail) {
       trail = document.createElementNS(SVG_NS, 'svg');
+      // Tagged so a later build can sweep it away; see the versioned guard at the top.
+      trail.setAttribute('data-mouseflow', 'trail');
       Object.assign(trail.style, {
         position: 'fixed', left: '0px', top: '0px', width: '100%', height: '100%',
         zIndex: '2147483646', pointerEvents: 'none', overflow: 'visible', opacity: '1',
