@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.6.0';
+const VERSION = '0.6.1';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -86,6 +86,10 @@ const isRestricted = (url) => !url || RESTRICTED.test(url);
 
 function originOf(url) {
   try { return new URL(url).origin; } catch (_) { return null; }
+}
+
+function hostOf(url) {
+  try { return new URL(url).host; } catch (_) { return null; }
 }
 
 async function activeTab() {
@@ -686,6 +690,8 @@ const agent = {
   running: false, abort: false, goal: '', log: [], result: null, frameId: null,
   cursor: null,   // where the drawn pointer was left, so it travels instead of teleporting
   tabId: null,    // the tab this run is working in, held so a user tab switch cannot divert it
+  trace: [],      // one entry per tool call: page, outcome, timing - see tracedTool
+  startedAt: null,
   opts: DEFAULT_SETTINGS,
 };
 
@@ -705,6 +711,103 @@ async function agentTab() {
   const tab = await activeTab();
   agent.tabId = tab.id;
   return tab.id;
+}
+
+/* ------------------------------------------------------------- the agent's trace */
+
+/* A step-by-step record of what the agent actually did.
+ *
+ * The log used to be only what the UI needed to draw a feed - a tool name and its input - which
+ * says what was ASKED for but not where it landed. When a run wandered off a Gmail compose window
+ * into the Play Store there was nothing to explain it: no page per step, no tool result, no
+ * timing. So each step now records the URL it acted on, where it ended up if that changed, what
+ * came back, and how long it took.
+ *
+ * Kept in local storage, not session: the worker is torn down when idle and session storage dies
+ * with the browser, and the run you want to explain is usually the one from before you closed it.
+ */
+const TRACE_MAX_STEPS = 300;
+const TRACE_MAX_RUNS = 3;
+const TRACE_MAX_TEXT = 300;
+
+// read_page returns a whole page snapshot; storing it would swamp the trace and tell you little.
+function summariseResult(name, result) {
+  if (result == null) return null;
+  if (name !== 'read_page') return result;
+  return {
+    url: result.url,
+    title: result.title,
+    elements: Array.isArray(result.elements) ? result.elements.length : 0,
+    frame: agent.frameId == null ? 'main' : 'frame ' + agent.frameId,
+    truncated: !!result.truncated,
+  };
+}
+
+async function currentUrl() {
+  if (agent.tabId == null) return null;
+  const tab = await chrome.tabs.get(agent.tabId).catch(() => null);
+  return tab ? tab.url : null;
+}
+
+async function saveTrace(done) {
+  const run = {
+    goal: agent.goal,
+    startedAt: agent.startedAt,
+    version: VERSION,
+    steps: agent.trace,
+    result: done ? agent.result : null,
+    finished: !!done,
+  };
+  try {
+    await chrome.storage.local.set({ agentTrace: run });
+    if (done) {
+      const { agentTraceHistory = [] } = await chrome.storage.local.get('agentTraceHistory');
+      agentTraceHistory.unshift(run);
+      await chrome.storage.local.set({ agentTraceHistory: agentTraceHistory.slice(0, TRACE_MAX_RUNS) });
+    }
+  } catch (_) {
+    // Storage full or unavailable; the run itself must not fail over logging.
+  }
+}
+
+/* Wraps every tool call so the trace is a property of running one, not something each case has
+ * to remember to do. `execute` is handed this, never runAgentTool directly. */
+async function tracedTool(name, input) {
+  const step = {
+    n: agent.trace.length + 1,
+    at: new Date().toISOString(),
+    tool: name,
+    input: input && input.text
+      ? Object.assign({}, input, { text: String(input.text).slice(0, TRACE_MAX_TEXT) })
+      : input,
+    url: await currentUrl(),
+  };
+
+  const started = Date.now();
+  let outcome;
+  try {
+    outcome = await runAgentTool(name, input);
+  } catch (err) {
+    outcome = { ok: false, error: err.message };
+  }
+  step.ms = Date.now() - started;
+  step.ok = !!outcome.ok;
+  if (outcome.ok) step.result = summariseResult(name, outcome.result);
+  else step.error = outcome.error;
+
+  /* Where did it end up? A click can navigate, and that is exactly how a run goes astray
+   * without any single step looking wrong.
+   *
+   * Only counts as a move if there was somewhere to move FROM. The first step of a run has no
+   * tab yet, so without that guard it always claims to have moved - a false marker on step one,
+   * precisely where someone reading the trace is looking for the real one. */
+  const after = await currentUrl();
+  if (after && step.url && after !== step.url) step.wentTo = after;
+
+  agent.trace.push(step);
+  if (agent.trace.length > TRACE_MAX_STEPS) agent.trace.shift();
+  await saveTrace(false);
+  return outcome;
 }
 
 /* One tool call from the model.
@@ -792,7 +895,7 @@ async function agentStart(goal) {
 
   Object.assign(agent, {
     running: true, abort: false, goal: goal.trim(), log: [], result: null, cursor: null,
-    tabId: null, frameId: null,
+    tabId: null, frameId: null, trace: [], startedAt: new Date().toISOString(),
     opts: await loadSettings(),
   });
   holdWorker(true);
@@ -804,7 +907,7 @@ async function agentStart(goal) {
   runGoal({
     goal: agent.goal,
     apiKey,
-    execute: runAgentTool,
+    execute: tracedTool,
     isAborted: () => agent.abort,
     onEvent: (event) => {
       agent.log.push(event);
@@ -825,6 +928,8 @@ async function agentStart(goal) {
       await chrome.action.setPopup({ popup: 'popup.html' });
       // Kept so the popup can show the outcome after the worker is torn down.
       chrome.storage.session.set({ lastAgentRun: { goal: agent.goal, log: agent.log.slice(-40), result: agent.result } }).catch(() => {});
+      // And the full trace, in local storage, so a run can still be explained tomorrow.
+      await saveTrace(true);
     });
 
   return { ok: true };
@@ -836,6 +941,13 @@ function agentStatus() {
     running: agent.running,
     goal: agent.goal,
     log: agent.log.slice(-12),
+    /* The last few steps with their pages, so a run drifting somewhere unexpected is visible
+     * while it happens rather than only afterwards in a copied log. */
+    steps: agent.trace.slice(-6).map((s) => ({
+      n: s.n, tool: s.tool, ok: s.ok,
+      host: hostOf(s.wentTo || s.url),
+      moved: !!s.wentTo,
+    })),
     result: agent.result,
   };
 }

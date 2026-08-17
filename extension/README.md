@@ -130,6 +130,31 @@ invariant across a whole replay rather than just the one event that was wrong.
 websites" warning. It is needed to inject into an arbitrary site the user chooses to record.
 Nothing is injected until a recording or replay actually starts.
 
+## Finding out what a run actually did
+
+**Create the flow → "Copy the step-by-step log."** One line per step with the tool, the page it
+acted on, where it ended up if that changed, the outcome and the timing.
+
+The trace exists because a run once started composing an email and ended up on the Play Store,
+and the log could not explain it. The old log was only what the feed needed — a tool name and its
+input — which records what was *asked for*, not where it landed. A click that navigates looks
+exactly like a click that does not, so a drifting run was invisible.
+
+- Every step records its **page**, and a step whose page changed under it is flagged with where it
+  went. That is usually the step that lost the plot.
+- `read_page` is stored as a summary — element count, title, which frame was read — not the whole
+  snapshot, so the trace stays a few KB.
+- Kept in **local** storage, so it survives the worker being torn down and the browser being
+  closed. The last three runs are retained.
+- The popup also shows the current host live, and lists every host a run has visited, so a detour
+  is visible while it happens.
+
+It includes any text the agent typed, deliberately — *"it entered the address twice"* has to be
+answerable. That is the user's own content and never leaves the machine unless they paste it.
+
+Live events also go to the service worker console (`chrome://extensions` → **service worker**),
+which is the fullest view while a run is in progress.
+
 ## What "Create the flow" will and will not do
 
 The goal is the authorisation, and it authorises exactly what it says.

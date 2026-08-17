@@ -324,6 +324,16 @@ async function refreshAgent() {
   const s = await ask('agent/status');
   renderFeed(s.log || []);
 
+  /* Which page each step is actually on. A run that drifts somewhere unrelated - a compose
+   * window one step, the Play Store the next - is otherwise invisible until afterwards, and the
+   * feed alone cannot show it because a click that navigates looks like any other click. */
+  const steps = s.steps || [];
+  const last = steps[steps.length - 1];
+  const hosts = [...new Set(steps.map((x) => x.host).filter(Boolean))];
+  $('where').textContent = last && last.host
+    ? 'on ' + last.host + (hosts.length > 1 ? '  (visited: ' + hosts.join(', ') + ')' : '')
+    : '';
+
   if (s.running) {
     setAgentRunning(true);
     $('ai-note').textContent = 'Working…';
@@ -349,6 +359,54 @@ async function refreshAgent() {
   $('ai-note').textContent = (result.needsUser ? 'Ready for you: ' : '') + result.summary +
     (result.steps && result.steps.length ? '\n(' + result.steps.length + ' actions taken)' : '');
 }
+
+/* The whole trace, as text, for pasting somewhere. One line per step with the page it acted on
+ * and where it ended up, which is what explains a run going somewhere unexpected.
+ *
+ * Includes any text the agent typed, because "it entered the address twice" is exactly the kind
+ * of thing this has to be able to answer. That text is the user's own content and never leaves
+ * the machine unless they paste it. */
+$('copy-ai-log').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  const { agentTrace, agentTraceHistory = [] } = await chrome.storage.local
+    .get(['agentTrace', 'agentTraceHistory']);
+  const run = agentTrace || agentTraceHistory[0];
+  if (!run) { $('ai-note').textContent = 'No run recorded yet.'; return; }
+
+  const lines = [
+    'MouseFlow "Create the flow" — step log',
+    'extension ' + (run.version || '?') + '   started ' + (run.startedAt || '?'),
+    'goal: ' + run.goal,
+    run.finished ? '' : '(this run did not finish)',
+    '',
+  ];
+  for (const s of run.steps || []) {
+    const detail = s.input && (s.input.url || s.input.text ||
+      (s.input.ref != null ? 'ref ' + s.input.ref : ''));
+    lines.push(
+      String(s.n).padStart(3) + '. ' + s.tool + (detail ? ' — ' + detail : ''),
+      '     on   ' + (s.url || '(no tab yet)'),
+      s.wentTo ? '     ➜ ended on ' + s.wentTo : null,
+      '     ' + (s.ok ? 'ok' : 'FAILED: ' + s.error) + '  (' + s.ms + 'ms)',
+      s.ok && s.result ? '     ' + JSON.stringify(s.result) : null,
+    );
+  }
+  if (run.result) {
+    lines.push('', 'outcome: ' + (run.result.ok
+      ? (run.result.needsUser ? '[waiting on user] ' : '') + run.result.summary
+      : 'failed — ' + run.result.error));
+  }
+  const text = lines.filter((l) => l !== null && l !== undefined).join('\n');
+
+  try {
+    await navigator.clipboard.writeText(text);
+    $('ai-note').textContent = 'Step log copied (' + (run.steps || []).length +
+      ' steps) — paste it into the chat.';
+  } catch (_) {
+    console.log('[MouseFlow] agent trace\n' + text);
+    $('ai-note').textContent = 'Clipboard blocked; the log is in this popup’s console.';
+  }
+});
 
 // Drops the rejected key and re-runs the same goal, so recovery is one click and not a
 // sequence the user has to work out.
