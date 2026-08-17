@@ -73,6 +73,33 @@ launcher is exactly the shape of an attack:
   pipe, since there is then no local file for the launcher to point at. The panel detects both
   cases and offers the file download instead.
 
+### Local network access
+
+Chrome 142 replaced Private Network Access with **Local Network Access**, a user permission.
+Reaching `127.0.0.1` from a public origin — i.e. from the deployed app — now prompts, and the
+old `Access-Control-Allow-Private-Network` response header grants nothing. Chrome 147 extended
+enforcement to WebSockets.
+
+This is invisible in local development, because a loopback page talking to loopback is
+same-address-space and never prompts. It only appears once deployed, which makes it an easy
+thing to ship broken.
+
+What the app does about it:
+
+- Requests carry `targetAddressSpace: 'loopback'`, which also serves as the mixed-content
+  exemption for an `https` page reaching `http://127.0.0.1`.
+- The **first** loopback request comes from the *Connect* button in step 2, never from the
+  background health poll — a permission prompt raised by a background fetch can be dismissed
+  without the user understanding what it was for, and a page stuck on "Agent offline" because
+  of an ungranted permission has no way back.
+- Step 2 pre-explains the prompt and shows the reset path (Settings → Privacy and security →
+  Site settings → Local network access) for anyone who clicks Block.
+- `navigator.permissions.query({name: 'local-network-access'})` is used when available, but only
+  as an optimisation: it reports `denied` before a grant, and reports `denied` on loopback pages
+  where requests actually work. Never gate functionality on it alone.
+
+Managed fleets can skip the prompt with the `LocalNetworkAccessAllowedForUrls` Chrome policy.
+
 ### The one-liner tradeoff
 
 `irm … | iex` is the fastest path — one copy, one paste — and it is what Rust, Chocolatey, uv
@@ -123,10 +150,17 @@ Read this before sharing the link.
   different DPI scale, every position is off by the scale ratio.
 - **Mouse only.** No keyboard capture. The format has room for it; the hook does not install
   `WH_KEYBOARD_LL` yet.
-- **Windows only**, and Chrome/Edge only in practice — Safari blocks requests from an HTTPS
-  page to loopback, so the agent is unreachable there.
-- **Elevated windows.** A non-elevated agent cannot inject input into an elevated window
-  (UIPI). Run the agent as admin if the target app is.
+- **Windows only**, and Chrome/Edge only in practice — Safari has no Local Network Access
+  permission to grant and blocks the loopback hop outright.
+- **Integrity levels cut both ways.** A normal (medium-integrity) agent cannot inject into an
+  elevated window *and* cannot see input while an elevated window is in the foreground — UIPI
+  applies to the hook as well as to `SendInput`. So a recording made over an admin app is
+  silently incomplete, not just unreplayable. Run the agent elevated if any target app is, and
+  note that the UAC secure desktop is unreachable either way. This is the failure mode that
+  demos fine for weeks and then dies live on one elevated app.
+- **Antivirus and EDR are untested.** A process that installs a global mouse hook and calls
+  `SendInput` looks exactly like a RAT. Nothing here has been run against Defender, CrowdStrike
+  or SentinelOne. Test that before putting it in front of a corporate machine.
 
 ## Agent API
 
@@ -173,8 +207,42 @@ icons/                               PWA icons
 agent/mouseflow-agent.ps1            the local agent, single file
 ```
 
+## On "why not make it fully web-based"
+
+Because it cannot be done, and the reason is worth stating precisely: no shipped or proposed web
+API lets a page observe pointer input outside its own viewport with button state, or author input
+that Windows or a native app accepts. The nearest thing that ever shipped is Captured Surface
+Control (Chrome 136+), which forwards *wheel and zoom* to a captured **tab** and whose explainer
+says forwarding clicks is not foreseen. WebHID refuses the Generic Desktop mouse/keyboard
+collections by name, on the stated grounds that raw access "enables the creation of input
+loggers" — which is, precisely, what this tool is. That is the sandbox working as designed, not a
+gap waiting to be filled.
+
+Two shapes do get to zero install, and both work by moving the *target* into the browser:
+
+- **Web-only targets** — a browser extension driving CDP can record and replay inside Chrome
+  tabs. It cannot touch a native app, and `chrome.debugger` plants a *"MouseFlow started
+  debugging this browser"* infobar in every tab until dismissed.
+- **A streamed desktop** — host Windows in the cloud, bake this agent into the image, and the
+  user drives it through a canvas. Genuinely zero install, full fidelity *inside the image*, and
+  it makes you a DaaS vendor. AWS AppStream bundles the Microsoft RDS SAL at ~$4.19/user/month,
+  which is the cheapest compliant route; Azure Windows 11 images require a per-user M365 or VDA
+  entitlement the customer already holds.
+
+For automating apps on the user's *own* machine, a local helper is not a shortcut — it is the
+only option. The honest goal is therefore to make the install small, signed and once-only, not
+to eliminate it. Also ruled out along the way: `ms-appinstaller:` (disabled by default since App
+Installer 1.21.3421.0, December 2023, after it was abused to bypass SmartScreen) and ClickOnce
+(unsupported by Chrome).
+
 ## Where this would go next
 
+- **A signed per-user installer**, replacing both start paths. One byte-identical signed binary
+  (so it accumulates SmartScreen hash reputation — a per-user-unique build never can), with the
+  pairing token carried in the URL rather than baked into the file, a `mouseflow://` scheme for
+  relaunch, and the autostart task registered at install time. Azure Artifact Signing is ~$10/mo
+  and does not need an EV certificate; identity validation takes 1–20 business days, so start it
+  early. This is what removes the PowerShell paste entirely.
 - **Anchored recording.** Capture the target window handle, title and client-relative
   coordinates alongside the screen position, then re-resolve the window at replay time. This
   removes the single biggest fragility.

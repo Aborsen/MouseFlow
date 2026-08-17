@@ -119,6 +119,54 @@ function summarize(events) {
   return { duration, clicks, moves, minX, maxX, minY, maxY, count: events.length };
 }
 
+/* ------------------------------------------------- local network access (LNA) */
+
+/* Chrome 142 shipped Local Network Access, which replaced Private Network Access:
+ * reaching 127.0.0.1 from a PUBLIC origin now needs a user permission, and the old
+ * Access-Control-Allow-Private-Network response header no longer grants anything.
+ *
+ * A loopback page talking to loopback is same-address-space and never prompts, so this
+ * is invisible in local development and only appears once the app is deployed.
+ *
+ * The prompt therefore has to be provoked from a real click. Firing it from the
+ * background health poll risks it being auto-dismissed, and a page that quietly sits at
+ * "Agent offline" because a permission was never granted is unrecoverable from the UI.
+ */
+
+const PAGE_IS_LOOPBACK = ['localhost', '127.0.0.1', '[::1]', '::1'].includes(location.hostname);
+
+let lnaGranted = PAGE_IS_LOOPBACK;   // nothing to grant when the page is itself loopback
+
+async function refreshLnaState() {
+  if (PAGE_IS_LOOPBACK) return true;
+  if (!navigator.permissions || !navigator.permissions.query) return lnaGranted;
+  try {
+    const status = await navigator.permissions.query({ name: 'local-network-access' });
+    lnaGranted = status.state === 'granted';
+    status.onchange = () => {
+      lnaGranted = status.state === 'granted';
+      if (lnaGranted) pollHealth().then(scheduleHealth);
+      else renderOnboarding();
+    };
+  } catch (_) {
+    // Permission not queryable (or not implemented) - fall back to click-to-connect.
+  }
+  return lnaGranted;
+}
+
+// Runs inside a click, so the permission prompt gets user activation behind it.
+async function connectToAgent() {
+  await pollHealth();
+  lnaGranted = lnaGranted || !!health;
+  if (health) {
+    scheduleHealth();
+  } else {
+    toast('No agent answered on port ' + state.port + '. Check the PowerShell window is ' +
+          'still open, and that you allowed local network access.', 'bad');
+    renderOnboarding();
+  }
+}
+
 /* ------------------------------------------------------------ agent transport */
 
 function agentBase() {
@@ -128,15 +176,27 @@ function agentBase() {
 async function agentReq(path, { method = 'GET', body = null, timeout = 4000 } = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeout);
+  const init = {
+    method,
+    body,
+    headers: body == null ? undefined : { 'Content-Type': 'text/plain' },
+    mode: 'cors',
+    cache: 'no-store',
+    signal: ctl.signal,
+    // Declares the request as loopback-bound for Local Network Access, and doubles as the
+    // mixed-content exemption for an https page reaching http://127.0.0.1.
+    targetAddressSpace: 'loopback',
+  };
   try {
-    const res = await fetch(agentBase() + path, {
-      method,
-      body,
-      headers: body == null ? undefined : { 'Content-Type': 'text/plain' },
-      mode: 'cors',
-      cache: 'no-store',
-      signal: ctl.signal,
-    });
+    let res;
+    try {
+      res = await fetch(agentBase() + path, init);
+    } catch (err) {
+      // Browsers that do not know the enum reject the init object outright.
+      if (!(err instanceof TypeError) || !('targetAddressSpace' in init)) throw err;
+      delete init.targetAddressSpace;
+      res = await fetch(agentBase() + path, init);
+    }
     const text = await res.text();
     if (!res.ok) {
       let detail = text;
@@ -770,20 +830,43 @@ function onboardingSteps() {
     {
       title: 'Paste it into PowerShell and press Enter',
       done: online,
-      note: 'Press Win+X then I to open a PowerShell window. Leave it open afterwards — ' +
-            'closing it stops the agent.',
-      build: () => [
-        h('div', { class: 'ob-waiting' }, [
-          h('span', { class: 'ob-spinner' }),
-          'Watching 127.0.0.1:' + state.port + ' for the agent…',
-        ]),
-        h('div', { class: 'ob-actions' }, [
-          h('button', {
-            class: 'btn btn--ghost btn--sm', type: 'button', text: 'Copy command again',
-            onclick: () => copyText(oneLineCommand()),
-          }),
-        ]),
-      ],
+      note: lnaGranted
+        ? 'Press Win+X then I to open a PowerShell window. Leave it open afterwards — ' +
+          'closing it stops the agent.'
+        : 'Press Win+X then I to open a PowerShell window, paste, and press Enter. Then press ' +
+          'Connect below — your browser will ask whether this site may reach devices on your ' +
+          'local network, which is how it talks to the agent. Choose Allow.',
+      build: () => {
+        const actions = [];
+
+        if (lnaGranted) {
+          actions.push(h('div', { class: 'ob-waiting' }, [
+            h('span', { class: 'ob-spinner' }),
+            'Watching 127.0.0.1:' + state.port + ' for the agent…',
+          ]));
+        }
+
+        const buttons = [];
+        if (!lnaGranted) {
+          buttons.push(h('button', {
+            class: 'btn btn--primary btn--sm', type: 'button', text: 'Connect to agent',
+            onclick: connectToAgent,
+          }));
+        }
+        buttons.push(h('button', {
+          class: 'btn btn--ghost btn--sm', type: 'button', text: 'Copy command again',
+          onclick: () => copyText(oneLineCommand()),
+        }));
+        actions.push(h('div', { class: 'ob-actions' }, buttons));
+
+        if (!lnaGranted) {
+          actions.push(h('p', { class: 'ob-note' },
+            'Clicked Block by mistake? Reset it under Settings → Privacy and security → ' +
+            'Site settings → Local network access, then press Connect again.'));
+        }
+
+        return actions;
+      },
       doneNote: online && health.screen
         ? 'Agent ' + health.version + ' connected · ' + health.screen.w + '×' + health.screen.h
         : null,
@@ -933,7 +1016,12 @@ function init() {
   renderFlow();
   setAgentUi();
 
-  pollHealth().then(scheduleHealth);
+  // Only probe loopback unprompted when doing so cannot raise a permission dialog.
+  // Otherwise wait for the Connect click in step 2.
+  refreshLnaState().then((granted) => {
+    if (granted) pollHealth().then(scheduleHealth);
+    else renderOnboarding();
+  });
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});

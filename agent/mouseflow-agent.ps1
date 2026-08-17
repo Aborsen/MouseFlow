@@ -10,8 +10,10 @@
     recording  SetWindowsHookEx(WH_MOUSE_LL) on a dedicated message-pump thread
     replay     SendInput with absolute virtual-desktop coordinates
 
-  It listens on http://127.0.0.1:<Port> and answers CORS + Private Network
-  Access preflights so an https:// page (e.g. a Vercel deployment) can call it.
+  It listens on http://127.0.0.1:<Port> and answers CORS preflights so an https://
+  page (e.g. a Vercel deployment) can call it. Note that reaching loopback from a
+  public origin also needs the user's Local Network Access permission in Chrome 142+;
+  that is granted in the browser and cannot be granted by any response header here.
 
   API
     GET  /health          -> JSON {ok, version, screen, recording, playing}
@@ -942,7 +944,10 @@ namespace MouseFlow
             sb.Append("Access-Control-Allow-Origin: ").Append(allow).Append("\r\n");
             sb.Append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
             sb.Append("Access-Control-Allow-Headers: Content-Type\r\n");
-            sb.Append("Access-Control-Allow-Private-Network: true\r\n");
+            // No Access-Control-Allow-Private-Network here on purpose. Chrome 142 replaced
+            // Private Network Access with Local Network Access, which is a user permission -
+            // the old response header grants nothing, and emitting it only implies the
+            // loopback hop is handled server-side when it is not.
             sb.Append("Access-Control-Max-Age: 600\r\n");
             sb.Append("Vary: Origin\r\n");
             sb.Append("Cache-Control: no-store\r\n");
