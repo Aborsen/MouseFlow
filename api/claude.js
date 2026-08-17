@@ -51,6 +51,23 @@ export default async function handler(req, res) {
   cors(req, res);
 
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+
+  /* Is this deployment ready to serve a demo?
+   *
+   * Worth being able to answer before walking into one, rather than finding out from the first
+   * failed run. Reports only whether a key is present - never the key, never a prefix, never a
+   * length, since any of those narrow a guess.
+   */
+  if (req.method === 'GET') {
+    res.status(200).json({
+      ok: true,
+      configured: !!process.env.ANTHROPIC_API_KEY,
+      model: [...ALLOWED_MODELS][0],
+      maxTokens: MAX_TOKENS_CAP,
+    });
+    return;
+  }
+
   if (req.method !== 'POST') { fail(res, 405, 'POST only'); return; }
 
   const key = process.env.ANTHROPIC_API_KEY;
