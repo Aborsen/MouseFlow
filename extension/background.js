@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.5.1';
+const VERSION = '0.6.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {

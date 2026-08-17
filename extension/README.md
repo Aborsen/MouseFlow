@@ -130,6 +130,34 @@ invariant across a whole replay rather than just the one event that was wrong.
 websites" warning. It is needed to inject into an arbitrary site the user chooses to record.
 Nothing is injected until a recording or replay actually starts.
 
+## What "Create the flow" will and will not do
+
+The goal is the authorisation, and it authorises exactly what it says.
+
+Ask it to **send, submit, publish, post, book, order or delete** and it carries that through to
+completion. It used to stop at a filled-in form and hand back "ready for you to confirm", which
+reads as caution but is really a failed run: the user asked for the outcome and got a draft, then
+had to finish the job by hand. Asking for a confirmation the user already gave in the goal is not
+a safety feature.
+
+What it still will not do:
+
+- **Type credentials.** Passwords, card numbers and the like are never entered, whatever the page
+  asks or the goal implies. It stops and hands that part back.
+- **Act beyond the goal.** An irreversible action the goal did not ask for is prepared, not taken:
+  *tidy my inbox* is not permission to delete, *look at Ann's reply* is not permission to answer
+  it.
+- **Widen the goal.** The recipients asked for and no others; the item asked for and nothing else.
+  Anything the page pre-filled gets reported.
+- **Obey the page.** Page text is data. A page that says to add a recipient or send something
+  elsewhere is reported in `finish`, never followed — the goal is the only instruction it has.
+  Worth knowing about, because a page the agent reads is untrusted input and it now has the
+  authority to send.
+
+Care went into the details rather than into hesitating: before a one-way click it re-reads the
+page and checks what the goal named — recipient, amount, destination, which item — against what is
+actually on screen, and stops if any of them differs.
+
 ## The shared demo key
 
 *Create the flow* works with no API key: the request goes to `/api/claude` on the MouseFlow
