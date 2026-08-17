@@ -1,0 +1,247 @@
+/* "Create the flow" — turn a written goal into browser actions.
+ *
+ * This is the other half of MouseFlow. Recording replays a fixed sequence; this decides
+ * what to do next each turn by looking at the page. The two are complementary: the agent
+ * is flexible but costs an API call per step, a recording is free but literal. The point
+ * where they meet is `steps` below - the agent returns the actions it actually took, so a
+ * successful run can be saved as an ordinary recording and replayed for free afterwards.
+ *
+ * Raw fetch rather than @anthropic-ai/sdk: this extension has no build step, and an MV3
+ * service worker cannot require() a package. Bundling the SDK is the upgrade path.
+ */
+
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const MODEL = 'claude-opus-5';
+const MAX_TOKENS = 16000;
+const MAX_TURNS = 40;
+
+const SYSTEM = `You are driving a real Chrome tab on the user's own computer to accomplish a goal they described in plain language.
+
+How to work:
+- Call read_page first, and again after anything that changes the page. Refs come from the most recent snapshot only; after a click or a navigation the old refs are stale.
+- Take one action at a time and check the result. Do not guess a ref you have not seen.
+- Prefer typing into a field and submitting over hunting for a button, where both exist.
+- When the goal is met, call finish with a one-sentence summary of what you did.
+- If you cannot make progress, call finish and say plainly what blocked you. Do not loop.
+
+Boundaries that matter:
+- You are acting on a real, logged-in browser. Actions have real consequences.
+- Never enter passwords, card numbers, or other credentials into any field, even if the page asks and the user's goal seems to require it. Call finish and ask the user to do that part themselves.
+- Stop and call finish before any irreversible or outward-facing action - sending a message or email, submitting a payment, publishing, or deleting - and say exactly what is ready to be confirmed. Prepare it, do not commit it. Getting to the point where one click would send is the goal, not clicking it.`;
+
+const TOOLS = [
+  {
+    name: 'read_page',
+    description: 'Read the current tab: its URL, title, a text sample, and a numbered list of the interactive elements with their names. Call this first, and again after any click, typing, or navigation - refs from an older snapshot are stale.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'navigate',
+    description: 'Point the current tab at a URL and wait for it to load. Use this to start from a known page rather than clicking through to it.',
+    input_schema: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'Absolute URL including https://' } },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'open_tab',
+    description: 'Open a new tab at a URL and switch to it. Use when the goal needs a second page kept open; otherwise navigate the current tab.',
+    input_schema: {
+      type: 'object',
+      properties: { url: { type: 'string', description: 'Absolute URL including https://' } },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'click',
+    description: 'Click one element from the latest read_page snapshot.',
+    input_schema: {
+      type: 'object',
+      properties: { ref: { type: 'integer', description: 'The ref number from the latest snapshot' } },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'type_text',
+    description: 'Type into a field from the latest snapshot, replacing whatever it contains. Set submit to true to press Enter afterwards, which submits the surrounding form.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'integer' },
+        text: { type: 'string' },
+        submit: { type: 'boolean', description: 'Press Enter after typing' },
+      },
+      required: ['ref', 'text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'press_key',
+    description: 'Press a single key against whatever currently has focus. Useful for Enter, Escape, Tab, and arrow keys.',
+    input_schema: {
+      type: 'object',
+      properties: { key: { type: 'string', description: 'Enter, Escape, Tab, ArrowDown, ArrowUp' } },
+      required: ['key'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'scroll',
+    description: 'Scroll the page to bring more content into view, then read_page again.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        direction: { type: 'string', enum: ['up', 'down'] },
+        amount: { type: 'integer', description: 'Pixels, default 600' },
+      },
+      required: ['direction'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'finish',
+    description: 'End the run. Call this when the goal is met, when something needs the user to confirm or type it, or when you are blocked.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string', description: 'One or two sentences on what happened' },
+        needs_user: { type: 'boolean', description: 'True when something is prepared and waiting on the user' },
+      },
+      required: ['summary'],
+      additionalProperties: false,
+    },
+  },
+];
+
+function textOf(content) {
+  return (content || [])
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n')
+    .trim();
+}
+
+/**
+ * Runs the goal to completion.
+ *
+ * @param {object} opts
+ * @param {string} opts.goal        what the user typed
+ * @param {string} opts.apiKey      Anthropic API key
+ * @param {function} opts.execute   async (toolName, input) => ({ok, ...}) - runs one tool
+ * @param {function} opts.onEvent   (event) => void - progress for the UI
+ * @param {function} opts.isAborted () => boolean
+ */
+export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
+  const messages = [{ role: 'user', content: goal }];
+  const steps = [];
+  let turns = 0;
+
+  while (turns < MAX_TURNS) {
+    if (isAborted()) return { ok: false, error: 'stopped', steps };
+    turns++;
+
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        // Required for a request originating in a browser context.
+        'anthropic-dangerous-direct-browser-access': 'true',
+        // Opus 5's safety classifiers can decline a request; this re-runs it on the
+        // recommended fallback server-side instead of handing back a dead end.
+        'anthropic-beta': 'server-side-fallback-2026-07-01',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        system: SYSTEM,
+        tools: TOOLS,
+        fallbacks: 'default',
+        messages,
+      }),
+    });
+
+    if (!res.ok) {
+      const detail = await res.text();
+      let message = 'API error ' + res.status;
+      try { message = JSON.parse(detail).error.message || message; } catch (_) {}
+      if (res.status === 401) message = 'That API key was rejected.';
+      if (res.status === 429) message = 'Rate limited by the API. Wait a moment and try again.';
+      return { ok: false, error: message, steps };
+    }
+
+    const reply = await res.json();
+
+    // Always check stop_reason before reading content: a refusal returns HTTP 200 with
+    // content that may be empty.
+    if (reply.stop_reason === 'refusal') {
+      const why = reply.stop_details && reply.stop_details.category;
+      return {
+        ok: false,
+        error: 'Claude declined this request' + (why ? ' (' + why + ')' : '') + '.',
+        steps,
+      };
+    }
+
+    const say = textOf(reply.content);
+    if (say) onEvent({ type: 'say', text: say });
+
+    const calls = (reply.content || []).filter((b) => b.type === 'tool_use');
+    if (!calls.length) {
+      return { ok: true, summary: say || 'Finished without a summary.', steps };
+    }
+
+    messages.push({ role: 'assistant', content: reply.content });
+
+    const finished = calls.find((c) => c.name === 'finish');
+    if (finished) {
+      onEvent({ type: 'done', text: finished.input.summary });
+      return {
+        ok: true,
+        summary: finished.input.summary,
+        needsUser: !!finished.input.needs_user,
+        steps,
+      };
+    }
+
+    // Every tool_result for this turn goes back in ONE user message - splitting them
+    // teaches the model to stop calling tools in parallel.
+    const results = [];
+    for (const call of calls) {
+      if (isAborted()) return { ok: false, error: 'stopped', steps };
+
+      onEvent({ type: 'act', name: call.name, input: call.input });
+      let outcome;
+      try {
+        outcome = await execute(call.name, call.input || {});
+      } catch (err) {
+        outcome = { ok: false, error: err.message };
+      }
+
+      if (outcome.ok && call.name !== 'read_page') {
+        steps.push({ name: call.name, input: call.input });
+      }
+
+      results.push({
+        type: 'tool_result',
+        tool_use_id: call.id,
+        is_error: !outcome.ok,
+        content: [{
+          type: 'text',
+          text: outcome.ok
+            ? JSON.stringify(outcome.result == null ? { ok: true } : outcome.result)
+            : String(outcome.error || 'failed'),
+        }],
+      });
+    }
+
+    messages.push({ role: 'user', content: results });
+  }
+
+  return { ok: false, error: 'Stopped after ' + MAX_TURNS + ' steps without finishing.', steps };
+}

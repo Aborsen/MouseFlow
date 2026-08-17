@@ -15,7 +15,9 @@
  * web app (chrome.runtime.sendMessage(EXTENSION_ID, ...) via externally_connectable).
  */
 
-const VERSION = '0.2.0';
+import { runGoal } from './agent.js';
+
+const VERSION = '0.3.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -184,7 +186,7 @@ async function recordStart(tabId) {
   const { key } = keyForTab(tab.id);
   // Opening step for tab 0, so replay starts from a known page instead of whatever
   // happens to be focused.
-  pushEvent({ action: 'focus', url: tab.url, opened: true }, key);
+  pushEvent({ action: 'focus', url: tab.url, opened: true, tabIndex: tab.index }, key);
   await ensureCapturing(tab.id);
 
   await chrome.action.setBadgeText({ text: 'REC' });
@@ -269,17 +271,34 @@ async function replayStart(flow) {
 // Carries the logical-tab -> real-tab mapping across the whole flow. `current` is the tab
 // the next non-focus event acts on.
 async function performEvent(ev, ctx) {
+  /* Mirroring, not re-creating.
+   *
+   * "Record the flow" replays the exact sequence into the tabs that are already open:
+   * a tab switch activates the tab sitting at the recorded position, and never opens a
+   * new one. Creating tabs made a two-tab recording spawn two fresh tabs on every run,
+   * which is not what "simply repeat it" means. If the tab is gone, say so instead of
+   * quietly substituting a new one and clicking into the wrong page.
+   */
   if (ev.action === 'focus') {
     const key = ev.tab || 0;
     let tabId = ctx.map[key];
+
     if (tabId == null) {
-      const created = await chrome.tabs.create({ url: ev.url || 'about:blank', active: true });
-      tabId = created.id;
+      const index = ev.tabIndex == null ? key : ev.tabIndex;
+      const tabs = await chrome.tabs.query({ currentWindow: true });
+      const match = tabs.find((t) => t.index === index) || tabs[index];
+      if (!match) {
+        throw new Error('this step needs the tab at position ' + (index + 1) +
+          ', and this window only has ' + tabs.length + ' - open it first');
+      }
+      if (isRestricted(match.url)) {
+        throw new Error('the tab at position ' + (index + 1) + ' is a browser page, which cannot be automated');
+      }
+      tabId = match.id;
       ctx.map[key] = tabId;
-      try { await pollComplete(tabId); } catch (_) { /* replay steps will still try */ }
-    } else {
-      await chrome.tabs.update(tabId, { active: true });
     }
+
+    await chrome.tabs.update(tabId, { active: true });
     ctx.current = tabId;
     return;
   }
@@ -385,10 +404,98 @@ function replayStatus() {
   };
 }
 
+/* ------------------------------------------------------- agent mode (describe) */
+
+const agent = { running: false, abort: false, goal: '', log: [], result: null };
+
+// One tool call from the model, executed against the active tab.
+async function runAgentTool(name, input) {
+  const tabId = await activeTabId();
+
+  switch (name) {
+    case 'read_page': {
+      const res = await send(tabId, { mf: 'agent/snapshot', limit: 120 });
+      if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'could not read the page' };
+      return { ok: true, result: res.page };
+    }
+    case 'navigate': {
+      await goTo(tabId, input.url);
+      return { ok: true, result: { navigated: input.url } };
+    }
+    case 'open_tab': {
+      const created = await chrome.tabs.create({ url: input.url, active: true });
+      try { await pollComplete(created.id); } catch (_) { /* the next read_page will show it */ }
+      return { ok: true, result: { opened: input.url } };
+    }
+    case 'click':
+    case 'type_text':
+    case 'press_key':
+    case 'scroll': {
+      const command = Object.assign({}, input, {
+        action: name === 'type_text' ? 'type' : name,
+      });
+      const res = await send(tabId, { mf: 'agent/act', command });
+      if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'no response from the page' };
+      // A click often navigates; give the page a moment before the next read_page.
+      await sleep(name === 'click' ? 500 : 150);
+      return { ok: true, result: { done: name } };
+    }
+    default:
+      return { ok: false, error: 'unknown tool ' + name };
+  }
+}
+
+async function agentStart(goal) {
+  if (agent.running) throw new Error('already running');
+  const { apiKey } = await chrome.storage.local.get('apiKey');
+  if (!apiKey) throw new Error('no API key saved - add one in Create a flow');
+  if (!goal || !goal.trim()) throw new Error('describe what you want done');
+
+  Object.assign(agent, { running: true, abort: false, goal: goal.trim(), log: [], result: null });
+  holdWorker(true);
+  await chrome.action.setBadgeText({ text: 'AI' });
+  await chrome.action.setBadgeBackgroundColor({ color: '#8957e5' });
+
+  runGoal({
+    goal: agent.goal,
+    apiKey,
+    execute: runAgentTool,
+    isAborted: () => agent.abort,
+    onEvent: (event) => {
+      agent.log.push(event);
+      console.log('[MouseFlow agent]', event);
+    },
+  })
+    .then((res) => { agent.result = res; })
+    .catch((err) => { agent.result = { ok: false, error: err.message, steps: [] }; })
+    .finally(async () => {
+      agent.running = false;
+      holdWorker(false);
+      await chrome.action.setBadgeText({ text: '' });
+      // Kept so the popup can show the outcome after the worker is torn down.
+      chrome.storage.session.set({ lastAgentRun: { goal: agent.goal, log: agent.log.slice(-40), result: agent.result } }).catch(() => {});
+    });
+
+  return { ok: true };
+}
+
+function agentStatus() {
+  return {
+    ok: true,
+    running: agent.running,
+    goal: agent.goal,
+    log: agent.log.slice(-12),
+    result: agent.result,
+  };
+}
+
 /* -------------------------------------------------------------------- routing */
 
 const ROUTES = {
-  ping: async () => ({ ok: true, version: VERSION, mode: 'extension', recording: rec.active, playing: play.active }),
+  ping: async () => ({
+    ok: true, version: VERSION, mode: 'extension',
+    recording: rec.active, playing: play.active, agentRunning: agent.running,
+  }),
   'capture/event': async (msg, sender) => captureFromPage(msg.event, sender && sender.tab && sender.tab.id),
   'record/start': (msg) => recordStart(msg.tabId),
   'record/status': () => recordStatus(),
@@ -396,6 +503,9 @@ const ROUTES = {
   replay: (msg) => replayStart(msg.flow || {}),
   'replay/status': async () => replayStatus(),
   'replay/abort': async () => { play.abort = true; return { ok: true }; },
+  'agent/start': (msg) => agentStart(msg.goal),
+  'agent/status': async () => agentStatus(),
+  'agent/abort': async () => { agent.abort = true; return { ok: true }; },
 };
 
 function route(msg, sender, respond) {
@@ -430,7 +540,9 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 
   rec.activeTabId = tabId;
   const { key, isNew } = keyForTab(tabId);
-  pushEvent({ action: 'focus', url: tab.url, opened: isNew }, key);
+  // tabIndex is what replay uses to find this tab again: mirroring activates the tab
+  // sitting in that position, it never creates one.
+  pushEvent({ action: 'focus', url: tab.url, opened: isNew, tabIndex: tab.index }, key);
   try { await ensureCapturing(tabId); } catch (err) {
     console.warn('[MouseFlow] could not start capture in switched tab:', err.message);
   }

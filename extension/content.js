@@ -358,6 +358,159 @@
     }
   }
 
+  /* ----------------------------------------------------- agent mode (describe) */
+
+  /* "Create the flow" needs a different page view than recording does.
+   *
+   * Recording knows which element the user touched. An agent working from a written
+   * goal has to be told what is on the page, cheaply enough to put in a prompt: a
+   * numbered list of interactive elements with their accessible names. Refs are indices
+   * into a snapshot held here, so the model never sees or invents a CSS selector.
+   */
+
+  let refs = [];
+
+  const AGENT_SELECTOR = [
+    'a[href]', 'button', 'input', 'select', 'textarea',
+    '[role="button"]', '[role="link"]', '[role="textbox"]', '[role="combobox"]',
+    '[role="tab"]', '[role="menuitem"]', '[role="option"]', '[role="checkbox"]',
+    '[contenteditable="true"]',
+  ].join(',');
+
+  function isVisible(el) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    const style = getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+  }
+
+  // The name a person would use for this control, in the order a screen reader would try.
+  function accessibleName(el) {
+    const aria = el.getAttribute('aria-label');
+    if (aria) return aria.trim();
+
+    const labelledBy = el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const parts = labelledBy.split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((n) => visibleText(n));
+      if (parts.length) return parts.join(' ');
+    }
+
+    if (el.labels && el.labels.length) return visibleText(el.labels[0]);
+
+    const text = visibleText(el);
+    if (text) return text;
+
+    const hint = (el.getAttribute('placeholder') || el.getAttribute('title') ||
+                  el.getAttribute('name') || '').trim();
+    if (hint) return hint;
+
+    /* The `value` attribute names a push button ("Submit", "Search") and is the only
+     * label such an element has. On every other input it is CONTENT, not a name — and
+     * for a password field it is the secret itself, which excluding the `value` property
+     * further down does nothing to stop leaking through here. Buttons only. */
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (el.tagName === 'INPUT' && ['submit', 'button', 'reset'].includes(type)) {
+      return (el.getAttribute('value') || '').trim();
+    }
+    return '';
+  }
+
+  function snapshot(limit) {
+    refs = [];
+    const out = [];
+    const seen = new Set();
+
+    for (const el of document.querySelectorAll(AGENT_SELECTOR)) {
+      if (out.length >= limit) break;
+      if (seen.has(el) || !isVisible(el)) continue;
+      seen.add(el);
+
+      const type = (el.getAttribute('type') || '').toLowerCase();
+      const entry = {
+        ref: refs.length,
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute('role') || type || null,
+        name: accessibleName(el).slice(0, 90) || null,
+      };
+      if (/^(input|textarea|select)$/i.test(el.tagName) && type !== 'password') {
+        entry.value = String(el.value == null ? '' : el.value).slice(0, 90);
+      }
+      refs.push(el);
+      out.push(entry);
+    }
+
+    return {
+      url: location.href,
+      title: document.title,
+      // A short text sample so the model can tell "search results loaded" from
+      // "still on the form" without another round trip.
+      text: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 1500),
+      elements: out,
+      truncated: out.length >= limit,
+    };
+  }
+
+  function elementFor(ref) {
+    const el = refs[ref];
+    if (!el) throw new Error('ref ' + ref + ' is not in the current snapshot - read the page again');
+    if (!el.isConnected) throw new Error('ref ' + ref + ' has left the page - read the page again');
+    return el;
+  }
+
+  async function agentAct(cmd) {
+    if (cmd.action === 'scroll') {
+      const by = (cmd.amount || 600) * (cmd.direction === 'up' ? -1 : 1);
+      scrollBy({ top: by, behavior: 'instant' });
+      return { ok: true };
+    }
+
+    if (cmd.action === 'press_key') {
+      const target = document.activeElement || document.body;
+      const init = { key: cmd.key, code: cmd.key, bubbles: true, cancelable: true, composed: true };
+      target.dispatchEvent(new KeyboardEvent('keydown', init));
+      target.dispatchEvent(new KeyboardEvent('keyup', init));
+      // Enter inside a form is expected to submit it; the synthetic keydown alone will not.
+      if (cmd.key === 'Enter' && target.form && typeof target.form.requestSubmit === 'function') {
+        target.form.requestSubmit();
+      }
+      return { ok: true };
+    }
+
+    const el = elementFor(cmd.ref);
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    flash(el);
+    await sleep(40);
+
+    if (cmd.action === 'click') {
+      const point = pointAt(el, { rx: 0.5, ry: 0.5 });
+      fire(el, 'pointerdown', point, { pointerId: 1, isPrimary: true });
+      fire(el, 'mousedown', point);
+      if (el.focus) el.focus({ preventScroll: true });
+      fire(el, 'pointerup', point, { pointerId: 1, isPrimary: true });
+      fire(el, 'mouseup', point);
+      fire(el, 'click', point, { detail: 1 });
+      return { ok: true };
+    }
+
+    if (cmd.action === 'type') {
+      if (el.focus) el.focus({ preventScroll: true });
+      if (el.isContentEditable) setEditableText(el, cmd.text);
+      else setValue(el, cmd.text);
+      if (cmd.submit) {
+        const init = { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, composed: true };
+        el.dispatchEvent(new KeyboardEvent('keydown', init));
+        el.dispatchEvent(new KeyboardEvent('keyup', init));
+        if (el.form && typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
+      }
+      return { ok: true };
+    }
+
+    throw new Error('unknown agent action ' + cmd.action);
+  }
+
   /* --------------------------------------------------------------- messages */
 
   chrome.runtime.onMessage.addListener((msg, sender, respond) => {
@@ -373,6 +526,20 @@
         (err) => respond({ ok: false, error: err.message })
       );
       return true;   // async responder
+    }
+
+    if (msg.mf === 'agent/snapshot') {
+      try { respond({ ok: true, page: snapshot(msg.limit || 120) }); }
+      catch (err) { respond({ ok: false, error: err.message }); }
+      return;
+    }
+
+    if (msg.mf === 'agent/act') {
+      agentAct(msg.command).then(
+        (res) => respond(res),
+        (err) => respond({ ok: false, error: err.message })
+      );
+      return true;
     }
   });
 
