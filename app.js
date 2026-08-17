@@ -20,12 +20,17 @@ const state = {
   startDelay: 3000,
   flowRepeat: 1,
   flowForever: false,
+  onboarding: { copied: false, autostartSkipped: false, ranOnce: false },
 };
+
+// null = follow the onboarding state, true/false = the user opened or closed it by hand
+let setupOverride = null;
 
 let health = null;         // last /health payload, or null when offline
 let recordTimer = null;
 let replayTimer = null;
 let healthTimer = null;
+let healthFailures = 0;
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -156,6 +161,7 @@ function save() {
       startDelay: state.startDelay,
       flowRepeat: state.flowRepeat,
       flowForever: state.flowForever,
+      onboarding: state.onboarding,
     }));
   } catch (err) {
     toast('Could not save: ' + err.message + '. Export anything you need to keep.', 'bad');
@@ -174,6 +180,9 @@ function load() {
     if (Number.isFinite(data.startDelay)) state.startDelay = data.startDelay;
     if (Number.isFinite(data.flowRepeat)) state.flowRepeat = data.flowRepeat;
     state.flowForever = !!data.flowForever;
+    if (data.onboarding && typeof data.onboarding === 'object') {
+      Object.assign(state.onboarding, data.onboarding);
+    }
     // A recording referenced by a step may have been deleted in another tab.
     const ids = new Set(state.recordings.map((r) => r.id));
     state.flow = state.flow.filter((s) => ids.has(s.recordingId));
@@ -204,6 +213,8 @@ function setAgentUi() {
   const busy = online && (health.recording || health.playing);
   $('#btn-record').disabled = !online || busy;
   $('#btn-run').disabled = !online || busy || state.flow.length === 0;
+
+  renderOnboarding();
 }
 
 async function pollHealth() {
@@ -211,18 +222,29 @@ async function pollHealth() {
     const data = await agentReq('/health', { timeout: 2500 });
     const wasOffline = !health;
     health = data;
-    if (wasOffline) {
-      $('#agent-setup').hidden = true;
-      $('#agent-pill').setAttribute('aria-expanded', 'false');
-      if (!data.hook) toast('Agent is up but the mouse hook failed to install.', 'bad');
+    if (wasOffline && !data.hook) {
+      toast('Agent is up but the mouse hook failed to install.', 'bad');
     }
     // Recover UI if the agent is mid-operation (page reload, second tab).
     if (data.recording && !recordTimer) startRecordPolling();
     if (data.playing && !replayTimer) startReplayPolling();
+    healthFailures = 0;
   } catch (_) {
     health = null;
+    healthFailures++;
   }
   setAgentUi();
+}
+
+// Poll briskly while someone is actively trying to connect, then back off. Each failed
+// probe logs a console error the page cannot suppress, so idle tabs should stay quiet.
+function scheduleHealth() {
+  clearTimeout(healthTimer);
+  const eager = health || healthFailures < 8 || !$('#agent-setup').hidden;
+  healthTimer = setTimeout(async () => {
+    await pollHealth();
+    scheduleHealth();
+  }, eager ? 2000 : 15000);
 }
 
 /* ------------------------------------------------------------------ recording */
@@ -564,10 +586,17 @@ function paintReplay(s) {
 }
 
 function finishReplay() {
+  const wasRunning = replayTimer !== null;
   clearInterval(replayTimer);
   replayTimer = null;
   $('#replay-panel').hidden = true;
   document.querySelectorAll('.step--active').forEach((n) => n.classList.remove('step--active'));
+
+  if (wasRunning && !state.onboarding.ranOnce) {
+    state.onboarding.ranOnce = true;
+    save();
+    renderOnboarding();
+  }
 }
 
 async function abortReplay() {
@@ -584,9 +613,8 @@ function wire() {
   $('#btn-abort').addEventListener('click', abortReplay);
 
   $('#agent-pill').addEventListener('click', () => {
-    const panel = $('#agent-setup');
-    panel.hidden = !panel.hidden;
-    $('#agent-pill').setAttribute('aria-expanded', String(!panel.hidden));
+    setupOverride = $('#agent-setup').hidden;
+    renderOnboarding();
   });
 
   $('#agent-port').addEventListener('change', (ev) => {
@@ -597,7 +625,6 @@ function wire() {
     }
     state.port = v;
     save();
-    updateSetupCmd();
     health = null;
     setAgentUi();
     pollHealth();
@@ -638,16 +665,6 @@ function wire() {
     save();
   });
 
-  document.addEventListener('click', (ev) => {
-    const btn = ev.target.closest('[data-copy]');
-    if (!btn) return;
-    const text = $(btn.dataset.copy).textContent;
-    navigator.clipboard.writeText(text).then(
-      () => toast('Copied.', 'good'),
-      () => toast('Could not copy - select the text instead.', 'bad')
-    );
-  });
-
   // Drag and drop import
   const zone = $('#dropzone');
   let depth = 0;
@@ -674,12 +691,233 @@ function wire() {
   });
 }
 
-function updateSetupCmd() {
-  const origin = location.protocol === 'https:' ? location.origin : null;
-  $('#agent-cmd').textContent =
-    'powershell -ExecutionPolicy Bypass -File .\\mouseflow-agent.ps1' +
+/* ------------------------------------------------------------- onboarding */
+
+// Fetches the agent straight into a PowerShell scriptblock, so nothing has to be
+// downloaded, unblocked, or exempted from the execution policy first.
+function oneLineCommand() {
+  return '& ([scriptblock]::Create((irm ' + location.origin + '/agent/mouseflow-agent.ps1)))' +
     (state.port !== 8787 ? ' -Port ' + state.port : '') +
-    (origin ? ' -AllowOrigin ' + origin : '');
+    ' -AllowOrigin ' + location.origin;
+}
+
+function fileCommand() {
+  return 'powershell -ExecutionPolicy Bypass -File .\\mouseflow-agent.ps1' +
+    (state.port !== 8787 ? ' -Port ' + state.port : '') +
+    ' -AllowOrigin ' + location.origin;
+}
+
+function copyText(text, okMessage) {
+  return navigator.clipboard.writeText(text).then(
+    () => toast(okMessage || 'Copied.', 'good'),
+    () => toast('Could not copy — select the command and copy it manually.', 'bad')
+  );
+}
+
+function downloadAgent() {
+  const a = h('a', { href: 'agent/mouseflow-agent.ps1', download: 'mouseflow-agent.ps1' });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  state.onboarding.copied = true;
+  save();
+  renderOnboarding();
+}
+
+async function enableAutostart() {
+  try {
+    await agentReq('/autostart/enable', { method: 'POST' });
+    await pollHealth();
+    toast('The agent will start automatically when you log in.', 'good');
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+  renderOnboarding();
+}
+
+function onboardingSteps() {
+  const online = !!health;
+  const newest = state.recordings[state.recordings.length - 1];
+  const ob = state.onboarding;
+
+  return [
+    {
+      title: 'Copy the start command',
+      done: ob.copied,
+      note: 'One line. It downloads the agent and starts it in one go — nothing to install, ' +
+            'nothing to unblock.',
+      build: () => [
+        h('div', { class: 'code-row' }, [
+          h('code', { text: oneLineCommand() }),
+          h('button', {
+            class: 'btn btn--primary btn--sm', type: 'button', text: 'Copy command',
+            onclick: () => copyText(oneLineCommand(), 'Copied — paste it into PowerShell.').then(() => {
+              state.onboarding.copied = true;
+              save();
+              renderOnboarding();
+            }),
+          }),
+        ]),
+        h('div', { class: 'ob-actions' }, [
+          h('button', {
+            class: 'link-btn link-btn--quiet', type: 'button',
+            text: 'or download the file instead',
+            onclick: downloadAgent,
+          }),
+        ]),
+      ],
+    },
+    {
+      title: 'Paste it into PowerShell and press Enter',
+      done: online,
+      note: 'Press Win+X then I to open a PowerShell window. Leave it open afterwards — ' +
+            'closing it stops the agent.',
+      build: () => [
+        h('div', { class: 'ob-waiting' }, [
+          h('span', { class: 'ob-spinner' }),
+          'Watching 127.0.0.1:' + state.port + ' for the agent…',
+        ]),
+        h('div', { class: 'ob-actions' }, [
+          h('button', {
+            class: 'btn btn--ghost btn--sm', type: 'button', text: 'Copy command again',
+            onclick: () => copyText(oneLineCommand()),
+          }),
+        ]),
+      ],
+      doneNote: online && health.screen
+        ? 'Agent ' + health.version + ' connected · ' + health.screen.w + '×' + health.screen.h
+        : null,
+    },
+    {
+      title: 'Keep it running after you log in',
+      done: (online && health.autostart) || state.onboarding.autostartSkipped,
+      note: online && health.canAutostart
+        ? 'Adds MouseFlowAgent.cmd to your Startup folder so you never have to do steps 1 and 2 ' +
+          'again. Deleting that file undoes it.'
+        : 'Only available when the agent was started from a downloaded file with a pinned ' +
+          'origin — a piped start leaves nothing for the launcher to point at.',
+      build: () => {
+        const actions = [];
+        if (online && health.canAutostart) {
+          actions.push(h('button', {
+            class: 'btn btn--primary btn--sm', type: 'button', text: 'Enable autostart',
+            onclick: enableAutostart,
+          }));
+        } else if (online) {
+          actions.push(h('button', {
+            class: 'btn btn--ghost btn--sm', type: 'button', text: 'Download the file instead',
+            onclick: downloadAgent,
+          }));
+        }
+        actions.push(h('button', {
+          class: 'link-btn link-btn--quiet', type: 'button', text: 'skip this',
+          onclick: () => {
+            state.onboarding.autostartSkipped = true;
+            save();
+            renderOnboarding();
+          },
+        }));
+        return [h('div', { class: 'ob-actions' }, actions)];
+      },
+      doneNote: online && health.autostart
+        ? 'On — delete MouseFlowAgent.cmd from your Startup folder to undo'
+        : 'Skipped — you will start the agent by hand each time',
+    },
+    {
+      title: 'Record something',
+      done: state.recordings.length > 0,
+      note: 'Click Start, do a few clicks in any application, then press Stop. Everything you ' +
+            'click, drag and scroll is captured.',
+      build: () => [
+        h('div', { class: 'ob-actions' }, [
+          h('button', {
+            class: 'btn btn--primary btn--sm', type: 'button',
+            text: health && health.recording ? 'Recording…' : 'Start recording',
+            disabled: !online || health.recording || health.playing,
+            onclick: beginRecording,
+          }),
+          h('button', {
+            class: 'link-btn link-btn--quiet', type: 'button', text: 'or import a .mmmacro file',
+            onclick: () => $('#file-import').click(),
+          }),
+        ]),
+      ],
+      doneNote: state.recordings.length + ' recording(s) saved',
+    },
+    {
+      title: 'Add it to the flow',
+      done: state.flow.length > 0,
+      note: 'A flow is an ordered list of recordings. Each step gets its own repeat count, ' +
+            'speed and trailing pause, so several recordings can run back to back.',
+      build: () => [
+        h('div', { class: 'ob-actions' }, [
+          h('button', {
+            class: 'btn btn--primary btn--sm', type: 'button',
+            text: newest ? 'Add "' + newest.name + '" to the flow' : 'Add to flow',
+            disabled: !newest,
+            onclick: () => newest && addToFlow(newest.id),
+          }),
+        ]),
+      ],
+      doneNote: state.flow.length + ' step(s) in the flow',
+    },
+    {
+      title: 'Run it',
+      done: state.onboarding.ranOnce,
+      note: 'You get ' + fmtMs(state.startDelay) + ' to switch to the target window before it ' +
+            'starts. Hold Esc at any point to abort. Tick "Restart forever when it ends" below ' +
+            'to keep the whole sequence looping.',
+      build: () => [
+        h('div', { class: 'ob-actions' }, [
+          h('button', {
+            class: 'btn btn--primary btn--sm', type: 'button', text: 'Run flow',
+            disabled: !online || state.flow.length === 0 || health.recording || health.playing,
+            onclick: runFlow,
+          }),
+        ]),
+      ],
+    },
+  ];
+}
+
+function renderOnboarding() {
+  const steps = onboardingSteps();
+  const doneCount = steps.filter((s) => s.done).length;
+  const activeIndex = steps.findIndex((s) => !s.done);
+  const complete = activeIndex === -1;
+
+  const panel = $('#agent-setup');
+  panel.hidden = setupOverride === null ? complete : !setupOverride;
+  $('#agent-pill').setAttribute('aria-expanded', String(!panel.hidden));
+
+  $('#setup-progress').textContent = doneCount + ' / ' + steps.length;
+  $('#setup-title').textContent = complete ? 'Setup complete' : 'Set up MouseFlow';
+  $('#setup-lede').textContent = complete
+    ? 'Everything is connected. Reopen this any time from the status pill.'
+    : 'Six steps, mostly buttons. A browser tab cannot see mouse events outside its own window ' +
+      'or inject real clicks, so one small helper runs on your machine — it talks to this page ' +
+      'over loopback only.';
+
+  const list = $('#onboarding');
+  list.textContent = '';
+
+  steps.forEach((step, i) => {
+    const cls = step.done ? 'is-done' : i === activeIndex ? 'is-active' : 'is-todo';
+    const body = [h('h3', { class: 'ob-title', text: step.title })];
+
+    if (step.done && step.doneNote) {
+      body.push(h('div', { class: 'ob-done-note', text: step.doneNote }));
+    }
+    if (!step.done) {
+      body.push(h('p', { class: 'ob-note', text: step.note }));
+      if (i === activeIndex) body.push(...step.build());
+    }
+
+    list.appendChild(h('li', { class: 'ob-step ' + cls }, [
+      h('span', { class: 'ob-marker', text: step.done ? '✓' : String(i + 1) }),
+      h('div', { class: 'ob-body' }, body),
+    ]));
+  });
 }
 
 function init() {
@@ -690,14 +928,12 @@ function init() {
   $('#flow-forever').checked = state.flowForever;
   $('#flow-repeat').disabled = state.flowForever;
 
-  updateSetupCmd();
   wire();
   renderLibrary();
   renderFlow();
   setAgentUi();
 
-  pollHealth();
-  healthTimer = setInterval(pollHealth, 2000);
+  pollHealth().then(scheduleHealth);
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});

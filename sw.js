@@ -3,7 +3,7 @@
  * be cached or intercepted.
  */
 
-const CACHE = 'mouseflow-v1';
+const CACHE = 'mouseflow-v2';
 
 const SHELL = [
   '.',
@@ -38,18 +38,22 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;   // leave the agent alone
 
+  // Network-first for everything, cache as the offline fallback.
+  //
+  // The tempting alternative is cache-first (or stale-while-revalidate) for static assets,
+  // but index.html references app.js and app.css by unversioned URL: serving a fresh
+  // document alongside a one-deploy-old script is a real failure mode, not a theoretical
+  // one. The whole shell is a few tens of KB, so there is nothing to win by racing the
+  // network. Offline still works - every successful response is cached below.
   event.respondWith(
-    caches.match(req).then((hit) => {
-      const live = fetch(req)
-        .then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((cache) => cache.put(req, copy));
-          }
-          return res;
-        })
-        .catch(() => hit);
-      return hit || live;
-    })
+    fetch(req)
+      .then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(req, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(req).then((hit) => hit || caches.match('index.html')))
   );
 });

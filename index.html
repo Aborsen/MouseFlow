@@ -28,34 +28,32 @@
 </header>
 
 <section id="agent-setup" class="setup" hidden>
-  <h2>Connect the local agent</h2>
-  <p>
-    A browser tab can only see mouse events inside its own window, and cannot inject real
-    clicks. The agent is the piece that records your desktop and replays it. It runs on your
-    machine and talks to this page over loopback only.
-  </p>
-  <ol>
-    <li>
-      Download <a id="agent-download" href="agent/mouseflow-agent.ps1" download>mouseflow-agent.ps1</a>
-    </li>
-    <li>
-      Open PowerShell in that folder and run:
-      <div class="code-row">
-        <code id="agent-cmd">powershell -ExecutionPolicy Bypass -File .\mouseflow-agent.ps1</code>
-        <button class="btn btn--ghost btn--sm" data-copy="#agent-cmd" type="button">Copy</button>
-      </div>
-    </li>
-    <li>Leave that window open. This page reconnects on its own.</li>
-  </ol>
-  <label class="field field--inline">
-    <span>Agent port</span>
-    <input id="agent-port" type="number" min="1" max="65535" step="1" value="8787">
-  </label>
-  <p class="fineprint">
-    The agent installs a low-level mouse hook while it runs. Events are only stored between
-    Start and Stop. Run it with <code>-AllowOrigin</code> set to this page's origin so other
-    sites cannot reach it.
-  </p>
+  <div class="setup-head">
+    <div>
+      <h2 id="setup-title">Set up MouseFlow</h2>
+      <p id="setup-lede">
+        Six steps, mostly buttons. A browser tab cannot see mouse events outside its own window
+        or inject real clicks, so one small helper runs on your machine — it talks to this page
+        over loopback only.
+      </p>
+    </div>
+    <span id="setup-progress" class="setup-progress mono">0 / 6</span>
+  </div>
+
+  <ol id="onboarding" class="ob"></ol>
+
+  <details class="advanced">
+    <summary>Advanced</summary>
+    <label class="field field--inline">
+      <span>Agent port</span>
+      <input id="agent-port" type="number" min="1" max="65535" step="1" value="8787">
+    </label>
+    <p class="fineprint">
+      The agent installs a low-level mouse hook while it runs. Events are only stored between
+      Start and Stop, nothing is written to disk, and the agent has no outbound network code.
+      Keep <code>-AllowOrigin</code> pinned to this page's origin so other sites cannot reach it.
+    </p>
+  </details>
 </section>
 
 <main class="grid">

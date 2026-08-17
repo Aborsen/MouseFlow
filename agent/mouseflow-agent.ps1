@@ -21,6 +21,8 @@
     POST /replay          -> JSON {ok}   body: see FLOW BODY below
     GET  /replay/status   -> JSON {playing, step, steps, pass, passes, index, total}
     POST /replay/abort    -> JSON {ok}
+    POST /autostart/enable  -> JSON {ok} - drops a launcher in the Startup folder
+    POST /autostart/disable -> JSON {ok} - removes it
 
   FLOW BODY (text/plain)
     startDelay=3000
@@ -58,7 +60,12 @@
   .\mouseflow-agent.ps1
 
 .EXAMPLE
-  .\mouseflow-agent.ps1 -Port 8787 -AllowOrigin https://mouse-flow.vercel.app
+  .\mouseflow-agent.ps1 -Port 8787 -AllowOrigin https://mouse-agent.vercel.app
+
+.EXAMPLE
+  # Start without downloading anything first. Autostart is unavailable this way,
+  # because there is no local file for the logon launcher to point at.
+  & ([scriptblock]::Create((irm https://mouse-agent.vercel.app/agent/mouseflow-agent.ps1))) -AllowOrigin https://mouse-agent.vercel.app
 
 .NOTES
   Hold ESC during replay to abort. Ctrl+C stops the agent.
@@ -232,6 +239,8 @@ namespace MouseFlow
         static int _flowPass, _flowPasses;
 
         public static string LastError = "";
+        public static string ScriptPath = "";   // empty when started via irm|iex - no file to autostart
+        public static int Port = 8787;
 
         // ---------- recording ----------
 
@@ -668,6 +677,65 @@ namespace MouseFlow
             return flow;
         }
 
+        // ---------- autostart ----------
+        //
+        // A shortcut in the user's Startup folder, which needs no admin rights and is trivial
+        // to undo. The command it writes is built only from the agent's OWN launch arguments -
+        // nothing from the HTTP request reaches it - so a hostile page cannot turn this into a
+        // "run my script at logon" primitive. It is still persistence, so it is refused unless
+        // the operator pinned -AllowOrigin.
+
+        public static string AutostartFile()
+        {
+            return Environment.GetFolderPath(Environment.SpecialFolder.Startup) + "\\MouseFlowAgent.cmd";
+        }
+
+        public static bool AutostartEnabled()
+        {
+            try { return System.IO.File.Exists(AutostartFile()); }
+            catch { return false; }
+        }
+
+        public static bool CanAutostart()
+        {
+            return ScriptPath.Length > 0 && AllowOrigin != "*";
+        }
+
+        public static string EnableAutostart()
+        {
+            if (ScriptPath.Length == 0)
+                return "the agent was started from a pipe, so there is no file to run at logon - download mouseflow-agent.ps1 and start it from the file instead";
+            if (AllowOrigin == "*")
+                return "restart the agent with -AllowOrigin set to your app origin before enabling autostart";
+
+            try
+            {
+                string cmd = "@echo off\r\n"
+                    + "rem Created by the MouseFlow agent. Delete this file to stop it starting at logon.\r\n"
+                    + "start \"\" powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \""
+                    + ScriptPath + "\" -Port " + Port.ToString(CultureInfo.InvariantCulture)
+                    + " -AllowOrigin " + AllowOrigin + "\r\n";
+                System.IO.File.WriteAllText(AutostartFile(), cmd);
+                Console.WriteLine("  autostart enabled -> " + AutostartFile());
+                return null;
+            }
+            catch (Exception ex) { return ex.Message; }
+        }
+
+        public static string DisableAutostart()
+        {
+            try
+            {
+                if (System.IO.File.Exists(AutostartFile()))
+                {
+                    System.IO.File.Delete(AutostartFile());
+                    Console.WriteLine("  autostart disabled");
+                }
+                return null;
+            }
+            catch (Exception ex) { return ex.Message; }
+        }
+
         // ---------- HTTP ----------
 
         public static string AllowOrigin = "*";
@@ -782,6 +850,9 @@ namespace MouseFlow
                     + ",\"hook\":" + (_hook != IntPtr.Zero ? "true" : "false")
                     + ",\"recording\":" + (IsRecording ? "true" : "false")
                     + ",\"playing\":" + (IsPlaying ? "true" : "false")
+                    + ",\"autostart\":" + (AutostartEnabled() ? "true" : "false")
+                    + ",\"canAutostart\":" + (CanAutostart() ? "true" : "false")
+                    + ",\"originPinned\":" + (AllowOrigin != "*" ? "true" : "false")
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
                 return;
@@ -813,7 +884,7 @@ namespace MouseFlow
             if (path == "/replay" && method == "POST")
             {
                 string err = StartReplay(body);
-                if (err != null) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"" + err + "\"}", origin); return; }
+                if (err != null) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"" + JsonEscape(err) + "\"}", origin); return; }
                 Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
                 return;
             }
@@ -827,6 +898,22 @@ namespace MouseFlow
             if (path == "/replay/abort" && method == "POST")
             {
                 Abort();
+                Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
+                return;
+            }
+
+            if (path == "/autostart/enable" && method == "POST")
+            {
+                string err = EnableAutostart();
+                if (err != null) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"" + JsonEscape(err) + "\"}", origin); return; }
+                Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
+                return;
+            }
+
+            if (path == "/autostart/disable" && method == "POST")
+            {
+                string err = DisableAutostart();
+                if (err != null) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"" + JsonEscape(err) + "\"}", origin); return; }
                 Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
                 return;
             }
@@ -867,6 +954,24 @@ namespace MouseFlow
             stream.Flush();
         }
 
+        static string JsonEscape(string s)
+        {
+            if (s == null) return "";
+            StringBuilder sb = new StringBuilder(s.Length + 8);
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c == '"') sb.Append("\\\"");
+                else if (c == '\\') sb.Append("\\\\");
+                else if (c == '\n') sb.Append("\\n");
+                else if (c == '\r') sb.Append("\\r");
+                else if (c == '\t') sb.Append("\\t");
+                else if (c < ' ') sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                else sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
         static string StatusText(int status)
         {
             switch (status)
@@ -885,6 +990,9 @@ namespace MouseFlow
 
 [MouseFlow.Agent]::Configure($MoveThrottleMs, $MoveMinPx)
 [MouseFlow.Agent]::AllowOrigin = $AllowOrigin
+[MouseFlow.Agent]::Port = $Port
+# Empty when the script was piped in rather than run from a file. Autostart needs a real path.
+if ($PSCommandPath) { [MouseFlow.Agent]::ScriptPath = $PSCommandPath }
 [MouseFlow.Agent]::StartHookPump()
 
 Start-Sleep -Milliseconds 250

@@ -30,23 +30,57 @@ index | X | Y | delayMs | action
 
 ## Quick start
 
-1. Start the agent (Windows, PowerShell 5.1 or later — no install, no dependencies):
+Open the app and follow the six-step panel. It is mostly buttons, and it detects each step
+rather than asking you to confirm it:
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\agent\mouseflow-agent.ps1
-   ```
+1. **Copy the start command** — one line, pre-filled with your origin
+2. **Paste it into PowerShell** — auto-completes the moment the agent connects
+3. **Keep it running after you log in** — one click, or skip
+4. **Record something** — starts the recorder
+5. **Add it to the flow**
+6. **Run it**
 
-2. Open the web app. Locally, any static server works:
+The command in step 1 pipes the agent straight into a scriptblock:
 
-   ```bash
-   npx --yes serve . -l 4321
-   ```
+```powershell
+& ([scriptblock]::Create((irm https://your-app.vercel.app/agent/mouseflow-agent.ps1))) -AllowOrigin https://your-app.vercel.app
+```
 
-3. The status pill turns green. Press **Start recording**, do the thing, press **Stop**.
-4. Press **Play** on the recording, or **Add** it to the flow and press **Run flow**.
+Nothing is downloaded, unblocked, or exempted from the execution policy — but see
+[the tradeoff](#the-one-liner-tradeoff). To run from a file instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\mouseflow-agent.ps1 -AllowOrigin https://your-app.vercel.app
+```
+
+Locally, any static server works: `npx --yes serve . -l 4321`
 
 Hold <kbd>Esc</kbd> at any point during replay to abort. The agent releases any held mouse
 button when it aborts, so you never get left mid-drag.
+
+### Autostart
+
+Step 3 writes `MouseFlowAgent.cmd` into your Startup folder, so the agent is already running
+next time you log in and onboarding never happens again. It needs no admin rights, and
+deleting that file undoes it.
+
+Two deliberate restrictions, because a web page asking a local service to create a persistent
+launcher is exactly the shape of an attack:
+
+- **The command is built only from the agent's own launch arguments.** Nothing from the HTTP
+  request reaches the file, so a hostile page cannot turn this into "run *my* script at logon".
+- **It is refused unless `-AllowOrigin` is pinned**, and refused when the agent was started by
+  pipe, since there is then no local file for the launcher to point at. The panel detects both
+  cases and offers the file download instead.
+
+### The one-liner tradeoff
+
+`irm … | iex` is the fastest path — one copy, one paste — and it is what Rust, Chocolatey, uv
+and others use. It also trains people to pipe remote code into a shell, and it means the script
+is re-fetched on every start, so whatever is at that URL runs. That is fine when the URL is
+your own deployment and you trust your own DNS and hosting; it is not a pattern to use with a
+URL someone sent you. The download path exists for anyone who would rather read the file first,
+and is the only path that supports autostart.
 
 ## Deploying
 
@@ -107,6 +141,8 @@ Loopback only. All responses carry CORS plus `Access-Control-Allow-Private-Netwo
 | `POST` | `/replay` | `{ok}` — body is a flow (below) |
 | `GET` | `/replay/status` | `{playing, step, steps, pass, passes, flowPass, flowPasses, index, total}` |
 | `POST` | `/replay/abort` | `{ok}` |
+| `POST` | `/autostart/enable` | `{ok}` — writes the Startup launcher, or `409` with the reason |
+| `POST` | `/autostart/disable` | `{ok}` — removes it |
 
 Flow body:
 
