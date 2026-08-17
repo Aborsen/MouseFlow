@@ -70,21 +70,31 @@ async function activeTab() {
   return tab;
 }
 
-// Content script is injected on demand, and re-injected after a navigation wipes it.
+/* Injected into EVERY frame, not just the top one.
+ *
+ * Excel Online, Google Docs, Teams and most embedded editors put the actual application
+ * inside nested iframes. Injecting only the main frame meant none of them were ever
+ * instrumented: clicks in the grid were never captured, and the drawn cursor went into a
+ * shell document the user could not see it in. This was the real cause behind several
+ * failures blamed on capture, on text, and on the cursor.
+ *
+ * The script's own `__mouseflowContent` guard makes re-injection a no-op in the page, so
+ * this is cheap enough to call before every step and removes the stale-ping race that
+ * the previous version could lose after a navigation.
+ */
 async function ensureContent(tabId) {
-  try {
-    const pong = await chrome.tabs.sendMessage(tabId, { mf: 'ping' });
-    if (pong && pong.ok) return;
-  } catch (_) {
-    // not there yet
-  }
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-  await sleep(60);
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    files: ['content.js'],
+  });
 }
 
-async function send(tabId, message) {
+/* Messages go to ONE frame when we know which, because a broadcast resolves with
+ * whichever frame answers first - and in an iframed app that is usually the wrong one. */
+async function send(tabId, message, frameId) {
   await ensureContent(tabId);
-  return chrome.tabs.sendMessage(tabId, message);
+  const options = frameId == null ? undefined : { frameId };
+  return chrome.tabs.sendMessage(tabId, message, options);
 }
 
 // The drawn cursor lives in the page, so it has to be told to go away when a run ends -
@@ -147,9 +157,15 @@ function keyForTab(tabId) {
   return { key: rec.tabKeys[tabId], isNew: false };
 }
 
+// Capture starts in every frame, so a click inside an iframed app is recorded by the
+// frame that actually owns the element.
 async function ensureCapturing(tabId) {
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-  await chrome.tabs.sendMessage(tabId, { mf: 'capture/start' });
+  await ensureContent(tabId);
+  const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null);
+  const ids = frames ? frames.map((f) => f.frameId) : [0];
+  await Promise.all(ids.map((frameId) =>
+    chrome.tabs.sendMessage(tabId, { mf: 'capture/start' }, { frameId }).catch(() => {})
+  ));
 }
 
 // Appends one event, tagged with its logical tab, and computes the gap since the previous
@@ -178,11 +194,16 @@ function pushEvent(ev, tabKey) {
 
 // An event arriving from a content script. Only the focused recorded tab is trusted -
 // a background tab can still fire script-driven events, which would land out of order.
-function captureFromPage(ev, senderTabId) {
+// The sending frame travels with the event so replay can go back to that same frame.
+function captureFromPage(ev, sender) {
   if (!rec.active) return { ok: false, error: 'not recording' };
+  const senderTabId = sender && sender.tab && sender.tab.id;
   if (senderTabId !== rec.activeTabId) return { ok: true, ignored: true };
   const key = rec.tabKeys[senderTabId];
   if (key === undefined) return { ok: true, ignored: true };
+
+  const frameId = sender.frameId || 0;
+  if (frameId) ev.frame = frameId;
   return { ok: true, count: pushEvent(ev, key) };
 }
 
@@ -331,7 +352,9 @@ async function performEvent(ev, ctx) {
     return;
   }
 
-  const res = await send(ctx.current, { mf: 'replay/event', event: ev });
+  // Back to the frame that recorded it. A step captured inside an iframed app is
+  // meaningless in the shell document, and vice versa.
+  const res = await send(ctx.current, { mf: 'replay/event', event: ev }, ev.frame);
   if (!res || !res.ok) throw new Error((res && res.error) || 'no response from the page');
 }
 
@@ -427,7 +450,7 @@ function replayStatus() {
 
 /* ------------------------------------------------------- agent mode (describe) */
 
-const agent = { running: false, abort: false, goal: '', log: [], result: null };
+const agent = { running: false, abort: false, goal: '', log: [], result: null, frameId: null };
 
 // One tool call from the model, executed against the active tab.
 async function runAgentTool(name, input) {
@@ -435,9 +458,29 @@ async function runAgentTool(name, input) {
 
   switch (name) {
     case 'read_page': {
-      const res = await send(tabId, { mf: 'agent/snapshot', limit: 120 });
-      if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'could not read the page' };
-      return { ok: true, result: res.page };
+      /* Read every frame and keep the richest one.
+       *
+       * In an iframed app - Excel Online, Google Docs, Teams - the top document is a
+       * shell with almost nothing in it, so a snapshot of the main frame shows the model
+       * an empty page. Whichever frame has the most interactive elements is the app, and
+       * subsequent clicks are aimed there. */
+      await ensureContent(tabId);
+      const frames = await chrome.webNavigation.getAllFrames({ tabId }).catch(() => null);
+      const ids = frames ? frames.map((f) => f.frameId) : [0];
+
+      let best = null;
+      for (const frameId of ids) {
+        const res = await chrome.tabs
+          .sendMessage(tabId, { mf: 'agent/snapshot', limit: 120 }, { frameId })
+          .catch(() => null);
+        if (!res || !res.ok) continue;
+        const count = res.page.elements.length;
+        if (!best || count > best.count) best = { count, frameId, page: res.page };
+      }
+
+      if (!best) return { ok: false, error: 'could not read the page' };
+      agent.frameId = best.frameId || null;
+      return { ok: true, result: best.page };
     }
     case 'navigate': {
       await goTo(tabId, input.url);
@@ -455,7 +498,9 @@ async function runAgentTool(name, input) {
       const command = Object.assign({}, input, {
         action: name === 'type_text' ? 'type' : name,
       });
-      const res = await send(tabId, { mf: 'agent/act', command });
+      // Aimed at whichever frame read_page found the elements in - refs only mean
+      // anything in the frame that produced them.
+      const res = await send(tabId, { mf: 'agent/act', command }, agent.frameId);
       if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'no response from the page' };
       // A click often navigates; give the page a moment before the next read_page.
       await sleep(name === 'click' ? 500 : 150);
@@ -522,7 +567,7 @@ const ROUTES = {
     ok: true, version: VERSION, mode: 'extension',
     recording: rec.active, playing: play.active, agentRunning: agent.running,
   }),
-  'capture/event': async (msg, sender) => captureFromPage(msg.event, sender && sender.tab && sender.tab.id),
+  'capture/event': async (msg, sender) => captureFromPage(msg.event, sender),
   'record/start': (msg) => recordStart(msg.tabId),
   'record/status': () => recordStatus(),
   'record/stop': () => recordStop(),
@@ -542,7 +587,7 @@ const ROUTES = {
       return { ok: false, stage: 'tab', error: err.message };
     }
     try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+      await ensureContent(tab.id);
     } catch (err) {
       return {
         ok: false, stage: 'inject',
@@ -551,13 +596,24 @@ const ROUTES = {
       };
     }
     await sleep(80);
-    try {
-      const res = await chrome.tabs.sendMessage(tab.id, { mf: 'cursor/demo' });
-      if (!res || !res.ok) return { ok: false, stage: 'respond', error: 'the page did not answer' };
-      return { ok: true, url: res.url, viewport: res.viewport };
-    } catch (err) {
-      return { ok: false, stage: 'message', error: 'Injected, but messaging failed: ' + err.message };
+
+    // Demo in every frame. In an iframed app the top document is a shell the user cannot
+    // see the cursor in, which is exactly how Excel Online looked like a failure.
+    const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id }).catch(() => null);
+    const ids = frames ? frames.map((f) => f.frameId) : [0];
+    const answered = [];
+    for (const frameId of ids) {
+      const res = await chrome.tabs
+        .sendMessage(tab.id, { mf: 'cursor/demo' }, { frameId })
+        .catch(() => null);
+      if (res && res.ok) answered.push({ frameId, url: res.url, viewport: res.viewport });
     }
+
+    if (!answered.length) {
+      return { ok: false, stage: 'message', error: 'Injected into ' + ids.length +
+        ' frame(s), but none answered' };
+    }
+    return { ok: true, frames: ids.length, answered };
   },
   'agent/start': (msg) => agentStart(msg.goal),
   'agent/status': async () => agentStatus(),

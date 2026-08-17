@@ -5,7 +5,7 @@
   "description": "Record a flow and repeat it, or describe what you need and have it done for you.",
   "minimum_chrome_version": "127",
 
-  "permissions": ["scripting", "tabs", "storage"],
+  "permissions": ["scripting", "tabs", "storage", "webNavigation"],
 
   "host_permissions": ["<all_urls>", "https://api.anthropic.com/*"],
 

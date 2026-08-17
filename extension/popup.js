@@ -203,13 +203,18 @@ $('selftest').addEventListener('click', async (ev) => {
   ev.preventDefault();
   $('rec-note').textContent = 'Testing…';
   const res = await ask('selftest');
-  if (res.ok) {
-    $('rec-note').textContent = 'Cursor drawn on ' + res.url.replace(/^https?:\/\//, '').slice(0, 40) +
-      ' (' + res.viewport + ').\nIf you did not see it move, tell me — the page is reachable, so the ' +
-      'problem is the drawing, not the connection.';
-  } else {
+  if (!res.ok) {
     $('rec-note').textContent = 'Failed at the "' + res.stage + '" stage:\n' + res.error;
+    return;
   }
+  // Frame count is the useful number here: an iframed app like Excel Online reports
+  // several, and the cursor should appear in the one showing the document.
+  const where = res.answered
+    .map((f) => (f.frameId ? 'frame ' + f.frameId : 'main') + ' · ' +
+      f.url.replace(/^https?:\/\//, '').split('/')[0] + ' ' + f.viewport)
+    .join('\n');
+  $('rec-note').textContent = 'Reachable in ' + res.answered.length + ' of ' + res.frames +
+    ' frame(s):\n' + where;
 });
 
 $('copy-log').addEventListener('click', async (ev) => {
