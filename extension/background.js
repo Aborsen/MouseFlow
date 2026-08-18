@@ -18,9 +18,12 @@
 import { runGoal } from './agent.js';
 import {
   skillFromRecording, skillFromRun, importSkills, exportSkill, exportMany, fillGoal, flowFor,
+  publishLink,
 } from './skills.js';
 
 const VERSION = '0.10.0';
+// Where the gallery lives. The same deployment that serves the shared Claude key.
+const APP_URL = 'https://mouse-agent.vercel.app';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -1250,6 +1253,17 @@ const ROUTES = {
   },
   'skills/delete': async (msg) => {
     await putSkills((await listSkills()).filter((s) => s.id !== msg.id));
+    return { ok: true };
+  },
+  /* Publishing opens the gallery page with the skill in the fragment, rather than posting from
+   * here. The page holds the session - and a fragment never reaches a server, so the skill does not
+   * travel through a request log on its way to being published. */
+  'skills/publish': async (msg) => {
+    const skills = await listSkills();
+    const skill = skills.find((s) => s.id === msg.id);
+    if (!skill) throw new Error('that skill is no longer here');
+    const url = publishLink(skill, APP_URL);
+    await chrome.tabs.create({ url, active: true });
     return { ok: true };
   },
   'skills/export': async (msg) => {

@@ -262,6 +262,25 @@ function cleanParams(params) {
     }));
 }
 
+/* ------------------------------------------------------------------- to the gallery */
+
+/* A skill handed to the gallery page through the URL FRAGMENT.
+ *
+ * A fragment is never sent to a server, so a skill on its way to being published does not pass
+ * through a request log on the way, and the extension needs no session of its own - the page is
+ * already signed in, and it does the publishing.
+ *
+ * base64url rather than plain base64 because this ends up in a URL, where + / and = have meanings.
+ */
+export function publishLink(skill, appUrl) {
+  const json = exportSkill(skill);
+  const bytes = new TextEncoder().encode(json);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const base64url = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return String(appUrl).replace(/\/$/, '') + '/gallery.html#publish=' + base64url;
+}
+
 /* --------------------------------------------------------------------------- running */
 
 // What a recorded skill needs to become a flow the replay engine understands.

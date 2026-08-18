@@ -390,6 +390,18 @@ async function renderSkills() {
       else { show('record'); refreshRecordView(); }
     });
 
+    const publish = document.createElement('button');
+    publish.textContent = 'Publish';
+    publish.title = 'Open the gallery to publish this skill for others';
+    publish.addEventListener('click', async () => {
+      const res2 = await ask('skills/publish', { id: skill.id });
+      if (!res2 || !res2.ok) {
+        $('skills-note').textContent = (res2 && res2.error) || 'could not open the gallery';
+        return;
+      }
+      $('skills-note').textContent = 'Opened the gallery — sign in there and press Publish.';
+    });
+
     const share = document.createElement('button');
     share.textContent = 'Share';
     share.title = 'Copy this skill as text — paste it to anyone with the extension';
@@ -415,7 +427,7 @@ async function renderSkills() {
       renderSkills();
     });
 
-    tools.append(run, share, del);
+    tools.append(run, share, publish, del);
     item.insertBefore(meta, item.firstChild);
     item.insertBefore(name, item.firstChild);
     name.after(kind);
@@ -682,6 +694,7 @@ $('btn-clear-key').addEventListener('click', async () => {
 
 (async () => {
   $('open-app').href = APP_URL;
+  $('skills-gallery').href = APP_URL + '/gallery.html';
   chrome.action.setBadgeText({ text: '' }).catch(() => {});
 
   const [{ apiKey }, session, ping] = await Promise.all([

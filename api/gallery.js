@@ -34,6 +34,9 @@ function cors(req, res) {
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
+  /* Still no Allow-Credentials. The page does not need it - it is same-origin, so CORS does not apply
+   * to it at all - and the extension sends an explicit header rather than an ambient cookie. Not
+   * setting it is what keeps a cross-site page from spending someone's session. */
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
@@ -46,14 +49,25 @@ const fail = (res, status, message) =>
  * place: if Neon Auth says the session is good, it is, and if it says nothing then neither does this
  * route. */
 async function caller(req) {
+  if (!AUTH_BASE) return null;
+
+  /* Two ways in, because there are two callers.
+   *
+   * The page is same-origin (auth is proxied through /api/auth/*), so the browser simply sends the
+   * session cookie and nothing needs to handle a token at all. The extension has no cookie for this
+   * site, so it sends the token explicitly. Both end up asking the same question of the same issuer.
+   */
   const header = String(req.headers.authorization || '');
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  if (!token || !AUTH_BASE) return null;
+  const bearer = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const cookie = String(req.headers.cookie || '');
+  if (!bearer && !cookie.includes('session_token')) return null;
 
   let res;
   try {
     res = await fetch(AUTH_BASE + '/get-session', {
-      headers: { authorization: 'Bearer ' + token, cookie: 'better-auth.session_token=' + token },
+      headers: bearer
+        ? { authorization: 'Bearer ' + bearer, cookie: 'better-auth.session_token=' + bearer }
+        : { cookie },
     });
   } catch (_) {
     return null;
