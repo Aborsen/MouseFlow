@@ -1,0 +1,16 @@
+{
+  "name": "mouseflow-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "MouseFlow web app: static PWA plus the serverless routes behind the shared key and the skill gallery. The HTTP driver serves the functions; pg is dev-only, for the migration runner, which needs arbitrary SQL.",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
+  },
+  "scripts": {
+    "migrate": "node scripts/migrate.mjs"
+  },
+  "devDependencies": {
+    "pg": "^8.13.1"
+  }
+}
