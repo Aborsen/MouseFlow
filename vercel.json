@@ -38,5 +38,10 @@
       "source": "/api/auth/(.*)",
       "destination": "/api/auth?authpath=$1"
     }
-  ]
+  ],
+  "functions": {
+    "api/claude.js": {
+      "maxDuration": 60
+    }
+  }
 }

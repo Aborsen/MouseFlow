@@ -100,6 +100,9 @@ const MAX_WAVES = 10;
  * export or a model writing a report; the poll interval is a screenshot from loopback, which costs
  * nothing but a little disk-free memory. */
 const SETTLE_MAX_MS = 120000;
+/* Longer than the server's own ceiling, so a slow-but-arriving answer is not thrown away by the client
+ * that asked for it. Shorter than forever, so a hung request is reported rather than waited on. */
+const MODEL_TIMEOUT_MS = 75000;
 const SETTLE_POLL_MS = 1500;
 /* Two consecutive quiet looks, so a caret blinking between frames does not read as movement. */
 const SETTLE_QUIET_FRAMES = 2;
@@ -420,6 +423,11 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
   for (let turn = 0; turn < WAVE_TURNS; turn++) {
     if (isAborted()) return { done: false, stepNo };
 
+    /* Counted before anything is attempted, so a failure in the screenshot or the model call is
+     * attributed to the step it happened on rather than to the one before it. */
+    stepNo++;
+    onEvent({ type: 'turn', n: stepNo, wave, inWave: turn + 1, of: WAVE_TURNS });
+
     let shot;
     try {
       shot = await agentCall(base, '/shot');
@@ -453,12 +461,18 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
       ],
     });
 
+    /* A vision turn is a slow request - a screenshot to read, a decision to make - and it goes through
+     * a serverless function, so it can be cut off at the edge as well as by the network. Given its own
+     * abort rather than left to hang: a run that stops reporting is worse than one that says why. */
+    const cutoff = new AbortController();
+    const timer = setTimeout(() => cutoff.abort(), MODEL_TIMEOUT_MS);
     let res;
     try {
       res = await fetch('/api/claude', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
+        signal: cutoff.signal,
         body: JSON.stringify({
           model: 'claude-opus-5',
           max_tokens: 2000,
@@ -468,14 +482,43 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
         }),
       });
     } catch (err) {
-      return done(stepNo, { ok: false, error: 'Could not reach the MouseFlow server.', steps });
+      clearTimeout(timer);
+      return done(stepNo, {
+        ok: false,
+        error: err && err.name === 'AbortError'
+          ? 'The model did not answer within ' + Math.round(MODEL_TIMEOUT_MS / 1000) + 's on step ' +
+            stepNo + '. Try again — and if it keeps happening, the screen may be too busy to read ' +
+            'quickly; close what you do not need.'
+          : 'Could not reach the MouseFlow server on step ' + stepNo +
+            '. Check the connection and try again.',
+        steps,
+      });
     }
+    clearTimeout(timer);
 
     const text = await res.text();
     if (!res.ok) {
-      let message = 'The model refused: ' + res.status;
-      try { message = JSON.parse(text).error.message || message; } catch (_) {}
-      return done(stepNo, { ok: false, error: message, steps });
+      /* Every one of these has a different thing to do about it, and "the model refused: 504" told the
+       * user nothing they could act on - which is how a run that stopped on step one looked like a run
+       * that had simply not happened. */
+      let detail = '';
+      try { detail = JSON.parse(text).error.message || ''; } catch (_) { /* not JSON, e.g. an edge page */ }
+      const advice = res.status === 401
+        ? 'Your session has expired. Reload this page and sign in again.'
+        : res.status === 413
+          ? 'That step was too large to send. It usually means the screen has grown very detailed; ' +
+            'closing a window or two makes the picture smaller.'
+          : res.status === 429
+            ? 'The shared demo key is rate limited. Wait a minute, or add your own Anthropic key.'
+            : res.status === 504 || res.status === 502
+              ? 'The request took longer than the server allows. Try again; a quieter screen reads faster.'
+              : '';
+      return done(stepNo, {
+        ok: false,
+        error: 'Step ' + stepNo + ' failed (HTTP ' + res.status + ')' +
+          (detail ? ': ' + detail : '') + (advice ? ' ' + advice : ''),
+        steps,
+      });
     }
 
     let answer;
@@ -488,9 +531,6 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
 
     const said = blocks.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
     if (said) onEvent({ type: 'text', text: said });
-
-    stepNo++;
-    onEvent({ type: 'turn', n: stepNo, wave, inWave: turn + 1, of: WAVE_TURNS });
 
     const uses = blocks.filter((b) => b.type === 'tool_use');
     if (!uses.length) {

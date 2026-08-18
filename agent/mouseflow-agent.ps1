@@ -244,6 +244,12 @@ namespace MouseFlow
         public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
         [DllImport("user32.dll")]
         public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint attachTo, uint attachFrom, bool attach);
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hWnd);
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
         /* Windows Store apps keep hidden windows around that are visible by every other measure. Asking
            the compositor whether one is "cloaked" is the only way to tell them from real ones, and
            without it the list is half phantoms. */
@@ -315,7 +321,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.3.0";
+        public const string Version = "0.3.1";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1018,17 +1024,41 @@ namespace MouseFlow
             if (found == IntPtr.Zero) return "no open window matches that";
 
             if (Native.IsIconic(found)) Native.ShowWindow(found, Native.SW_RESTORE);
-            if (!Native.SetForegroundWindow(found))
+
+            /* Windows refuses SetForegroundWindow from a process that is not itself in front. The trick
+             * that is everywhere on the internet - tap ALT to release the foreground lock - is a real
+             * keystroke, and ALT is not a harmless one: in Outlook and the rest of Office it opens the
+             * ribbon key tips, so the next text typed is read as accelerator keys and vanishes. A window
+             * that came to the front by that route was a window about to swallow the message.
+             *
+             * Attaching to the target's input queue asks for the same permission without pressing
+             * anything. Detached again immediately: leaving two threads' input queues joined makes each
+             * one's stalls the other's.
+             */
+            uint targetPid;
+            uint targetThread = Native.GetWindowThreadProcessId(found, out targetPid);
+            uint self = Native.GetCurrentThreadId();
+            bool attached = targetThread != 0 && targetThread != self &&
+                Native.AttachThreadInput(self, targetThread, true);
+            try
             {
-                SendVk(0x12, false);            // ALT down
-                SendVk(0x12, true);             // ALT up - releases the foreground lock
-                Thread.Sleep(30);
-                if (!Native.SetForegroundWindow(found))
-                {
-                    return "that window would not come to the front - click it on the taskbar instead";
-                }
+                Native.BringWindowToTop(found);
+                Native.SetForegroundWindow(found);
             }
+            finally
+            {
+                if (attached) Native.AttachThreadInput(self, targetThread, false);
+            }
+
             Thread.Sleep(250);                  // let it paint before the next screenshot
+
+            /* Checked rather than assumed. Windows can decline all of this - a full-screen app, an
+             * elevated window - and reporting success while the wrong window has focus is how typing
+             * ends up somewhere nobody asked for. */
+            if (Native.GetForegroundWindow() != found)
+            {
+                return "that window would not come to the front - click it on the taskbar instead";
+            }
             return null;
         }
 
