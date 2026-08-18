@@ -7,16 +7,42 @@
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body {
-    width: 320px;
+    /* Fixed, not content-sized. Chrome sizes a popup to its content, so Record, Create, Skills and
+       Gallery were four different heights and the window - and the rail inside it - jumped on every
+       move between them. One height, chosen for the tallest screen, and the pane scrolls.
+
+       560px is inside Chrome's 600px popup ceiling; asking for more would be silently clipped rather
+       than honoured. The width covers the rail so the content keeps the room it had before it. */
+    width: 366px;
+    height: 560px;
     margin: 0;
     padding: 0;
     display: flex;
     align-items: stretch;
+    overflow: hidden;
     font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
     background: Canvas;
     color: CanvasText;
   }
-  #pane { flex: 1 1 auto; min-width: 0; padding: 14px; }
+  #pane {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 14px;
+    overflow-y: auto;
+    /* Room for the scrollbar kept whether or not it is there, so a long screen and a short one line
+       their content up in the same place instead of shifting sideways. */
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  /* The rail is the fixed part: it stays put while the pane moves under it. */
+  #rail { overflow: hidden; }
+
+  /* The wall has little on it, and at a fixed height that little would sit in the top corner of an
+     otherwise empty window. Centred instead - and, as everywhere else here, `hidden` has to be spelled
+     out, because it is only a UA display:none and any author display rule beats it. */
+  #gate { display: flex; flex-direction: column; justify-content: center; min-height: 100%; }
+  #gate[hidden], #pane > section[hidden] { display: none !important; }
 
   /* The rail. Same idea as the app's sidebar collapsed to icons - one navigation, two widths. */
   #rail {

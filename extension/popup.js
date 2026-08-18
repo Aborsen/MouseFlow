@@ -69,6 +69,9 @@ function show(which) {
   /* The rail is the navigation, so it has to agree with what is showing - including on the wall,
    * where there is nothing to navigate to and it is not there at all. */
   $('rail').hidden = which === 'gate';
+  // Each screen starts at its own top. Carrying the last one's scroll position over lands the user
+  // halfway down a page they have not seen yet.
+  $('pane').scrollTop = 0;
   for (const button of document.querySelectorAll('.rail-btn')) {
     button.classList.toggle('on', button.dataset.go === which);
   }
