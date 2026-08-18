@@ -394,6 +394,27 @@ export function mountSkills(root) {
     }));
     foot.appendChild(Object.assign(document.createElement('span'), { className: 'g-spacer' }));
 
+    /* Run, but only for the half that can. A `desktop` flow is screen coordinates and belongs to the
+     * local agent; a `web` flow points at page elements and belongs to the extension. Offering the wrong
+     * one is a button that does something meaningless. */
+    if (flow.source === 'desktop') {
+      const open = document.createElement('button');
+      open.className = 'btn btn--sm';
+      open.textContent = 'Open in Desktop';
+      open.title = 'Put this in the Desktop console, ready to play on this computer';
+      open.addEventListener('click', () => {
+        dispatchEvent(new CustomEvent('mouseflow:adopt', { detail: flow }));
+        location.hash = '#desktop';
+      });
+      foot.appendChild(open);
+    } else {
+      const note = document.createElement('span');
+      note.className = 'muted';
+      note.textContent = 'Run it from the extension';
+      note.title = 'This one aims at page elements, so the extension is the half that can replay it';
+      foot.appendChild(note);
+    }
+
     const copy = document.createElement('button');
     copy.className = 'btn btn--sm';
     copy.textContent = 'Copy';

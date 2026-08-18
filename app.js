@@ -309,10 +309,43 @@ function scheduleHealth() {
 
 /* ------------------------------------------------------------------ recording */
 
+/* Which applications you were in while recording, in the order you first touched them.
+ *
+ * A desktop recording is otherwise a list of coordinates: "Recording 3, 14 clicks" tells nobody what it
+ * does, which is why these recordings never became skills worth keeping. The agent already knows which
+ * window is in front, and this poll is already running - so the context comes for free, and a saved
+ * skill can say "Outlook (PWA), Excel" instead of nothing.
+ *
+ * Sampled once a second rather than per event: an application you passed through for half a second is
+ * not what the flow is about.
+ */
+let recordWindows = [];
+let windowSampler = null;
+
+async function sampleWindow() {
+  try {
+    const seen = await agentReq('/windows', { timeout: 2000 });
+    const front = (seen.windows || []).find((w) => w.active);
+    if (!front) return;
+    const label = front.title || front.process;
+    if (!label) return;
+    // Kept once, in first-touched order. Alt-tabbing back and forth should not fill the list.
+    if (!recordWindows.some((w) => w.title === label)) {
+      recordWindows.push({ title: label, process: front.process || '' });
+    }
+  } catch (_) {
+    // An agent too old to list windows records without the context, exactly as before.
+  }
+}
+
 function startRecordPolling() {
   $('#rec-idle').hidden = true;
   $('#rec-live').hidden = false;
   clearInterval(recordTimer);
+  recordWindows = [];
+  clearInterval(windowSampler);
+  windowSampler = setInterval(sampleWindow, 1000);
+  sampleWindow();
   recordTimer = setInterval(async () => {
     try {
       const s = await agentReq('/record/status', { timeout: 2500 });
@@ -328,6 +361,8 @@ function startRecordPolling() {
 function stopRecordPolling() {
   clearInterval(recordTimer);
   recordTimer = null;
+  clearInterval(windowSampler);
+  windowSampler = null;
   $('#rec-idle').hidden = false;
   $('#rec-live').hidden = true;
   $('#rec-count').textContent = '0';
@@ -354,17 +389,31 @@ async function endRecording() {
       toast('Nothing was captured.', 'bad');
       return;
     }
-    addRecording('Recording ' + (state.recordings.length + 1), events);
+    /* Named after what you were working in, not after how many recordings there are. "Outlook (PWA)"
+     * is a thing you can find again in a week; "Recording 3" is not. */
     const s = summarize(events);
-    toast(s.count + ' events captured (' + fmtMs(s.duration) + ')', 'good');
+    const where = recordWindows.map((w) => w.title);
+    const shortest = where.length
+      ? where[0].split(/\s+[-\u2013\u2014|]\s+/)[0].slice(0, 40)
+      : '';
+    const name = shortest
+      ? shortest + ' \u00b7 ' + s.clicks + ' click' + (s.clicks === 1 ? '' : 's')
+      : 'Recording ' + (state.recordings.length + 1);
+    addRecording(name, events, where);
+    toast(s.count + ' events captured (' + fmtMs(s.duration) + ')' +
+      (where.length ? ' in ' + where.length + ' window' + (where.length === 1 ? '' : 's') : ''), 'good');
   } catch (err) {
     stopRecordPolling();
     toast('Could not stop recording: ' + err.message, 'bad');
   }
 }
 
-function addRecording(name, events) {
-  state.recordings.push({ id: uid(), name, created: new Date().toISOString(), events });
+function addRecording(name, events, windows) {
+  state.recordings.push({
+    id: uid(), name, created: new Date().toISOString(), events,
+    // Where it happened, for naming it and for saying what a skill made from it actually does.
+    windows: Array.isArray(windows) ? windows : [],
+  });
   save();
   renderLibrary();
   setAgentUi();
@@ -404,6 +453,11 @@ function renderLibrary() {
       h('div', { class: 'rec-tools' }, [
         h('button', { class: 'btn btn--ghost btn--sm', type: 'button', text: 'Play', onclick: () => playOne(rec) }),
         h('button', { class: 'btn btn--ghost btn--sm', type: 'button', text: 'Add', onclick: () => addToFlow(rec.id) }),
+        h('button', {
+          class: 'btn btn--ghost btn--sm', type: 'button', text: 'Save as skill',
+          title: 'Keep this on your account under a name, ready to run again or publish',
+          onclick: () => saveAsSkill(rec),
+        }),
         h('button', { class: 'btn btn--ghost btn--sm', type: 'button', text: 'Export', onclick: () => exportRec(rec) }),
         h('button', {
           class: 'btn btn--ghost btn--sm', type: 'button', text: 'Delete',
@@ -422,6 +476,92 @@ function renderLibrary() {
     ]));
   }
 }
+
+/* A recording becomes a skill.
+ *
+ * The extension has always been able to do this with a browser recording; a desktop recording could only
+ * be exported to a file, so the fastest way anyone has of building a library - just do the thing once -
+ * stopped at the edge of this half. Now both halves feed the same list.
+ *
+ * Pushed straight to the account rather than kept locally: a skill that lives in one browser is a skill
+ * nobody else can run, and publishing to the gallery starts from the account.
+ */
+async function saveAsSkill(rec) {
+  const s = summarize(rec.events);
+  const where = (rec.windows || []).map((w) => w.title).filter(Boolean);
+  const name = prompt('Name this skill', rec.name);
+  if (name === null) return;
+
+  const described = 'Repeats ' + s.count + ' recorded actions' +
+    (s.clicks ? ' (' + s.clicks + ' click' + (s.clicks === 1 ? '' : 's') + ')' : '') +
+    ' over ' + fmtMs(s.duration) +
+    (where.length ? ', in ' + where.slice(0, 3).join(', ') : '') + '.';
+
+  const flow = {
+    id: 'dr_' + rec.id,
+    /* `desktop`, which decides who can run it: these are screen coordinates, so the extension must not
+     * offer to replay them in a page - it would click at meaningless positions. */
+    source: 'desktop',
+    kind: 'recorded',
+    name: (name || rec.name).slice(0, 80),
+    description: described.slice(0, 400),
+    origins: where.slice(0, 12),
+    created: rec.created,
+    payload: {
+      version: 1,
+      kind: 'recorded',
+      agent: 'desktop',
+      name: (name || rec.name).slice(0, 80),
+      description: described.slice(0, 400),
+      events: rec.events,
+      windows: rec.windows || [],
+      created: rec.created,
+    },
+  };
+
+  try {
+    const res = await fetch('/api/sync', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ flows: [flow] }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) throw new Error((body && body.error && body.error.message) || 'HTTP ' + res.status);
+    const problems = (body && body.problems) || [];
+    if (problems.length) throw new Error(problems.join('; '));
+    toast('Saved as a skill. It is in Skills, on this and any other browser you sign in from.', 'good');
+  } catch (err) {
+    toast('Could not save it as a skill: ' + err.message, 'bad');
+  }
+}
+
+/* The way back: a desktop skill, from Skills or from the gallery, into this console ready to play.
+ *
+ * A custom event rather than an import, because Skills is a module and this console is not - and because
+ * the only thing they need to agree on is the shape of a flow. */
+addEventListener('mouseflow:adopt', (event) => {
+  const flow = event.detail;
+  if (!flow || !flow.payload || !Array.isArray(flow.payload.events)) {
+    toast('That skill has no recorded actions to play.', 'bad');
+    return;
+  }
+  if (state.recordings.some((r) => r.id === 'from_' + flow.id)) {
+    toast('That one is already here, in Recordings.', 'good');
+    return;
+  }
+  state.recordings.push({
+    id: 'from_' + flow.id,
+    name: flow.name || 'From a skill',
+    created: new Date().toISOString(),
+    events: flow.payload.events,
+    windows: flow.payload.windows || [],
+  });
+  save();
+  renderLibrary();
+  setAgentUi();
+  toast('"' + (flow.name || 'It') + '" is in Recordings, ready to play.', 'good');
+});
 
 function exportRec(rec) {
   const safe = rec.name.replace(/[^\w\-. ]+/g, '_').trim() || 'recording';
