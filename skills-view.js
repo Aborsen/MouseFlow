@@ -4,11 +4,17 @@
  * keep, read and pass them around from a full window rather than a 320px popup: paste one in, look at
  * what it actually does, copy it out, send it to the gallery.
  *
- * What it deliberately does NOT claim: these are the skills stored HERE, in this browser's local
- * storage for this site. It cannot see into the extension - a page and an extension have separate
- * storage, by design - so a skill saved in the extension appears here only once it is synced through
- * the account. Until that exists, the honest description is "kept on this page", and that is what it
- * says.
+ * Two sources, kept visibly apart:
+ *
+ *   the account   flows synced from the extension and from the desktop agent. Each carries the half
+ *                 that made it, because that decides what can run it: a `web` flow points at page
+ *                 elements and only the extension can replay it, a `desktop` flow points at screen
+ *                 coordinates and only the agent can.
+ *
+ *   this page     anything pasted in directly. Local storage for this site, nothing more.
+ *
+ * A page and an extension cannot see each other's storage - a browser guarantee, not an oversight -
+ * so the account is the only place the two halves meet.
  */
 
 const STORE = 'mouseflow.skills';
@@ -91,8 +97,8 @@ export function mountSkills(root) {
       <div>
         <h2 class="card-title">Skills</h2>
         <p class="g-lede">
-          Kept on this page. A skill is made in the extension — this is where you read one properly,
-          pass it on, or paste one in from the gallery.
+          Your flows from both halves — the extension and the desktop agent. A skill is made in one of
+          them; this is where you read one properly, pass it on, or paste one in.
         </p>
       </div>
       <div class="g-row s-tools">
@@ -100,6 +106,7 @@ export function mountSkills(root) {
         <button class="btn btn--sm btn--ghost s-copy" type="button">Copy all</button>
       </div>
     </div>
+    <div class="s-account"></div>
     <textarea class="s-box" placeholder="Paste a skill here, then press Add" hidden></textarea>
     <div class="g-row s-boxrow" hidden>
       <button class="btn btn--primary btn--sm s-add" type="button">Add</button>
@@ -110,6 +117,7 @@ export function mountSkills(root) {
   `;
 
   const el = {
+    account: root.querySelector('.s-account'),
     paste: root.querySelector('.s-paste'),
     copy: root.querySelector('.s-copy'),
     box: root.querySelector('.s-box'),
@@ -162,6 +170,161 @@ export function mountSkills(root) {
       say('The clipboard was blocked. Open one and use Copy on it instead.', 'bad');
     }
   });
+
+  /* What the account holds. Auth is same-origin (api/auth.js), so this is a plain request carrying the
+   * cookie - there is no token handling on this side at all. */
+  let me = null;
+  let remote = { flows: [], runs: [] };
+
+  async function api(url, options) {
+    const res = await fetch(url, Object.assign({ credentials: 'same-origin' }, options));
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* a status is still an answer */ }
+    return { ok: res.ok, status: res.status, body };
+  }
+
+  async function loadAccount() {
+    const session = await api('/api/auth/get-session');
+    me = session.ok && session.body && session.body.user ? session.body.user : null;
+    if (me) {
+      const sync = await api('/api/sync');
+      remote = sync.ok && sync.body
+        ? { flows: sync.body.flows || [], runs: sync.body.runs || [] }
+        : { flows: [], runs: [] };
+    } else {
+      remote = { flows: [], runs: [] };
+    }
+    renderAccount();
+    render();
+  }
+
+  function renderAccount() {
+    el.account.innerHTML = '';
+    const note = document.createElement('div');
+    note.className = 'g-note';
+
+    if (!me) {
+      note.append(
+        Object.assign(document.createElement('strong'), { textContent: 'Not signed in' }),
+        Object.assign(document.createElement('div'), {
+          className: 'muted',
+          textContent: 'Sign in to see the flows on your account and to connect the extension.',
+        }),
+      );
+      el.account.appendChild(note);
+      return;
+    }
+
+    const web = remote.flows.filter((f) => f.source === 'web').length;
+    const desk = remote.flows.filter((f) => f.source === 'desktop').length;
+    note.append(
+      Object.assign(document.createElement('strong'), {
+        textContent: 'Signed in as ' + (me.name || me.email),
+      }),
+      Object.assign(document.createElement('div'), {
+        className: 'muted',
+        textContent: remote.flows.length
+          ? web + ' from the extension, ' + desk + ' from the desktop agent, ' +
+            remote.runs.length + ' run' + (remote.runs.length === 1 ? '' : 's') + ' logged'
+          : 'Nothing synced yet. Connect the extension below, then press Sync now in it.',
+      }),
+    );
+
+    const row = document.createElement('div');
+    row.className = 'g-row';
+
+    /* Minting shows the token exactly once, because only its hash is stored. Saying so matters: a
+     * value that cannot be shown again is worth copying now rather than later. */
+    const pair = document.createElement('button');
+    pair.className = 'btn btn--sm';
+    pair.textContent = 'Connect an extension';
+    pair.addEventListener('click', async () => {
+      pair.disabled = true;
+      const res = await api('/api/sync?issue=1', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ label: 'Chrome extension' }),
+      });
+      pair.disabled = false;
+      if (res.status !== 201 || !res.body || !res.body.token) {
+        say((res.body && res.body.error && res.body.error.message) || 'could not create a token', 'bad');
+        return;
+      }
+      const box = document.createElement('div');
+      box.className = 'g-note g-note--good';
+      box.appendChild(Object.assign(document.createElement('strong'), {
+        textContent: 'Paste this into the extension, under Skills - Account',
+      }));
+      box.appendChild(Object.assign(document.createElement('pre'), { textContent: res.body.token }));
+      box.appendChild(Object.assign(document.createElement('div'), {
+        className: 'muted',
+        textContent: 'Shown once - only its hash is stored, so it cannot be shown again. Make another ' +
+          'any time.',
+      }));
+      el.account.appendChild(box);
+      try {
+        await navigator.clipboard.writeText(res.body.token);
+        say('Token copied.', 'good');
+      } catch (_) {
+        // It is on screen either way.
+      }
+    });
+
+    const refresh = document.createElement('button');
+    refresh.className = 'btn btn--sm btn--ghost';
+    refresh.textContent = 'Refresh';
+    refresh.addEventListener('click', loadAccount);
+
+    row.append(pair, refresh);
+    note.appendChild(row);
+    el.account.appendChild(note);
+  }
+
+  function accountCard(flow) {
+    const box = document.createElement('div');
+    box.className = 'g-card';
+
+    const head = document.createElement('h3');
+    head.textContent = flow.name || 'Untitled';
+    const kind = document.createElement('span');
+    kind.className = 'g-tag g-tag--' + (flow.kind === 'created' ? 'created' : 'recorded');
+    kind.textContent = flow.kind;
+    /* The tag that decides what can run this. Shown on every row rather than only where it differs,
+     * because a missing badge reads as "unknown" rather than "the other one". */
+    const src = document.createElement('span');
+    src.className = 'g-tag g-tag--' + flow.source;
+    src.textContent = flow.source;
+    src.title = flow.source === 'web'
+      ? 'Points at page elements - run it from the extension'
+      : 'Points at screen coordinates - run it from the Desktop tab';
+    head.append(kind, src);
+
+    const foot = document.createElement('div');
+    foot.className = 'g-foot';
+    foot.appendChild(Object.assign(document.createElement('span'), {
+      textContent: 'on your account' +
+        (flow.updated ? ' - updated ' + new Date(flow.updated).toLocaleDateString() : ''),
+    }));
+    foot.appendChild(Object.assign(document.createElement('span'), { className: 'g-spacer' }));
+
+    const copy = document.createElement('button');
+    copy.className = 'btn btn--sm';
+    copy.textContent = 'Copy';
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(flow.payload, null, 2));
+        say('Copied it.', 'good');
+      } catch (_) {
+        say('The clipboard was blocked.', 'bad');
+      }
+    });
+    foot.appendChild(copy);
+
+    box.append(head, Object.assign(document.createElement('p'), {
+      textContent: flow.description || '',
+    }), foot);
+    return box;
+  }
 
   function card(skill, index) {
     const box = document.createElement('div');
@@ -239,20 +402,33 @@ export function mountSkills(root) {
     return box;
   }
 
+  const heading = (text) => Object.assign(document.createElement('h3'), {
+    className: 's-group', textContent: text,
+  });
+
   function render() {
-    const all = read();
+    const local = read();
     el.list.innerHTML = '';
-    if (!all.length) {
+
+    if (remote.flows.length) {
+      el.list.appendChild(heading('On your account'));
+      for (const flow of remote.flows) el.list.appendChild(accountCard(flow));
+    }
+    if (local.length) {
+      if (remote.flows.length) el.list.appendChild(heading('Kept on this page'));
+      local.forEach((skill, i) => el.list.appendChild(card(skill, i)));
+    }
+    if (!remote.flows.length && !local.length) {
       el.list.appendChild(Object.assign(document.createElement('p'), {
         className: 'empty',
-        textContent: 'Nothing here yet. Copy a skill from the gallery, or from the extension ' +
-          'under Skills, and paste it in.',
+        textContent: me
+          ? 'Nothing on your account yet. Connect the extension above, then press Sync now in it.'
+          : 'Nothing here yet.',
       }));
-      return;
     }
-    all.forEach((skill, i) => el.list.appendChild(card(skill, i)));
   }
 
   render();
-  return { reload: render };
+  loadAccount();
+  return { reload: loadAccount };
 }

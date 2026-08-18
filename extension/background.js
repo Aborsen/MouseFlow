@@ -21,7 +21,7 @@ import {
   publishLink,
 } from './skills.js';
 
-const VERSION = '0.11.0';
+const VERSION = '0.12.0';
 // Where the gallery lives. The same deployment that serves the shared Claude key.
 const APP_URL = 'https://mouse-agent.vercel.app';
 const KEEPALIVE_MS = 20000;
@@ -655,6 +655,166 @@ async function runSkill(msg) {
   return agentStart(fillGoal(skill, msg.values || {}));
 }
 
+/* ------------------------------------------------------------------------ sync */
+
+/* One account, so a skill made here is also there.
+ *
+ * The extension cannot hold a session: signing in inside an extension needs an OAuth client tied to
+ * its id, and an unpacked extension's id comes from its folder path - different on every machine. So
+ * the web app mints a device token, the user pastes it in once, and it goes in the Authorization
+ * header from then on. The same pairing a CLI uses, for the same reason.
+ *
+ * Sync is push-then-pull in one call, and deliberately manual rather than continuous: it is somebody
+ * else's data allowance and somebody else's battery, and a flow is not urgent. Nothing is sent until
+ * a token exists, so the unpaired extension makes no network calls at all.
+ */
+const SYNC_URL = APP_URL + '/api/sync';
+
+async function syncToken() {
+  const { syncToken: token } = await chrome.storage.local.get('syncToken');
+  return typeof token === 'string' && token.startsWith('mf_') ? token : null;
+}
+
+async function syncStatus() {
+  const token = await syncToken();
+  const { syncedAt, syncWho } = await chrome.storage.local.get(['syncedAt', 'syncWho']);
+  return { ok: true, paired: !!token, syncedAt: syncedAt || null, who: syncWho || null };
+}
+
+async function syncPair(raw) {
+  const token = String(raw || '').trim();
+  if (!token) throw new Error('paste the token from the web app');
+  if (!token.startsWith('mf_')) {
+    throw new Error('that does not look like a MouseFlow device token - it should start with mf_');
+  }
+  /* Checked against the server before it is kept, so a mistyped token fails here rather than at the
+   * next sync, when the user is no longer thinking about it. */
+  const res = await fetch(SYNC_URL, { headers: { authorization: 'Bearer ' + token } });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    throw new Error((body && body.error && body.error.message) || 'the server rejected that token');
+  }
+  const who = (body && body.you) || null;
+  await chrome.storage.local.set({ syncToken: token, syncWho: who });
+  return { ok: true, who };
+}
+
+async function syncUnpair() {
+  // Only forgotten here. Revoking it properly is done from the web app, which is where the account is.
+  await chrome.storage.local.remove(['syncToken', 'syncWho', 'syncedAt']);
+  return { ok: true };
+}
+
+/* A local skill as the account stores a flow. Everything from here is `web`: these steps point at
+ * page elements, so only the extension can replay them. */
+function flowFromSkill(skill) {
+  return {
+    id: skill.id,
+    source: 'web',
+    kind: skill.kind === 'created' ? 'created' : 'recorded',
+    name: skill.name,
+    description: skill.description || '',
+    origins: skill.origins || [],
+    created: skill.created || null,
+    payload: skill,
+  };
+}
+
+/* The runs worth keeping: what was asked for, what came back, and every step. Taken from the trace
+ * history rather than kept separately - it is already the fullest record there is. */
+async function runsToPush() {
+  const { agentTrace, agentTraceHistory = [] } = await chrome.storage.local
+    .get(['agentTrace', 'agentTraceHistory']);
+  const all = [agentTrace].concat(agentTraceHistory).filter((r) => r && r.goal && r.startedAt);
+  const seen = new Set();
+  const out = [];
+  for (const run of all) {
+    // startedAt is the only id a trace has, and it is unique per run.
+    const id = 'run_' + run.startedAt;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const result = run.result || {};
+    out.push({
+      id,
+      kind: 'agent',
+      goal: run.goal,
+      model: 'claude-opus-5',
+      outcome: !run.finished ? 'running' : result.ok ? 'ok' : result.error === 'stopped' ? 'stopped' : 'failed',
+      summary: result.summary || null,
+      error: result.ok ? null : result.error || null,
+      steps: run.steps || [],
+      extension: run.version || VERSION,
+      startedAt: run.startedAt,
+      finishedAt: run.finished ? (run.steps && run.steps.length
+        ? run.steps[run.steps.length - 1].at : run.startedAt) : null,
+    });
+  }
+  return out;
+}
+
+async function syncNow() {
+  const token = await syncToken();
+  if (!token) throw new Error('not paired yet - add a device token from the web app');
+
+  const skills = await listSkills();
+  const { syncDeleted = [] } = await chrome.storage.local.get('syncDeleted');
+
+  const push = await fetch(SYNC_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+    body: JSON.stringify({
+      flows: skills.map(flowFromSkill),
+      runs: await runsToPush(),
+      deleted: syncDeleted,
+    }),
+  });
+  const pushed = await push.json().catch(() => null);
+  if (!push.ok) {
+    throw new Error((pushed && pushed.error && pushed.error.message) || 'could not push (HTTP ' + push.status + ')');
+  }
+  // Tombstones are only needed until the server has them.
+  await chrome.storage.local.set({ syncDeleted: [] });
+
+  const pull = await fetch(SYNC_URL, { headers: { authorization: 'Bearer ' + token } });
+  const remote = await pull.json().catch(() => null);
+  if (!pull.ok) {
+    throw new Error((remote && remote.error && remote.error.message) || 'could not pull (HTTP ' + pull.status + ')');
+  }
+
+  /* Merge by id. A flow the account has and this machine does not is adopted - which is the whole
+   * point - but only if this half can run it: a desktop flow is screen coordinates and replaying it
+   * here would click at meaningless positions. It is still visible in the web app, which can. */
+  const known = new Set(skills.map((s) => s.id));
+  let adopted = 0;
+  const incoming = [];
+  for (const flow of (remote && remote.flows) || []) {
+    if (flow.source !== 'web' || known.has(flow.id) || !flow.payload) continue;
+    try {
+      const [skill] = importSkills(JSON.stringify(flow.payload));
+      skill.id = flow.id;            // keep the account's identity, so it does not re-sync as new
+      skill.name = flow.name || skill.name;
+      incoming.push(skill);
+      adopted++;
+    } catch (_) {
+      // A flow this build cannot read is left alone rather than dropped from the account.
+    }
+  }
+  if (incoming.length) await putSkills(incoming.concat(skills));
+
+  const who = (remote && remote.you) || null;
+  const at = new Date().toISOString();
+  await chrome.storage.local.set({ syncedAt: at, syncWho: who });
+
+  return {
+    ok: true,
+    pushed: { flows: pushed.flows, runs: pushed.runs, problems: pushed.problems || [] },
+    adopted,
+    desktopFlows: ((remote && remote.flows) || []).filter((f) => f.source === 'desktop').length,
+    who,
+    syncedAt: at,
+  };
+}
+
 /* --------------------------------------------------------------------- replay */
 
 async function replayStart(flow) {
@@ -1240,6 +1400,10 @@ const ROUTES = {
     return { ok: true, frames: ids.length, answered };
   },
   'skills/list': async () => ({ ok: true, skills: await listSkills() }),
+  'sync/status': () => syncStatus(),
+  'sync/pair': (msg) => syncPair(msg.token),
+  'sync/unpair': () => syncUnpair(),
+  'sync/now': () => syncNow(),
   'skills/save': (msg) => saveSkill(msg),
   'skills/run': (msg) => runSkill(msg),
   'skills/rename': async (msg) => {
@@ -1253,6 +1417,12 @@ const ROUTES = {
   },
   'skills/delete': async (msg) => {
     await putSkills((await listSkills()).filter((s) => s.id !== msg.id));
+    /* Remembered until the account has been told. Without this the next sync pulls it straight back
+     * down, and deleting anything would look broken. */
+    const { syncDeleted = [] } = await chrome.storage.local.get('syncDeleted');
+    if (!syncDeleted.includes(msg.id)) {
+      await chrome.storage.local.set({ syncDeleted: syncDeleted.concat(msg.id) });
+    }
     return { ok: true };
   },
   /* Browsing the gallery from inside the extension.

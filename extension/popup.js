@@ -64,7 +64,7 @@ function show(which) {
 
 $('go-record').addEventListener('click', () => { show('record'); refreshRecordView(); });
 $('go-create').addEventListener('click', () => { show('create'); refreshAgent(); });
-$('go-skills').addEventListener('click', () => { show('skills'); renderSkills(); });
+$('go-skills').addEventListener('click', () => { show('skills'); renderSkills(); refreshAccount(); });
 document.querySelectorAll('[data-home]').forEach((b) => b.addEventListener('click', () => show('home')));
 
 /* ------------------------------------------------------------------- settings */
@@ -436,6 +436,62 @@ async function renderSkills() {
     list.appendChild(item);
   }
 }
+
+/* The account.
+ *
+ * Pairing is a pasted token rather than a sign-in button, because an extension cannot hold a session -
+ * see the note in background.js. Syncing is a button rather than automatic: it is somebody else's
+ * data allowance, and a flow is not urgent. */
+async function refreshAccount() {
+  const s = await ask('sync/status');
+  const paired = !!(s && s.paired);
+  $('btn-pair').hidden = paired;
+  $('sync-token').hidden = paired;
+  $('btn-sync').hidden = !paired;
+  $('btn-unpair').hidden = !paired;
+  $('account-summary').textContent = paired
+    ? 'Account — ' + ((s.who && s.who.name) || 'connected') +
+      (s.syncedAt ? ', synced ' + new Date(s.syncedAt).toLocaleTimeString() : '')
+    : 'Account — not connected';
+}
+
+$('btn-pair').addEventListener('click', async () => {
+  const res = await ask('sync/pair', { token: $('sync-token').value });
+  if (!res || !res.ok) { $('sync-note').textContent = (res && res.error) || 'could not connect'; return; }
+  $('sync-token').value = '';
+  $('sync-note').textContent = 'Connected as ' + ((res.who && res.who.name) || 'you') + '. Press Sync now.';
+  refreshAccount();
+});
+
+$('btn-sync').addEventListener('click', async () => {
+  $('btn-sync').disabled = true;
+  $('sync-note').textContent = 'Syncing…';
+  const res = await ask('sync/now');
+  $('btn-sync').disabled = false;
+  if (!res || !res.ok) { $('sync-note').textContent = (res && res.error) || 'sync failed'; return; }
+
+  const bits = ['sent ' + res.pushed.flows + ' skill' + (res.pushed.flows === 1 ? '' : 's')];
+  if (res.pushed.runs) bits.push(res.pushed.runs + ' run' + (res.pushed.runs === 1 ? '' : 's'));
+  if (res.adopted) bits.push('brought back ' + res.adopted);
+  // Desktop flows are mentioned rather than hidden: they are in the account, and this half cannot
+  // run them, and saying so is better than a number that does not add up.
+  if (res.desktopFlows) bits.push(res.desktopFlows + ' desktop flow' +
+    (res.desktopFlows === 1 ? '' : 's') + ' (run those in the app)');
+  $('sync-note').textContent = bits.join(' · ') +
+    (res.pushed.problems.length ? '\n' + res.pushed.problems.join('\n') : '');
+  refreshAccount();
+  renderSkills();
+});
+
+$('btn-unpair').addEventListener('click', async () => {
+  await ask('sync/unpair');
+  $('sync-note').textContent = 'Disconnected here. Revoke the token in the app to retire it for good.';
+  refreshAccount();
+});
+
+$('account-box').addEventListener('toggle', () => {
+  if ($('account-box').open) refreshAccount();
+});
 
 /* The gallery, inside the popup.
  *

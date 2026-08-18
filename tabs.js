@@ -10,6 +10,7 @@
 
 import { mountGallery } from './gallery-view.js';
 import { mountSkills } from './skills-view.js';
+import { requireAccount } from './gate.js';
 
 const VIEWS = ['desktop', 'skills', 'gallery'];
 const mounted = {};
@@ -56,4 +57,25 @@ for (const tab of document.querySelectorAll('#tabs .tab')) {
 }
 
 addEventListener('hashchange', () => show(viewFromHash()));
+
+/* Nothing is mounted, fetched or shown until there is an account. requireAccount never resolves while
+ * signed out, so everything below this line happens for somebody identifiable. */
+const me = await requireAccount();
+
+const badge = document.getElementById('account-badge');
+if (badge) {
+  badge.hidden = false;
+  badge.textContent = me.name || me.email || 'Signed in';
+  badge.title = 'Signed in' + (me.email ? ' as ' + me.email : '') + ' — click to sign out';
+  badge.addEventListener('click', async () => {
+    await fetch('/api/auth/sign-out', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    location.href = location.origin + '/';
+  });
+}
+
 show(viewFromHash());

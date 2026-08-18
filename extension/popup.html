@@ -225,6 +225,20 @@
     from the gallery below.
   </p>
 
+  <details id="account-box">
+    <summary id="account-summary">Account — not connected</summary>
+    <p class="hint" style="margin-top:8px">
+      Connect this extension to your MouseFlow account and your skills appear in the web app too —
+      along with a log of every run. Open the app, sign in, and copy the device token from
+      <em>Skills → Connect an extension</em>.
+    </p>
+    <input id="sync-token" type="password" placeholder="mf_…">
+    <button id="btn-pair" class="wide" type="button">Connect</button>
+    <button id="btn-sync" class="wide primary" type="button" hidden>Sync now</button>
+    <button id="btn-unpair" class="wide" type="button" hidden>Disconnect</button>
+    <p id="sync-note" class="note"></p>
+  </details>
+
   <details id="gallery-box">
     <summary>Install from the gallery</summary>
     <input id="gallery-q" type="search" placeholder="Search shared skills…" autocomplete="off">

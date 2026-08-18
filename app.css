@@ -711,3 +711,34 @@ kbd {
  * #view-desktop carries .grid. Without this the tabs set the attribute correctly and every view
  * rendered at once, which looks like the tab doing nothing. */
 .view[hidden] { display: none !important; }
+
+.s-group {
+  margin: 20px 0 9px;
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #8b94a3);
+}
+.g-tag--web { background: rgba(46, 160, 67, 0.2); color: #4bbd63; }
+.g-tag--desktop { background: rgba(219, 154, 4, 0.22); color: #e0b341; }
+
+/* --------------------------------------------------------------------- the front door */
+.gated > *:not(.gate) { display: none !important; }
+.gate {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--bg, #0e1116);
+}
+.gate-card { max-width: 380px; text-align: center; }
+.gate-mark { width: 34px; height: 34px; color: #4c8dff; }
+.gate-card h1 { margin: 10px 0 8px; font-size: 22px; font-weight: 650; }
+.gate-card p { margin: 0 0 20px; color: var(--muted, #8b94a3); font-size: 14px; line-height: 1.55; }
+.gate-go { width: 100%; justify-content: center; padding: 11px; font-size: 14.5px; }
+.gate-note { min-height: 1.2em; margin: 14px 0 0 !important; font-size: 13px; }
+.gate-note--bad { color: #f85149; }
+.gate-fine { margin: 18px 0 0 !important; font-size: 12px; opacity: 0.72; }
+.pill--who { background: rgba(255,255,255,0.06); border-color: transparent; }

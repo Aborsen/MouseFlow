@@ -33,7 +33,11 @@
 </main>
 
 <script type="module">
+  /* Gated like the rest of the app. The gallery API stays publicly readable so the extension can
+   * install without being paired, but the PAGE requires an account, so browsing here is attributable. */
   import { mountGallery } from './gallery-view.js';
+  import { requireAccount } from './gate.js';
+  await requireAccount();
   mountGallery(document.getElementById('gallery-root'));
 </script>
 </body>
