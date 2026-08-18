@@ -964,3 +964,161 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
  * there was anything to put in them. Stated once, for everything in the sidebar that starts hidden. */
 .side [hidden], .side-recent[hidden], .side-stat[hidden], .side-account[hidden],
 .side-icon--bar[hidden] { display: none !important; }
+
+/* ---------- an explicit theme ----------
+ *
+ * The tokens already answer prefers-color-scheme. These let a choice override it, and are written as
+ * attribute selectors so they outrank BOTH the bare :root defaults and the media query - which a
+ * later plain :root block would not do.
+ */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f8fa;
+  --bg-raised: #ffffff;
+  --bg-inset: #eef1f4;
+  --line: #d5dae0;
+  --line-soft: #e6e9ed;
+  --text: #1c2128;
+  --text-dim: #57606a;
+  --text-faint: #808a94;
+  --accent: #0b62d6;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1116;
+  --bg-raised: #161b22;
+  --bg-inset: #0b0e13;
+  --line: #262d38;
+  --line-soft: #1d232c;
+  --text: #e6edf3;
+  --text-dim: #9aa7b4;
+  --text-faint: #6b7785;
+  --accent: #4c8dff;
+}
+
+/* ---------- my account ---------- */
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+  background: color-mix(in srgb, #000 55%, transparent);
+}
+
+.sheet[hidden] { display: none !important; }
+
+.sheet-card {
+  width: min(560px, 100%);
+  max-height: min(78vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.1rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.sheet-head h2 { margin: 0; font-size: 1.05rem; font-weight: 650; }
+
+.sheet-x {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.sheet-x:hover { background: var(--bg-inset); color: var(--text); }
+.sheet-x svg { width: 17px; height: 17px; }
+
+.sheet-body { overflow-y: auto; padding: 1rem 1.1rem 1.15rem; }
+
+.sheet-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 0.7rem 0;
+}
+
+.sheet-row > div { min-width: 0; flex: 1 1 auto; }
+.sheet-row > .btn { flex: 0 0 auto; }
+.sheet-label { display: block; font-size: 0.9rem; font-weight: 600; }
+.sheet-value { margin: 0.15rem 0 0; color: var(--text-dim); font-size: 0.9rem; word-break: break-all; }
+.sheet-note { margin: 0.2rem 0 0; color: var(--text-faint); font-size: 0.82rem; max-width: 46ch; }
+.sheet-row--danger { border-top: 1px solid var(--line-soft); margin-top: 0.5rem; padding-top: 0.9rem; }
+
+.btn--danger {
+  border-color: color-mix(in srgb, var(--bad) 55%, transparent);
+  background: color-mix(in srgb, var(--bad) 14%, transparent);
+  color: var(--bad);
+}
+
+.btn--danger:hover { background: color-mix(in srgb, var(--bad) 22%, transparent); }
+.btn--danger.is-armed { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+/* A segmented control, which is what a three-way choice with no default looks like. */
+.seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+}
+
+.seg-btn {
+  padding: 0.45rem 0.5rem;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.seg-btn:hover { color: var(--text); }
+.seg-btn.on { background: var(--bg-raised); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+
+.sheet-list { margin: 0.4rem 0 0; padding: 0; list-style: none; }
+
+.sheet-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.35rem;
+  font-size: 0.86rem;
+}
+
+.sheet-list .sheet-dev { min-width: 0; flex: 1 1 auto; }
+.sheet-list .sheet-dev span { display: block; color: var(--text-faint); font-size: 0.76rem; }
+.sheet-said { margin: 0.9rem 0 0; min-height: 1.2em; font-size: 0.85rem; color: var(--text-dim); }
+.sheet-said.is-bad { color: var(--bad); }
+.sheet-said.is-good { color: var(--good); }
+
+/* The account block belongs at the foot of the sidebar whether or not there is a Recent list above
+ * it to push it down - with no flows yet, it sat directly under the navigation. */
+.side-foot { margin-top: auto; }

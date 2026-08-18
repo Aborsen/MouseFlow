@@ -145,6 +145,170 @@ async function fillRecent() {
   document.getElementById('side-recent').hidden = false;
 }
 
+/* ------------------------------------------------------------------------------ my account */
+
+/* The theme is remembered here rather than on the account, because it is about this screen: the same
+ * person at a bright desk and on a dark laptop wants different answers. `system` is the absence of a
+ * choice, so it removes the attribute instead of setting a third value. */
+const THEME = 'mouseflow.theme';
+
+function applyTheme(choice) {
+  if (choice === 'light' || choice === 'dark') document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  for (const button of document.querySelectorAll('#sheet-theme .seg-btn')) {
+    button.classList.toggle('on', button.dataset.theme === (choice || 'system'));
+  }
+  try { localStorage.setItem(THEME, choice || 'system'); } catch (_) {}
+}
+
+let storedTheme = 'system';
+try { storedTheme = localStorage.getItem(THEME) || 'system'; } catch (_) {}
+applyTheme(storedTheme);
+
+for (const button of document.querySelectorAll('#sheet-theme .seg-btn')) {
+  button.addEventListener('click', () => applyTheme(button.dataset.theme));
+}
+
+const sheet = document.getElementById('account-panel');
+const said = document.getElementById('sheet-said');
+
+function say(message, kind) {
+  said.textContent = message || '';
+  said.classList.toggle('is-bad', kind === 'bad');
+  said.classList.toggle('is-good', kind === 'good');
+}
+
+function closeAccount() {
+  sheet.hidden = true;
+  say('');
+  disarmDelete();
+}
+
+/* What else is signed in as you, and the way to take one away. A device token is a credential, so the
+ * list of them is the only place its existence is visible - the token itself is shown once, at
+ * minting, and stored only as a hash. */
+async function loadDevices() {
+  const list = document.getElementById('sheet-devices');
+  const note = document.getElementById('sheet-devices-note');
+  list.textContent = '';
+  let body = null;
+  try {
+    const res = await fetch('/api/sync?tokens=1', { credentials: 'same-origin' });
+    body = await res.json();
+    if (!res.ok) throw new Error((body && body.error && body.error.message) || 'HTTP ' + res.status);
+  } catch (err) {
+    note.textContent = 'Could not list your devices: ' + err.message;
+    return;
+  }
+
+  const devices = (body && body.devices) || [];
+  note.textContent = devices.length
+    ? 'Extensions and agents signed in as you. Revoking one stops it syncing at once.'
+    : 'Nothing paired yet. Connect an extension from the Skills tab.';
+
+  for (const device of devices) {
+    const item = document.createElement('li');
+    const who = document.createElement('div');
+    who.className = 'sheet-dev';
+    who.appendChild(Object.assign(document.createElement('strong'), {
+      textContent: device.label || 'Device',
+    }));
+    who.appendChild(Object.assign(document.createElement('span'), {
+      textContent: device.lastUsedAt
+        ? 'last used ' + new Date(device.lastUsedAt).toLocaleString()
+        : 'never used since it was created',
+    }));
+
+    const revoke = document.createElement('button');
+    revoke.className = 'btn btn--sm btn--ghost';
+    revoke.textContent = 'Revoke';
+    revoke.addEventListener('click', async () => {
+      revoke.disabled = true;
+      const res = await fetch('/api/sync?token=' + encodeURIComponent(device.id), {
+        method: 'DELETE',
+        credentials: 'same-origin',
+      });
+      const answer = await res.json().catch(() => null);
+      if (!res.ok) {
+        revoke.disabled = false;
+        say((answer && answer.error && answer.error.message) || 'could not revoke that device', 'bad');
+        return;
+      }
+      say('Revoked. That device will have to be paired again.', 'good');
+      loadDevices();
+    });
+
+    item.append(who, revoke);
+    list.appendChild(item);
+  }
+}
+
+/* Deleting asks twice, in the same button. A confirm() is easy to click through and a second dialog
+ * is easy to lose behind the first; changing the button into the consequence is not. */
+let armed = false;
+const deleteButton = document.getElementById('sheet-delete');
+
+function disarmDelete() {
+  armed = false;
+  deleteButton.classList.remove('is-armed');
+  deleteButton.textContent = 'Delete my data';
+}
+
+deleteButton.addEventListener('click', async () => {
+  if (!armed) {
+    armed = true;
+    deleteButton.classList.add('is-armed');
+    deleteButton.textContent = 'Delete everything — press again';
+    say('This cannot be undone. Press again within a few seconds to go ahead.', 'bad');
+    setTimeout(() => { if (armed) { disarmDelete(); say(''); } }, 6000);
+    return;
+  }
+
+  deleteButton.disabled = true;
+  say('Deleting…');
+  let body = null;
+  try {
+    const res = await fetch('/api/account?erase=1', { method: 'DELETE', credentials: 'same-origin' });
+    body = await res.json();
+    if (!res.ok) throw new Error((body && body.error && body.error.message) || 'HTTP ' + res.status);
+  } catch (err) {
+    deleteButton.disabled = false;
+    disarmDelete();
+    say('Nothing was deleted: ' + err.message, 'bad');
+    return;
+  }
+
+  const gone = body.deleted || {};
+  say(gone.flows + ' flows, ' + gone.runs + ' runs and ' + gone.devices +
+    ' devices deleted' + (gone.withdrawn ? ', ' + gone.withdrawn + ' withdrawn from the gallery' : '') +
+    '. Signing out…', 'good');
+  setTimeout(signOut, 1200);
+});
+
+async function signOut() {
+  await fetch('/api/auth/sign-out', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  }).catch(() => {});
+  location.href = location.origin + '/';
+}
+
+function openAccount() {
+  sheet.hidden = false;
+  say('');
+  disarmDelete();
+  loadDevices();
+  document.getElementById('sheet-close').focus();
+}
+
+document.getElementById('sheet-close').addEventListener('click', closeAccount);
+document.getElementById('sheet-signout').addEventListener('click', signOut);
+// The backdrop closes it; a click inside the card must not.
+sheet.addEventListener('click', (event) => { if (event.target === sheet) closeAccount(); });
+addEventListener('keydown', (event) => { if (event.key === 'Escape' && !sheet.hidden) closeAccount(); });
+
 /* Nothing is mounted, fetched or shown until there is an account. requireAccount never resolves while
  * signed out, so everything below this line happens for somebody identifiable. */
 const me = await requireAccount();
@@ -155,17 +319,10 @@ if (badge) {
   badge.hidden = false;
   document.getElementById('side-name').textContent = label;
   document.getElementById('side-avatar').textContent = (label.trim()[0] || '?').toUpperCase();
-  document.getElementById('side-plan').textContent = me.email && me.name ? me.email : 'Signed out with a click';
-  badge.title = 'Signed in' + (me.email ? ' as ' + me.email : '') + ' — click to sign out';
-  badge.addEventListener('click', async () => {
-    await fetch('/api/auth/sign-out', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/json' },
-      body: '{}',
-    });
-    location.href = location.origin + '/';
-  });
+  document.getElementById('side-plan').textContent = me.email && me.name ? me.email : 'View account';
+  badge.title = 'Your account';
+  badge.addEventListener('click', openAccount);
+  document.getElementById('sheet-email').textContent = me.email || me.name || 'signed in';
 }
 
 show(viewFromHash());

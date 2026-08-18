@@ -102,6 +102,22 @@ $('rail-avatar').addEventListener('click', () => {
 
 /* ----------------------------------------------------------------------- the wall */
 
+/* This popup is read from disk every time it opens; the background worker is not - it keeps running
+ * the build it started with until the extension is reloaded. So the two can disagree, and when they
+ * do the symptom is a button that does nothing: the popup sends a command the old worker has no
+ * route for. Both halves of the check live here, because only this half can see both versions.
+ */
+const staleWorker = (res) => !!(res && typeof res.error === 'string' && /unknown command/.test(res.error));
+
+async function versionNote() {
+  const ping = await chrome.runtime.sendMessage({ mf: 'ping' }).catch(() => null);
+  if (!ping || !ping.version) return null;
+  const mine = chrome.runtime.getManifest().version;
+  if (ping.version === mine) return null;
+  return 'This extension was updated to ' + mine + ' but is still running ' + ping.version + '. ' +
+    'Open chrome://extensions and press Reload on MouseFlow.';
+}
+
 /* Signing in is pairing: one click opens the app, which is the only place a Google session can
  * live, and the token comes back on its own through the bridge content script. See bridge.js.
  *
@@ -120,9 +136,10 @@ function showWho(name) {
   $('rail-avatar').title = 'Signed in as ' + name;
 }
 
-function showGate(message) {
+async function showGate(message) {
   show('gate');
-  $('gate-note').textContent = message || '';
+  // A version mismatch explains every other failure on this screen, so it outranks any other message.
+  $('gate-note').textContent = (await versionNote()) || message || '';
   clearInterval(gatePoll);
   /* The handover happens in a tab, and finishes while the user is looking at that tab. If the popup
    * is still open when it lands, it should notice by itself rather than needing a click. */
@@ -143,7 +160,17 @@ function enter(status) {
 }
 
 $('gate-google').addEventListener('click', async () => {
-  await chrome.runtime.sendMessage({ mf: 'auth/start' });
+  const res = await chrome.runtime.sendMessage({ mf: 'auth/start' }).catch(() => null);
+  /* Reporting only what happened. Announcing "finish signing in on the tab that just opened" without
+   * checking whether a tab opened is how a dead button looks like a working one - and the button was
+   * dead, because the worker was still an older build that had never heard of auth/start. */
+  if (!res || !res.ok) {
+    $('gate-note').textContent = staleWorker(res)
+      ? 'This extension has been updated but is still running the old version. Open ' +
+        'chrome://extensions, press Reload on MouseFlow, then try again.'
+      : 'Could not open the sign-in tab: ' + ((res && res.error) || 'no answer from the extension');
+    return;
+  }
   $('gate-note').textContent = 'Finish signing in on the tab that just opened. This connects ' +
     'itself when you do — reopen this popup if it has closed.';
 });

@@ -224,6 +224,67 @@
 
 </main>
 
+
+<!-- ---------- my account ----------
+     Clicking your own name used to sign you out on the spot: a one-click, no-confirmation exit
+     behind the control people press to find out WHERE they are signed in. Now it opens this, and
+     signing out is a button inside it, next to the things you might have wanted instead. -->
+<div id="account-panel" class="sheet" hidden>
+  <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <div class="sheet-head">
+      <h2 id="sheet-title">My account</h2>
+      <button id="sheet-close" class="sheet-x" type="button" aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+             stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="sheet-body">
+      <div class="sheet-row">
+        <div>
+          <span class="sheet-label">Your email</span>
+          <p class="sheet-value" id="sheet-email">&mdash;</p>
+        </div>
+        <button id="sheet-signout" class="btn btn--sm" type="button">Sign out</button>
+      </div>
+
+      <div class="sheet-row">
+        <div>
+          <span class="sheet-label">Theme</span>
+          <p class="sheet-note">Follows your system unless you pick one.</p>
+        </div>
+      </div>
+      <div class="seg" id="sheet-theme" role="group" aria-label="Theme">
+        <button class="seg-btn" data-theme="light" type="button">Light</button>
+        <button class="seg-btn" data-theme="dark" type="button">Dark</button>
+        <button class="seg-btn" data-theme="system" type="button">System</button>
+      </div>
+
+      <div class="sheet-row">
+        <div>
+          <span class="sheet-label">Paired devices</span>
+          <p class="sheet-note" id="sheet-devices-note">Extensions and agents signed in as you.</p>
+        </div>
+      </div>
+      <ul class="sheet-list" id="sheet-devices"></ul>
+
+      <div class="sheet-row sheet-row--danger">
+        <div>
+          <span class="sheet-label">Delete my data</span>
+          <p class="sheet-note">
+            Every flow and every run, from both halves, and all paired devices. Anything you published
+            is withdrawn from the gallery. Your Google account is not ours to delete &mdash; sign out
+            to finish.
+          </p>
+        </div>
+        <button id="sheet-delete" class="btn btn--sm btn--danger" type="button">Delete my data</button>
+      </div>
+
+      <p class="sheet-said" id="sheet-said"></p>
+    </div>
+  </div>
+</div>
+
 <div id="toasts" class="toasts" aria-live="polite"></div>
 <div id="dropzone" class="dropzone"><span>Drop .mmmacro files to import</span></div>
 
