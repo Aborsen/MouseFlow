@@ -16,8 +16,11 @@
  */
 
 import { runGoal } from './agent.js';
+import {
+  skillFromRecording, skillFromRun, importSkills, exportSkill, exportMany, fillGoal, flowFor,
+} from './skills.js';
 
-const VERSION = '0.9.0';
+const VERSION = '0.10.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -569,6 +572,84 @@ async function recordStop() {
   await chrome.storage.local.set({ pending });
 
   return { ok: true, events, saved, tabs: tabCount, origins };
+}
+
+/* ---------------------------------------------------------------------- skills */
+
+/* A finished flow, kept and named. See skills.js for the format and why the two kinds differ.
+ *
+ * Local storage rather than session: a skill is meant to outlive the browser, and eventually to
+ * leave the machine entirely.
+ */
+const SKILLS_MAX = 200;
+
+async function listSkills() {
+  const { skills = [] } = await chrome.storage.local.get('skills');
+  return skills;
+}
+
+async function putSkills(skills) {
+  await chrome.storage.local.set({ skills: skills.slice(0, SKILLS_MAX) });
+}
+
+/* Saves a skill from whichever kind of flow produced it.
+ *
+ * A recording is named by the user, so it is taken as it stands. An agent run brings its goal,
+ * which is both the description and - once the variable parts are lifted out of it - the source of
+ * the skill's parameters.
+ */
+async function saveSkill(msg) {
+  const now = new Date().toISOString();
+  let skill;
+
+  if (msg.from === 'recording') {
+    const pending = (await chrome.storage.local.get('pending')).pending || [];
+    const rec = pending.find((r) => r.id === msg.id) || pending[pending.length - 1];
+    if (!rec) throw new Error('no recording to save');
+    skill = skillFromRecording(rec, now);
+  } else if (msg.from === 'run') {
+    /* The last agent run. Read from the trace, not from session storage: a skill is worth making
+     * from the run you did yesterday, and session storage does not survive the browser closing. */
+    const { agentTrace, agentTraceHistory = [] } = await chrome.storage.local
+      .get(['agentTrace', 'agentTraceHistory']);
+    const run = agentTrace && agentTrace.finished ? agentTrace : agentTraceHistory[0];
+    if (!run || !run.goal) throw new Error('no completed run to save');
+    const result = run.result || {};
+    if (!result.ok) throw new Error('that run did not succeed, so there is nothing to save yet');
+    skill = skillFromRun({ goal: run.goal, steps: result.steps || [] }, now);
+  } else {
+    throw new Error('unknown skill source ' + msg.from);
+  }
+
+  if (msg.name) skill.name = String(msg.name).slice(0, 80);
+  if (msg.description) skill.description = String(msg.description).slice(0, 400);
+
+  const skills = await listSkills();
+  skills.unshift(skill);
+  await putSkills(skills);
+  return { ok: true, skill };
+}
+
+/* Runs a skill, which means something different for each kind.
+ *
+ * A recorded skill goes to the replay engine as an ordinary flow. A created skill goes to the agent
+ * as a goal with its parameters filled in - which is the point of it: the same errand, different
+ * details. It costs an API call per step, and that is the trade for it still working when the page
+ * has moved.
+ */
+async function runSkill(msg) {
+  const skills = await listSkills();
+  const skill = skills.find((s) => s.id === msg.id);
+  if (!skill) throw new Error('that skill is no longer here');
+
+  const stamped = skills.map((s) =>
+    (s.id === skill.id ? Object.assign({}, s, { lastRun: new Date().toISOString() }) : s));
+  await putSkills(stamped);
+
+  if (skill.kind === 'recorded') {
+    return replayStart(flowFor(skill, { loop: !!msg.loop }));
+  }
+  return agentStart(fillGoal(skill, msg.values || {}));
 }
 
 /* --------------------------------------------------------------------- replay */
@@ -1154,6 +1235,39 @@ const ROUTES = {
         ' frame(s), but none answered' };
     }
     return { ok: true, frames: ids.length, answered };
+  },
+  'skills/list': async () => ({ ok: true, skills: await listSkills() }),
+  'skills/save': (msg) => saveSkill(msg),
+  'skills/run': (msg) => runSkill(msg),
+  'skills/rename': async (msg) => {
+    const skills = await listSkills();
+    const skill = skills.find((s) => s.id === msg.id);
+    if (!skill) throw new Error('that skill is no longer here');
+    if (msg.name) skill.name = String(msg.name).slice(0, 80);
+    if (msg.description != null) skill.description = String(msg.description).slice(0, 400);
+    await putSkills(skills);
+    return { ok: true, skill };
+  },
+  'skills/delete': async (msg) => {
+    await putSkills((await listSkills()).filter((s) => s.id !== msg.id));
+    return { ok: true };
+  },
+  'skills/export': async (msg) => {
+    const skills = await listSkills();
+    if (msg.id) {
+      const skill = skills.find((s) => s.id === msg.id);
+      if (!skill) throw new Error('that skill is no longer here');
+      return { ok: true, text: exportSkill(skill) };
+    }
+    if (!skills.length) throw new Error('there are no skills to export');
+    return { ok: true, text: exportMany(skills) };
+  },
+  'skills/import': async (msg) => {
+    // importSkills validates and rebuilds field by field; anything pasted in is untrusted.
+    const incoming = importSkills(msg.text);
+    const skills = await listSkills();
+    await putSkills(incoming.concat(skills));
+    return { ok: true, added: incoming.length, skills: incoming };
   },
   'agent/start': (msg) => agentStart(msg.goal),
   'agent/status': async () => agentStatus(),

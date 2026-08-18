@@ -115,6 +115,17 @@
   .opt input { margin: 2px 0 0; flex: 0 0 auto; accent-color: #4c8dff; }
   .opt span { font-size: 12px; }
   .opt em { display: block; font-style: normal; opacity: 0.6; font-size: 11.5px; margin-top: 1px; }
+
+  .tag {
+    display: inline-block; padding: 1px 6px; margin-left: 6px; border-radius: 20px;
+    font-size: 10px; font-weight: 600; vertical-align: 1px;
+  }
+  .tag-recorded { background: color-mix(in srgb, #4c8dff 22%, transparent); color: #4c8dff; }
+  .tag-created { background: color-mix(in srgb, #8957e5 24%, transparent); color: #a97bf0; }
+  .param { display: flex; gap: 6px; align-items: center; margin-top: 5px; }
+  .param label { flex: 0 0 74px; font-size: 11px; opacity: 0.7; }
+  .param input { flex: 1; padding: 4px 6px; margin: 0; font-size: 11.5px; border-radius: 5px;
+    border: 1px solid color-mix(in srgb, CanvasText 22%, transparent); background: Canvas; color: inherit; }
 </style>
 </head>
 <body>
@@ -129,6 +140,11 @@
   <button class="choice" id="go-create" type="button">
     <strong>Create the flow</strong>
     <span>Describe what you need — including what to type — and have it done for you.</span>
+  </button>
+
+  <button class="choice" id="go-skills" type="button">
+    <strong>Skills</strong>
+    <span id="skills-count">Flows you have kept, ready to run again or share.</span>
   </button>
 
   <details id="settings">
@@ -182,6 +198,29 @@
   <div class="row"><a id="open-app" href="#" target="_blank" rel="noopener">Open the MouseFlow app</a></div>
 </section>
 
+<!-- ---------- skills ---------- -->
+<section id="skills" hidden>
+  <button class="back" data-home type="button">&larr; Back</button>
+  <h2>Skills</h2>
+  <p class="hint">
+    A kept flow with a name. A <strong>recorded</strong> skill repeats exactly what you did, for
+    free. A <strong>created</strong> skill re-runs its goal through the agent, so it adapts and can
+    take different details each time — at the cost of an API call per step.
+  </p>
+
+  <ul id="skill-list" class="list"></ul>
+  <p id="skills-empty" class="hint" hidden>
+    No skills yet. Save one from a recording, or from a run in <em>Create the flow</em>.
+  </p>
+
+  <p id="skills-note" class="note"></p>
+  <div class="row">
+    <a id="skills-export" href="#">Copy all</a>
+    <a id="skills-import" href="#">Paste one in</a>
+  </div>
+  <textarea id="skills-paste" placeholder="Paste a shared skill here, then press Paste one in again" hidden></textarea>
+</section>
+
 <!-- ---------- mode B: create ---------- -->
 <section id="create" hidden>
   <button class="back" data-home type="button">&larr; Back</button>
@@ -200,6 +239,7 @@
   <button id="btn-use-shared" class="wide primary" type="button" hidden>
     Use the shared demo key and retry
   </button>
+  <button id="btn-save-skill" class="wide" type="button" hidden>Save this as a skill</button>
 
   <details id="key-box">
     <summary>Anthropic API key (optional)</summary>

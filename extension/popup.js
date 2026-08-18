@@ -56,7 +56,7 @@ const getPending = async () => (await chrome.storage.local.get('pending')).pendi
 /* ------------------------------------------------------------------ navigation */
 
 function show(which) {
-  for (const id of ['home', 'record', 'create']) $(id).hidden = id !== which;
+  for (const id of ['home', 'record', 'create', 'skills']) $(id).hidden = id !== which;
   if (which !== 'record') { clearInterval(playPoll); playPoll = null; }
   if (which !== 'create') { clearInterval(agentPoll); agentPoll = null; }
   chrome.storage.session.set({ popupView: which }).catch(() => {});
@@ -64,6 +64,7 @@ function show(which) {
 
 $('go-record').addEventListener('click', () => { show('record'); refreshRecordView(); });
 $('go-create').addEventListener('click', () => { show('create'); refreshAgent(); });
+$('go-skills').addEventListener('click', () => { show('skills'); renderSkills(); });
 document.querySelectorAll('[data-home]').forEach((b) => b.addEventListener('click', () => show('home')));
 
 /* ------------------------------------------------------------------- settings */
@@ -171,6 +172,16 @@ async function renderList() {
     loop.title = 'Restart automatically until you stop it — click the toolbar icon to stop';
     loop.addEventListener('click', () => replay(rec, true));
 
+    const keep = document.createElement('button');
+    keep.textContent = 'Save as skill';
+    keep.title = 'Keep this under a name, ready to run again or share';
+    keep.addEventListener('click', async () => {
+      const res = await ask('skills/save', { from: 'recording', id: rec.id, name: rec.name });
+      $('rec-note').textContent = res && res.ok
+        ? 'Saved \u201c' + res.skill.name + '\u201d as a skill. See Skills on the first screen.'
+        : (res && res.error) || 'could not save that';
+    });
+
     const del = document.createElement('button');
     del.className = 'del';
     del.textContent = '✕';
@@ -184,7 +195,11 @@ async function renderList() {
     });
 
     tools.append(repeat, loop, del);
-    item.append(name, meta, tools);
+    item.append(name, meta, tools, keep);
+    keep.style.width = '100%';
+    keep.style.marginTop = '6px';
+    keep.style.fontSize = '12px';
+    keep.style.fontWeight = '500';
     list.appendChild(item);
   });
 }
@@ -305,6 +320,144 @@ async function refreshRecordView() {
   await renderList();
 }
 
+/* ------------------------------------------------------------------- skills */
+
+/* A kept flow, with the controls that make it worth keeping: run it, fill in what varies, share it,
+ * throw it away. Built from the same list pattern as recordings so the two read alike. */
+async function renderSkills() {
+  const res = await ask('skills/list');
+  const skills = (res && res.skills) || [];
+  const list = $('skill-list');
+  list.textContent = '';
+  $('skills-empty').hidden = skills.length > 0;
+  $('skills-count').textContent = skills.length
+    ? skills.length + (skills.length === 1 ? ' skill' : ' skills') + ' kept, ready to run or share.'
+    : 'Flows you have kept, ready to run again or share.';
+
+  for (const skill of skills) {
+    const item = document.createElement('li');
+    item.className = 'item';
+
+    const name = document.createElement('input');
+    name.className = 'item-name';
+    name.value = skill.name;
+    name.setAttribute('aria-label', 'Skill name');
+    name.addEventListener('change', async () => {
+      const next = name.value.trim();
+      if (!next) { name.value = skill.name; return; }
+      await ask('skills/rename', { id: skill.id, name: next });
+      skill.name = next;
+    });
+
+    const kind = document.createElement('span');
+    kind.className = 'tag tag-' + skill.kind;
+    kind.textContent = skill.kind === 'created' ? 'created' : 'recorded';
+    kind.title = skill.kind === 'created'
+      ? 'Re-runs its goal through the agent: adapts, costs an API call per step'
+      : 'Repeats exactly what was recorded: free, but breaks if the page changes';
+
+    const meta = document.createElement('div');
+    meta.className = 'item-meta';
+    meta.textContent = skill.description || '';
+    meta.title = (skill.origins || []).join('\n');
+
+    /* What varies between runs, asked for at the point of running rather than stored. The example
+     * from the original goal is the placeholder, so leaving a field blank repeats the original. */
+    const values = {};
+    for (const param of skill.params || []) {
+      const row = document.createElement('div');
+      row.className = 'param';
+      const label = document.createElement('label');
+      label.textContent = param.name;
+      const input = document.createElement('input');
+      input.placeholder = param.example || param.name;
+      input.setAttribute('aria-label', param.name);
+      input.addEventListener('input', () => { values[param.name] = input.value.trim(); });
+      row.append(label, input);
+      item.appendChild(row);
+    }
+
+    const tools = document.createElement('div');
+    tools.className = 'item-tools';
+
+    const run = document.createElement('button');
+    run.textContent = 'Run';
+    run.addEventListener('click', async () => {
+      const res2 = await ask('skills/run', { id: skill.id, values });
+      if (!res2 || !res2.ok) { $('skills-note').textContent = (res2 && res2.error) || 'could not run it'; return; }
+      // A recorded skill replays; a created one hands over to the agent, which has its own view.
+      if (skill.kind === 'created') { show('create'); refreshAgent(); }
+      else { show('record'); refreshRecordView(); }
+    });
+
+    const share = document.createElement('button');
+    share.textContent = 'Share';
+    share.title = 'Copy this skill as text — paste it to anyone with the extension';
+    share.addEventListener('click', async () => {
+      const res2 = await ask('skills/export', { id: skill.id });
+      if (!res2 || !res2.ok) { $('skills-note').textContent = (res2 && res2.error) || 'could not export'; return; }
+      try {
+        await navigator.clipboard.writeText(res2.text);
+        $('skills-note').textContent = 'Copied. Paste it to anyone with the extension.';
+      } catch (_) {
+        console.log('[MouseFlow] skill\n' + res2.text);
+        $('skills-note').textContent = 'Clipboard blocked; the skill is in this popup\u2019s console.';
+      }
+    });
+
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '\u2715';
+    del.title = 'Delete this skill';
+    del.addEventListener('click', async () => {
+      await ask('skills/delete', { id: skill.id });
+      $('skills-note').textContent = 'Deleted \u201c' + skill.name + '\u201d.';
+      renderSkills();
+    });
+
+    tools.append(run, share, del);
+    item.insertBefore(meta, item.firstChild);
+    item.insertBefore(name, item.firstChild);
+    name.after(kind);
+    item.appendChild(tools);
+    list.appendChild(item);
+  }
+}
+
+$('skills-export').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  const res = await ask('skills/export', {});
+  if (!res || !res.ok) { $('skills-note').textContent = (res && res.error) || 'nothing to export'; return; }
+  try {
+    await navigator.clipboard.writeText(res.text);
+    $('skills-note').textContent = 'All skills copied.';
+  } catch (_) {
+    console.log('[MouseFlow] skills\n' + res.text);
+    $('skills-note').textContent = 'Clipboard blocked; they are in this popup\u2019s console.';
+  }
+});
+
+/* Import is two clicks on purpose: the first reveals the box, the second reads it. Reading the
+ * clipboard without being asked to is not something a popup should do. */
+$('skills-import').addEventListener('click', async (ev) => {
+  ev.preventDefault();
+  const box = $('skills-paste');
+  if (box.hidden) {
+    box.hidden = false;
+    box.focus();
+    $('skills-note').textContent = 'Paste the skill, then press Paste one in again.';
+    return;
+  }
+  const text = box.value.trim();
+  if (!text) { $('skills-note').textContent = 'Nothing pasted yet.'; return; }
+  const res = await ask('skills/import', { text });
+  if (!res || !res.ok) { $('skills-note').textContent = (res && res.error) || 'could not read that'; return; }
+  box.value = '';
+  box.hidden = true;
+  $('skills-note').textContent = 'Added ' + res.added + (res.added === 1 ? ' skill.' : ' skills.');
+  renderSkills();
+});
+
 /* -------------------------------------------------------------- mode B: create */
 
 function renderFeed(log) {
@@ -374,6 +527,8 @@ async function refreshAgent() {
     return;
   }
   $('btn-use-shared').hidden = true;
+  // A run that worked is worth keeping; one that did not is not.
+  $('btn-save-skill').hidden = false;
   $('ai-note').textContent = (result.needsUser ? 'Ready for you: ' : '') + result.summary +
     (result.steps && result.steps.length ? '\n(' + result.steps.length + ' actions taken)' : '');
 }
@@ -468,9 +623,22 @@ $('btn-use-shared').addEventListener('click', async () => {
   refreshAgent();
 });
 
+/* Offered only after a run that worked. A skill made from a failed run would carry a goal that is
+ * known not to work, which is worse than having no skill. */
+$('btn-save-skill').addEventListener('click', async () => {
+  const res = await ask('skills/save', { from: 'run' });
+  if (!res || !res.ok) { $('ai-note').textContent = (res && res.error) || 'could not save that'; return; }
+  const params = (res.skill.params || []).map((p) => p.name);
+  $('btn-save-skill').hidden = true;
+  $('ai-note').textContent = 'Saved as \u201c' + res.skill.name + '\u201d' +
+    (params.length ? ', asking for ' + params.join(', ') + ' each run.' : '.') +
+    ' See Skills on the first screen.';
+});
+
 $('btn-run-goal').addEventListener('click', async () => {
   $('ai-note').textContent = '';
   $('btn-use-shared').hidden = true;
+  $('btn-save-skill').hidden = true;
   const res = await ask('agent/start', { goal: $('goal').value });
   if (!res.ok) {
     $('ai-note').textContent = res.error;
