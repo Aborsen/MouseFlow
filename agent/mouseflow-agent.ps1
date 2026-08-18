@@ -23,6 +23,8 @@
     POST /replay          -> JSON {ok}   body: see FLOW BODY below
     GET  /replay/status   -> JSON {playing, step, steps, pass, passes, index, total}
     POST /replay/abort    -> JSON {ok}
+    GET  /shot            -> JSON {ok, png, w, h, scale, originX, originY}  a look at the screen
+    POST /do              -> JSON {ok}   one action; body is key=value, see ACTION BODY below
     POST /autostart/enable  -> JSON {ok} - drops a launcher in the Startup folder
     POST /autostart/disable -> JSON {ok} - removes it
 
@@ -35,6 +37,18 @@
     STEP repeat=1 speed=2.0 delayAfter=0
     1 | 900 | 300 | 120 | Left Click Down
     ...
+
+  ACTION BODY (text/plain)
+    action=click x=1074 y=159 button=left double=0
+    action=move x=400 y=300
+    action=scroll x=400 y=300 amount=-3
+    action=type text=hello there
+    action=key key=Enter ctrl=0 shift=0 alt=0
+
+  /shot and /do are what let the app describe a goal in words and have it carried out here rather
+  than only replaying something recorded earlier: one is how it sees, the other is how it acts. Both
+  work in virtual-desktop coordinates, the same space replay uses, and /shot reports the scale it
+  shrank the image by so a point on the picture maps back to a point on the screen.
 
   Event lines use the Mini Mouse Macro layout: index | X | Y | delayMs | action
   where delayMs is the wait BEFORE the event. Lines starting with # are ignored.
@@ -84,7 +98,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-Add-Type -TypeDefinition @'
+# System.Drawing is referenced for /shot: capturing the screen is what lets the app act on a goal
+# described in words rather than only replay something recorded earlier.
+Add-Type -ReferencedAssemblies 'System.Drawing' -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -138,6 +154,34 @@ namespace MouseFlow
         public MOUSEINPUT mi;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    /* A real INPUT is a union, and the OS checks cbSize against the whole thing - so a struct
+       carrying only KEYBDINPUT would be the wrong size and SendInput would reject it. Explicit
+       layout gives the union its true size on 32- and 64-bit alike, rather than hand-counting
+       padding that differs between them. */
+    [StructLayout(LayoutKind.Explicit)]
+    public struct INPUTDATA
+    {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUTU
+    {
+        public uint type;
+        public INPUTDATA u;
+    }
+
     public static class Native
     {
         public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -156,12 +200,20 @@ namespace MouseFlow
         public static extern IntPtr DispatchMessage(ref MSG lpMsg);
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern uint SendInput(uint nInputs, INPUTU[] pInputs, int cbSize);
         [DllImport("user32.dll")]
         public static extern bool GetCursorPos(out POINT lpPoint);
         [DllImport("user32.dll")]
         public static extern int GetSystemMetrics(int nIndex);
         [DllImport("user32.dll")]
         public static extern short GetAsyncKeyState(int vKey);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern short VkKeyScan(char ch);
+
+        public const uint INPUT_KEYBOARD = 1;
+        public const uint KEYEVENTF_KEYUP = 0x0002;
+        public const uint KEYEVENTF_UNICODE = 0x0004;
 
         public const int WH_MOUSE_LL = 14;
         public const uint LLMHF_INJECTED = 0x00000001;
@@ -220,7 +272,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.1.0";
+        public const string Version = "0.2.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -581,6 +633,272 @@ namespace MouseFlow
             Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
         }
 
+        /* ---------------------------------------------------------------- one action at a time
+         *
+         * Replay performs a recording; these perform a decision. The web app describes a goal, a model
+         * looks at /shot and picks the next thing to do, and this is where that lands. Same SendInput
+         * path as replay, so what the OS sees is identical - the difference is only who chose it.
+         */
+
+        /* Ev is a field-holder with no constructor; the existing code fills one in place, so this
+           does the same rather than adding a constructor other code would then have two ways to use. */
+        static Ev At(int x, int y, string action)
+        {
+            Ev e = new Ev();
+            e.X = x;
+            e.Y = y;
+            e.DelayMs = 0;
+            e.Action = action;
+            return e;
+        }
+
+        public static string DoAction(string body)
+        {
+            Dictionary<string, string> a = ParseFields(body);
+            string action = Get(a, "action", "");
+
+            if (action == "type") return TypeText(Get(a, "text", ""));
+            if (action == "key")
+            {
+                return PressKey(Get(a, "key", ""), Get(a, "ctrl", "0") == "1",
+                    Get(a, "shift", "0") == "1", Get(a, "alt", "0") == "1");
+            }
+
+            int x, y;
+            if (!int.TryParse(Get(a, "x", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out x) ||
+                !int.TryParse(Get(a, "y", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out y))
+            {
+                return "x and y are required for " + (action.Length > 0 ? action : "an action");
+            }
+
+            if (action == "move")
+            {
+                Emit(At(x, y, "Mouse Movement"));
+                return null;
+            }
+
+            if (action == "scroll")
+            {
+                int amount;
+                if (!int.TryParse(Get(a, "amount", "-3"), NumberStyles.Integer, CultureInfo.InvariantCulture, out amount)) amount = -3;
+                Emit(At(x, y, "Mouse Movement"));
+                int steps = Math.Min(20, Math.Abs(amount));
+                for (int i = 0; i < steps; i++)
+                {
+                    Emit(At(x, y, amount > 0 ? "Scroll Up" : "Scroll Down"));
+                    Thread.Sleep(25);
+                }
+                return null;
+            }
+
+            if (action == "click")
+            {
+                string button = Get(a, "button", "left");
+                bool twice = Get(a, "double", "0") == "1";
+                string down = button == "right" ? "Right Click Down" : (button == "middle" ? "Middle Click Down" : "Left Click Down");
+                string up = button == "right" ? "Right Click Release" : (button == "middle" ? "Middle Click Release" : "Left Click Release");
+
+                /* Moved first and given a moment to land. Clicking at a position the pointer has not
+                   reached yet is how a click ends up on whatever was under the old position. */
+                Emit(At(x, y, "Mouse Movement"));
+                Thread.Sleep(40);
+                Emit(At(x, y, down));
+                Thread.Sleep(30);
+                Emit(At(x, y, up));
+                if (twice)
+                {
+                    Thread.Sleep(60);
+                    Emit(At(x, y, down));
+                    Thread.Sleep(30);
+                    Emit(At(x, y, up));
+                }
+                return null;
+            }
+
+            return "unknown action: " + action;
+        }
+
+        static Dictionary<string, string> ParseFields(string body)
+        {
+            /* key=value pairs, and `text` takes the rest of the line - so typed text may contain
+               spaces and equals signs without needing a quoting rule nobody would remember. */
+            Dictionary<string, string> found = new Dictionary<string, string>();
+            if (body == null) return found;
+            string line = body.Replace("\r", " ").Replace("\n", " ").Trim();
+
+            int textAt = line.IndexOf("text=", StringComparison.Ordinal);
+            if (textAt >= 0)
+            {
+                found["text"] = line.Substring(textAt + 5);
+                line = line.Substring(0, textAt);
+            }
+
+            string[] parts = line.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < parts.Length; i++)
+            {
+                int eq = parts[i].IndexOf('=');
+                if (eq <= 0) continue;
+                string key = parts[i].Substring(0, eq).Trim().ToLowerInvariant();
+                if (key == "text") continue;                     // already taken, whole and unsplit
+                found[key] = parts[i].Substring(eq + 1).Trim();
+            }
+            return found;
+        }
+
+        static string Get(Dictionary<string, string> from, string key, string fallback)
+        {
+            string value;
+            return from.TryGetValue(key, out value) ? value : fallback;
+        }
+
+        static string TypeText(string text)
+        {
+            if (text == null || text.Length == 0) return "nothing to type";
+            if (text.Length > 4000) return "that is more text than this will type in one go";
+
+            /* Sent as Unicode rather than as virtual keys: a keycode depends on the keyboard layout,
+               and text typed through them comes out wrong on any layout but the author's. */
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c == '\n' || c == '\r')
+                {
+                    PressKey("Enter", false, false, false);
+                    continue;
+                }
+                SendUnicode(c, false);
+                SendUnicode(c, true);
+                Thread.Sleep(6);
+            }
+            return null;
+        }
+
+        static void SendUnicode(char c, bool up)
+        {
+            INPUTU[] inputs = new INPUTU[1];
+            inputs[0].type = Native.INPUT_KEYBOARD;
+            inputs[0].u.ki.wVk = 0;
+            inputs[0].u.ki.wScan = (ushort)c;
+            inputs[0].u.ki.dwFlags = Native.KEYEVENTF_UNICODE | (up ? Native.KEYEVENTF_KEYUP : 0);
+            inputs[0].u.ki.time = 0;
+            inputs[0].u.ki.dwExtraInfo = IntPtr.Zero;
+            Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUTU)));
+        }
+
+        static void SendVk(ushort vk, bool up)
+        {
+            INPUTU[] inputs = new INPUTU[1];
+            inputs[0].type = Native.INPUT_KEYBOARD;
+            inputs[0].u.ki.wVk = vk;
+            inputs[0].u.ki.wScan = 0;
+            inputs[0].u.ki.dwFlags = up ? Native.KEYEVENTF_KEYUP : 0;
+            inputs[0].u.ki.time = 0;
+            inputs[0].u.ki.dwExtraInfo = IntPtr.Zero;
+            Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUTU)));
+        }
+
+        static string PressKey(string key, bool ctrl, bool shift, bool alt)
+        {
+            ushort vk = VkFor(key);
+            if (vk == 0) return "unknown key: " + key;
+
+            if (ctrl) SendVk(0x11, false);
+            if (shift) SendVk(0x10, false);
+            if (alt) SendVk(0x12, false);
+            SendVk(vk, false);
+            Thread.Sleep(25);
+            SendVk(vk, true);
+            if (alt) SendVk(0x12, true);
+            if (shift) SendVk(0x10, true);
+            if (ctrl) SendVk(0x11, true);
+            return null;
+        }
+
+        static ushort VkFor(string key)
+        {
+            if (key == null || key.Length == 0) return 0;
+            /* A single character goes through the layout, because a shortcut IS a keycode - Ctrl+C is
+               Ctrl plus VK_C, not Ctrl plus the letter c. Text uses TypeText instead. */
+            if (key.Length == 1)
+            {
+                short scan = Native.VkKeyScan(key[0]);
+                if (scan == -1) return 0;
+                return (ushort)(scan & 0xFF);
+            }
+
+            switch (key.ToLowerInvariant())
+            {
+                case "enter": case "return": return 0x0D;
+                case "tab": return 0x09;
+                case "escape": case "esc": return 0x1B;
+                case "backspace": return 0x08;
+                case "delete": case "del": return 0x2E;
+                case "space": return 0x20;
+                case "up": case "arrowup": return 0x26;
+                case "down": case "arrowdown": return 0x28;
+                case "left": case "arrowleft": return 0x25;
+                case "right": case "arrowright": return 0x27;
+                case "home": return 0x24;
+                case "end": return 0x23;
+                case "pageup": return 0x21;
+                case "pagedown": return 0x22;
+                case "f1": return 0x70;
+                case "f2": return 0x71;
+                case "f3": return 0x72;
+                case "f4": return 0x73;
+                case "f5": return 0x74;
+                case "f6": return 0x75;
+                case "f11": return 0x7A;
+                case "f12": return 0x7B;
+                case "win": return 0x5B;
+                default: return 0;
+            }
+        }
+
+        /* ------------------------------------------------------------------------- the seeing half
+         *
+         * The whole virtual desktop, shrunk to something a model can read without a picture the size
+         * of a novel. `scale` is what it was shrunk by and originX/originY are where the desktop
+         * starts - a multi-monitor origin is often negative - so a point on the picture maps back to
+         * a point on the screen with two multiplications and an add. Nothing is written to disk.
+         */
+        public static string Shot(int maxWidth)
+        {
+            int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+            int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+            int vw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+            int vh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+            if (vw < 2 || vh < 2) return "{\"ok\":false,\"error\":\"no screen\"}";
+            if (maxWidth < 320) maxWidth = 320;
+            if (maxWidth > 2560) maxWidth = 2560;
+
+            double scale = vw > maxWidth ? (double)maxWidth / vw : 1.0;
+            int sw = (int)Math.Round(vw * scale);
+            int sh = (int)Math.Round(vh * scale);
+
+            using (System.Drawing.Bitmap full = new System.Drawing.Bitmap(vw, vh))
+            {
+                using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(full))
+                {
+                    g.CopyFromScreen(vx, vy, 0, 0, new System.Drawing.Size(vw, vh));
+                }
+                using (System.Drawing.Bitmap small = new System.Drawing.Bitmap(full, sw, sh))
+                using (System.IO.MemoryStream buffer = new System.IO.MemoryStream())
+                {
+                    small.Save(buffer, System.Drawing.Imaging.ImageFormat.Png);
+                    string png = Convert.ToBase64String(buffer.ToArray());
+                    StringBuilder sb = new StringBuilder();
+                    sb.Append("{\"ok\":true,\"w\":").Append(sw.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(",\"h\":").Append(sh.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(",\"scale\":").Append(scale.ToString("0.####", CultureInfo.InvariantCulture));
+                    sb.Append(",\"originX\":").Append(vx.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(",\"originY\":").Append(vy.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(",\"png\":\"").Append(png).Append("\"}");
+                    return sb.ToString();
+                }
+            }
+        }
+
         static void ReleaseAllButtons()
         {
             uint[] ups = new uint[] { Native.MOUSEEVENTF_LEFTUP, Native.MOUSEEVENTF_RIGHTUP, Native.MOUSEEVENTF_MIDDLEUP };
@@ -855,6 +1173,9 @@ namespace MouseFlow
                     + ",\"autostart\":" + (AutostartEnabled() ? "true" : "false")
                     + ",\"canAutostart\":" + (CanAutostart() ? "true" : "false")
                     + ",\"originPinned\":" + (AllowOrigin != "*" ? "true" : "false")
+                    /* So the app can tell an older agent from this one and say which. A missing
+                       endpoint answers 404, which reads as "broken" rather than "out of date". */
+                    + ",\"canSee\":true"
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
                 return;
@@ -900,6 +1221,24 @@ namespace MouseFlow
             if (path == "/replay/abort" && method == "POST")
             {
                 Abort();
+                Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
+                return;
+            }
+
+            if (path == "/shot")
+            {
+                /* Deliberately not while replaying: a picture taken mid-replay shows a screen that is
+                   already moving, and a decision made from it acts on something that has gone. */
+                if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
+                Respond(stream, 200, "application/json", Shot(1280), origin);
+                return;
+            }
+
+            if (path == "/do" && method == "POST")
+            {
+                if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
+                string problem = DoAction(body);
+                if (problem != null) { Respond(stream, 400, "application/json", "{\"ok\":false,\"error\":\"" + JsonEscape(problem) + "\"}", origin); return; }
                 Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
                 return;
             }

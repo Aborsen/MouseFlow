@@ -26,6 +26,20 @@ const HELLO = 'mouseflow:extension';     // extension -> page: "I am here", with
 const ASK = 'mouseflow:hello?';          // page -> extension: "are you there?"
 const PAIR = 'mouseflow:pair';           // page -> extension: here is a device token
 const PAIRED = 'mouseflow:paired';       // extension -> page: how that went
+const CMD = 'mouseflow:cmd';             // page -> extension: do one of the things below
+const RESULT = 'mouseflow:cmd-result';   // extension -> page: what it answered
+
+/* What the app may ask for, by name.
+ *
+ * "Create the flow" in the web app is this list: the page describes a goal, the worker runs it in a
+ * real tab, and the page asks how it is going. Everything else - recording, replay, editing skills,
+ * the gallery - stays inside the extension, because the app has its own way to do those and two paths
+ * to one outcome is how they drift apart.
+ *
+ * An allowlist rather than a pass-through. This channel starts a process that drives a logged-in
+ * browser and spends the shared key; what it can reach should be readable in one line.
+ */
+const FORWARDABLE = new Set(['ping', 'page/run', 'page/status', 'page/abort']);
 
 /* The announcement carries whether the extension is already attached to an account, so the app can
  * offer to connect one that is not and simply say so about one that is - rather than minting a
@@ -54,6 +68,25 @@ window.addEventListener('message', async (event) => {
   if (!data || typeof data !== 'object') return;
 
   if (data.mf === ASK) { announce(); return; }
+
+  if (data.mf === CMD) {
+    const cmd = String(data.cmd || '');
+    if (!FORWARDABLE.has(cmd)) {
+      window.postMessage({ mf: RESULT, id: data.id,
+        res: { ok: false, error: 'not available to the app: ' + cmd } }, location.origin);
+      return;
+    }
+    let res;
+    try {
+      const payload = data.payload && typeof data.payload === 'object' ? data.payload : {};
+      res = await chrome.runtime.sendMessage(Object.assign({ mf: cmd }, payload));
+    } catch (err) {
+      res = { ok: false, error: 'the extension is not answering - reload it' };
+    }
+    window.postMessage({ mf: RESULT, id: data.id, res: res || null }, location.origin);
+    return;
+  }
+
   if (data.mf !== PAIR) return;
 
   let res;

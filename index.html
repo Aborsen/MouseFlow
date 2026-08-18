@@ -41,6 +41,13 @@
     <button class="side-item tab" data-view="desktop" type="button" title="Desktop">
       <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="12.5" rx="1.6"/><path d="M8 20.5h8M12 16.5v4"/></svg><span class="side-text">Desktop</span>
     </button>
+    <button class="side-item tab" data-view="create" type="button" title="Create the flow">
+      <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3.5l1.9 4.6 4.6 1.9-4.6 1.9L12 16.5l-1.9-4.6L5.5 10l4.6-1.9z"/>
+        <path d="M18 16.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/>
+      </svg><span class="side-text">Create</span>
+    </button>
     <button class="side-item tab" data-view="skills" type="button" title="Skills">
       <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17z"/></svg><span class="side-text">Skills</span>
     </button>
@@ -218,6 +225,11 @@
 </div>
 
 <!-- ================================================================= gallery -->
+<!-- ============================================================ create the flow -->
+<div id="view-create" class="view" hidden>
+  <div id="create-root"></div>
+</div>
+
 <div id="view-gallery" class="view" hidden>
   <section class="card card--wide" id="gallery-root"></section>
 </div>

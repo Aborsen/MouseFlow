@@ -10,10 +10,13 @@
 
 import { mountGallery } from './gallery-view.js';
 import { mountSkills } from './skills-view.js';
+import { mountCreate } from './create-view.js';
 import { requireAccount } from './gate.js';
 
-const VIEWS = ['desktop', 'skills', 'gallery'];
-const TITLES = { desktop: 'Desktop', skills: 'Skills', gallery: 'Gallery' };
+const VIEWS = ['desktop', 'create', 'skills', 'gallery'];
+const TITLES = {
+  desktop: 'Desktop', create: 'Create the flow', skills: 'Skills', gallery: 'Gallery',
+};
 const mounted = {};
 
 function viewFromHash() {
@@ -30,6 +33,7 @@ function mount(view) {
   if (mounted[view]) return;
   if (view === 'gallery') mounted.gallery = mountGallery(document.getElementById('gallery-root'));
   if (view === 'skills') mounted.skills = mountSkills(document.getElementById('skills-root'));
+  if (view === 'create') mounted.create = mountCreate(document.getElementById('create-root'));
   // The desktop console is rendered by app.js on load; there is nothing to mount.
   if (view === 'desktop') mounted.desktop = true;
 }
@@ -83,21 +87,25 @@ try { if (localStorage.getItem(TIGHT) === '1') setTight(true); } catch (_) {}
 document.getElementById('side-toggle').addEventListener('click', () => setTight(true));
 document.getElementById('side-open').addEventListener('click', () => setTight(false));
 
-/* "New flow" is not a fourth place - it is the Desktop console with the recorder in view. Making it
- * a separate view would leave two ways to reach one thing. */
+/* "New flow" opens Create, and puts the cursor in the box. Describing what you want is the way in
+ * that needs no equipment - recording needs the desktop agent running, and installing needs somebody
+ * else to have published something. */
 document.getElementById('side-new').addEventListener('click', () => {
-  location.hash = '#desktop';
-  const recorder = document.getElementById('rec-idle');
-  const card = (recorder && recorder.closest('.card')) || document.querySelector('#view-desktop .card');
-  if (card) {
-    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    card.classList.add('is-called');
-    setTimeout(() => card.classList.remove('is-called'), 1200);
-  }
+  location.hash = '#create';
+  const box = document.getElementById('c-goal');
+  if (box) box.focus();
 });
 
-/* What you were working on, from the account rather than from this browser: the point of an account
- * is that the extension's flows and the desktop agent's flows are one list. */
+/* What you were working on - which means what you RAN, not what you happen to have saved.
+ *
+ * It used to list flows by when they were last edited, and most of them are recordings whose names are
+ * taken from the page they were made on. So "Recent" read as a list of websites: a sidebar full of
+ * places rather than of work. Runs are the honest signal - a flow you ran an hour ago is what you were
+ * doing, and one you saved in March and never ran is not.
+ *
+ * From the account rather than from this browser, because the point of an account is that the
+ * extension's runs and the desktop agent's runs are one history.
+ */
 async function fillRecent() {
   let body = null;
   try {
@@ -110,6 +118,7 @@ async function fillRecent() {
 
   const flows = Array.isArray(body.flows) ? body.flows : [];
   const runs = Array.isArray(body.runs) ? body.runs : [];
+  const byId = new Map(flows.map((flow) => [flow.id, flow]));
 
   const stat = document.getElementById('side-stat');
   if (stat) {
@@ -117,28 +126,51 @@ async function fillRecent() {
     document.getElementById('side-runs').textContent = String(runs.length);
   }
 
-  if (!flows.length) return;
+  /* Runs come back newest first. One entry per thing run - a flow you ran five times is one line, at
+   * the time of the latest of them, not five lines pushing everything else out. */
+  const seen = new Set();
+  const recent = [];
+  for (const run of runs) {
+    const flow = run.flowId ? byId.get(run.flowId) : null;
+    const label = flow ? (flow.name || 'Untitled') : (run.goal || '').trim();
+    if (!label) continue;                       // a replay with nothing to name it
+    const key = run.flowId || label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    recent.push({
+      label,
+      source: flow ? flow.source : (run.extension ? 'web' : 'desktop'),
+      when: run.startedAt || run.finishedAt || null,
+      outcome: run.outcome,
+      saved: !!flow,
+    });
+    if (recent.length >= 12) break;
+  }
+
+  if (!recent.length) {
+    document.getElementById('side-recent').hidden = true;
+    return;
+  }
+
   const list = document.getElementById('side-recent-list');
   list.textContent = '';
-  const recent = flows
-    .slice()
-    .sort((a, b) => String(b.updated || b.created || '').localeCompare(String(a.updated || a.created || '')))
-    .slice(0, 12);
-
-  for (const flow of recent) {
+  for (const entry of recent) {
     const item = document.createElement('li');
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = flow.name || 'Untitled';
-    /* Which half made it, in one letter. A flow that points at page elements and one that points at
-     * screen coordinates are not interchangeable, and the list is where that is decided. */
+    button.textContent = entry.label;
+    /* Which half ran it, in one word. A flow aimed at page elements and one aimed at screen
+     * coordinates are not interchangeable, and this list is where that gets decided. */
     const tag = document.createElement('span');
     tag.className = 'side-src';
-    tag.textContent = flow.source === 'desktop' ? 'desktop' : 'web';
+    tag.textContent = entry.source === 'desktop' ? 'desktop' : 'web';
     button.appendChild(tag);
-    button.title = (flow.name || 'Untitled') + ' \u2014 ' +
-      (flow.source === 'desktop' ? 'recorded by the desktop agent' : 'recorded in the browser');
-    button.addEventListener('click', () => { location.hash = '#skills'; });
+    button.title = entry.label +
+      (entry.when ? ' \u2014 ran ' + new Date(entry.when).toLocaleString() : '') +
+      (entry.outcome && entry.outcome !== 'ok' ? ' (' + entry.outcome + ')' : '') +
+      (entry.saved ? '' : ' \u2014 not saved as a skill');
+    // A saved flow lives in Skills; a one-off run has nowhere else to be, so it reopens Create.
+    button.addEventListener('click', () => { location.hash = entry.saved ? '#skills' : '#create'; });
     item.appendChild(button);
     list.appendChild(item);
   }

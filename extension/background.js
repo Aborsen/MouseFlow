@@ -1464,6 +1464,25 @@ const ROUTES = {
     const synced = await syncNow().catch(() => null);
     return { ok: true, who: res.who, synced: synced ? synced.pushed : null };
   },
+  /* The web app's console. Same run, same worker, same agent - reached from the app's own page
+   * instead of from the popup, because a page cannot act on another page and this half can.
+   *
+   * Separate route names rather than letting the app call agent/* directly: the page's surface should
+   * be readable as its own list, and it should be impossible to widen it by accident while editing
+   * something the popup uses. Each one refuses a sender that is not our own origin. */
+  'page/run': async (msg, sender) => {
+    if (!fromBridge(sender)) throw new Error('not available to this page');
+    return agentStart(msg.goal);
+  },
+  'page/status': async (msg, sender) => {
+    if (!fromBridge(sender)) throw new Error('not available to this page');
+    return agentStatus();
+  },
+  'page/abort': async (msg, sender) => {
+    if (!fromBridge(sender)) throw new Error('not available to this page');
+    agent.abort = true;
+    return { ok: true };
+  },
   'skills/list': async () => ({ ok: true, skills: await listSkills() }),
   'sync/status': () => syncStatus(),
   'sync/pair': (msg) => syncPair(msg.token),

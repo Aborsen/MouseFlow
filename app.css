@@ -1122,3 +1122,72 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 /* The account block belongs at the foot of the sidebar whether or not there is a Recent list above
  * it to push it down - with no flows yet, it sat directly under the navigation. */
 .side-foot { margin-top: auto; }
+
+/* ---------- create the flow ---------- */
+
+.c-target { max-width: 420px; margin-top: 0.2rem; }
+.c-where { color: var(--text-faint); font-size: 0.78rem; }
+
+.c-goal {
+  width: 100%;
+  min-height: 84px;
+  margin-top: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+.c-goal:focus { outline: none; border-color: var(--accent); }
+.c-goal:disabled { opacity: 0.6; }
+.c-tools { display: flex; gap: 0.5rem; margin-top: 0.7rem; }
+
+.btn--ai {
+  border-color: #8957e5;
+  background: #8957e5;
+  color: #fff;
+}
+
+.btn--ai:hover:not(:disabled) { background: #7b4bd8; }
+.btn--ai:disabled { opacity: 0.5; }
+
+.c-feed {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  border: 1px solid var(--line-soft);
+  font-size: 0.85rem;
+}
+
+.c-feed div { padding: 0.12rem 0; }
+.c-feed .c-act { color: var(--text-dim); font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; }
+.c-feed .is-bad { color: var(--bad); }
+.c-note { margin: 0.8rem 0 0; min-height: 1.2em; font-size: 0.88rem; color: var(--text-dim); }
+.c-note.is-bad { color: var(--bad); }
+.c-note.is-good { color: var(--good); }
+
+.c-gate {
+  margin-top: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 0.88rem;
+  color: var(--text-dim);
+}
+
+.c-gate[hidden] { display: none !important; }
+
+/* Waiting for an answer is not a warning. Same box, no alarm. */
+.c-gate--soft {
+  border-color: var(--line);
+  background: var(--bg-inset);
+  color: var(--text-faint);
+}
