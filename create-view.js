@@ -970,8 +970,8 @@ export function mountCreate(root) {
         if (!body.canSee) {
           blocked('The agent answering on ' + agentBase().replace('http://', '') + ' is ' +
             (body.version ? 'version ' + body.version : 'an older build') + ', which has no /shot or ' +
-            '/do — the eyes and hands this needs. Stop that PowerShell window and start the agent ' +
-            'again from the Desktop tab; the copy it downloads is 0.2.0 or newer.');
+            '/do — the eyes and hands this needs. The Desktop tab has the command that starts the ' +
+            'current one: close that PowerShell window first, then paste it into a new one.');
           return false;
         }
         unblocked();

@@ -27,6 +27,27 @@ const state = {
 let setupOverride = null;
 
 let health = null;         // last /health payload, or null when offline
+
+/* The build this app needs on the other end.
+ *
+ * The agent gains abilities faster than anyone restarts it, and an old one fails in ways that look like
+ * bugs rather than like being old: /shot and /do missing (it cannot act at all), /windows missing (it
+ * opens a second copy of a program that is already running), text arriving as one inline paragraph.
+ * Stated once here, compared against what answers, and the fix - the command - offered on the spot
+ * rather than left for someone to find.
+ */
+const AGENT_WANTS = '0.5.0';
+
+const olderThanWanted = (running) => {
+  if (!running) return false;
+  const mine = String(running).split('.').map((part) => parseInt(part, 10) || 0);
+  const want = AGENT_WANTS.split('.').map((part) => parseInt(part, 10) || 0);
+  for (let i = 0; i < Math.max(mine.length, want.length); i++) {
+    if ((mine[i] || 0) < (want[i] || 0)) return true;
+    if ((mine[i] || 0) > (want[i] || 0)) return false;
+  }
+  return false;
+};
 let recordTimer = null;
 let replayTimer = null;
 let healthTimer = null;
@@ -263,12 +284,23 @@ function setAgentUi() {
   pill.classList.toggle('pill--ok', online);
   pill.classList.toggle('pill--bad', !online);
 
+  const stale = online && olderThanWanted(health.version);
+  pill.classList.toggle('pill--warn', stale);
+
   if (online) {
     const s = health.screen;
-    label.textContent = 'Agent ' + health.version + ' · ' + s.w + '×' + s.h;
+    label.textContent = stale
+      ? 'Agent ' + health.version + ' · update to ' + AGENT_WANTS
+      : 'Agent ' + health.version + ' · ' + s.w + '×' + s.h;
+    pill.title = stale
+      ? 'This app expects ' + AGENT_WANTS + '. Click for the command that starts the current one.'
+      : 'The local agent is connected';
   } else {
     label.textContent = 'Agent offline';
+    pill.title = 'Click for the command that starts it';
   }
+
+  renderStartCommand(stale);
 
   const busy = online && (health.recording || health.playing);
   $('#btn-record').disabled = !online || busy;
@@ -918,6 +950,46 @@ function localFileCommand() {
 
 function startCommand() {
   return state.onboarding.usedDownload ? localFileCommand() : oneLineCommand();
+}
+
+/* The start command, permanently reachable.
+ *
+ * It used to live in onboarding step one and vanish the moment the agent connected - so the moment it
+ * was needed AGAIN, to restart an agent that had fallen behind, there was nowhere to get it. Now it sits
+ * in the Desktop console whatever the state, and says which of the two things it is for. */
+function renderStartCommand(stale) {
+  const box = $('#start-command');
+  if (!box) return;
+  box.textContent = '';
+
+  const online = !!health;
+  box.classList.toggle('start--stale', !!stale);
+
+  const heading = stale
+    ? 'Update the agent to ' + AGENT_WANTS
+    : (online ? 'Start command' : 'Start the agent');
+  const why = stale
+    ? 'Version ' + health.version + ' is running. Close that PowerShell window, then paste this into a ' +
+      'new one - it fetches the current agent and starts it.'
+    : (online
+      ? 'Paste this into PowerShell after a restart, or on another computer. Nothing is installed: it ' +
+        'fetches the agent and runs it in one go.'
+      : 'Paste this into PowerShell and press Enter. Leave the window open - closing it stops the agent.');
+
+  box.append(
+    h('div', { class: 'start-head' }, [
+      h('strong', { text: heading }),
+      h('span', { class: 'start-why', text: why }),
+    ]),
+    h('div', { class: 'code-row' }, [
+      h('code', { text: startCommand() }),
+      h('button', {
+        class: 'btn btn--sm ' + (stale || !online ? 'btn--primary' : 'btn--ghost'),
+        type: 'button', text: 'Copy',
+        onclick: () => copyText(startCommand(), 'Copied — paste it into PowerShell.'),
+      }),
+    ]),
+  );
 }
 
 function copyText(text, okMessage) {

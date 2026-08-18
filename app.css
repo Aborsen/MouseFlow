@@ -1227,3 +1227,18 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 
 /* A line of prose is unreadable at 1700px. The card can be wide; its contents should not be. */
 .c-goal, .c-feed, .c-gate { max-width: 760px; }
+
+/* ---------- the start command ---------- */
+
+.start-head { display: flex; flex-direction: column; gap: 0.2rem; margin-bottom: 0.7rem; }
+.start-why { color: var(--text-dim); font-size: 0.85rem; max-width: 64ch; }
+
+/* Out of date is not an error - the agent is running - but it is the reason the next thing will fail,
+ * so it gets the colour that means "read this". */
+#start-command.start--stale {
+  border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.pill--warn { color: var(--warn); }
+.pill--warn .dot { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent); }
