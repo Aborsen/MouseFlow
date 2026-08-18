@@ -24,7 +24,7 @@ import {
 /* Kept in step with the manifest by hand, and asserted in the tests: the popup compares the two to
  * tell the user when the worker it is talking to is an older build. A stale constant here would make
  * that warning cry wolf. */
-const VERSION = '0.14.1';
+const VERSION = '0.15.0';
 // Where the gallery lives. The same deployment that serves the shared Claude key.
 const APP_URL = 'https://mouse-agent.vercel.app';
 const KEEPALIVE_MS = 20000;
@@ -1177,8 +1177,80 @@ async function tracedTool(name, input) {
  * anything and the mode had never once worked. Resolving inside each case also means
  * `open_tab` no longer needs an existing usable tab, which is exactly the state it is for.
  */
+/* Waiting, without spending a step.
+ *
+ * The agent used to have no way to wait at all: faced with a page that was loading, generating or
+ * streaming an answer, its only options were to call read_page again - a full snapshot, a model call,
+ * one of a limited number of steps - or to click around it. A long wait could eat a whole run.
+ *
+ * So the worker waits on the agent's behalf and polls the page directly, which costs nothing: the
+ * content script answers `agent/pulse` with a few numbers, and this returns as soon as they have held
+ * still for a couple of looks. One tool call covers what used to take a dozen.
+ */
+const PULSE_MS = 1200;
+const PULSE_QUIET = 2;          // consecutive still looks before calling it settled
+const WAIT_CAP_MS = 120000;
+
+function samePulse(a, b) {
+  if (!a || !b) return false;
+  return a.state === b.state && a.chars === b.chars && a.elements === b.elements &&
+    a.busy === b.busy && a.head === b.head && a.tail === b.tail;
+}
+
+async function waitForQuiet(limitMs) {
+  const tabId = await agentTab();
+  const started = Date.now();
+  let last = null;
+  let still = 0;
+
+  while (Date.now() - started < limitMs) {
+    if (agent.abort) break;
+    await sleep(PULSE_MS);
+
+    let pulse = null;
+    try {
+      await ensureContent(tabId);
+      pulse = await send(tabId, { mf: 'agent/pulse' }, agent.frameId);
+    } catch (_) {
+      // A navigation in progress tears the content script down; that is itself "not settled yet".
+      last = null;
+      still = 0;
+      continue;
+    }
+    if (!pulse || !pulse.ok) { last = null; still = 0; continue; }
+
+    /* Something visibly working counts as movement even if the numbers happen to match - a spinner on
+     * an otherwise static page is exactly the case worth waiting through. */
+    if (samePulse(last, pulse) && !pulse.busy) {
+      still++;
+      if (still >= PULSE_QUIET) {
+        return { ok: true, settled: true, waitedMs: Date.now() - started };
+      }
+    } else {
+      still = 0;
+    }
+    last = pulse;
+  }
+
+  return { ok: true, settled: false, waitedMs: Date.now() - started };
+}
+
 async function runAgentTool(name, input) {
   switch (name) {
+    /* Free by design: see waitForQuiet. The answer says which happened, because "quiet after four
+     * seconds" and "still moving after two minutes" call for different next moves. */
+    case 'wait': {
+      const limit = Math.min(WAIT_CAP_MS, Math.max(500, Number(input && input.ms) || 3000));
+      const outcome = await waitForQuiet(limit);
+      return {
+        ok: true,
+        result: outcome.settled
+          ? { settled: true, waited: Math.round(outcome.waitedMs / 1000) + 's',
+              note: 'The page has stopped changing.' }
+          : { settled: false, waited: Math.round(outcome.waitedMs / 1000) + 's',
+              note: 'Still changing. Wait again with a longer limit if it needs longer.' },
+      };
+    }
     case 'read_page': {
       const tabId = await agentTab();
       /* Read every frame and keep the richest one.

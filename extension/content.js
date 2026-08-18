@@ -1401,6 +1401,32 @@
       return;
     }
 
+    /* A fingerprint of the page, for waiting on.
+     *
+     * Not a snapshot: a snapshot is for a model to read and costs a step to fetch. This is a handful of
+     * numbers the worker can poll as often as it likes, to answer one question - has anything changed?
+     * Text length and element count move when a page is loading, rendering, or streaming an answer, and
+     * sit still when it has finished.
+     */
+    if (msg.mf === 'agent/pulse') {
+      const text = document.body ? document.body.innerText || '' : '';
+      respond({
+        ok: true,
+        state: document.readyState,
+        // Sampled rather than hashed whole: on a long document the hash would cost more than it saves.
+        chars: text.length,
+        head: text.slice(0, 200),
+        tail: text.slice(-200),
+        elements: document.querySelectorAll('a,button,input,select,textarea,[role],[contenteditable]').length,
+        /* A spinner is often the only thing moving on a page that is working, and it is usually one of
+         * these. Counting them separately means "still busy" survives text that happens not to change. */
+        busy: document.querySelectorAll(
+          '[aria-busy="true"],progress,[role="progressbar"],.spinner,.loading,[class*="spinner"],[class*="loading"]'
+        ).length,
+      });
+      return;
+    }
+
     if (msg.mf === 'agent/snapshot') {
       try { respond({ ok: true, page: snapshot(msg.limit || 120) }); }
       catch (err) { respond({ ok: false, error: err.message }); }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MouseFlow",
-  "version": "0.14.1",
+  "version": "0.15.0",
   "description": "Record a flow and repeat it, or describe what you need and have it done for you.",
   "minimum_chrome_version": "127",
   "permissions": [

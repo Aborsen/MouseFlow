@@ -1169,6 +1169,23 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 .c-feed div { padding: 0.12rem 0; }
 .c-feed .c-act { color: var(--text-dim); font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; }
 .c-feed .is-bad { color: var(--bad); }
+
+/* The seam where a run changes hands, and the note it leaves. Both are structure rather than chatter,
+ * so they read differently from the running commentary. */
+.c-feed .c-wave {
+  margin: 0.5rem 0 0.3rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.c-feed .c-hand {
+  padding: 0.35rem 0.5rem;
+  border-left: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-dim);
+}
 .c-note { margin: 0.8rem 0 0; min-height: 1.2em; font-size: 0.88rem; color: var(--text-dim); }
 .c-note.is-bad { color: var(--bad); }
 .c-note.is-good { color: var(--good); }

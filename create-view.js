@@ -68,7 +68,41 @@ function ask(cmd, payload) {
  * the trip back is exactly one multiply and one add - and so nothing here has to guess a screen size.
  */
 
-const DESKTOP_MAX_TURNS = 24;
+/* A step is a MODEL TURN - a screenshot sent, a decision made - not a second of waiting.
+ *
+ * The first version conflated the two, and a run that had to wait for something long (a page
+ * researching, a file exporting) spent its whole budget on `wait`, `wait`, `wait`: twenty-four
+ * screenshots of a progress indicator, and no steps left for the work. Waiting is free now - see
+ * settle() - so what is bounded is decisions, which is the thing worth bounding.
+ *
+ * WAVES
+ *
+ * A single hard limit is the wrong shape for real work: a task either fits or it dies at the ceiling
+ * with everything half-done. So a run is a series of waves of WAVE_TURNS decisions each. At the end of
+ * a wave the model does not act - it writes down what is done, what remains, and the immediate next
+ * step - and the next wave starts from the goal, that note, and a fresh screenshot.
+ *
+ * Two things this buys, and they are the same thing twice:
+ *
+ *   the context stays small     a wave carries its own turns, not the whole history. Twenty screenshots
+ *                               of a progress bar do not follow the run around, so the tenth wave costs
+ *                               what the first did.
+ *   long tasks finish           "research this, then write it up, then send it" is three waves, not one
+ *                               impossible one.
+ *
+ * The overall cap is high rather than absent, because a loop with no ceiling spends money until someone
+ * notices. Stop is always there, and every wave boundary is a place the run reports itself.
+ */
+const WAVE_TURNS = 24;
+const MAX_WAVES = 10;
+
+/* How long a single wait may block, and how often it looks while blocking. Two minutes covers a long
+ * export or a model writing a report; the poll interval is a screenshot from loopback, which costs
+ * nothing but a little disk-free memory. */
+const SETTLE_MAX_MS = 120000;
+const SETTLE_POLL_MS = 1500;
+/* Two consecutive quiet looks, so a caret blinking between frames does not read as movement. */
+const SETTLE_QUIET_FRAMES = 2;
 
 const DESKTOP_SYSTEM = `You are operating a real Windows computer for the user, who described a goal in plain language. You act by looking at a screenshot and choosing one action at a time.
 
@@ -76,6 +110,8 @@ How to work:
 - Each turn you are given a fresh screenshot. Look at it before deciding.
 - Coordinates are in the pixels of the screenshot you were just given. Aim at the CENTRE of what you mean to click.
 - One action per turn, then look again. The screen changes underneath you.
+- Waiting is free and looking is not. The wait tool blocks until the screen has stopped changing, so ONE wait of 60000 is right for something long - a page researching, a report being written, a file exporting. Never a string of short waits: each of those costs a step, and a run has a limited number of them.
+- If a wait comes back and the thing is still not finished, wait again with a longer limit rather than clicking around it.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
 - If two attempts at the same sub-goal get nowhere, change method. If a third fails, call finish and say precisely what you could not do.
 - When the goal is met, call finish with one sentence about what you did.
@@ -143,10 +179,13 @@ const DESKTOP_TOOLS = [
   },
   {
     name: 'wait',
-    description: 'Wait for the screen to settle - a window opening, a file saving.',
+    description: 'Wait for the screen to stop changing - a window opening, a page loading, a long answer being written. This BLOCKS until the screen has been still for a few seconds, or until the limit you give, and it does not cost a step. Use one long wait rather than several short ones: waiting is free, looking is not.',
     input_schema: {
       type: 'object',
-      properties: { ms: { type: 'integer', description: 'Up to 5000' } },
+      properties: {
+        ms: { type: 'integer', description: 'How long to wait at most, in milliseconds. Up to 120000. Use 30000 or more for something that takes a while.' },
+        reason: { type: 'string', description: 'What you are waiting for' },
+      },
       required: ['ms'],
       additionalProperties: false,
     },
@@ -162,6 +201,45 @@ const DESKTOP_TOOLS = [
     },
   },
 ];
+
+/* Has the screen stopped moving?
+ *
+ * A coarse fingerprint - the whole desktop reduced to 64x36 grey samples - because the question is
+ * "is anything happening", not "what changed". At that size a spinner still registers and JPEG-ish
+ * noise does not, and comparing two of them is 2304 subtractions rather than an image diff.
+ */
+async function fingerprint(png) {
+  try {
+    const blob = await (await fetch('data:image/png;base64,' + png)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(64, 36);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, 64, 36);
+    bitmap.close();
+    const { data } = ctx.getImageData(0, 0, 64, 36);
+    const grey = new Uint8Array(64 * 36);
+    for (let i = 0; i < grey.length; i++) {
+      const at = i * 4;
+      grey[i] = (data[at] * 77 + data[at + 1] * 150 + data[at + 2] * 29) >> 8;
+    }
+    return grey;
+  } catch (_) {
+    /* No OffscreenCanvas, or a picture that will not decode. Fall back to the encoded bytes: two
+     * identical screens compress to identical PNGs, so equality still answers "did anything change",
+     * just more sensitively than a threshold would. */
+    return png;
+  }
+}
+
+function moved(a, b) {
+  if (!a || !b) return true;
+  if (typeof a === 'string' || typeof b === 'string') return a !== b;
+  if (a.length !== b.length) return true;
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+  // Mean difference per sample, out of 255. Three is above dither and below anything visible.
+  return sum / a.length > 3;
+}
 
 async function agentCall(base, path, options) {
   const res = await fetch(base + path, Object.assign({ mode: 'cors' }, options));
@@ -200,22 +278,111 @@ export function actionBody(name, input, shot) {
   return null;
 }
 
+/* Wait, without spending a step.
+ *
+ * Polls the screen over loopback - free - and returns as soon as it has been still for a couple of
+ * looks, or when the limit runs out. The model gets one tool result for what used to be a dozen turns
+ * of screenshotting a progress bar.
+ */
+async function settle(base, limitMs, isAborted, onTick) {
+  const started = Date.now();
+  let last = null;
+  let quietSince = null;
+
+  while (Date.now() - started < limitMs) {
+    if (isAborted()) break;
+    await new Promise((done) => setTimeout(done, SETTLE_POLL_MS));
+
+    let shot;
+    try {
+      shot = await agentCall(base, '/shot');
+    } catch (_) {
+      // The agent went away mid-wait; the next turn's shot will report it properly.
+      break;
+    }
+
+    const now = await fingerprint(shot.png);
+    if (last && !moved(last, now)) {
+      if (quietSince === null) quietSince = Date.now();
+      const frames = Math.round((Date.now() - quietSince) / SETTLE_POLL_MS) + 1;
+      if (frames >= SETTLE_QUIET_FRAMES) {
+        return { quiet: true, waited: Date.now() - started, quietFor: Date.now() - quietSince };
+      }
+    } else {
+      quietSince = null;
+    }
+    last = now;
+    if (onTick) onTick(Date.now() - started);
+  }
+
+  return { quiet: false, waited: Date.now() - started, quietFor: 0 };
+}
+
 /* The loop. Reports through `onEvent` rather than touching the DOM, so the console below renders a
  * desktop run and a browser run the same way. */
 export async function runOnDesktop({ goal, base, onEvent, isAborted }) {
-  const messages = [{ role: 'user', content: goal }];
   const steps = [];
+  let handoff = null;                 // what the previous wave said it had done
+  let stepNo = 0;                     // continuous across waves, because the user counts steps once
 
-  for (let turn = 0; turn < DESKTOP_MAX_TURNS; turn++) {
+  for (let wave = 1; wave <= MAX_WAVES; wave++) {
+    /* Each wave starts clean: the goal, and what the last wave left behind. The whole point is that
+     * wave ten is no more expensive than wave one. */
+    const messages = [{
+      role: 'user',
+      content: handoff
+        ? goal + '\n\nThis is a continuation. Earlier work on this same goal reported:\n' + handoff +
+          '\n\nCarry on from there. Look at the screen before assuming anything about it.'
+        : goal,
+    }];
+    if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
+
+    const outcome = await runWave({
+      messages, base, onEvent, isAborted, steps,
+      wave, stepFrom: stepNo,
+    });
+    stepNo = outcome.stepNo;
+
+    if (outcome.done) return outcome.result;
     if (isAborted()) return { ok: false, error: 'stopped', steps };
+
+    /* Out of turns for this wave, and the goal is not met. Ask for the handoff - one turn, no acting -
+     * so the next wave inherits knowledge instead of starting blind. */
+    handoff = await askForHandoff(messages);
+    if (!handoff) {
+      return { ok: false, error: 'It could not summarise where it had got to, so it stopped rather ' +
+        'than starting over blind.', steps };
+    }
+    onEvent({ type: 'handoff', text: handoff });
+  }
+
+  return {
+    ok: false,
+    error: 'It worked through ' + MAX_WAVES + ' waves of ' + WAVE_TURNS + ' steps without finishing. ' +
+      'That is a long way past a normal task - either something on screen is stuck, or the goal needs ' +
+      'breaking into smaller ones.',
+    steps,
+  };
+}
+
+/* One wave: up to WAVE_TURNS decisions against the messages it is given. Returns either a finished run
+ * or "out of turns", and the step number it reached, since the count is continuous for the user even
+ * though the context is not. */
+async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFrom }) {
+  let stepNo = stepFrom;
+
+  for (let turn = 0; turn < WAVE_TURNS; turn++) {
+    if (isAborted()) return { done: false, stepNo };
 
     let shot;
     try {
       shot = await agentCall(base, '/shot');
     } catch (err) {
-      return { ok: false, error: 'Could not see the screen: ' + err.message, steps };
+      return done(stepNo, { ok: false, error: 'Could not see the screen: ' + err.message, steps });
     }
-    if (!shot || !shot.png) return { ok: false, error: 'The agent returned no picture.', steps };
+    if (!shot || !shot.png) {
+      return done(stepNo, { ok: false, error: 'The agent returned no picture.', steps });
+    }
 
     /* The picture goes in as the newest turn, and older pictures are dropped: a conversation carrying
      * twenty screenshots costs a fortune and says nothing the latest one does not. */
@@ -247,19 +414,19 @@ export async function runOnDesktop({ goal, base, onEvent, isAborted }) {
         }),
       });
     } catch (err) {
-      return { ok: false, error: 'Could not reach the MouseFlow server.', steps };
+      return done(stepNo, { ok: false, error: 'Could not reach the MouseFlow server.', steps });
     }
 
     const text = await res.text();
     if (!res.ok) {
       let message = 'The model refused: ' + res.status;
       try { message = JSON.parse(text).error.message || message; } catch (_) {}
-      return { ok: false, error: message, steps };
+      return done(stepNo, { ok: false, error: message, steps });
     }
 
     let answer;
     try { answer = JSON.parse(text); } catch (_) {
-      return { ok: false, error: 'The model sent something unreadable.', steps };
+      return done(stepNo, { ok: false, error: 'The model sent something unreadable.', steps });
     }
 
     const blocks = answer.content || [];
@@ -268,26 +435,46 @@ export async function runOnDesktop({ goal, base, onEvent, isAborted }) {
     const said = blocks.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
     if (said) onEvent({ type: 'text', text: said });
 
+    stepNo++;
+    onEvent({ type: 'turn', n: stepNo, wave, inWave: turn + 1, of: WAVE_TURNS });
+
     const uses = blocks.filter((b) => b.type === 'tool_use');
     if (!uses.length) {
-      return { ok: true, said: said || 'It had nothing further to do.', steps };
+      return done(stepNo, { ok: true, said: said || 'It had nothing further to do.', steps });
     }
 
     const results = [];
     for (const use of uses) {
       if (use.name === 'finish') {
         const closing = (use.input && use.input.said) || said || 'Done.';
-        return { ok: use.input && use.input.ok === false ? false : true, said: closing,
-                 error: use.input && use.input.ok === false ? closing : undefined, steps };
+        return done(stepNo, {
+          ok: use.input && use.input.ok === false ? false : true,
+          said: closing,
+          error: use.input && use.input.ok === false ? closing : undefined,
+          steps,
+        });
       }
 
       onEvent({ type: 'tool', name: use.name, input: use.input });
       steps.push({ tool: use.name, input: use.input });
 
       if (use.name === 'wait') {
-        const ms = Math.min(5000, Math.max(0, Number(use.input && use.input.ms) || 500));
-        await new Promise((done) => setTimeout(done, ms));
-        results.push({ type: 'tool_result', tool_use_id: use.id, content: 'waited ' + ms + 'ms' });
+        const limit = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input && use.input.ms) || 2000));
+        const settled = await settle(base, limit, isAborted, (waited) => {
+          onEvent({ type: 'waiting', ms: waited, limit,
+                    reason: (use.input && use.input.reason) || '' });
+        });
+        /* The answer says which of the two it was, because "still moving after two minutes" and
+         * "quiet after four seconds" call for different next moves. */
+        results.push({
+          type: 'tool_result',
+          tool_use_id: use.id,
+          content: settled.quiet
+            ? 'The screen has been still for ' + Math.round(settled.quietFor / 1000) + 's after ' +
+              Math.round(settled.waited / 1000) + 's of waiting.'
+            : 'Still changing after ' + Math.round(settled.waited / 1000) +
+              's. Wait again with a longer limit if it needs longer.',
+        });
         continue;
       }
 
@@ -317,7 +504,51 @@ export async function runOnDesktop({ goal, base, onEvent, isAborted }) {
     messages.push({ role: 'user', content: results });
   }
 
-  return { ok: false, error: 'It used all ' + DESKTOP_MAX_TURNS + ' steps without finishing.', steps };
+  // Out of turns for this wave. The caller asks for a handoff and starts the next one.
+  return { done: false, stepNo };
+}
+
+const done = (stepNo, result) => ({ done: true, stepNo, result });
+
+/* The seam between waves.
+ *
+ * Deliberately a plain question with no tools offered, so the answer cannot be another action: what is
+ * wanted here is knowledge, and a model handed a hammer at this point would swing it. Written for the
+ * next wave to read rather than for the user, though the console shows it - a run that changes hands
+ * should say what it knew.
+ */
+async function askForHandoff(messages) {
+  messages.push({
+    role: 'user',
+    content: 'You have used this stretch of steps. Do not act now, and do not call a tool. Write a ' +
+      'short note for whoever picks this up next: what is already done, what still needs doing, and ' +
+      'the immediate next action. Mention anything on screen they will need - a window that is open, ' +
+      'a file name, where you got to in a list.',
+  });
+
+  let res;
+  try {
+    res = await fetch('/api/claude', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-5',
+        max_tokens: 700,
+        system: 'You are handing an unfinished task to someone who will continue it. Be concrete and brief.',
+        messages,
+      }),
+    });
+  } catch (_) {
+    return null;
+  }
+  if (!res.ok) return null;
+
+  let answer;
+  try { answer = JSON.parse(await res.text()); } catch (_) { return null; }
+  const text = (answer.content || [])
+    .filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+  return text || null;
 }
 
 export function mountCreate(root) {
@@ -474,7 +705,9 @@ export function mountCreate(root) {
 
   function renderTarget() {
     el.cost.textContent = target === 'desktop'
-      ? 'Each step sends a picture of your screen to the model. Up to 24 steps per run.'
+      ? 'A step is one decision, and each sends a picture of your screen to the model. ' +
+        WAVE_TURNS + ' steps to a wave, up to ' + MAX_WAVES + ' waves — at the end of a wave it writes ' +
+        'down where it got to and carries on. Waiting for something to finish costs nothing.'
       : 'Each step sends the page\u2019s elements to the model, not a picture. Up to 40 steps per run.';
     for (const button of el.target.querySelectorAll('.seg-btn')) {
       button.classList.toggle('on', button.dataset.target === target);
@@ -512,7 +745,11 @@ export function mountCreate(root) {
     el.stop.hidden = !running;
     el.goal.disabled = running;
 
-    const lines = (status.log || []).slice(-14);
+    /* A wait can tick for two minutes, and a `turn` arrives before every decision. Neither belongs in
+     * the transcript as its own line - one would flood it and the other would repeat it - so both are
+     * folded into the status line above instead. */
+    const log = status.log || [];
+    const lines = log.filter((e) => e.type !== 'turn' && e.type !== 'waiting').slice(-16);
     el.feed.hidden = !lines.length;
     el.feed.textContent = '';
     for (const event of lines) {
@@ -521,6 +758,14 @@ export function mountCreate(root) {
         line.className = 'c-act';
         line.textContent = event.name + (event.input && event.input.url ? ' ' + event.input.url : '');
       } else if (event.type === 'text') {
+        line.textContent = event.text;
+      } else if (event.type === 'wave') {
+        /* Marked in the transcript, because it is the one place the run forgets what it saw and
+         * continues from a written note instead. A reader should be able to see that seam. */
+        line.className = 'c-wave';
+        line.textContent = 'Wave ' + event.n + ' — carrying on from what it wrote down';
+      } else if (event.type === 'handoff') {
+        line.className = 'c-hand';
         line.textContent = event.text;
       } else if (event.type === 'error') {
         line.className = 'is-bad';
@@ -539,7 +784,22 @@ export function mountCreate(root) {
     el.where.textContent = running && step && step.host ? 'working on ' + step.host : '';
 
     if (running) {
-      say(stopping ? 'Stopping after the current step…' : 'Running…');
+      /* Where it has got to, in the terms the budget is counted in: a step is a decision, waiting is
+       * not. Saying both stops "step 12 of 24" looking like a run that has stalled while it waits. */
+      const lastTurn = [...log].reverse().find((e) => e.type === 'turn');
+      const lastWait = log[log.length - 1] && log[log.length - 1].type === 'waiting'
+        ? log[log.length - 1] : null;
+      const where = [];
+      if (lastTurn) {
+        where.push('step ' + lastTurn.n +
+          (lastTurn.wave > 1 ? ' (wave ' + lastTurn.wave + ', ' + lastTurn.inWave + ' of ' +
+            lastTurn.of + ')' : ' of ' + lastTurn.of));
+      }
+      if (lastWait) {
+        where.push('waiting ' + Math.round(lastWait.ms / 1000) + 's for the screen to settle' +
+          (lastWait.reason ? ' — ' + lastWait.reason : ''));
+      }
+      say(stopping ? 'Stopping after the current step…' : (where.join(' · ') || 'Running…'));
       return;
     }
 

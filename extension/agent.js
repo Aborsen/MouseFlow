@@ -31,7 +31,22 @@ function fetchWithBody(url, headers, body) {
 }
 const MODEL = 'claude-opus-5';
 const MAX_TOKENS = 16000;
-const MAX_TURNS = 40;
+/* WAVES
+ *
+ * A single ceiling is the wrong shape for real work: a task either fits under it or dies against it
+ * with everything half-done - a draft written and not sent, a dialog left open. So a run is a series of
+ * waves. Each wave gets WAVE_TURNS decisions; when they run out the model stops acting and writes down
+ * what is done, what remains and the next step, and the following wave starts from the goal plus that
+ * note.
+ *
+ * The context resets at every seam, which is the other half of the point: a run does not drag twenty
+ * page snapshots behind it, so the tenth wave costs what the first did.
+ *
+ * The same shape as the web app's desktop engine, deliberately - see create-view.js. Two halves of one
+ * product should not have two ideas about what a long task is.
+ */
+const WAVE_TURNS = 24;
+const MAX_WAVES = 10;
 
 const SYSTEM = `You are driving a real Chrome tab on the user's own computer to accomplish a goal they described in plain language.
 
@@ -39,6 +54,8 @@ How to work:
 - Call read_page first. After that, every action hands back the page as it is afterwards, with fresh refs - so you do NOT need a read_page between actions. Use read_page again when you need the full view, the page text, or after a navigation.
 - Refs always come from the most recent snapshot, whether that came from read_page or from the last action. Older refs are stale.
 - Take one action at a time and check the result. Do not guess a ref you have not seen.
+- Waiting is free and looking is not. When something is loading, generating or writing out an answer, call wait with a generous limit - it blocks until the page stops changing and costs you no steps. Never poll with read_page to pass time; each of those is a step you will want later.
+- If a wait returns and the thing is still unfinished, wait again with a longer limit rather than working around it.
 - When a dialog is open, its controls are listed FIRST and the snapshot names it. Work inside it rather than reaching past it into the page behind.
 - The snapshot may carry notes about the site you are on. They are conventions of that application, worth more than guessing from the element list. Read them.
 - Reach for a keyboard shortcut before hunting for an icon. Some controls only exist once another element has focus, so no amount of looking will find them; the shortcut works regardless.
@@ -112,6 +129,18 @@ const TOOLS = [
     },
   },
   {
+    name: 'wait',
+    description: 'Wait for the page to stop changing - loading, rendering, or writing out a long answer. This BLOCKS until the page has been still for a few seconds or until your limit, and it does NOT cost a step. Use one long wait rather than repeated read_page calls: waiting is free, looking is not.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ms: { type: 'integer', description: 'How long to wait at most, in milliseconds. Up to 120000. Use 30000 or more for something that takes a while, such as a page researching or generating.' },
+      },
+      required: ['ms'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'press_key',
     description: 'Press a key, with modifiers if needed, against whatever has focus. A keyboard shortcut is usually far more reliable than hunting for an icon control - and some controls only exist once something else has focus, where a shortcut always works. Gmail opens Cc with Control+Shift+C and sends with Control+Enter.',
     input_schema: {
@@ -175,13 +204,62 @@ function textOf(content) {
  * @param {function} opts.isAborted () => boolean
  */
 export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAborted }) {
-  const messages = [{ role: 'user', content: goal }];
   const steps = [];
+  let handoff = null;
+  let stepNo = 0;
+
+  for (let wave = 1; wave <= MAX_WAVES; wave++) {
+    const messages = [{
+      role: 'user',
+      content: handoff
+        ? goal + '\n\nThis is a continuation of the same goal. The earlier attempt reported:\n' +
+          handoff + '\n\nCarry on from there. Call read_page first - do not assume the page is where ' +
+          'it was left.'
+        : goal,
+    }];
+    if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
+
+    const outcome = await runWave({
+      messages, execute, onEvent, isAborted, apiKey, authToken, steps,
+      wave, stepFrom: stepNo,
+    });
+    stepNo = outcome.stepNo;
+    if (outcome.done) return outcome.result;
+    if (isAborted()) return { ok: false, error: 'stopped', steps };
+
+    handoff = await handoffNote({ messages, apiKey, authToken });
+    if (!handoff) {
+      return { ok: false, error: 'It ran out of steps and could not summarise where it had got to, ' +
+        'so it stopped rather than starting over blind.', steps };
+    }
+    onEvent({ type: 'handoff', text: handoff });
+  }
+
+  return {
+    ok: false,
+    error: 'It worked through ' + MAX_WAVES + ' waves of ' + WAVE_TURNS + ' steps without finishing. ' +
+      'Either something on the page is stuck, or the goal needs breaking into smaller ones.',
+    steps,
+  };
+}
+
+/* A wave that ended in a result rather than in a seam. Every exit from runWave goes through this or
+ * through `{ done: false }`, so the caller has exactly two cases to think about - and a missed one is
+ * visible as an object with no `done`, which is how a finished run once went on to ask for a handover
+ * note it did not need. */
+const waveDone = (stepNo, result) => ({ done: true, stepNo, result });
+
+/* One wave. Same loop as before; what changed is that running out of turns is a seam rather than the
+ * end, and that the step number carries across waves because the user counts steps once. */
+async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToken, steps, wave, stepFrom }) {
+  let stepNo = stepFrom;
   let turns = 0;
 
-  while (turns < MAX_TURNS) {
-    if (isAborted()) return { ok: false, error: 'stopped', steps };
+  while (turns < WAVE_TURNS) {
+    if (isAborted()) return { done: false, stepNo };
     turns++;
+    stepNo++;
+    onEvent({ type: 'turn', n: stepNo, wave, inWave: turns, of: WAVE_TURNS });
 
     /* Own key: straight to Anthropic. No key: the shared demo proxy, which attaches one
      * server-side. The credential headers are only sent on the direct path - the proxy has no
@@ -217,13 +295,13 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
         messages,
       });
     } catch (err) {
-      return {
+      return waveDone(stepNo, {
         ok: false,
         error: direct
           ? 'Could not reach api.anthropic.com - check the connection and try again.'
           : 'Could not reach the MouseFlow server - check the connection, or add your own API key.',
         steps,
-      };
+      });
     }
 
     if (!res.ok) {
@@ -251,7 +329,7 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
           : 'The shared demo key is rate limited - everyone is using the same one. ' +
             'Wait a moment, or add your own key.';
       }
-      return { ok: false, error: message, recover, steps };
+      return waveDone(stepNo, { ok: false, error: message, recover, steps });
     }
 
     const reply = await res.json();
@@ -260,11 +338,11 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
     // content that may be empty.
     if (reply.stop_reason === 'refusal') {
       const why = reply.stop_details && reply.stop_details.category;
-      return {
+      return waveDone(stepNo, {
         ok: false,
         error: 'Claude declined this request' + (why ? ' (' + why + ')' : '') + '.',
         steps,
-      };
+      });
     }
 
     const say = textOf(reply.content);
@@ -272,7 +350,7 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
 
     const calls = (reply.content || []).filter((b) => b.type === 'tool_use');
     if (!calls.length) {
-      return { ok: true, summary: say || 'Finished without a summary.', steps };
+      return waveDone(stepNo, { ok: true, summary: say || 'Finished without a summary.', steps });
     }
 
     messages.push({ role: 'assistant', content: reply.content });
@@ -280,19 +358,19 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
     const finished = calls.find((c) => c.name === 'finish');
     if (finished) {
       onEvent({ type: 'done', text: finished.input.summary });
-      return {
+      return waveDone(stepNo, {
         ok: true,
         summary: finished.input.summary,
         needsUser: !!finished.input.needs_user,
         steps,
-      };
+      });
     }
 
     // Every tool_result for this turn goes back in ONE user message - splitting them
     // teaches the model to stop calling tools in parallel.
     const results = [];
     for (const call of calls) {
-      if (isAborted()) return { ok: false, error: 'stopped', steps };
+      if (isAborted()) return { done: false, stepNo };
 
       onEvent({ type: 'act', name: call.name, input: call.input });
       let outcome;
@@ -324,19 +402,72 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
      * A run that hits the limit is cut off mid-task with whatever it had half-done - a saved draft,
      * an open dialog - and no summary of where it got to. Given a few steps' notice it can finish
      * cleanly or say plainly what is left. */
-    const left = MAX_TURNS - turns;
-    if (left <= 6) {
+    /* Warn before the seam rather than at it.
+     *
+     * A wave that ends mid-task hands over, which is survivable - but finishing cleanly is better than
+     * handing over, and tidying up beats leaving a draft and an open dialog for the next wave to
+     * puzzle over. */
+    const left = WAVE_TURNS - turns;
+    if (left <= 5) {
       results.push({
         type: 'text',
         text: left <= 1
-          ? 'This is your last step. Call finish now and say exactly what is done and what is not.'
-          : left + ' steps remain. Finish the task, or wrap up and call finish with what is done ' +
-            'and what is left - including anything you opened that should be closed.',
+          ? 'This is your last step in this stretch. If the task is done, call finish. If not, leave ' +
+            'the screen somewhere sensible - close anything half-open - because you will be asked to ' +
+            'write a handover note next.'
+          : left + ' steps left in this stretch. Finish if you can; otherwise get to a clean stopping ' +
+            'point, since you will hand over rather than being cut off.',
       });
     }
 
     messages.push({ role: 'user', content: results });
   }
 
-  return { ok: false, error: 'Stopped after ' + MAX_TURNS + ' steps without finishing.', steps };
+  // Out of turns for this wave. The caller asks for a note and starts the next one.
+  return { done: false, stepNo };
+}
+
+/* The seam between waves.
+ *
+ * No tools are offered, deliberately: what is wanted here is knowledge, and a model handed a hammer at
+ * this point swings it. Written for the next wave rather than for the user.
+ */
+async function handoffNote({ messages, apiKey, authToken }) {
+  const direct = !!apiKey;
+  const headers = { 'content-type': 'application/json' };
+  if (!direct && authToken) headers.authorization = 'Bearer ' + authToken;
+  if (direct) {
+    Object.assign(headers, {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    });
+  }
+
+  const asking = messages.concat([{
+    role: 'user',
+    content: 'You have used this stretch of steps. Do not act and do not call a tool. Write a short ' +
+      'note for whoever continues this: what is already done, what still needs doing, and the ' +
+      'immediate next action. Name anything they will need - which tab, which dialog, how far through ' +
+      'a list you got.',
+  }]);
+
+  let res;
+  try {
+    res = await fetchWithBody(direct ? API_URL : SHARED_URL, headers, {
+      model: MODEL,
+      max_tokens: 700,
+      system: 'You are handing an unfinished task to someone who will continue it. Be concrete and brief.',
+      messages: asking,
+    });
+  } catch (_) {
+    return null;
+  }
+  if (!res.ok) return null;
+
+  let answer;
+  try { answer = await res.json(); } catch (_) { return null; }
+  const text = (answer.content || [])
+    .filter((block) => block.type === 'text').map((block) => block.text).join(' ').trim();
+  return text || null;
 }
