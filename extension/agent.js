@@ -39,6 +39,9 @@ How to work:
 - Call read_page first, and again after anything that changes the page. Refs come from the most recent snapshot only; after a click or a navigation the old refs are stale.
 - Take one action at a time and check the result. Do not guess a ref you have not seen.
 - When a dialog is open, its controls are listed FIRST and the snapshot names it. Work inside it rather than reaching past it into the page behind.
+- The snapshot may carry notes about the site you are on. They are conventions of that application, worth more than guessing from the element list. Read them.
+- Reach for a keyboard shortcut before hunting for an icon. Some controls only exist once another element has focus, so no amount of looking will find them; the shortcut works regardless.
+- If two attempts at the same sub-goal get nowhere, change method rather than repeating - a shortcut instead of a control, or the field instead of the button. If a third does not work, call finish and say precisely what you could not do.
 - The snapshot says how many elements it is showing out of how many exist. If what you need is missing and the snapshot is truncated, scroll or work within the open dialog - do not conclude the control is absent.
 - Use one approach at a time. Do not navigate to a URL that already opens something AND also click the control that opens it; that leaves two of whatever it was.
 - If you open something and then change approach, close what you opened before carrying on. Stray windows, drafts and tabs left behind are part of the result, and the user has to clear them up.
@@ -109,10 +112,16 @@ const TOOLS = [
   },
   {
     name: 'press_key',
-    description: 'Press a single key against whatever currently has focus. Useful for Enter, Escape, Tab, and arrow keys.',
+    description: 'Press a key, with modifiers if needed, against whatever has focus. A keyboard shortcut is usually far more reliable than hunting for an icon control - and some controls only exist once something else has focus, where a shortcut always works. Gmail opens Cc with Control+Shift+C and sends with Control+Enter.',
     input_schema: {
       type: 'object',
-      properties: { key: { type: 'string', description: 'Enter, Escape, Tab, ArrowDown, ArrowUp' } },
+      properties: {
+        key: { type: 'string', description: 'Enter, Escape, Tab, ArrowDown, or a single character such as C' },
+        ctrl: { type: 'boolean', description: 'Hold Control' },
+        shift: { type: 'boolean', description: 'Hold Shift' },
+        alt: { type: 'boolean', description: 'Hold Alt' },
+        meta: { type: 'boolean', description: 'Hold Command or Windows' },
+      },
       required: ['key'],
       additionalProperties: false,
     },

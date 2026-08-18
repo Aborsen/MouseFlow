@@ -409,6 +409,62 @@
     el.dispatchEvent(new Ctor(type, init));
   }
 
+  /* Keys, pressed properly.
+   *
+   * Two things were missing and both made a shortcut a silent no-op. There were no modifiers, so
+   * Control+Shift+C could not be expressed at all. And `keyCode` was absent: it is deprecated and
+   * read-only, and the KeyboardEvent constructor ignores it in the init dictionary, but plenty of
+   * long-lived applications - Gmail among them - still branch on it. So it is defined onto the
+   * event afterwards.
+   *
+   * The cost of getting this wrong was not a visible error. press_key reported success every time
+   * while doing nothing, and the agent went on to spend twenty steps clicking around for a control
+   * that one shortcut would have opened.
+   */
+  const KEY_CODES = {
+    Enter: 13, Escape: 27, Tab: 9, Backspace: 8, Delete: 46, ' ': 32,
+    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
+    Home: 36, End: 35, PageUp: 33, PageDown: 34,
+  };
+
+  function keyCodeFor(key) {
+    if (KEY_CODES[key] != null) return KEY_CODES[key];
+    if (key.length === 1) return key.toUpperCase().charCodeAt(0);
+    return 0;
+  }
+
+  function pressKey(target, spec) {
+    const key = String(spec.key || '');
+    if (!key) return;
+    const legacy = keyCodeFor(key);
+    const init = {
+      key,
+      code: key.length === 1 ? 'Key' + key.toUpperCase() : key,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      ctrlKey: !!spec.ctrl,
+      shiftKey: !!spec.shift,
+      altKey: !!spec.alt,
+      metaKey: !!spec.meta,
+    };
+    // keypress is not raised for modified or non-printing keys, and faking it confuses editors.
+    const types = spec.ctrl || spec.alt || spec.meta || key.length > 1
+      ? ['keydown', 'keyup']
+      : ['keydown', 'keypress', 'keyup'];
+
+    for (const type of types) {
+      const ev = new KeyboardEvent(type, init);
+      try {
+        Object.defineProperty(ev, 'keyCode', { get: () => legacy });
+        Object.defineProperty(ev, 'which', { get: () => legacy });
+      } catch (_) {
+        // Frozen in some environments; key and code still carry.
+      }
+      target.dispatchEvent(ev);
+    }
+  }
+
   // React and Vue track the value through the prototype setter, so assigning
   // el.value directly leaves their state stale and the change is discarded.
   function setValue(el, value) {
@@ -972,9 +1028,7 @@
         if (el.focus) el.focus({ preventScroll: true });
         throw new Error('this step recorded a password field and was not stored - type it yourself, then resume');
       case 'key': {
-        const init = { key: ev.key, code: ev.key, bubbles: true, cancelable: true, composed: true };
-        el.dispatchEvent(new KeyboardEvent('keydown', init));
-        el.dispatchEvent(new KeyboardEvent('keyup', init));
+        pressKey(el, ev);
         return target;
       }
       default:
@@ -1060,6 +1114,18 @@
       .filter((d) => isVisible(d));
     // Last in DOM order is the one on top in practice.
     return found.length ? found[found.length - 1] : null;
+  }
+
+  // The element inside `root` that actually scrolls, if any.
+  function scrollableWithin(root) {
+    if (!root) return null;
+    const scrolls = (el) => {
+      if (el.scrollHeight <= el.clientHeight + 4) return false;
+      try { return /(auto|scroll)/.test(getComputedStyle(el).overflowY); } catch (_) { return false; }
+    };
+    if (scrolls(root)) return root;
+    for (const el of root.querySelectorAll('*')) if (scrolls(el)) return el;
+    return null;
   }
 
   function onScreen(el) {
@@ -1177,19 +1243,31 @@
   async function agentAct(cmd, from) {
     if (cmd.action === 'scroll') {
       const by = (cmd.amount || 600) * (cmd.direction === 'up' ? -1 : 1);
-      scrollBy({ top: by, behavior: 'instant' });
-      return { ok: true };
+      /* Scroll the thing a person would scroll. An open dialog is its own scroll container, so
+       * scrolling the window did nothing at all - a wasted step, and read_page then reported an
+       * unchanged page, which reads like the page having no more content. */
+      const box = scrollableWithin(openDialog());
+      if (box) {
+        box.scrollTop += by;
+      } else {
+        scrollBy({ top: by, behavior: 'instant' });
+      }
+      await settle(120, 800);
+      return { ok: true, result: { scrolled: box ? 'dialog' : 'page' } };
     }
 
     if (cmd.action === 'press_key') {
       const target = document.activeElement || document.body;
-      const init = { key: cmd.key, code: cmd.key, bubbles: true, cancelable: true, composed: true };
-      target.dispatchEvent(new KeyboardEvent('keydown', init));
-      target.dispatchEvent(new KeyboardEvent('keyup', init));
-      // Enter inside a form is expected to submit it; the synthetic keydown alone will not.
-      if (cmd.key === 'Enter' && target.form && typeof target.form.requestSubmit === 'function') {
+      pressKey(target, cmd);
+      /* Enter inside a form is expected to submit it, and a synthetic keydown alone will not - but
+       * only for a bare Enter. Control+Enter is a shortcut the app handles itself, and submitting
+       * on top of it would fire twice. */
+      const bare = !cmd.ctrl && !cmd.alt && !cmd.meta && !cmd.shift;
+      if (cmd.key === 'Enter' && bare && target.form &&
+          typeof target.form.requestSubmit === 'function') {
         target.form.requestSubmit();
       }
+      await settle(150, 1200);
       return { ok: true };
     }
 
@@ -1222,10 +1300,9 @@
       if (el.isContentEditable) setEditableText(el, cmd.text);
       else setValue(el, cmd.text);
       if (cmd.submit) {
-        const init = { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, composed: true };
-        el.dispatchEvent(new KeyboardEvent('keydown', init));
-        el.dispatchEvent(new KeyboardEvent('keyup', init));
+        pressKey(el, { key: 'Enter' });
         if (el.form && typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
+        await settle(150, 1200);
       }
       return { ok: true, cursor: cursorEnd };
     }

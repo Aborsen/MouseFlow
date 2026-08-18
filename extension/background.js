@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.7.1';
+const VERSION = '0.8.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -111,6 +111,36 @@ function originOf(url) {
 
 function hostOf(url) {
   try { return new URL(url).host; } catch (_) { return null; }
+}
+
+/* What a person already knows about the app they are in.
+ *
+ * The agent is good at deciding what to do next and bad at guessing an application's conventions.
+ * It spent twenty steps failing to add a Cc in Gmail: Cc is a control that only appears once the
+ * recipient row has focus, and the shortcut that opens it directly was being dropped on the floor
+ * by our own press_key.
+ *
+ * This is the static half of that problem - knowledge that does not change from run to run, handed
+ * over when the run is actually on that site. Deliberately short: these are hints, and a long list
+ * would crowd out what the page itself is saying. Matched by host suffix.
+ */
+const SITE_NOTES = [
+  {
+    host: 'mail.google.com',
+    notes: [
+      'Cc: Control+Shift+C. Bcc: Control+Shift+B. Use these rather than hunting for the Cc control, which only appears once the recipient row has focus.',
+      'Send: Control+Enter.',
+      'To reply: open the thread; the reply box is at the BOTTOM of it.',
+      'A recipient field takes an address followed by Enter, which turns it into a chip. Check the chip appeared before moving on.',
+      'Do not use the pop-out or full-screen buttons; they replace the dialog you are working in.',
+    ],
+  },
+];
+
+function siteNotes(url) {
+  const host = hostOf(url) || '';
+  const found = SITE_NOTES.find((s) => host === s.host || host.endsWith('.' + s.host));
+  return found ? found.notes : null;
 }
 
 async function activeTab() {
@@ -912,6 +942,9 @@ async function runAgentTool(name, input) {
       }
 
       if (!best) return { ok: false, error: 'could not read the page' };
+      // Conventions of this particular app, if we know any.
+      const notes = siteNotes(best.page && best.page.url);
+      if (notes) best.page.notes = notes;
       /* Frame 0 is the main frame, and a perfectly valid target. `|| null` collapsed it to
        * null - and null means "unknown" to send(), which then broadcasts to EVERY frame. A
        * broadcast resolves with whichever frame answers first, and refs only mean anything in
