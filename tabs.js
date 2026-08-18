@@ -57,6 +57,12 @@ function show(view) {
   const title = document.getElementById('topbar-title');
   if (title) title.textContent = TITLES[view] || 'MouseFlow';
   mount(view);
+  /* Mounting happens once; arriving happens repeatedly. A view that depends on something outside the
+   * page - Create needs an extension or a local agent - has to look again rather than show what was
+   * true the first time it was opened. */
+  if (view === 'create' && mounted.create && typeof mounted.create.reload === 'function') {
+    mounted.create.reload();
+  }
 }
 
 for (const tab of document.querySelectorAll('#tabs .tab')) {

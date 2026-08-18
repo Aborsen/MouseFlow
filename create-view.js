@@ -387,7 +387,20 @@ export function mountCreate(root) {
   function blocked(reason) {
     el.gate.hidden = false;
     el.gate.className = 'c-gate';
-    el.gate.textContent = reason;
+    el.gate.textContent = '';
+    el.gate.appendChild(document.createTextNode(reason + ' '));
+    /* Every one of these is fixed somewhere else - a PowerShell window, chrome://extensions - and the
+     * user comes back here expecting the page to have noticed. It re-checks on its own when the tab
+     * regains focus, and this is for when that is not enough. */
+    const again = document.createElement('button');
+    again.className = 'btn btn--sm btn--ghost';
+    again.type = 'button';
+    again.textContent = 'Check again';
+    again.addEventListener('click', () => {
+      checking();
+      checkReach().then((ok) => { if (ok) refresh(); });
+    });
+    el.gate.appendChild(again);
     el.run.disabled = true;
   }
 
@@ -657,9 +670,22 @@ export function mountCreate(root) {
     checkReach().then((ok) => { if (ok) refresh(); });
   });
 
+  /* Coming back to the tab is the signal that something was fixed elsewhere: the agent restarted, the
+   * extension reloaded. Re-checking then is what makes "start it and come back" work without a
+   * reload - and it is bounded to when the page is actually visible, so it costs nothing while it is
+   * not. */
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || desktop.running) return;
+    checkReach().then((ok) => { if (ok) refresh(); });
+  });
+
   renderTarget();
   checking();
   checkReach().then((ok) => { if (ok) refresh(); });
 
-  return { reload: refresh };
+  /* Re-checks as well as re-renders, since a caller asking for a reload means "look again", and what
+   * is most likely to have changed is whether the engine is there at all. */
+  return {
+    reload: () => { checkReach().then((ok) => { if (ok) refresh(); }); },
+  };
 }

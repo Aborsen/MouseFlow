@@ -1344,10 +1344,13 @@ $err = [MouseFlow.Agent]::LastError
 if ($err) { throw "Could not install the mouse hook: $err" }
 
 Write-Host ""
-Write-Host "  MouseFlow agent 0.1.0" -ForegroundColor Cyan
+# Read from the compiled constant, never written twice. A hardcoded banner said 0.1.0 while the code
+# was 0.2.0, so the one place a user checks which build they are running was the one place that lied.
+Write-Host ("  MouseFlow agent " + [MouseFlow.Agent]::Version) -ForegroundColor Cyan
 Write-Host "  listening   http://127.0.0.1:$Port"
 Write-Host "  origin      $AllowOrigin"
 Write-Host "  move filter $MoveThrottleMs ms / $MoveMinPx px"
+Write-Host "  can see     yes - /shot and /do are available to the app"
 Write-Host ""
 if ($AllowOrigin -eq '*') {
     Write-Warning "Any site open in your browser can drive your mouse while this agent runs."
