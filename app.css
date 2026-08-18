@@ -742,3 +742,225 @@ kbd {
 .gate-note--bad { color: #f85149; }
 .gate-fine { margin: 18px 0 0 !important; font-size: 12px; opacity: 0.72; }
 .pill--who { background: rgba(255,255,255,0.06); border-color: transparent; }
+
+/* ---------- the sidebar ----------
+ *
+ * A row of tabs said where you were and nothing else. This says the same thing with room left over
+ * for what you were working on and whose account it is - and it collapses to a rail, because on a
+ * narrow window the flows matter more than the labels.
+ *
+ * Two states, one class: .side--tight is set on the sidebar itself and everything else follows from
+ * it, so there is no second layout to keep in step.
+ */
+
+.shell { display: flex; align-items: stretch; min-height: 100vh; }
+.content { flex: 1 1 auto; min-width: 0; }
+
+.side {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  /* Fixed, not merely preferred: as a flex item it shrank whenever a view wanted the room, so the
+   * labels lost a few pixels on every wide screen and the width was never the width. */
+  flex: 0 0 236px;
+  width: 236px;
+  height: 100vh;
+  padding: 0.75rem 0.6rem 0.6rem;
+  background: var(--bg-inset);
+  border-right: 1px solid var(--line-soft);
+  transition: width 120ms ease;
+}
+
+.side-top { display: flex; align-items: center; gap: 0.4rem; padding: 0 0.15rem 0.5rem; }
+
+.side-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.2rem;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.side-brand-name { white-space: nowrap; overflow: hidden; }
+
+.side-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.side-icon:hover { background: var(--bg-raised); color: var(--text); }
+.side-glyph { width: 17px; height: 17px; }
+
+/* The reopen control lives in the top bar, and only while the sidebar is a rail. */
+.side-icon--bar { display: none; margin-left: 0; }
+
+.side-nav { display: flex; flex-direction: column; gap: 1px; }
+
+.side-item {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  padding: 0.5rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.92rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-item .side-glyph { flex: 0 0 auto; opacity: 0.9; }
+.side-item .side-text { white-space: nowrap; overflow: hidden; }
+.side-item:hover { background: var(--bg-raised); color: var(--text); }
+
+.side-item.tab--on {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.side-item.tab--on .side-glyph { color: var(--accent); opacity: 1; }
+.side-item--new { color: var(--text); margin-bottom: 0.35rem; }
+
+/* Recent takes the leftover height and scrolls on its own, so the account block below it is always
+ * reachable however many flows there are. */
+.side-recent { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin-top: 1.1rem; }
+
+.side-label {
+  margin: 0 0 0.35rem 0.6rem;
+  font-size: 0.68rem;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.side-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+
+.side-list button {
+  display: block;
+  width: 100%;
+  padding: 0.34rem 0.55rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  /* Faded rather than cut with an ellipsis, as in the design: a hard cut looks like a bug. */
+  mask-image: linear-gradient(to right, #000 82%, transparent);
+  cursor: pointer;
+}
+
+.side-list button:hover { background: var(--bg-raised); color: var(--text); }
+.side-list .side-src { margin-left: 0.4rem; font-size: 0.72rem; color: var(--text-faint); }
+
+.side-foot { flex: 0 0 auto; margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--line-soft); }
+
+.side-stat {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.3rem 0.6rem 0.5rem;
+  font-size: 0.82rem;
+  color: var(--text-faint);
+}
+
+.side-account {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.45rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-account:hover { background: var(--bg-raised); }
+
+.side-avatar {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.side-who { min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.side-who strong { font-size: 0.84rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-who span { font-size: 0.72rem; color: var(--text-faint); white-space: nowrap; }
+
+/* ---------- collapsed to a rail ---------- */
+
+.side--tight { flex-basis: 56px; width: 56px; padding-left: 0.5rem; padding-right: 0.5rem; align-items: center; }
+.side--tight .side-brand-name,
+.side--tight .side-text,
+.side--tight .side-who,
+.side--tight .side-recent,
+.side--tight .side-stat,
+.side--tight #side-toggle { display: none; }
+.side--tight .side-top { justify-content: center; padding-bottom: 0.7rem; }
+.side--tight .side-item { justify-content: center; padding: 0.55rem 0; }
+.side--tight .side-account { justify-content: center; padding: 0.45rem 0; }
+.side--tight .side-foot { width: 100%; }
+body:has(.side--tight) .side-icon--bar { display: grid; }
+
+/* The top bar keeps the agent pill and gains the title, since the sidebar took the brand. */
+.topbar-title { margin: 0; font-size: 0.98rem; font-weight: 600; letter-spacing: -0.01em; }
+.topbar { justify-content: flex-start; gap: 0.7rem; }
+.topbar .pill { margin-left: auto; }
+
+/* Below this there is no room for a sidebar and a two-column view at once, so it starts as a rail.
+ * A window this size is a phone or a split screen; the flows matter more than the labels. */
+@media (max-width: 820px) {
+  .side { flex-basis: 56px; width: 56px; padding-left: 0.5rem; padding-right: 0.5rem; align-items: center; }
+  .side-brand-name, .side-text, .side-who, .side-recent, .side-stat, #side-toggle { display: none; }
+  .side-top { justify-content: center; }
+  .side-item, .side-account { justify-content: center; }
+}
+
+/* Where "New flow" sends you. A scroll alone is easy to miss on a page of cards. */
+.card.is-called {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+  transition: box-shadow 200ms ease, border-color 200ms ease;
+}
+
+/* hidden is only a UA-stylesheet display:none, and every one of these sets its own display - so the
+ * attribute lost and an empty Recent list, a zero stat and a blank account row all rendered before
+ * there was anything to put in them. Stated once, for everything in the sidebar that starts hidden. */
+.side [hidden], .side-recent[hidden], .side-stat[hidden], .side-account[hidden],
+.side-icon--bar[hidden] { display: none !important; }

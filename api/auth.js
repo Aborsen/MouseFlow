@@ -69,11 +69,20 @@ async function finishSignIn(req, res) {
   const here = new URL(req.url, 'https://' + host);
   const verifier = here.searchParams.get(VERIFIER);
   // Where the user was going. Kept relative so this cannot be turned into an open redirect.
-  const to = (here.searchParams.get('to') || '/gallery.html').replace(/^[^/]*\/\//, '/');
+  const to = (here.searchParams.get('to') || '/').replace(/^[^/]*\/\//, '/');
   const back = to.startsWith('/') ? to : '/' + to;
 
+  /* The outcome has to go in the QUERY, which means taking `back` apart: appending "?auth=ok" to a
+   * destination that already has a query or a fragment produced "/?pair=extension#skills?auth=ok",
+   * where the parameter lands inside the fragment and nothing ever reads it. */
+  const landing = (outcome) => {
+    const url = new URL(back, 'https://' + host);
+    url.searchParams.set('auth', outcome);
+    return url.pathname + url.search + url.hash;
+  };
+
   if (!verifier) {
-    res.writeHead(302, { location: back + '?auth=missing-verifier' });
+    res.writeHead(302, { location: landing('missing-verifier') });
     res.end();
     return;
   }
@@ -89,7 +98,7 @@ async function finishSignIn(req, res) {
       },
     });
   } catch (err) {
-    res.writeHead(302, { location: back + '?auth=unreachable' });
+    res.writeHead(302, { location: landing('unreachable') });
     res.end();
     return;
   }
@@ -101,13 +110,13 @@ async function finishSignIn(req, res) {
   if (!upstream.ok || !cookies.length) {
     /* No cookie means no session, and redirecting as though it worked would leave the page saying
      * "signed out" with no explanation. Say which half failed. */
-    res.writeHead(302, { location: back + '?auth=' + (upstream.ok ? 'no-session-cookie' : 'rejected') });
+    res.writeHead(302, { location: landing(upstream.ok ? 'no-session-cookie' : 'rejected') });
     res.end();
     return;
   }
 
   res.setHeader('Set-Cookie', cookies.map(firstParty));
-  res.writeHead(302, { location: back + '?auth=ok' });
+  res.writeHead(302, { location: landing('ok') });
   res.end();
 }
 

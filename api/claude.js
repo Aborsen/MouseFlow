@@ -15,9 +15,20 @@
  *
  * This endpoint spends money for anyone who can reach it, so it is deliberately narrow:
  * one model, a capped max_tokens, a capped conversation size, and only the fields the agent
- * actually needs are passed through. That bounds the damage if the URL gets around; it does
- * not make the endpoint private. For anything beyond a demo, put auth in front of it.
+ * actually needs are passed through. That bounds what ONE request can cost.
+ *
+ * And it is no longer anonymous. Every call must identify a person - a signed-in session from the
+ * app, or a device token from a paired extension - because a shared key that anyone who finds the
+ * URL can spend is a key with no owner and no way to tell whose run cost what. The rate limit is
+ * counted per account rather than per IP for the same reason: an IP is not a person, and a room full
+ * of people at a demo shares one.
+ *
+ * This is also what makes the extension's sign-in wall more than a screen. The wall can be walked
+ * around by anyone willing to edit the extension's own source, which is readable; this cannot.
  */
+
+import { neon } from '@neondatabase/serverless';
+import { whoIsCalling } from './_session.js';
 
 const UPSTREAM = 'https://api.anthropic.com/v1/messages';
 
@@ -67,7 +78,7 @@ function cors(req, res) {
   res.setHeader('Access-Control-Allow-Origin', allowed);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
@@ -105,10 +116,30 @@ export default async function handler(req, res) {
     return;
   }
 
-  const caller = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
-  if (rateLimited(caller)) {
+  /* Who is spending the shared key. The extension presents the device token it was paired with;
+   * the app is same-origin, so its session cookie comes along by itself. */
+  if (!process.env.DATABASE_URL) {
+    fail(res, 503, 'This deployment cannot check who is calling, so the shared key is switched off. ' +
+      'Add your own API key in the extension.');
+    return;
+  }
+  let who;
+  try {
+    who = await whoIsCalling(req, neon(process.env.DATABASE_URL));
+  } catch (err) {
+    fail(res, 503, 'could not check who is calling: ' + err.message);
+    return;
+  }
+  if (!who) {
+    res.setHeader('WWW-Authenticate', 'Bearer');
+    fail(res, 401, 'Sign in to use the shared key: open the extension and press Continue with ' +
+      'Google, or add your own Anthropic key.');
+    return;
+  }
+
+  if (rateLimited(who.id)) {
     res.setHeader('Retry-After', '60');
-    fail(res, 429, 'too many requests to the shared demo endpoint - wait a minute, or add your ' +
+    fail(res, 429, 'too many requests on the shared demo key - wait a minute, or add your ' +
       'own API key in the extension');
     return;
   }

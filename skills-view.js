@@ -171,10 +171,54 @@ export function mountSkills(root) {
     }
   });
 
+  /* ------------------------------------------------------------------ the extension handover
+   *
+   * An extension cannot sign in with Google - that needs an OAuth client tied to its id, and an
+   * unpacked extension's id comes from its folder path. This page CAN, so it does the signing in and
+   * hands the extension a device token minted for this account. extension/bridge.js is the other
+   * end: a content script that runs only on this origin.
+   *
+   * Detection is two-way on purpose. Either side may load first, so both announce and both ask.
+   */
+  const bridge = { present: false, version: null, paired: false, who: null };
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    if (!data || data.mf !== 'mouseflow:extension') return;
+    bridge.present = true;
+    bridge.version = data.version || null;
+    bridge.paired = !!data.paired;
+    bridge.who = data.who || null;
+    renderAccount();
+  });
+  window.postMessage({ mf: 'mouseflow:hello?' }, location.origin);
+
+  /* Push a token across and wait for the extension to say whether it took. Resolves to null if
+   * nothing answers, which is the case the manual paste exists for. */
+  function handover(token) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { window.removeEventListener('message', onDone); resolve(null); }, 4000);
+      function onDone(event) {
+        if (event.source !== window || event.origin !== location.origin) return;
+        if (!event.data || event.data.mf !== 'mouseflow:paired') return;
+        clearTimeout(timer);
+        window.removeEventListener('message', onDone);
+        resolve(event.data);
+      }
+      window.addEventListener('message', onDone);
+      window.postMessage({ mf: 'mouseflow:pair', token }, location.origin);
+    });
+  }
+
   /* What the account holds. Auth is same-origin (api/auth.js), so this is a plain request carrying the
    * cookie - there is no token handling on this side at all. */
   let me = null;
   let remote = { flows: [], runs: [] };
+  /* "The extension sent me here": set by background.js when its sign-in button opens this page. */
+  const WANTS_PAIR = new URLSearchParams(location.search).get('pair') === 'extension';
+  let autoTried = false;
+  let autoRan = false;
 
   async function api(url, options) {
     const res = await fetch(url, Object.assign({ credentials: 'same-origin' }, options));
@@ -230,6 +274,27 @@ export function mountSkills(root) {
       }),
     );
 
+    /* Arriving from the extension's sign-in button. The click that started this was made in the
+     * extension, and a Google sign-in has just been completed, so there is nothing left to confirm -
+     * connect it and say so. Only when the extension says it is not already attached, so reopening
+     * this page does not mint a token every time. */
+    if (WANTS_PAIR && bridge.present && !bridge.paired && !autoTried) {
+      autoTried = true;
+      note.appendChild(Object.assign(document.createElement('div'), {
+        className: 'muted', textContent: 'Connecting your extension\u2026',
+      }));
+    }
+
+    if (bridge.present) {
+      note.appendChild(Object.assign(document.createElement('div'), {
+        className: 'muted',
+        textContent: bridge.paired
+          ? 'The extension in this browser is connected' +
+            (bridge.version ? ' (v' + bridge.version + ')' : '') + '.'
+          : 'The extension is installed in this browser but not connected yet.',
+      }));
+    }
+
     const row = document.createElement('div');
     row.className = 'g-row';
 
@@ -237,19 +302,38 @@ export function mountSkills(root) {
      * value that cannot be shown again is worth copying now rather than later. */
     const pair = document.createElement('button');
     pair.className = 'btn btn--sm';
-    pair.textContent = 'Connect an extension';
-    pair.addEventListener('click', async () => {
-      pair.disabled = true;
+    pair.textContent = bridge.present && !bridge.paired
+      ? 'Connect this browser\u2019s extension'
+      : 'Connect an extension';
+    pair.addEventListener('click', () => connect(pair));
+
+    async function connect(button) {
+      button.disabled = true;
       const res = await api('/api/sync?issue=1', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label: 'Chrome extension' }),
+        body: JSON.stringify({ label: bridge.present ? 'Chrome extension' : 'Device' }),
       });
-      pair.disabled = false;
+      button.disabled = false;
       if (res.status !== 201 || !res.body || !res.body.token) {
         say((res.body && res.body.error && res.body.error.message) || 'could not create a token', 'bad');
         return;
       }
+
+      /* With the extension present the token never has to be seen, let alone copied: it goes
+       * straight across and the user is done. It is only printed when nothing answered. */
+      if (bridge.present) {
+        const done = await handover(res.body.token);
+        if (done && done.ok) {
+          bridge.paired = true;
+          say('The extension is connected' +
+            (done.who && done.who.name ? ' as ' + done.who.name : '') + '.', 'good');
+          loadAccount();
+          return;
+        }
+        say((done && done.error) || 'the extension did not answer - paste the token in by hand', 'bad');
+      }
+
       const box = document.createElement('div');
       box.className = 'g-note g-note--good';
       box.appendChild(Object.assign(document.createElement('strong'), {
@@ -268,7 +352,7 @@ export function mountSkills(root) {
       } catch (_) {
         // It is on screen either way.
       }
-    });
+    }
 
     const refresh = document.createElement('button');
     refresh.className = 'btn btn--sm btn--ghost';
@@ -278,6 +362,9 @@ export function mountSkills(root) {
     row.append(pair, refresh);
     note.appendChild(row);
     el.account.appendChild(note);
+
+    // Deliberately after the panel is in the DOM, so the outcome has somewhere to be written.
+    if (autoTried && !autoRan) { autoRan = true; connect(pair); }
   }
 
   function accountCard(flow) {

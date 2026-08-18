@@ -50,13 +50,26 @@ function summarize(events) {
 }
 
 const savePending = (list) => chrome.storage.local.set({ pending: list });
-const ask = (mf, extra) => chrome.runtime.sendMessage(Object.assign({ mf }, extra));
+/* Every command goes through here, so this is also where a locked door is noticed: the worker
+ * answers `signedOut` when the extension is not attached to an account, and the wall goes back up
+ * wherever in the UI the command came from. */
+const ask = async (mf, extra) => {
+  const res = await chrome.runtime.sendMessage(Object.assign({ mf }, extra));
+  if (res && res.signedOut) showGate(res.error);
+  return res;
+};
 const getPending = async () => (await chrome.storage.local.get('pending')).pending || [];
 
 /* ------------------------------------------------------------------ navigation */
 
 function show(which) {
-  for (const id of ['home', 'record', 'create', 'skills']) $(id).hidden = id !== which;
+  for (const id of ['gate', 'home', 'record', 'create', 'skills']) $(id).hidden = id !== which;
+  /* The rail is the navigation, so it has to agree with what is showing - including on the wall,
+   * where there is nothing to navigate to and it is not there at all. */
+  $('rail').hidden = which === 'gate';
+  for (const button of document.querySelectorAll('.rail-btn')) {
+    button.classList.toggle('on', button.dataset.go === which);
+  }
   if (which !== 'record') { clearInterval(playPoll); playPoll = null; }
   if (which !== 'create') { clearInterval(agentPoll); agentPoll = null; }
   chrome.storage.session.set({ popupView: which }).catch(() => {});
@@ -66,6 +79,90 @@ $('go-record').addEventListener('click', () => { show('record'); refreshRecordVi
 $('go-create').addEventListener('click', () => { show('create'); refreshAgent(); });
 $('go-skills').addEventListener('click', () => { show('skills'); renderSkills(); refreshAccount(); });
 document.querySelectorAll('[data-home]').forEach((b) => b.addEventListener('click', () => show('home')));
+
+/* One handler for the rail: the buttons name the view they open, so adding one is markup only. */
+const OPENERS = {
+  record: () => { show('record'); refreshRecordView(); },
+  create: () => { show('create'); refreshAgent(); },
+  skills: () => { show('skills'); renderSkills(); refreshAccount(); },
+};
+
+for (const button of document.querySelectorAll('.rail-btn')) {
+  button.addEventListener('click', () => OPENERS[button.dataset.go]());
+}
+
+/* The account sits at the foot of the rail, as in the app. It opens Skills with the account panel
+ * already unfolded, which is where syncing and signing out live. */
+$('rail-avatar').addEventListener('click', () => {
+  show('skills');
+  renderSkills();
+  $('account-box').open = true;
+  refreshAccount();
+});
+
+/* ----------------------------------------------------------------------- the wall */
+
+/* Signing in is pairing: one click opens the app, which is the only place a Google session can
+ * live, and the token comes back on its own through the bridge content script. See bridge.js.
+ *
+ * While the wall is up nothing else is reachable - not because this hides it, but because the
+ * worker refuses every other command. This is the face of that rule, not the rule. */
+let gatePoll = null;
+
+/* Who is signed in, in the two places that say so: the line on the mode picker and the avatar at
+ * the foot of the rail. */
+function showWho(name) {
+  const initial = (String(name || '?').trim()[0] || '?').toUpperCase();
+  $('who').hidden = false;
+  $('who-name').textContent = name;
+  $('who-mark').textContent = initial;
+  $('rail-avatar').textContent = initial;
+  $('rail-avatar').title = 'Signed in as ' + name;
+}
+
+function showGate(message) {
+  show('gate');
+  $('gate-note').textContent = message || '';
+  clearInterval(gatePoll);
+  /* The handover happens in a tab, and finishes while the user is looking at that tab. If the popup
+   * is still open when it lands, it should notice by itself rather than needing a click. */
+  gatePoll = setInterval(async () => {
+    const s = await chrome.runtime.sendMessage({ mf: 'sync/status' }).catch(() => null);
+    if (s && s.paired) { clearInterval(gatePoll); gatePoll = null; enter(s); }
+  }, 1500);
+}
+
+/* Past the wall. */
+function enter(status) {
+  clearInterval(gatePoll);
+  gatePoll = null;
+  const name = (status && status.who && status.who.name) || 'your account';
+  showWho(name);
+  show('home');
+  renderSkills().catch(() => {});
+}
+
+$('gate-google').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ mf: 'auth/start' });
+  $('gate-note').textContent = 'Finish signing in on the tab that just opened. This connects ' +
+    'itself when you do — reopen this popup if it has closed.';
+});
+
+$('btn-gate-pair').addEventListener('click', async () => {
+  const res = await chrome.runtime.sendMessage({
+    mf: 'sync/pair', token: $('gate-token').value,
+  });
+  if (!res || !res.ok) { $('gate-note').textContent = (res && res.error) || 'could not connect'; return; }
+  $('gate-token').value = '';
+  const status = await chrome.runtime.sendMessage({ mf: 'sync/status' });
+  enter(status);
+});
+
+$('who-out').addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ mf: 'sync/unpair' });
+  $('who').hidden = true;
+  showGate('Signed out here. Your flows are still on your account.');
+});
 
 /* ------------------------------------------------------------------- settings */
 
@@ -445,8 +542,6 @@ async function renderSkills() {
 async function refreshAccount() {
   const s = await ask('sync/status');
   const paired = !!(s && s.paired);
-  $('btn-pair').hidden = paired;
-  $('sync-token').hidden = paired;
   $('btn-sync').hidden = !paired;
   $('btn-unpair').hidden = !paired;
   $('account-summary').textContent = paired
@@ -454,14 +549,6 @@ async function refreshAccount() {
       (s.syncedAt ? ', synced ' + new Date(s.syncedAt).toLocaleTimeString() : '')
     : 'Account — not connected';
 }
-
-$('btn-pair').addEventListener('click', async () => {
-  const res = await ask('sync/pair', { token: $('sync-token').value });
-  if (!res || !res.ok) { $('sync-note').textContent = (res && res.error) || 'could not connect'; return; }
-  $('sync-token').value = '';
-  $('sync-note').textContent = 'Connected as ' + ((res.who && res.who.name) || 'you') + '. Press Sync now.';
-  refreshAccount();
-});
 
 $('btn-sync').addEventListener('click', async () => {
   $('btn-sync').disabled = true;
@@ -485,8 +572,9 @@ $('btn-sync').addEventListener('click', async () => {
 
 $('btn-unpair').addEventListener('click', async () => {
   await ask('sync/unpair');
-  $('sync-note').textContent = 'Disconnected here. Revoke the token in the app to retire it for good.';
-  refreshAccount();
+  // Disconnecting is signing out: without an account there is nothing here to use.
+  $('who').hidden = true;
+  showGate('Disconnected here. Revoke the token in the app to retire it for good.');
 });
 
 $('account-box').addEventListener('toggle', () => {
@@ -830,8 +918,16 @@ $('btn-clear-key').addEventListener('click', async () => {
 
 (async () => {
   $('open-app').href = APP_URL;
-  $('skills-gallery').href = APP_URL + '/gallery.html';
+  // Through the app shell, so the gallery arrives with the sidebar rather than on its own page.
+  $('skills-gallery').href = APP_URL + '/#gallery';
   chrome.action.setBadgeText({ text: '' }).catch(() => {});
+
+  /* Asked before anything is rendered, because everything below it needs an account - and asked
+   * through sendMessage rather than ask(), which would recurse into showGate. */
+  const status = await chrome.runtime.sendMessage({ mf: 'sync/status' }).catch(() => null);
+  if (!status || !status.paired) { showGate(); return; }
+
+  showWho((status.who && status.who.name) || 'your account');
 
   const [{ apiKey }, session, ping] = await Promise.all([
     chrome.storage.local.get('apiKey'),

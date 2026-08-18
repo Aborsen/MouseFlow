@@ -9,11 +9,72 @@
   body {
     width: 320px;
     margin: 0;
-    padding: 14px;
+    padding: 0;
+    display: flex;
+    align-items: stretch;
     font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
     background: Canvas;
     color: CanvasText;
   }
+  #pane { flex: 1 1 auto; min-width: 0; padding: 14px; }
+
+  /* The rail. Same idea as the app's sidebar collapsed to icons - one navigation, two widths. */
+  #rail {
+    flex: 0 0 46px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 11px 0 10px;
+    background: color-mix(in srgb, CanvasText 5%, transparent);
+    border-right: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+  }
+
+  /* hidden is only a UA-stylesheet display:none, and #rail sets display:flex - so without this the
+     rail showed on the sign-in wall, next to a screen with nothing to navigate to. */
+  #rail[hidden] { display: none; }
+
+  .rail-mark { width: 19px; height: 19px; margin-bottom: 9px; color: #4c8dff; }
+
+  .rail-btn, .rail-avatar {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.6;
+    cursor: pointer;
+  }
+
+  .rail-btn svg { width: 17px; height: 17px; }
+  .rail-btn:hover, .rail-avatar:hover { background: color-mix(in srgb, CanvasText 10%, transparent); opacity: 1; }
+
+  .rail-btn.on {
+    background: color-mix(in srgb, #4c8dff 20%, transparent);
+    color: #4c8dff;
+    opacity: 1;
+  }
+
+  .rail-avatar {
+    margin-top: auto;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: #4c8dff;
+    color: #fff;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 650;
+    opacity: 1;
+  }
+
+  /* With the rail carrying the navigation, a Back button on every screen is one control too many. */
+  .back { display: none; }
+
   h1 { margin: 0 0 12px; font-size: 14px; }
   h2 { margin: 0 0 2px; font-size: 13px; }
 
@@ -127,6 +188,23 @@
   .opt span { font-size: 12px; }
   .opt em { display: block; font-style: normal; opacity: 0.6; font-size: 11.5px; margin-top: 1px; }
 
+  #gate { text-align: center; padding: 6px 2px 0; }
+  .gate-mark { width: 30px; height: 30px; color: #4c8dff; }
+  #gate h1 { margin: 8px 0 6px; font-size: 17px; }
+  #gate .hint { text-align: left; }
+  #gate details { text-align: left; }
+  .who {
+    display: flex; align-items: center; gap: 7px; margin: 0 0 10px;
+    font-size: 11.5px; color: inherit; opacity: 0.75;
+  }
+  .who-mark {
+    flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%;
+    display: grid; place-items: center;
+    background: #4c8dff; color: #fff; font-size: 10.5px; font-weight: 650;
+  }
+  .who-out { margin-left: auto; background: none; border: 0; padding: 0; color: #4c8dff;
+    font: inherit; font-size: 11px; cursor: pointer; }
+
   .tag {
     display: inline-block; padding: 1px 6px; margin-left: 6px; border-radius: 20px;
     font-size: 10px; font-weight: 600; vertical-align: 1px;
@@ -141,8 +219,58 @@
 </head>
 <body>
 
+<!-- ---------- the rail ----------
+     The same navigation as the app's sidebar, in the width a popup has: icons only, with the account
+     at the bottom. It is hidden while the wall is up, because there is nothing behind it to reach. -->
+<nav id="rail" aria-label="Sections" hidden>
+  <svg class="rail-mark" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor"/>
+  </svg>
+  <button class="rail-btn" data-go="record" type="button" title="Record the flow"
+          aria-label="Record the flow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg></button>
+  <button class="rail-btn" data-go="create" type="button" title="Create the flow"
+          aria-label="Create the flow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l1.9 4.6 4.6 1.9-4.6 1.9L12 16.5l-1.9-4.6L5.5 10l4.6-1.9z"/><path d="M18 16.5l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg></button>
+  <button class="rail-btn" data-go="skills" type="button" title="Skills"
+          aria-label="Skills"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 17z"/></svg></button>
+  <button class="rail-avatar" id="rail-avatar" type="button" title="Your account"
+          aria-label="Your account"></button>
+</nav>
+
+<div id="pane">
+
+<!-- ---------- the wall ----------
+     Shown until this extension is attached to an account. The check that matters is in the worker
+     (see OPEN_WITHOUT_ACCOUNT in background.js) - this is only its face. -->
+<section id="gate">
+  <svg class="gate-mark" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor"/>
+  </svg>
+  <h1>MouseFlow</h1>
+  <p class="hint">
+    Sign in to use MouseFlow. Your flows and every run are kept on your account, so what you record
+    here is in the web app too — and a run always belongs to somebody.
+  </p>
+  <button id="gate-google" class="wide primary" type="button">Continue with Google</button>
+  <p id="gate-note" class="note"></p>
+
+  <details id="gate-manual">
+    <summary>Paste a device token instead</summary>
+    <p class="hint" style="margin-top:8px">
+      For a browser where the handover cannot happen. Open the app, sign in, then
+      <em>Skills → Connect an extension</em>, and paste the token here.
+    </p>
+    <input id="gate-token" type="password" placeholder="mf_…">
+    <button id="btn-gate-pair" class="wide" type="button">Connect</button>
+  </details>
+</section>
+
 <!-- ---------- mode picker ---------- -->
-<section id="home">
+<section id="home" hidden>
+  <div id="who" class="who" hidden>
+    <span id="who-mark" class="who-mark"></span>
+    <span id="who-name"></span>
+    <button id="who-out" class="who-out" type="button">Sign out</button>
+  </div>
   <h1>MouseFlow</h1>
   <button class="choice" id="go-record" type="button">
     <strong>Record the flow</strong>
@@ -228,12 +356,10 @@
   <details id="account-box">
     <summary id="account-summary">Account — not connected</summary>
     <p class="hint" style="margin-top:8px">
-      Connect this extension to your MouseFlow account and your skills appear in the web app too —
-      along with a log of every run. Open the app, sign in, and copy the device token from
-      <em>Skills → Connect an extension</em>.
+      Your skills and every run live on this account, so the web app shows the same set.
+      <strong>Sync now</strong> sends what is here and brings back what is not — it is manual because
+      it is your data allowance, and a flow is not urgent.
     </p>
-    <input id="sync-token" type="password" placeholder="mf_…">
-    <button id="btn-pair" class="wide" type="button">Connect</button>
     <button id="btn-sync" class="wide primary" type="button" hidden>Sync now</button>
     <button id="btn-unpair" class="wide" type="button" hidden>Disconnect</button>
     <p id="sync-note" class="note"></p>
@@ -291,6 +417,8 @@
     <button id="btn-clear-key" class="wide" type="button">Remove key and use the shared one</button>
   </details>
 </section>
+
+</div>
 
 <script src="popup.js" type="module"></script>
 </body>

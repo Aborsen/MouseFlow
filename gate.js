@@ -91,8 +91,11 @@ function screen(message) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           provider: 'google',
+          /* Search included, not just path and hash: `?pair=extension` is how the extension asks to
+           * be connected, and dropping it across sign-in turned a one-click handover into a
+           * copy-and-paste. */
           callbackURL: location.origin + '/api/auth/finish?to=' +
-            encodeURIComponent(location.pathname + location.hash),
+            encodeURIComponent(location.pathname + location.search + location.hash),
         }),
       });
     } catch (_) {
@@ -120,8 +123,11 @@ export async function requireAccount() {
   const params = new URLSearchParams(location.search);
   const outcome = params.get('auth');
   if (outcome) {
-    // Cleared from the address bar so a refresh does not repeat the message.
-    history.replaceState(null, '', location.pathname + location.hash);
+    /* Only the outcome is cleared, so a refresh does not repeat the message. Everything else in the
+     * query string belongs to whoever put it there - `pair=extension` among them. */
+    params.delete('auth');
+    const rest = params.toString();
+    history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
   }
 
   const user = await currentUser();

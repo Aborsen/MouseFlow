@@ -169,11 +169,12 @@ function textOf(content) {
  * @param {object} opts
  * @param {string} opts.goal        what the user typed
  * @param {string} opts.apiKey      Anthropic API key
+ * @param {string} opts.authToken   MouseFlow device token, sent when using the shared endpoint
  * @param {function} opts.execute   async (toolName, input) => ({ok, ...}) - runs one tool
  * @param {function} opts.onEvent   (event) => void - progress for the UI
  * @param {function} opts.isAborted () => boolean
  */
-export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
+export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAborted }) {
   const messages = [{ role: 'user', content: goal }];
   const steps = [];
   let turns = 0;
@@ -187,6 +188,10 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
      * use for them and they must not leave the machine that owns the key. */
     const direct = !!apiKey;
     const headers = { 'content-type': 'application/json' };
+    /* The shared key is spent per person, so the shared endpoint is told which one. It is the same
+     * device token sync uses, and the endpoint refuses the request without it - which is what stops
+     * the demo key being spendable by anyone who finds the URL. */
+    if (!direct && authToken) headers.authorization = 'Bearer ' + authToken;
     if (direct) {
       Object.assign(headers, {
         'x-api-key': apiKey,

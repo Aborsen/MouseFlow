@@ -21,7 +21,7 @@ import {
   publishLink,
 } from './skills.js';
 
-const VERSION = '0.12.0';
+const VERSION = '0.13.0';
 // Where the gallery lives. The same deployment that serves the shared Claude key.
 const APP_URL = 'https://mouse-agent.vercel.app';
 const KEEPALIVE_MS = 20000;
@@ -1295,6 +1295,8 @@ async function agentStart(goal) {
   runGoal({
     goal: agent.goal,
     apiKey,
+    // Only used on the shared endpoint, which will not spend the demo key for an unknown caller.
+    authToken: await syncToken(),
     execute: tracedTool,
     isAborted: () => agent.abort,
     onEvent: (event) => {
@@ -1338,6 +1340,45 @@ function agentStatus() {
     })),
     result: agent.result,
   };
+}
+
+/* ---------------------------------------------------------------------- the wall */
+
+/* Nobody drives a browser through this anonymously.
+ *
+ * The popup shows a sign-in screen, but a popup is a suggestion: the worker is reachable from any
+ * extension page and from a content script, so the check has to be HERE, at the one door every
+ * command comes through. What identifies the user is the device token - the same one sync uses - so
+ * "signed in" and "attached to an account" are one state rather than two that can disagree.
+ *
+ * Open without an account, and only these:
+ *
+ *   ping, sync/status       answer questions about this extension, not about the user
+ *   auth/*                  how you get in; refusing these would lock the door from both sides
+ *   sync/pair, sync/unpair  the manual way in, and the way out
+ *   settings/*              pointer and trail, kept locally, no account involved
+ *   capture/*               a content script streaming into a recording that cannot have started
+ *
+ * Everything else - recording, replay, the agent, skills, the gallery - needs an account.
+ */
+const OPEN_WITHOUT_ACCOUNT = new Set([
+  'ping', 'auth/start', 'auth/paired', 'auth/who',
+  'sync/status', 'sync/pair', 'sync/unpair',
+  'settings/get', 'settings/set',
+  'capture/event', 'capture/moves',
+]);
+
+/* Which pages may hand a token in. The bridge content script runs only on the app's own origin
+ * (see the manifest), and this is the other half of that: a message claiming to be the bridge is
+ * checked against where it actually came from. */
+const BRIDGE_ORIGINS = new Set([APP_URL]);
+const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+function fromBridge(sender) {
+  if (!sender || !sender.tab) return false;               // a real page, not an extension view
+  const origin = sender.origin || (sender.url ? new URL(sender.url).origin : '');
+  // localhost on any port too, for development against a local copy of the app.
+  return BRIDGE_ORIGINS.has(origin) || LOCAL_ORIGIN.test(origin);
 }
 
 /* -------------------------------------------------------------------- routing */
@@ -1398,6 +1439,27 @@ const ROUTES = {
         ' frame(s), but none answered' };
     }
     return { ok: true, frames: ids.length, answered };
+  },
+  /* Signing in IS pairing with the account - one click instead of copying a token by hand.
+   *
+   * This opens the app, which is where a session can actually live: it is the app's own origin, so
+   * Google's callback can set a first-party cookie there. Once signed in, the page mints a device
+   * token and hands it to the bridge content script, which brings it back here. The user never sees
+   * the token. Pasting one by hand still works, and is the fallback for when the handover cannot
+   * happen - a different browser, or the app open in a profile without the extension. */
+  'auth/start': async () => {
+    await chrome.tabs.create({ url: APP_URL + '/?pair=extension#skills', active: true });
+    return { ok: true };
+  },
+  'auth/who': () => syncStatus(),
+  /* The handover. Only from the app's own origin: a token is a credential, and this is the one
+   * route that accepts one from a web page. */
+  'auth/paired': async (msg, sender) => {
+    if (!fromBridge(sender)) throw new Error('not available to this page');
+    const res = await syncPair(msg.token);
+    // Straight into a sync, so the first thing the user sees is their own skills rather than none.
+    const synced = await syncNow().catch(() => null);
+    return { ok: true, who: res.who, synced: synced ? synced.pushed : null };
   },
   'skills/list': async () => ({ ok: true, skills: await listSkills() }),
   'sync/status': () => syncStatus(),
@@ -1507,7 +1569,14 @@ function route(msg, sender, respond) {
     return true;
   }
   Promise.resolve()
-    .then(() => handler(msg, sender))
+    .then(async () => {
+      if (!OPEN_WITHOUT_ACCOUNT.has(msg.mf) && !(await syncToken())) {
+        /* A flag rather than a message the caller has to pattern-match: the popup puts the wall
+         * back up when it sees this, wherever in the UI the command came from. */
+        return { ok: false, signedOut: true, error: 'Sign in to use MouseFlow.' };
+      }
+      return handler(msg, sender);
+    })
     .then((res) => respond(res))
     .catch((err) => respond({ ok: false, error: err.message }));
   return true;   // responding asynchronously
