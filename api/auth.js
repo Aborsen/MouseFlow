@@ -19,6 +19,9 @@
 
 const AUTH_BASE = process.env.NEON_AUTH_BASE_URL;
 
+/* The name Neon Auth gives the one-time value that completes an OAuth sign-in. */
+const VERIFIER = 'neon_auth_session_verifier';
+
 /* Headers that describe the hop rather than the request. Forwarding these breaks things in ways that
  * are hard to see: a stale content-length truncates the body, and the original host makes the
  * upstream build redirect URLs pointing back at the wrong place. */
@@ -35,6 +38,17 @@ const HOP_BY_HOP = new Set([
  * x-vercel-* set is the same kind of thing: true of the hop, false of the request being forwarded. */
 const OUR_HOP = /^(x-forwarded-|x-vercel-|x-real-ip$|forwarded$|cdn-loop$)/i;
 
+/* Makes an upstream cookie belong to THIS site.
+ *
+ * Drop Domain so it is host-only here, and rewrite SameSite=None - which only existed because the
+ * cookie used to be cross-site - to Lax. Lax is required rather than merely tidier: the OAuth
+ * callback arrives from Google as a cross-site GET, and Strict would withhold the cookie on exactly
+ * that request, signing the user in everywhere except the page they land on.
+ */
+const firstParty = (cookie) => cookie
+  .replace(/;\s*Domain=[^;]*/i, '')
+  .replace(/;\s*SameSite=None/i, '; SameSite=Lax');
+
 // Vercel has already parsed the body by the time we see it, so it is rebuilt rather than streamed.
 function bodyFor(req) {
   if (req.method === 'GET' || req.method === 'HEAD') return undefined;
@@ -42,6 +56,59 @@ function bodyFor(req) {
   if (body == null) return undefined;
   if (typeof body === 'string' || Buffer.isBuffer(body)) return body;
   return JSON.stringify(body);
+}
+
+/* Exchanges the verifier for a session, then sends the browser where it was going.
+ *
+ * The exchange IS a get-session call: it carries the challenge cookie from the browser, and the
+ * upstream answers with the Set-Cookie that establishes the real session. Nothing here interprets
+ * that cookie - it is rewritten to be first-party and passed on, exactly as every other response is.
+ */
+async function finishSignIn(req, res) {
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'mouse-agent.vercel.app';
+  const here = new URL(req.url, 'https://' + host);
+  const verifier = here.searchParams.get(VERIFIER);
+  // Where the user was going. Kept relative so this cannot be turned into an open redirect.
+  const to = (here.searchParams.get('to') || '/gallery.html').replace(/^[^/]*\/\//, '/');
+  const back = to.startsWith('/') ? to : '/' + to;
+
+  if (!verifier) {
+    res.writeHead(302, { location: back + '?auth=missing-verifier' });
+    res.end();
+    return;
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(AUTH_BASE.replace(/\/$/, '') + '/get-session?' + VERIFIER + '=' +
+      encodeURIComponent(verifier), {
+      headers: {
+        cookie: req.headers.cookie || '',
+        origin: 'https://' + host,
+        accept: 'application/json',
+      },
+    });
+  } catch (err) {
+    res.writeHead(302, { location: back + '?auth=unreachable' });
+    res.end();
+    return;
+  }
+
+  const cookies = typeof upstream.headers.getSetCookie === 'function'
+    ? upstream.headers.getSetCookie()
+    : [upstream.headers.get('set-cookie')].filter(Boolean);
+
+  if (!upstream.ok || !cookies.length) {
+    /* No cookie means no session, and redirecting as though it worked would leave the page saying
+     * "signed out" with no explanation. Say which half failed. */
+    res.writeHead(302, { location: back + '?auth=' + (upstream.ok ? 'no-session-cookie' : 'rejected') });
+    res.end();
+    return;
+  }
+
+  res.setHeader('Set-Cookie', cookies.map(firstParty));
+  res.writeHead(302, { location: back + '?auth=ok' });
+  res.end();
 }
 
 export default async function handler(req, res) {
@@ -55,6 +122,19 @@ export default async function handler(req, res) {
   const subpath = String((req.query && req.query.authpath) || '').replace(/^\/+/, '');
   if (!subpath) {
     res.status(404).json({ error: 'no auth path given' });
+    return;
+  }
+
+  /* Finishing an OAuth sign-in is the one thing here that is not a plain forward.
+   *
+   * Google redirects to Neon's own host, not ours - the redirect_uri is fixed to their domain - so
+   * Neon completes its half and then sends the browser to our callbackURL carrying a one-time
+   * verifier. Turning that verifier into a session needs a SERVER: the exchange reads the
+   * session-challenge cookie set when sign-in began, and a static page cannot set the session cookie
+   * that comes back. Landing the callback here rather than on the page is what makes that possible.
+   */
+  if (subpath === 'finish') {
+    await finishSignIn(req, res);
     return;
   }
   /* The caller's own query string, minus the parameter the rewrite added. Better Auth needs the
@@ -105,11 +185,7 @@ export default async function handler(req, res) {
   const cookies = typeof upstream.headers.getSetCookie === 'function'
     ? upstream.headers.getSetCookie()
     : [upstream.headers.get('set-cookie')].filter(Boolean);
-  if (cookies.length) {
-    res.setHeader('Set-Cookie', cookies.map((cookie) => cookie
-      .replace(/;\s*Domain=[^;]*/i, '')
-      .replace(/;\s*SameSite=None/i, '; SameSite=Lax')));
-  }
+  if (cookies.length) res.setHeader('Set-Cookie', cookies.map(firstParty));
 
   const buffer = Buffer.from(await upstream.arrayBuffer());
   res.status(upstream.status).send(buffer);

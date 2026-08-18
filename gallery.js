@@ -65,15 +65,24 @@ async function signIn() {
   const button = $('signin');
   if (button) { button.disabled = true; button.textContent = 'Opening Google…'; }
 
-  /* callbackURL comes back to this page, and its origin must be one Neon Auth trusts - see
-   * scripts/auth-origin.mjs. The fragment is preserved through the round trip by the browser, so a
-   * skill waiting to be published survives signing in. */
+  /* A skill waiting to be published cannot travel through the sign-in round trip in the URL: the
+   * callback is completed by a server, and a fragment is never sent to one. So it is parked here and
+   * picked up on the way back. sessionStorage is per-tab and per-origin, which is exactly the scope
+   * of one sign-in. */
+  if (pending) {
+    try { sessionStorage.setItem('mouseflow.pending', JSON.stringify(pending)); } catch (_) {}
+  }
+
+  /* The callback lands on /api/auth/finish, not on this page. Completing an OAuth sign-in means
+   * exchanging a one-time verifier for a session cookie, and only a server can do that - see
+   * api/auth.js. It sends the browser back here afterwards. */
   const res = await json(AUTH + '/sign-in/social', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       provider: 'google',
-      callbackURL: location.origin + location.pathname + location.hash,
+      callbackURL: location.origin + '/api/auth/finish?to=' +
+        encodeURIComponent(location.pathname),
     }),
   });
 
@@ -129,7 +138,21 @@ function renderAccount() {
  * publish again, and it keeps someone's flow out of the browser history. */
 function takePendingFromUrl() {
   const match = location.hash.match(/[#&]publish=([^&]+)/);
-  if (!match) return null;
+  if (!match) {
+    // Coming back from sign-in: the skill was parked before leaving, because a fragment cannot
+    // survive a server-side redirect.
+    try {
+      const parked = sessionStorage.getItem('mouseflow.pending');
+      if (parked) {
+        sessionStorage.removeItem('mouseflow.pending');
+        const skill = JSON.parse(parked);
+        if (skill && skill.format === 'mouseflow.skill/1') return skill;
+      }
+    } catch (_) {
+      // nothing parked, or storage unavailable
+    }
+    return null;
+  }
   history.replaceState(null, '', location.origin + location.pathname);
   try {
     const base64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
@@ -322,7 +345,25 @@ $('search').addEventListener('input', () => {
   searchTimer = setTimeout(load, 220);
 });
 
+/* What the sign-in round trip reports back, since a redirect cannot say anything else.
+ * Cleared from the address bar so a refresh does not repeat the message. */
+function readSignInOutcome() {
+  const params = new URLSearchParams(location.search);
+  const outcome = params.get('auth');
+  if (!outcome) return;
+  history.replaceState(null, '', location.origin + location.pathname);
+  if (outcome === 'ok') return;
+  const why = {
+    'missing-verifier': 'Google came back without a verifier, so the sign-in could not be completed.',
+    'no-session-cookie': 'The sign-in was accepted but no session came back. Try again.',
+    rejected: 'Neon Auth rejected the sign-in. The session may have expired - try again.',
+    unreachable: 'Could not reach the sign-in service to finish signing in.',
+  }[outcome] || 'Sign-in did not complete (' + outcome + ').';
+  say(why, 'bad');
+}
+
 (async () => {
+  readSignInOutcome();
   pending = takePendingFromUrl();
   try {
     me = await whoAmI();
