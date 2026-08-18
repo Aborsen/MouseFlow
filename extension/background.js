@@ -21,7 +21,10 @@ import {
   publishLink,
 } from './skills.js';
 
-const VERSION = '0.13.0';
+/* Kept in step with the manifest by hand, and asserted in the tests: the popup compares the two to
+ * tell the user when the worker it is talking to is an older build. A stale constant here would make
+ * that warning cry wolf. */
+const VERSION = '0.14.0';
 // Where the gallery lives. The same deployment that serves the shared Claude key.
 const APP_URL = 'https://mouse-agent.vercel.app';
 const KEEPALIVE_MS = 20000;

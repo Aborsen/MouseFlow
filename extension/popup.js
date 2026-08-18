@@ -63,7 +63,9 @@ const getPending = async () => (await chrome.storage.local.get('pending')).pendi
 /* ------------------------------------------------------------------ navigation */
 
 function show(which) {
-  for (const id of ['gate', 'home', 'record', 'create', 'skills']) $(id).hidden = id !== which;
+  for (const id of ['gate', 'home', 'record', 'create', 'skills', 'gallery']) {
+    $(id).hidden = id !== which;
+  }
   /* The rail is the navigation, so it has to agree with what is showing - including on the wall,
    * where there is nothing to navigate to and it is not there at all. */
   $('rail').hidden = which === 'gate';
@@ -78,13 +80,17 @@ function show(which) {
 $('go-record').addEventListener('click', () => { show('record'); refreshRecordView(); });
 $('go-create').addEventListener('click', () => { show('create'); refreshAgent(); });
 $('go-skills').addEventListener('click', () => { show('skills'); renderSkills(); refreshAccount(); });
+$('go-gallery').addEventListener('click', () => OPENERS.gallery());
 document.querySelectorAll('[data-home]').forEach((b) => b.addEventListener('click', () => show('home')));
 
 /* One handler for the rail: the buttons name the view they open, so adding one is markup only. */
 const OPENERS = {
+  // The mark at the top of the rail. Back to every option, which is where the popup starts.
+  home: () => { show('home'); refreshAccount(); },
   record: () => { show('record'); refreshRecordView(); },
   create: () => { show('create'); refreshAgent(); },
   skills: () => { show('skills'); renderSkills(); refreshAccount(); },
+  gallery: () => { show('gallery'); renderGallery(); },
 };
 
 for (const button of document.querySelectorAll('.rail-btn')) {
@@ -675,12 +681,6 @@ async function renderGallery() {
     list.appendChild(item);
   }
 }
-
-$('gallery-box').addEventListener('toggle', () => {
-  // Fetched when opened, not on every popup: the gallery is a network call and most visits do not
-  // want it.
-  if ($('gallery-box').open) renderGallery();
-});
 
 $('gallery-q').addEventListener('input', () => {
   clearTimeout(galleryTimer);
