@@ -948,8 +948,20 @@ function localFileCommand() {
     ' -AllowOrigin ' + location.origin;
 }
 
+/* The command to give somebody, and it is always the same one.
+ *
+ * This used to return the LOCAL-FILE command whenever `usedDownload` was set - a flag one click on "or
+ * download the file instead" turns on and nothing ever turns off. So a single click, possibly weeks
+ * earlier, silently rewrote every Copy button on the page to a command that reads
+ * $env:USERPROFILE\Downloads\mouseflow-agent.ps1 - and if that file was never there, or has been tidied
+ * away, PowerShell says "cannot find path" and nothing on the page explains why.
+ *
+ * A mode you cannot see is worse than a choice you have to make. The piped command is the primary one
+ * because it works on a machine with nothing on it; the local-file variant is offered next to it, in the
+ * open, for anyone who would rather read the script before running it.
+ */
 function startCommand() {
-  return state.onboarding.usedDownload ? localFileCommand() : oneLineCommand();
+  return oneLineCommand();
 }
 
 /* The start command, permanently reachable.
@@ -982,14 +994,41 @@ function renderStartCommand(stale) {
       h('span', { class: 'start-why', text: why }),
     ]),
     h('div', { class: 'code-row' }, [
-      h('code', { text: startCommand() }),
+      h('code', { text: oneLineCommand() }),
       h('button', {
         class: 'btn btn--sm ' + (stale || !online ? 'btn--primary' : 'btn--ghost'),
         type: 'button', text: 'Copy',
-        onclick: () => copyText(startCommand(), 'Copied — paste it into PowerShell.'),
+        onclick: () => copyText(oneLineCommand(), 'Copied — paste it into PowerShell.'),
       }),
     ]),
   );
+
+  /* The other way, in the open rather than as a hidden mode. Folded up because most people want the line
+   * above; expanded already if this browser has downloaded the file, since that is a signal about which
+   * one they meant - a signal, not a decision made on their behalf. */
+  const other = h('details', { class: 'start-other' });
+  if (state.onboarding.usedDownload) other.open = true;
+  other.append(
+    h('summary', { text: 'Or run a copy you have downloaded' }),
+    h('p', { class: 'start-why' },
+      'Same agent, read first. Download it, then run it from wherever you saved it - the command below ' +
+      'assumes your Downloads folder. Autostart needs this route: a piped command leaves no file for the ' +
+      'launcher to point at.'),
+    h('div', { class: 'code-row' }, [
+      h('code', { text: localFileCommand() }),
+      h('button', {
+        class: 'btn btn--sm btn--ghost', type: 'button', text: 'Copy',
+        onclick: () => copyText(localFileCommand(), 'Copied — run it from PowerShell.'),
+      }),
+    ]),
+    h('div', { class: 'ob-actions' }, [
+      h('button', {
+        class: 'link-btn link-btn--quiet', type: 'button', text: 'Download the agent',
+        onclick: downloadAgent,
+      }),
+    ]),
+  );
+  box.appendChild(other);
 }
 
 function copyText(text, okMessage) {
@@ -1005,10 +1044,14 @@ function downloadAgent() {
   a.click();
   a.remove();
   state.onboarding.copied = true;
+  /* Remembered only so the local-file command is unfolded next time - it no longer replaces the piped
+   * one. See startCommand. */
   state.onboarding.usedDownload = true;
   save();
   renderOnboarding();
-  toast('Downloaded. The command below now runs your local copy.', 'good');
+  setAgentUi();
+  toast('Downloaded. The command for running your local copy is under "Or run a copy you have ' +
+    'downloaded".', 'good');
 }
 
 async function enableAutostart() {
@@ -1048,7 +1091,9 @@ function onboardingSteps() {
         h('div', { class: 'ob-actions' }, [
           h('button', {
             class: 'link-btn link-btn--quiet', type: 'button',
-            text: 'or download the file instead',
+            /* Named as a second option rather than as a replacement: it used to change what every Copy
+             * button on the page produced, invisibly and permanently. */
+            text: 'or download the file to read it first',
             onclick: downloadAgent,
           }),
         ]),

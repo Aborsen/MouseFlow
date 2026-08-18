@@ -1242,3 +1242,8 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 
 .pill--warn { color: var(--warn); }
 .pill--warn .dot { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent); }
+
+.start-other { margin-top: 0.9rem; }
+.start-other summary { font-size: 0.85rem; color: var(--text-dim); cursor: pointer; }
+.start-other summary:hover { color: var(--text); }
+.start-other .start-why { margin: 0.5rem 0 0.6rem; }
