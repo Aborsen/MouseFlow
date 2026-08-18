@@ -24,6 +24,7 @@
     GET  /replay/status   -> JSON {playing, step, steps, pass, passes, index, total}
     POST /replay/abort    -> JSON {ok}
     GET  /shot            -> JSON {ok, png, w, h, scale, originX, originY}  a look at the screen
+    GET  /windows         -> JSON {ok, windows:[{title, process, active, minimized, x, y, w, h}]}
     POST /do              -> JSON {ok}   one action; body is key=value, see ACTION BODY below
     POST /autostart/enable  -> JSON {ok} - drops a launcher in the Startup folder
     POST /autostart/disable -> JSON {ok} - removes it
@@ -44,6 +45,12 @@
     action=scroll x=400 y=300 amount=-3
     action=type text=hello there
     action=key key=Enter ctrl=0 shift=0 alt=0
+    action=activate title=Outlook            (or process=outlook)
+
+  /windows exists because a screenshot is not the whole truth. An application that is minimised, or
+  behind another window, is invisible to a picture - and something acting only on pictures will happily
+  launch a second copy of a program that is already running, which is exactly what happened. The list
+  says what is open; `activate` is how to get to it without opening anything.
 
   /shot and /do are what let the app describe a goal in words and have it carried out here rather
   than only replaying something recorded earlier: one is how it sees, the other is how it acts. Both
@@ -114,6 +121,9 @@ using System.Threading;
 namespace MouseFlow
 {
     public struct POINT { public int X; public int Y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MSLLHOOKSTRUCT
@@ -211,6 +221,39 @@ namespace MouseFlow
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern short VkKeyScan(char ch);
 
+        public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll")]
+        public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr hWnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetWindowTextLength(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        public static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetWindow(IntPtr hWnd, uint cmd);
+        /* Windows Store apps keep hidden windows around that are visible by every other measure. Asking
+           the compositor whether one is "cloaked" is the only way to tell them from real ones, and
+           without it the list is half phantoms. */
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out int value, int size);
+
+        public const int SW_RESTORE = 9;
+        public const uint GW_OWNER = 4;
+        public const int DWMWA_CLOAKED = 14;
+
         public const uint INPUT_KEYBOARD = 1;
         public const uint KEYEVENTF_KEYUP = 0x0002;
         public const uint KEYEVENTF_UNICODE = 0x0004;
@@ -272,7 +315,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.2.0";
+        public const string Version = "0.3.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -658,6 +701,7 @@ namespace MouseFlow
             string action = Get(a, "action", "");
 
             if (action == "type") return TypeText(Get(a, "text", ""));
+            if (action == "activate") return Activate(Get(a, "title", ""), Get(a, "process", ""));
             if (action == "key")
             {
                 return PressKey(Get(a, "key", ""), Get(a, "ctrl", "0") == "1",
@@ -853,6 +897,139 @@ namespace MouseFlow
                 case "win": return 0x5B;
                 default: return 0;
             }
+        }
+
+        /* ------------------------------------------------------------- what is already open
+         *
+         * A screenshot shows what is in front. It says nothing about the mail client sitting minimised
+         * on the taskbar - so a decision made from pictures alone opens a second copy of it, which is
+         * both wrong and hard to undo. This is the other half of seeing.
+         *
+         * Only real, top-level, titled windows: no tool windows, no owned dialogs of other apps, and
+         * nothing the compositor has cloaked.
+         */
+        public static string WindowsJson()
+        {
+            List<string> items = new List<string>();
+            IntPtr front = Native.GetForegroundWindow();
+
+            Native.EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+            {
+                if (!Native.IsWindowVisible(hWnd)) return true;
+                if (Native.GetWindow(hWnd, Native.GW_OWNER) != IntPtr.Zero) return true;
+
+                int length = Native.GetWindowTextLength(hWnd);
+                if (length < 1) return true;
+                StringBuilder title = new StringBuilder(length + 1);
+                Native.GetWindowText(hWnd, title, title.Capacity);
+                string text = title.ToString().Trim();
+                if (text.Length == 0) return true;
+
+                int cloaked = 0;
+                if (Native.DwmGetWindowAttribute(hWnd, Native.DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0)
+                {
+                    return true;
+                }
+
+                string process = "";
+                try
+                {
+                    uint pid;
+                    Native.GetWindowThreadProcessId(hWnd, out pid);
+                    process = Process.GetProcessById((int)pid).ProcessName;
+                }
+                catch (Exception) { /* it exited between the two calls; the title is still useful */ }
+
+                RECT r;
+                Native.GetWindowRect(hWnd, out r);
+
+                /* Real applications, not their furniture. Chat apps in particular keep small titled
+                   helper windows around - notification hosts, drag proxies - which pass every other
+                   test here and would pad the list with things nobody can switch to. A minimised
+                   window reports a 160x28 rect by convention, so it is exempt from the size test
+                   rather than being caught by it. */
+                bool small = (r.Right - r.Left) < 200 || (r.Bottom - r.Top) < 120;
+                if (small && !Native.IsIconic(hWnd)) return true;
+
+                /* The desktop itself. Explorer's shell window is titled, top-level and visible, and
+                   there is nothing to switch to - listing it only invites an attempt. */
+                if (text == "Program Manager") return true;
+
+                StringBuilder item = new StringBuilder();
+                item.Append("{\"title\":\"").Append(JsonEscape(text)).Append("\"");
+                item.Append(",\"process\":\"").Append(JsonEscape(process)).Append("\"");
+                item.Append(",\"active\":").Append(hWnd == front ? "true" : "false");
+                item.Append(",\"minimized\":").Append(Native.IsIconic(hWnd) ? "true" : "false");
+                item.Append(",\"x\":").Append(r.Left.ToString(CultureInfo.InvariantCulture));
+                item.Append(",\"y\":").Append(r.Top.ToString(CultureInfo.InvariantCulture));
+                item.Append(",\"w\":").Append((r.Right - r.Left).ToString(CultureInfo.InvariantCulture));
+                item.Append(",\"h\":").Append((r.Bottom - r.Top).ToString(CultureInfo.InvariantCulture));
+                item.Append("}");
+                items.Add(item.ToString());
+                return true;
+            }, IntPtr.Zero);
+
+            return "{\"ok\":true,\"windows\":[" + string.Join(",", items.ToArray()) + "]}";
+        }
+
+        /* Bringing one to the front.
+         *
+         * SetForegroundWindow is refused when the calling process is not itself in the foreground -
+         * Windows protects against exactly this - so a minimised window is restored first and, if the
+         * call is still refused, a tap of ALT clears the foreground lock and it is tried once more.
+         * Whether it worked is reported rather than assumed, because a click on the taskbar is a fair
+         * fallback and only the caller can decide to take it.
+         */
+        public static string Activate(string title, string process)
+        {
+            IntPtr found = IntPtr.Zero;
+            string wanted = (title ?? "").Trim().ToLowerInvariant();
+            string wantedProcess = (process ?? "").Trim().ToLowerInvariant();
+            if (wanted.Length == 0 && wantedProcess.Length == 0) return "title or process is required";
+
+            Native.EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+            {
+                if (found != IntPtr.Zero) return false;
+                if (!Native.IsWindowVisible(hWnd)) return true;
+                if (Native.GetWindow(hWnd, Native.GW_OWNER) != IntPtr.Zero) return true;
+
+                int length = Native.GetWindowTextLength(hWnd);
+                if (length < 1) return true;
+                StringBuilder sb = new StringBuilder(length + 1);
+                Native.GetWindowText(hWnd, sb, sb.Capacity);
+                string text = sb.ToString().ToLowerInvariant();
+
+                string name = "";
+                try
+                {
+                    uint pid;
+                    Native.GetWindowThreadProcessId(hWnd, out pid);
+                    name = Process.GetProcessById((int)pid).ProcessName.ToLowerInvariant();
+                }
+                catch (Exception) { }
+
+                bool titleMatches = wanted.Length > 0 && text.IndexOf(wanted, StringComparison.Ordinal) >= 0;
+                bool processMatches = wantedProcess.Length > 0 &&
+                    name.IndexOf(wantedProcess, StringComparison.Ordinal) >= 0;
+                if (titleMatches || processMatches) found = hWnd;
+                return found == IntPtr.Zero;
+            }, IntPtr.Zero);
+
+            if (found == IntPtr.Zero) return "no open window matches that";
+
+            if (Native.IsIconic(found)) Native.ShowWindow(found, Native.SW_RESTORE);
+            if (!Native.SetForegroundWindow(found))
+            {
+                SendVk(0x12, false);            // ALT down
+                SendVk(0x12, true);             // ALT up - releases the foreground lock
+                Thread.Sleep(30);
+                if (!Native.SetForegroundWindow(found))
+                {
+                    return "that window would not come to the front - click it on the taskbar instead";
+                }
+            }
+            Thread.Sleep(250);                  // let it paint before the next screenshot
+            return null;
         }
 
         /* ------------------------------------------------------------------------- the seeing half
@@ -1176,6 +1353,10 @@ namespace MouseFlow
                     /* So the app can tell an older agent from this one and say which. A missing
                        endpoint answers 404, which reads as "broken" rather than "out of date". */
                     + ",\"canSee\":true"
+                    /* Separate from canSee because it arrived later: an 0.2.0 agent can act on
+                       pictures but cannot say what is already open, and the app degrades to that
+                       rather than refusing to run. */
+                    + ",\"canWindows\":true"
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
                 return;
@@ -1231,6 +1412,12 @@ namespace MouseFlow
                    already moving, and a decision made from it acts on something that has gone. */
                 if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
                 Respond(stream, 200, "application/json", Shot(1280), origin);
+                return;
+            }
+
+            if (path == "/windows")
+            {
+                Respond(stream, 200, "application/json", WindowsJson(), origin);
                 return;
             }
 
@@ -1350,7 +1537,7 @@ Write-Host ("  MouseFlow agent " + [MouseFlow.Agent]::Version) -ForegroundColor 
 Write-Host "  listening   http://127.0.0.1:$Port"
 Write-Host "  origin      $AllowOrigin"
 Write-Host "  move filter $MoveThrottleMs ms / $MoveMinPx px"
-Write-Host "  can see     yes - /shot and /do are available to the app"
+Write-Host "  can see     yes - /shot, /do and /windows are available to the app"
 Write-Host ""
 if ($AllowOrigin -eq '*') {
     Write-Warning "Any site open in your browser can drive your mouse while this agent runs."

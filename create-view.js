@@ -113,6 +113,8 @@ How to work:
 - Waiting is free and looking is not. The wait tool blocks until the screen has stopped changing, so ONE wait of 60000 is right for something long - a page researching, a report being written, a file exporting. Never a string of short waits: each of those costs a step, and a run has a limited number of them.
 - If a wait comes back and the thing is still not finished, wait again with a longer limit rather than clicking around it.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
+- Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
+- If activate_window says the window would not come to the front, click it on the taskbar instead. Do not open the application again.
 - If two attempts at the same sub-goal get nowhere, change method. If a third fails, call finish and say precisely what you could not do.
 - When the goal is met, call finish with one sentence about what you did.
 
@@ -174,6 +176,18 @@ const DESKTOP_TOOLS = [
         amount: { type: 'integer', description: 'Notches; -3 is a comfortable page nudge' },
       },
       required: ['x', 'y', 'amount'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'activate_window',
+    description: 'Bring an application that is ALREADY OPEN to the front, by a distinctive part of its title or by its process name. Always prefer this to opening the application again: the window list with each screenshot says what is already running, including windows that are minimised and therefore not in the picture. Opening a second copy of something is usually wrong and is hard to undo.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Part of the window title, as shown in the window list' },
+        process: { type: 'string', description: 'Process name instead, e.g. outlook' },
+      },
       additionalProperties: false,
     },
   },
@@ -241,6 +255,29 @@ function moved(a, b) {
   return sum / a.length > 3;
 }
 
+/* What is already open, in one line each.
+ *
+ * Sent with every screenshot, because the mistake it prevents is one a picture cannot: an application
+ * that is minimised or behind another window is invisible, and something acting on pictures alone will
+ * launch a second copy of it. Cheap - a few dozen tokens - against a whole wrong branch of a run.
+ *
+ * Optional on purpose: an agent from before /windows existed answers 404, and the run continues without
+ * the list rather than refusing to start.
+ */
+export async function openWindows(base) {
+  try {
+    const body = await agentCall(base, '/windows');
+    const windows = (body && body.windows) || [];
+    if (!windows.length) return null;
+    return windows.slice(0, 24).map((w) => {
+      const state = w.active ? 'in front' : (w.minimized ? 'minimised' : 'open behind');
+      return '- ' + w.title + '  [' + (w.process || '?') + ', ' + state + ']';
+    }).join('\n');
+  } catch (_) {
+    return null;
+  }
+}
+
 async function agentCall(base, path, options) {
   const res = await fetch(base + path, Object.assign({ mode: 'cors' }, options));
   const body = await res.json().catch(() => null);
@@ -274,6 +311,15 @@ export function actionBody(name, input, shot) {
   if (name === 'type_text') {
     // `text` runs to the end of the line by design, so it needs no escaping - see ParseFields.
     return 'action=type text=' + String(input.text || '').replace(/[\r\n]+/g, ' ');
+  }
+  if (name === 'activate_window') {
+    const title = String(input.title || '').replace(/[\r\n]+/g, ' ').trim();
+    const process = String(input.process || '').replace(/[\r\n\s]+/g, '').trim();
+    if (!title && !process) return null;
+    // `title` runs to the end of the line, so process goes first where both are given.
+    // Trimmed, because with only a process the trailing space would arrive as part of no field at all.
+    return ('action=activate ' + (process ? 'process=' + process + ' ' : '') +
+      (title ? 'title=' + title : '')).trim();
   }
   return null;
 }
@@ -391,11 +437,19 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
       message.content = message.content.filter((part) => part.type !== 'image');
       if (!message.content.length) message.content = [{ type: 'text', text: '(earlier screen)' }];
     }
+    const windows = await openWindows(base);
     messages.push({
       role: 'user',
       content: [
         { type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot.png } },
-        { type: 'text', text: 'The screen now, ' + shot.w + ' by ' + shot.h + ' pixels.' },
+        {
+          type: 'text',
+          text: 'The screen now, ' + shot.w + ' by ' + shot.h + ' pixels.' +
+            (windows
+              ? '\n\nAlready open - use activate_window rather than opening any of these again:\n' +
+                windows
+              : ''),
+        },
       ],
     });
 
