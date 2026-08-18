@@ -1191,3 +1191,22 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
   background: var(--bg-inset);
   color: var(--text-faint);
 }
+
+/* The lede sits in the card head next to the status, so the heading is not said twice - the top bar
+ * already names the view. */
+.c-lede { margin: 0; max-width: 60ch; }
+.card-head:has(.c-lede) { align-items: flex-start; gap: 1rem; }
+
+/* Two engines, two cells. .seg is built for the theme's three, and repeating 3 left an empty third
+ * that looked like a control which had failed to render. */
+.c-target { grid-template-columns: repeat(2, 1fr); max-width: 340px; }
+
+/* `hidden` is only a UA display:none, and .btn sets its own display - so Stop was on screen from the
+ * moment the view mounted, offering to stop something that was not running. Stated for buttons here
+ * the way it is stated for the sidebar and the popup. */
+.c-tools .btn[hidden] { display: none !important; }
+
+.c-cost { margin: 0.55rem 0 0; font-size: 0.78rem; color: var(--text-faint); }
+
+/* A line of prose is unreadable at 1700px. The card can be wide; its contents should not be. */
+.c-goal, .c-feed, .c-gate { max-width: 760px; }

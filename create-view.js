@@ -324,12 +324,9 @@ export function mountCreate(root) {
   root.innerHTML = `
     <section class="card card--wide">
       <div class="card-head">
-        <h2 class="card-title">Create the flow</h2>
+        <p class="hint c-lede">Say what you want done, and choose what carries it out.</p>
         <span class="c-where mono" id="c-where"></span>
       </div>
-      <p class="hint">
-        Say what you want done, and choose what carries it out.
-      </p>
 
       <div class="seg c-target" id="c-target" role="group" aria-label="What carries it out">
         <button class="seg-btn" data-target="browser" type="button">In this browser</button>
@@ -346,6 +343,7 @@ export function mountCreate(root) {
         <button id="c-run" class="btn btn--ai" type="button">Do it</button>
         <button id="c-stop" class="btn btn--stop" type="button" hidden>Stop</button>
       </div>
+      <p class="c-cost" id="c-cost"></p>
 
       <div class="c-feed" id="c-feed" hidden></div>
       <p class="c-note" id="c-note"></p>
@@ -353,6 +351,7 @@ export function mountCreate(root) {
   `;
 
   const el = {
+    cost: root.querySelector('#c-cost'),
     target: root.querySelector('#c-target'),
     explain: root.querySelector('#c-explain'),
     gate: root.querySelector('#c-gate'),
@@ -432,8 +431,10 @@ export function mountCreate(root) {
         const body = await res.json();
         if (!body || !body.ok) throw new Error('the agent answered oddly');
         if (!body.canSee) {
-          blocked('The agent is running but is an older build without /shot and /do — the eyes and ' +
-            'hands this needs. Restart it from the Desktop tab to pick up the current one.');
+          blocked('The agent answering on ' + agentBase().replace('http://', '') + ' is ' +
+            (body.version ? 'version ' + body.version : 'an older build') + ', which has no /shot or ' +
+            '/do — the eyes and hands this needs. Stop that PowerShell window and start the agent ' +
+            'again from the Desktop tab; the copy it downloads is 0.2.0 or newer.');
           return false;
         }
         unblocked();
@@ -459,6 +460,9 @@ export function mountCreate(root) {
   }
 
   function renderTarget() {
+    el.cost.textContent = target === 'desktop'
+      ? 'Each step sends a picture of your screen to the model. Up to 24 steps per run.'
+      : 'Each step sends the page\u2019s elements to the model, not a picture. Up to 40 steps per run.';
     for (const button of el.target.querySelectorAll('.seg-btn')) {
       button.classList.toggle('on', button.dataset.target === target);
     }
