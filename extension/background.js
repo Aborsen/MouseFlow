@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -738,7 +738,8 @@ function summariseResult(name, result) {
     url: result.url,
     title: result.title,
     elements: Array.isArray(result.elements) ? result.elements.length : 0,
-    frame: agent.frameId == null ? 'main' : 'frame ' + agent.frameId,
+    frame: agent.frameId == null ? '(not read yet)'
+      : agent.frameId === 0 ? 'main' : 'frame ' + agent.frameId,
     truncated: !!result.truncated,
   };
 }
@@ -842,7 +843,12 @@ async function runAgentTool(name, input) {
       }
 
       if (!best) return { ok: false, error: 'could not read the page' };
-      agent.frameId = best.frameId || null;
+      /* Frame 0 is the main frame, and a perfectly valid target. `|| null` collapsed it to
+       * null - and null means "unknown" to send(), which then broadcasts to EVERY frame. A
+       * broadcast resolves with whichever frame answers first, and refs only mean anything in
+       * the frame that produced them, so an iframe would answer with its own ref list and the
+       * click would land on a different element entirely. */
+      agent.frameId = best.frameId;
       return { ok: true, result: best.page };
     }
     case 'navigate': {
