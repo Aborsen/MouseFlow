@@ -24,16 +24,44 @@ const UPSTREAM = 'https://api.anthropic.com/v1/messages';
 // Only what the agent uses, and only within these bounds.
 const ALLOWED_MODELS = new Set(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001']);
 const MAX_TOKENS_CAP = 16000;
-const MAX_MESSAGES = 120;              // a runaway loop should hit this, not the credit balance
+const MAX_MESSAGES = 120;              // a runaway loop hits this long before it hits the balance
 const MAX_BODY_BYTES = 1_500_000;
+
+/* Per-caller rate limit.
+ *
+ * The caps above bound what ONE request can cost; they do nothing about ten thousand of them, and
+ * the earlier comment claiming they protected the credit balance was overstating it. This is
+ * best-effort by construction: a serverless instance holds its own window, so the real limit is
+ * this multiplied by however many instances are warm. It stops a stuck client and casual abuse,
+ * not a determined one - put real auth in front of this if it outlives the demo.
+ */
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 30;
+const hits = new Map();
+
+function rateLimited(key) {
+  const now = Date.now();
+  const seen = (hits.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
+  seen.push(now);
+  hits.set(key, seen);
+  // Unbounded growth would outlive the instance; drop windows nobody is using.
+  if (hits.size > 500) {
+    for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k);
+  }
+  return seen.length > RATE_MAX;
+}
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
-  /* The extension's origin is chrome-extension://<id>, and an unpacked extension's id is
-   * derived from its folder path - different on every machine - so it cannot be listed here.
-   * Any extension origin is accepted; the request is bounded by the limits above rather than
-   * by who is asking. */
-  const allowed = /^chrome-extension:\/\//.test(origin) || /^https?:\/\/localhost(:\d+)?$/.test(origin)
+  /* CORS is not a security control here and should not be mistaken for one: it governs what a
+   * BROWSER will let a page read, and anything that is not a browser can POST regardless. What
+   * actually bounds this endpoint is the validation below. What CORS is for is not handing a
+   * browsable credential to every local dev server on the machine - localhost used to be
+   * reflected, which let any page on any local port read the responses.
+   *
+   * The extension's origin is chrome-extension://<id>, and an unpacked extension's id is derived
+   * from its folder path, so it cannot be listed - any extension origin is accepted. */
+  const allowed = /^chrome-extension:\/\//.test(origin)
     ? origin
     : 'https://mouse-agent.vercel.app';
   res.setHeader('Access-Control-Allow-Origin', allowed);
@@ -74,6 +102,14 @@ export default async function handler(req, res) {
   if (!key) {
     fail(res, 503, 'This deployment has no shared key configured. Set ANTHROPIC_API_KEY in the ' +
       'Vercel project, or add your own key in the extension.');
+    return;
+  }
+
+  const caller = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
+  if (rateLimited(caller)) {
+    res.setHeader('Retry-After', '60');
+    fail(res, 429, 'too many requests to the shared demo endpoint - wait a minute, or add your ' +
+      'own API key in the extension');
     return;
   }
 

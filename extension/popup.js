@@ -16,6 +16,11 @@ let recPoll = null;
 let playPoll = null;
 let agentPoll = null;
 
+// A stop is a request, not an event: the run ends between steps. These keep the UI honest about
+// the difference between "asked to stop" and "stopped".
+let playStopping = false;
+let agentStopping = false;
+
 const fmt = (ms) => (ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's');
 
 /* What a recording contains, in the user's terms. Recording is mouse-only now, so this
@@ -241,7 +246,12 @@ async function refreshReplay() {
 }
 
 $('btn-abort').addEventListener('click', async () => {
+  // Only a request. replay/abort sets a flag the run checks between steps, so the run is still
+  // going for a moment - saying "Aborted." here claimed something that was not true yet, and left
+  // the retry to die on a raw "already playing".
+  playStopping = true;
   await ask('replay/abort');
+  $('rec-note').textContent = 'Stopping after the current step…';
   setPlaying(false);
   $('rec-note').textContent = 'Aborted.';
 });
@@ -303,7 +313,11 @@ function renderFeed(log) {
   feed.textContent = '';
   for (const event of log) {
     const line = document.createElement('div');
-    if (event.type === 'act') {
+    if (event.type === 'error') {
+      // A failed step used to be invisible, so a run failing every step looked like one working.
+      line.className = 'bad';
+      line.textContent = event.text;
+    } else if (event.type === 'act') {
       line.className = 'act';
       const detail = event.input && (event.input.url || event.input.text ||
         (event.input.ref != null ? 'ref ' + event.input.ref : ''));
@@ -340,9 +354,10 @@ async function refreshAgent() {
 
   if (s.running) {
     setAgentRunning(true);
-    $('ai-note').textContent = 'Working…';
+    $('ai-note').textContent = agentStopping ? 'Stopping after the current step…' : 'Working…';
     return;
   }
+  agentStopping = false;
   setAgentRunning(false);
 
   const result = s.result || (await chrome.storage.session.get('lastAgentRun')).lastAgentRun?.result;
@@ -424,7 +439,14 @@ $('btn-use-shared').addEventListener('click', async () => {
   $('btn-use-shared').hidden = true;
   $('key-box').open = false;
 
-  const goal = $('goal').value.trim();
+  /* Reopening the popup empties the textarea, so the retry silently did nothing at exactly the
+   * moment the user had asked for it. The worker still knows the goal of the last run. */
+  let goal = $('goal').value.trim();
+  if (!goal) {
+    const status = await ask('agent/status');
+    goal = (status && status.goal) || '';
+    if (goal) $('goal').value = goal;
+  }
   if (!goal) { $('ai-note').textContent = 'Key removed. Runs now use the shared demo key.'; return; }
   $('ai-note').textContent = 'Key removed. Retrying with the shared demo key…';
   const res = await ask('agent/start', { goal });
@@ -447,6 +469,9 @@ $('btn-run-goal').addEventListener('click', async () => {
 });
 
 $('btn-stop-goal').addEventListener('click', async () => {
+  // The poll rewrites the note every 700ms, so the message has to survive in state, not just be
+  // written once here.
+  agentStopping = true;
   await ask('agent/abort');
   $('ai-note').textContent = 'Stopping after the current step…';
 });
@@ -489,6 +514,13 @@ $('btn-clear-key').addEventListener('click', async () => {
   $('key-box').querySelector('summary').textContent =
     apiKey ? 'Anthropic API key (using yours)' : 'Anthropic API key (using the shared demo key)';
   $('btn-clear-key').hidden = !apiKey;
+
+  // The last goal, so Create the flow reopens where the user left it - and so the recovery retry
+  // has something to re-run.
+  if (!$('goal').value) {
+    const status = await ask('agent/status');
+    if (status && status.goal) $('goal').value = status.goal;
+  }
 
   // Land on whatever is actually happening; otherwise on the last mode used.
   if (ping.recording || ping.playing) { show('record'); refreshRecordView(); }

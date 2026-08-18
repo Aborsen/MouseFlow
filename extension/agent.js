@@ -24,6 +24,11 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
  * being up, and is not sharing anyone's quota.
  */
 const SHARED_URL = 'https://mouse-agent.vercel.app/api/claude';
+
+// Kept separate so the call site reads as one thing that can fail, rather than a nested literal.
+function fetchWithBody(url, headers, body) {
+  return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+}
 const MODEL = 'claude-opus-5';
 const MAX_TOKENS = 16000;
 const MAX_TURNS = 40;
@@ -180,18 +185,27 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
       });
     }
 
-    const res = await fetch(direct ? API_URL : SHARED_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
+    /* A transport failure - offline, DNS, a blocked request - rejects rather than returning a
+     * status, and "Failed to fetch" on its own tells the user nothing they can act on. */
+    let res;
+    try {
+      res = await fetchWithBody(direct ? API_URL : SHARED_URL, headers, {
         model: MODEL,
         max_tokens: MAX_TOKENS,
         system: SYSTEM,
         tools: TOOLS,
         fallbacks: 'default',
         messages,
-      }),
-    });
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: direct
+          ? 'Could not reach api.anthropic.com - check the connection and try again.'
+          : 'Could not reach the MouseFlow server - check the connection, or add your own API key.',
+        steps,
+      };
+    }
 
     if (!res.ok) {
       const detail = await res.text();

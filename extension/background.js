@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.6.3';
+const VERSION = '0.7.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -59,6 +59,21 @@ function holdWorker(on) {
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/* A wait that notices a stop.
+ *
+ * Replay honours the pauses in a recording, and a recorded pause can be seconds long. Waiting it
+ * out with a single sleep meant Stop appeared to do nothing, then performed one more action before
+ * ending. Returns false if the run was aborted while waiting.
+ */
+async function pausableSleep(ms, aborted) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (aborted()) return false;
+    await sleep(Math.min(60, Math.max(1, deadline - Date.now())));
+  }
+  return !aborted();
+}
 
 /* ------------------------------------------------------------------- settings */
 
@@ -221,6 +236,23 @@ function pushEvent(ev, tabKey) {
     last.value = ev.value;
     return rec.events.length;
   }
+  /* A double click arrives as a second pointerdown that the page flags as such. Upgrade the
+   * click already recorded rather than appending another step - two steps would replay as three
+   * clicks. Motion between the two halves is a few pixels at most, so a `path` event in between
+   * is skipped over rather than treated as a break. */
+  if (ev.action === 'dblclick') {
+    for (let i = rec.events.length - 1; i >= 0; i--) {
+      const prev = rec.events[i];
+      if (prev.action === 'path') continue;
+      if (prev.action === 'click' && prev.tab === tabKey && prev.selector === ev.selector) {
+        prev.action = 'dblclick';
+        rec.lastAt = now;
+        return rec.events.length;
+      }
+      break;
+    }
+  }
+
   rec.events.push(Object.assign({
     delay: rec.events.length === 0 ? 0 : now - rec.lastAt,
     tab: tabKey,
@@ -565,6 +597,7 @@ async function performEvent(ev, ctx, speed) {
       }
       tabId = match.id;
       ctx.map[key] = tabId;
+      if (ctx.touched) ctx.touched.add(tabId);
     }
 
     await chrome.tabs.update(tabId, { active: true });
@@ -608,7 +641,11 @@ async function performEvent(ev, ctx, speed) {
 async function runFlow(steps, flow) {
   // `cursor` deliberately survives each pass: a loop should look like one continuous run,
   // not like the pointer being re-summoned at the top of every lap.
-  const ctx = { map: {}, current: null, cursor: null, opts: DEFAULT_SETTINGS };
+  /* Every tab the whole run touched. ctx.map is rebuilt each pass, so clearing the drawn cursor
+   * from it at the end only ever covered the final pass - a looped flow left a cursor stranded in
+   * every other tab it had visited. */
+  const touched = new Set();
+  const ctx = { map: {}, current: null, cursor: null, opts: DEFAULT_SETTINGS, touched };
   try {
     // Read once, so a long run keeps the appearance it started with.
     ctx.opts = await loadSettings();
@@ -640,7 +677,8 @@ async function runFlow(steps, flow) {
           for (let i = 0; i < step.events.length; i++) {
             if (play.abort) break;
             const ev = step.events[i];
-            await sleep(Math.round((ev.delay || 0) / speed));
+            // Checked while waiting, not only between events, so Stop lands inside a long pause.
+            if (!(await pausableSleep(Math.round((ev.delay || 0) / speed), () => play.abort))) break;
 
             let ok = false;
             let error = null;
@@ -668,7 +706,9 @@ async function runFlow(steps, flow) {
             play.index = i + 1;
           }
 
-          if (step.delayAfter > 0) await sleep(step.delayAfter);
+          if (step.delayAfter > 0) {
+            if (!(await pausableSleep(step.delayAfter, () => play.abort))) break;
+          }
         }
       }
     }
@@ -677,7 +717,7 @@ async function runFlow(steps, flow) {
   } finally {
     play.active = false;
     holdWorker(false);
-    hideCursors(Object.values(ctx.map).concat(ctx.current));
+    hideCursors([...touched, ctx.current]);
     chrome.action.setBadgeText({ text: '' });
     chrome.action.setPopup({ popup: 'popup.html' });
     chrome.storage.session.set({
@@ -811,8 +851,15 @@ async function tracedTool(name, input) {
   }
   step.ms = Date.now() - started;
   step.ok = !!outcome.ok;
-  if (outcome.ok) step.result = summariseResult(name, outcome.result);
-  else step.error = outcome.error;
+  if (outcome.ok) {
+    step.result = summariseResult(name, outcome.result);
+  } else {
+    step.error = outcome.error;
+    /* Surfaced as an event, not just recorded in the trace. runGoal's onEvent only ever emitted
+     * say/act/done - never a tool OUTCOME - so a run failing every single step looked in the popup
+     * exactly like one working, right up to the final summary. */
+    agent.log.push({ type: 'error', text: '\u2717 ' + name + ' failed: ' + outcome.error });
+  }
 
   /* Where did it end up? A click can navigate, and that is exactly how a run goes astray
    * without any single step looking wrong.

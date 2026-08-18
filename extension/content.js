@@ -18,26 +18,35 @@
 (() => {
   'use strict';
 
-  /* Injected repeatedly across recordings, so it must only wire up once - but the guard is
-   * versioned, because "once" used to mean "once per page, forever".
+  /* Only ONE generation of this script may be wired up in a page, and it must be the newest.
    *
-   * Reloading an unpacked extension does not touch the scripts already running in open tabs.
-   * The flag they set was a bare `true`, so a fresh copy of a NEW build injected into such a
-   * tab bailed out immediately and the tab kept running the old code until the page itself
-   * was reloaded - which is how a fix could appear to have no effect at all. Chrome
-   * invalidates the orphaned context, so its message listener is already dead; keying the
-   * flag on the build lets the new copy take over the tab.
+   * Keying this on the manifest version did not cover the case the comment named: reloading an
+   * unpacked extension does not change the version, so a same-version reload still bailed out and
+   * left the orphaned copy in charge.
+   *
+   * What identifies a generation is its extension CONTEXT, not the version - and a generation can
+   * be ASKED whether its context is still valid, because an orphaned one loses chrome.runtime. So
+   * each generation leaves a marker carrying a liveness probe. A newer copy runs the previous
+   * marker's probe: if it answers, that generation is alive and this injection is a no-op; if it
+   * does not, the previous generation is orphaned and is switched off. The marker object is
+   * shared, so every handler still held by the old closure sees `live` go false.
    */
-  // Taken from the manifest rather than written here, so it cannot drift from the real build.
-  let BUILD = 'dev';
-  try { BUILD = chrome.runtime.getManifest().version; } catch (_) { /* orphaned context */ }
-  if (window.__mouseflowContent === BUILD) return;
-  const staleBuild = window.__mouseflowContent;
-  window.__mouseflowContent = BUILD;
+  const previous = window.__mouseflowContent;
+  const priorObject = previous && typeof previous === 'object';
+  if (priorObject && typeof previous.alive === 'function' && previous.alive()) return;
+  if (priorObject) previous.live = false;
 
-  // An older build may have left its cursor or trail behind, and it can no longer be asked
+  const generation = {
+    live: true,
+    alive: () => {
+      try { return !!chrome.runtime.id; } catch (_) { return false; }
+    },
+  };
+  window.__mouseflowContent = generation;
+
+  // An orphaned generation may have left its cursor or trail behind, and can no longer be asked
   // to clean up after itself.
-  if (staleBuild) {
+  if (previous) {
     for (const node of document.querySelectorAll('[data-mouseflow]')) node.remove();
   }
 
@@ -159,16 +168,42 @@
     }
   }
 
+  /* A double click has to be worked out, not read off the event.
+   *
+   * This used to test `ev.detail > 1`, but `detail` is 0 on a pointerdown - the click count only
+   * appears on click and dblclick - so it was never true and no recording ever contained a double
+   * click. Two presses close together in time and place on the same element is what one is.
+   */
+  const DBLCLICK_MS = 400;
+  const DBLCLICK_PX = 6;
+  let lastDownAt = 0;
+  let lastDownX = 0;
+  let lastDownY = 0;
+  let lastDownEl = null;
+
   function onPointerDown(ev) {
-    if (!capturing || !ev.isTrusted) return;
+    if (!capturing || !generation.live || !ev.isTrusted) return;
     const el = ev.target;
     if (!el || el.nodeType !== 1) return;
     // Motion recorded so far has to reach the worker before the click does, or the
     // sequence arrives scrambled. Sends from one frame keep their order, so flushing
     // first is enough.
     flushMoves();
+
+    const at = performance.now();
+    const isDouble = ev.button === 0 && lastDownEl === el &&
+      at - lastDownAt < DBLCLICK_MS &&
+      Math.abs(ev.clientX - lastDownX) <= DBLCLICK_PX &&
+      Math.abs(ev.clientY - lastDownY) <= DBLCLICK_PX;
+    lastDownAt = at;
+    lastDownX = ev.clientX;
+    lastDownY = ev.clientY;
+    lastDownEl = el;
+
+    // The worker folds a dblclick into the click it already recorded rather than appending a
+    // second step - two steps would replay as three clicks.
     push(Object.assign({
-      action: ev.detail > 1 ? 'dblclick' : 'click',
+      action: isDouble ? 'dblclick' : 'click',
       button: ev.button,
     }, describe(el, ev.clientX, ev.clientY)));
   }
@@ -192,7 +227,7 @@
   let haveMove = false;
 
   function onPointerMove(ev) {
-    if (!capturing || !ev.isTrusted) return;
+    if (!capturing || !generation.live || !ev.isTrusted) return;
     const now = performance.now();
     const x = ev.clientX;
     const y = ev.clientY;
@@ -258,12 +293,27 @@
    * imported .mmmacro files keep working; nothing produces them any more.
    */
 
-  function onScroll() {
-    if (!capturing) return;
+  /* Scroll does not bubble, which is why this listens in the capture phase - but it then recorded
+   * the WINDOW's offsets whatever had actually scrolled, so scrolling a pane, a list or a dialog
+   * replayed as a no-op. Record the thing that scrolled. */
+  function onScroll(ev) {
+    if (!capturing || !generation.live) return;
     const now = performance.now();
     if (now - lastScrollAt < SCROLL_MIN_MS) return;
     lastScrollAt = now;
     flushMoves();
+
+    const target = ev && ev.target;
+    const inner = target && target.nodeType === 1 &&
+      target !== document.documentElement && target !== document.body;
+    if (inner) {
+      push(Object.assign({
+        action: 'scroll',
+        scrollLeft: Math.round(target.scrollLeft),
+        scrollTop: Math.round(target.scrollTop),
+      }, describe(target, 0, 0)));
+      return;
+    }
     push({ action: 'scroll', scrollX: Math.round(scrollX), scrollY: Math.round(scrollY) });
   }
 
@@ -855,6 +905,14 @@
 
   async function perform(ev, from) {
     if (ev.action === 'scroll') {
+      // A container scroll carries a selector and the element's own offsets; a window scroll does
+      // not. Older recordings only ever have the window form.
+      if (ev.selector) {
+        const box = await resolve(ev);
+        box.scrollLeft = ev.scrollLeft || 0;
+        box.scrollTop = ev.scrollTop || 0;
+        return null;
+      }
       scrollTo({ left: ev.scrollX, top: ev.scrollY, behavior: 'instant' });
       return null;
     }
@@ -872,17 +930,33 @@
     switch (ev.action) {
       case 'click':
       case 'dblclick': {
+        /* Replay the button that was recorded. `button` was stored on every click step and then
+         * never read, so a right or middle click replayed as a left click - and a page that only
+         * opens its menu on button 2 did nothing at all.
+         *
+         * `buttons` encodes the same thing differently: a bitmask, left 1, right 2, middle 4. */
+        const button = ev.button === 1 || ev.button === 2 ? ev.button : 0;
+        const held = button === 2 ? 2 : button === 1 ? 4 : 1;
+        const withButton = { button };
+        const whileDown = { button, buttons: held };
+
         fire(el, 'pointerover', point, { pointerId: 1, isPrimary: true });
         fire(el, 'mouseover', point);
-        fire(el, 'pointerdown', point, { pointerId: 1, isPrimary: true });
-        fire(el, 'mousedown', point);
+        fire(el, 'pointerdown', point, Object.assign({ pointerId: 1, isPrimary: true }, whileDown));
+        fire(el, 'mousedown', point, whileDown);
         if (el.focus) el.focus({ preventScroll: true });
-        fire(el, 'pointerup', point, { pointerId: 1, isPrimary: true });
-        fire(el, 'mouseup', point);
-        fire(el, 'click', point, { detail: 1 });
-        if (ev.action === 'dblclick') {
-          fire(el, 'click', point, { detail: 2 });
-          fire(el, 'dblclick', point, { detail: 2 });
+        fire(el, 'pointerup', point, Object.assign({ pointerId: 1, isPrimary: true }, withButton));
+        fire(el, 'mouseup', point, withButton);
+        /* A right press raises contextmenu, not click. Chrome's own menu cannot be opened from a
+         * page, but an app with its own menu is listening for exactly this. */
+        if (button === 2) {
+          fire(el, 'contextmenu', point, withButton);
+        } else {
+          fire(el, 'click', point, Object.assign({ detail: 1 }, withButton));
+          if (ev.action === 'dblclick') {
+            fire(el, 'click', point, Object.assign({ detail: 2 }, withButton));
+            fire(el, 'dblclick', point, Object.assign({ detail: 2 }, withButton));
+          }
         }
         return target;
       }
@@ -1070,6 +1144,8 @@
   /* --------------------------------------------------------------- messages */
 
   chrome.runtime.onMessage.addListener((msg, sender, respond) => {
+    // A superseded generation stands down rather than racing the current one to answer.
+    if (!generation.live) return;
     if (!msg || typeof msg.mf !== 'string') return;
 
     if (msg.mf === 'ping') { respond({ ok: true, url: location.href, capturing }); return; }
