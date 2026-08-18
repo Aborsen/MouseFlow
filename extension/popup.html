@@ -51,6 +51,17 @@
   .ai { background: #8957e5; border-color: #8957e5; color: #fff; }
   .stop { background: color-mix(in srgb, #f85149 16%, transparent); border-color: #f85149; color: #f85149; }
 
+  input[type=search] {
+    width: 100%;
+    padding: 8px;
+    margin: 10px 0 0;
+    border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
+    border-radius: 7px;
+    background: Canvas;
+    color: inherit;
+    font: inherit;
+  }
+
   textarea, input[type=password] {
     width: 100%;
     padding: 8px;
@@ -210,8 +221,16 @@
 
   <ul id="skill-list" class="list"></ul>
   <p id="skills-empty" class="hint" hidden>
-    No skills yet. Save one from a recording, or from a run in <em>Create the flow</em>.
+    No skills yet. Save one from a recording, from a run in <em>Create the flow</em>, or install one
+    from the gallery below.
   </p>
+
+  <details id="gallery-box">
+    <summary>Install from the gallery</summary>
+    <input id="gallery-q" type="search" placeholder="Search shared skills…" autocomplete="off">
+    <ul id="gallery-list" class="list"></ul>
+    <p id="gallery-note" class="note"></p>
+  </details>
 
   <p id="skills-note" class="note"></p>
   <div class="row">

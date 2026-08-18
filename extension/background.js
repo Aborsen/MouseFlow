@@ -21,7 +21,7 @@ import {
   publishLink,
 } from './skills.js';
 
-const VERSION = '0.10.0';
+const VERSION = '0.11.0';
 // Where the gallery lives. The same deployment that serves the shared Claude key.
 const APP_URL = 'https://mouse-agent.vercel.app';
 const KEEPALIVE_MS = 20000;
@@ -1255,6 +1255,45 @@ const ROUTES = {
     await putSkills((await listSkills()).filter((s) => s.id !== msg.id));
     return { ok: true };
   },
+  /* Browsing the gallery from inside the extension.
+   *
+   * Reading the gallery needs no session - it is public - so the extension can fetch it directly and
+   * install with one click, rather than sending someone to a page to copy JSON and paste it back.
+   * The whole point of a gallery is that taking something out of it is easy.
+   */
+  'gallery/list': async (msg) => {
+    const url = APP_URL + '/api/gallery' +
+      (msg.q ? '?q=' + encodeURIComponent(String(msg.q).slice(0, 80)) : '');
+    const res = await fetch(url, { headers: { accept: 'application/json' } });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((body && body.error && body.error.message) ||
+        'the gallery is not answering (HTTP ' + res.status + ')');
+    }
+    return { ok: true, skills: (body && body.skills) || [] };
+  },
+
+  /* Installing is fetching the payload and putting it through the same door a pasted skill uses -
+   * importSkills validates and rebuilds field by field. A skill from the gallery is no more trusted
+   * than one from a colleague: it came off the internet, and it is about to drive a browser. */
+  'gallery/install': async (msg) => {
+    const id = String(msg.id || '');
+    if (!id) throw new Error('which skill?');
+    const res = await fetch(APP_URL + '/api/gallery?id=' + encodeURIComponent(id),
+      { headers: { accept: 'application/json' } });
+    const body = await res.json().catch(() => null);
+    if (!res.ok || !body || !body.skill || !body.skill.payload) {
+      throw new Error((body && body.error && body.error.message) ||
+        'could not fetch that skill (HTTP ' + res.status + ')');
+    }
+    const incoming = importSkills(JSON.stringify(body.skill.payload));
+    const skills = await listSkills();
+    // Remember where it came from, so a listing can say so and a duplicate install is visible.
+    for (const skill of incoming) skill.from = { gallery: id, name: body.skill.name };
+    await putSkills(incoming.concat(skills));
+    return { ok: true, added: incoming.length, skill: incoming[0] };
+  },
+
   /* Publishing opens the gallery page with the skill in the fragment, rather than posting from
    * here. The page holds the session - and a fragment never reaches a server, so the skill does not
    * travel through a request log on its way to being published. */

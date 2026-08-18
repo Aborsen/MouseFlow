@@ -358,7 +358,8 @@ async function renderSkills() {
 
     const meta = document.createElement('div');
     meta.className = 'item-meta';
-    meta.textContent = skill.description || '';
+    meta.textContent = (skill.description || '') +
+      (skill.from && skill.from.gallery ? ' · from the gallery' : '');
     meta.title = (skill.origins || []).join('\n');
 
     /* What varies between runs, asked for at the point of running rather than stored. The example
@@ -435,6 +436,85 @@ async function renderSkills() {
     list.appendChild(item);
   }
 }
+
+/* The gallery, inside the popup.
+ *
+ * Reading it needs no account, so the extension can fetch it directly - install is one click rather
+ * than a trip to a web page to copy JSON out and paste it back in. */
+let galleryTimer = null;
+
+async function renderGallery() {
+  const list = $('gallery-list');
+  const term = $('gallery-q').value.trim();
+  list.textContent = '';
+  $('gallery-note').textContent = 'Loading…';
+
+  const res = await ask('gallery/list', term ? { q: term } : {});
+  if (!res || !res.ok) {
+    $('gallery-note').textContent = (res && res.error) || 'could not reach the gallery';
+    return;
+  }
+  const skills = res.skills || [];
+  $('gallery-note').textContent = skills.length
+    ? ''
+    : (term ? 'Nothing matches that.' : 'Nothing published yet.');
+
+  for (const skill of skills) {
+    const item = document.createElement('li');
+    item.className = 'item';
+
+    const name = document.createElement('div');
+    name.style.fontWeight = '600';
+    name.textContent = skill.name;
+    const kind = document.createElement('span');
+    kind.className = 'tag tag-' + skill.kind;
+    kind.textContent = skill.kind;
+    name.appendChild(kind);
+
+    const meta = document.createElement('div');
+    meta.className = 'item-meta';
+    meta.textContent = [
+      skill.description,
+      'by ' + ((skill.author && skill.author.name) || 'someone'),
+      skill.params && skill.params.length
+        ? 'asks for ' + skill.params.map((p) => p.name).join(', ') : null,
+    ].filter(Boolean).join(' · ');
+
+    const tools = document.createElement('div');
+    tools.className = 'item-tools';
+    const get = document.createElement('button');
+    get.textContent = 'Install';
+    get.addEventListener('click', async () => {
+      get.disabled = true;
+      get.textContent = 'Installing…';
+      const done = await ask('gallery/install', { id: skill.id });
+      if (!done || !done.ok) {
+        $('gallery-note').textContent = (done && done.error) || 'could not install that';
+        get.disabled = false;
+        get.textContent = 'Install';
+        return;
+      }
+      get.textContent = 'Installed';
+      $('gallery-note').textContent = 'Installed “' + done.skill.name + '”.';
+      renderSkills();
+    });
+    tools.appendChild(get);
+
+    item.append(name, meta, tools);
+    list.appendChild(item);
+  }
+}
+
+$('gallery-box').addEventListener('toggle', () => {
+  // Fetched when opened, not on every popup: the gallery is a network call and most visits do not
+  // want it.
+  if ($('gallery-box').open) renderGallery();
+});
+
+$('gallery-q').addEventListener('input', () => {
+  clearTimeout(galleryTimer);
+  galleryTimer = setTimeout(renderGallery, 250);
+});
 
 $('skills-export').addEventListener('click', async (ev) => {
   ev.preventDefault();
