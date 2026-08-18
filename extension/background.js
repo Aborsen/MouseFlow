@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.6.2';
+const VERSION = '0.6.3';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -39,14 +39,20 @@ const play = {
 };
 
 let keepAlive = null;
+let keepAliveHolders = 0;
 
-/* An MV3 worker is torn down when idle, and a replay spends most of its life inside
- * setTimeout, which does not count as activity. Touching a chrome API on a timer keeps it
- * resident for the duration. */
+/* An MV3 worker is torn down when idle, and a run spends most of its life inside setTimeout,
+ * which does not count as activity. Touching a chrome API on a timer keeps it resident.
+ *
+ * Reference counted, because recording, replay and an agent run can overlap and each needs the
+ * worker alive. A plain on/off flag meant whichever finished FIRST switched the keepalive off
+ * underneath the others.
+ */
 function holdWorker(on) {
-  if (on && !keepAlive) {
+  keepAliveHolders = Math.max(0, keepAliveHolders + (on ? 1 : -1));
+  if (keepAliveHolders > 0 && !keepAlive) {
     keepAlive = setInterval(() => chrome.runtime.getPlatformInfo().catch(() => {}), KEEPALIVE_MS);
-  } else if (!on && keepAlive) {
+  } else if (keepAliveHolders === 0 && keepAlive) {
     clearInterval(keepAlive);
     keepAlive = null;
   }
@@ -416,6 +422,10 @@ function compact(events) {
 async function recordStart(tabId) {
   const tab = tabId ? await chrome.tabs.get(tabId) : await activeTab();
 
+  /* A recording exists only as rec.events in this worker's memory, so it must keep the worker
+   * resident - alone among the three run kinds it did not, and an idle teardown discarded the
+   * whole recording while the badge still read REC. */
+  holdWorker(true);
   rec.active = true;
   rec.activeTabId = tab.id;
   rec.tabKeys = {};
@@ -463,6 +473,7 @@ async function recordStop() {
   if (!rec.active) return { ok: true, events: [], saved: null };
 
   rec.active = false;
+  holdWorker(false);
   // Stop capture in every tab this recording touched.
   for (const realId of Object.keys(rec.tabKeys)) {
     chrome.tabs.sendMessage(Number(realId), { mf: 'capture/stop' }).catch(() => {});
@@ -557,6 +568,13 @@ async function performEvent(ev, ctx, speed) {
     }
 
     await chrome.tabs.update(tabId, { active: true });
+    /* Back to the page this step was recorded on. Without it a looped flow plays its second lap
+     * into whatever page the first lap navigated to, so every element the lap needs is gone.
+     * goTo is a no-op when the tab is already there, and navigating a tab we were given is still
+     * mirroring - it never creates one. */
+    if (ev.url && !isRestricted(ev.url)) {
+      await goTo(tabId, ev.url).catch(() => {});
+    }
     ctx.current = tabId;
     return;
   }
@@ -1039,7 +1057,23 @@ function route(msg, sender, respond) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, respond) => route(msg, sender, respond));
-chrome.runtime.onMessageExternal.addListener((msg, sender, respond) => route(msg, sender, respond));
+/* The external channel is NOT the popup channel.
+ *
+ * externally_connectable lets the deployed app and localhost post messages here, and they were
+ * handed to the same unauthenticated dispatcher the popup uses - so any page on localhost could
+ * start an agent run, which drives the browser and spends the shared API key, by posting one
+ * message. Until the app bridge is actually built and has something to authenticate with, only
+ * harmless questions are answerable from outside.
+ */
+const EXTERNAL_ALLOWED = new Set(['ping']);
+function externalListener(msg, sender, respond) {
+  if (!msg || typeof msg.mf !== 'string' || !EXTERNAL_ALLOWED.has(msg.mf)) {
+    respond({ ok: false, error: 'not available to web pages' });
+    return true;
+  }
+  return route(msg, sender, respond);
+}
+chrome.runtime.onMessageExternal.addListener(externalListener);
 
 /* Follow the user across tabs while recording.
  *

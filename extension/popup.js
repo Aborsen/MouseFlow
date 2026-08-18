@@ -284,8 +284,12 @@ $('copy-log').addEventListener('click', async (ev) => {
 
 async function refreshRecordView() {
   const s = await ask('ping');
-  setRecording(!!s.recording);
+  /* Order matters, and used to be wrong. setPlaying(false) un-hides #btn-record and #list, so
+   * running it AFTER setRecording(true) put "Start recording" back on screen during a live
+   * recording - and clicking it calls record/start, which clears rec.events and silently
+   * discards the recording in progress. A recording, if there is one, has the final say. */
   setPlaying(!!s.playing);
+  setRecording(!!s.recording);
   if (s.recording) refreshRecording();
   if (s.playing) refreshReplay();
   await renderList();
