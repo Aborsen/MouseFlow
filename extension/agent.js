@@ -38,6 +38,10 @@ const SYSTEM = `You are driving a real Chrome tab on the user's own computer to 
 How to work:
 - Call read_page first, and again after anything that changes the page. Refs come from the most recent snapshot only; after a click or a navigation the old refs are stale.
 - Take one action at a time and check the result. Do not guess a ref you have not seen.
+- When a dialog is open, its controls are listed FIRST and the snapshot names it. Work inside it rather than reaching past it into the page behind.
+- The snapshot says how many elements it is showing out of how many exist. If what you need is missing and the snapshot is truncated, scroll or work within the open dialog - do not conclude the control is absent.
+- Use one approach at a time. Do not navigate to a URL that already opens something AND also click the control that opens it; that leaves two of whatever it was.
+- If you open something and then change approach, close what you opened before carrying on. Stray windows, drafts and tabs left behind are part of the result, and the user has to clear them up.
 - Prefer typing into a field and submitting over hunting for a button, where both exist.
 - When the goal is met, call finish with a one-sentence summary of what you did.
 - If you cannot make progress, call finish and say plainly what blocked you. Do not loop.
@@ -56,7 +60,7 @@ The goal is your authorisation, and it authorises exactly what it says:
 const TOOLS = [
   {
     name: 'read_page',
-    description: 'Read the current tab: its URL, title, a text sample, and a numbered list of the interactive elements with their names. Call this first, and again after any click, typing, or navigation - refs from an older snapshot are stale.',
+    description: 'Read the current tab: its URL, title, a text sample, and a numbered list of the interactive elements with their names. An open dialog is named in `dialog` and its controls come first; `shown` of `total` says how much of the page the list covers. Call this first, and again after any click, typing, or navigation - refs from an older snapshot are stale.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {

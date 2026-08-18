@@ -994,6 +994,18 @@
 
   let refs = [];
 
+  /* Which snapshot the refs belong to.
+   *
+   * read_page snapshots EVERY frame, so every frame ends up holding a populated `refs` array -
+   * and a ref is just an index, so ref 0 exists in most of them. An action delivered to more than
+   * one frame would therefore be performed more than once, by frames pointing at different
+   * elements. The worker stamps each action with the id of the snapshot it actually used, and a
+   * frame holding a different one stays silent: it neither acts nor answers, so it cannot win a
+   * broadcast either.
+   */
+  let snapshotId = null;
+  let snapshotSeq = 0;
+
   const AGENT_SELECTOR = [
     'a[href]', 'button', 'input', 'select', 'textarea',
     '[role="button"]', '[role="link"]', '[role="textbox"]', '[role="combobox"]',
@@ -1042,14 +1054,51 @@
     return '';
   }
 
+  // The dialog on top, if there is one. Gmail's compose window is a [role=dialog].
+  function openDialog() {
+    const found = [...document.querySelectorAll('[role="dialog"], dialog[open], [aria-modal="true"]')]
+      .filter((d) => isVisible(d));
+    // Last in DOM order is the one on top in practice.
+    return found.length ? found[found.length - 1] : null;
+  }
+
+  function onScreen(el) {
+    const r = el.getBoundingClientRect();
+    return r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+  }
+
+  /* What to show, and in what order.
+   *
+   * The cap used to keep the first N in DOM order. On a Gmail inbox that is 120 message rows and
+   * no compose form: the agent had opened a compose window, could not see its To or Subject
+   * fields, and abandoned it for another approach - twice, leaving two empty compose windows
+   * behind. The elements were there, just past the cap.
+   *
+   * A person looks at the dialog that just opened, not the page behind it. So an open dialog's
+   * controls come first, then whatever is actually on screen, then the rest.
+   */
   function snapshot(limit) {
     refs = [];
+    snapshotSeq++;
+    snapshotId = (IS_TOP ? 'top' : 'frame') + ':' + snapshotSeq + ':' +
+      Math.random().toString(36).slice(2, 8);
+
     const out = [];
     const seen = new Set();
+    const dialog = openDialog();
 
-    for (const el of document.querySelectorAll(AGENT_SELECTOR)) {
+    const candidates = [...document.querySelectorAll(AGENT_SELECTOR)].filter((el) => {
+      if (seen.has(el) || !isVisible(el)) return false;
+      seen.add(el);
+      return true;
+    });
+    // Stable, so DOM order still decides within a band.
+    const band = (el) => (dialog && dialog.contains(el) ? 0 : onScreen(el) ? 1 : 2);
+    candidates.sort((a, b) => band(a) - band(b));
+    seen.clear();
+
+    for (const el of candidates) {
       if (out.length >= limit) break;
-      if (seen.has(el) || !isVisible(el)) continue;
       seen.add(el);
 
       const type = (el.getAttribute('type') || '').toLowerCase();
@@ -1067,13 +1116,18 @@
     }
 
     return {
+      snapshotId,
       url: location.href,
       title: document.title,
       // A short text sample so the model can tell "search results loaded" from
       // "still on the form" without another round trip.
       text: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 1500),
       elements: out,
-      truncated: out.length >= limit,
+      // Named, so the model knows a dialog is open and that its controls are the ones listed first.
+      dialog: dialog ? (accessibleName(dialog) || 'dialog').slice(0, 60) : null,
+      shown: out.length,
+      total: candidates.length,
+      truncated: candidates.length > out.length,
     };
   }
 
@@ -1082,6 +1136,42 @@
     if (!el) throw new Error('ref ' + ref + ' is not in the current snapshot - read the page again');
     if (!el.isConnected) throw new Error('ref ' + ref + ' has left the page - read the page again');
     return el;
+  }
+
+  /* Wait until the page stops changing, instead of guessing how long it takes.
+   *
+   * The worker slept a flat 500ms after a click. Gmail can take longer than that to open a compose
+   * window, so the next read_page saw the page as it was before - which is how the agent ends up
+   * repeating or abandoning work it had already done. Settling on an actual quiet period fixes the
+   * cause rather than moving the guess.
+   */
+  function settle(quietMs = 250, maxMs = 2500) {
+    if (typeof MutationObserver !== 'function') return sleep(quietMs);
+    return new Promise((done) => {
+      let quiet = null;
+      let cap = null;
+      let observer = null;
+      const stop = () => {
+        if (observer) observer.disconnect();
+        clearTimeout(quiet);
+        clearTimeout(cap);
+        done();
+      };
+      const restart = () => {
+        clearTimeout(quiet);
+        quiet = setTimeout(stop, quietMs);
+      };
+      try {
+        observer = new MutationObserver(restart);
+        observer.observe(document.documentElement || document.body,
+          { childList: true, subtree: true, attributes: true });
+      } catch (_) {
+        sleep(quietMs).then(done);
+        return;
+      }
+      cap = setTimeout(stop, maxMs);
+      restart();
+    });
   }
 
   async function agentAct(cmd, from) {
@@ -1122,6 +1212,8 @@
       fire(el, 'pointerup', point, { pointerId: 1, isPrimary: true });
       fire(el, 'mouseup', point);
       fire(el, 'click', point, { detail: 1 });
+      // Let whatever the click started finish before the next read_page looks at the page.
+      await settle();
       return { ok: true, cursor: cursorEnd };
     }
 
@@ -1220,6 +1312,9 @@
     }
 
     if (msg.mf === 'agent/act') {
+      // Not our snapshot, not our action. Silence rather than an error: a broadcast resolves with
+      // whichever frame answers first, so answering at all would be enough to do damage.
+      if (msg.snapshotId && msg.snapshotId !== snapshotId) return;
       trackOffset(true);
       applyOptions(msg.opts);
       agentAct(msg.command, msg.from).then(

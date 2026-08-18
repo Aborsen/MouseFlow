@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -748,6 +748,7 @@ const agent = {
   running: false, abort: false, goal: '', log: [], result: null, frameId: null,
   cursor: null,   // where the drawn pointer was left, so it travels instead of teleporting
   tabId: null,    // the tab this run is working in, held so a user tab switch cannot divert it
+  snapshotId: null,   // which frame's snapshot the current refs belong to
   trace: [],      // one entry per tool call: page, outcome, timing - see tracedTool
   startedAt: null,
   opts: DEFAULT_SETTINGS,
@@ -795,7 +796,10 @@ function summariseResult(name, result) {
   return {
     url: result.url,
     title: result.title,
-    elements: Array.isArray(result.elements) ? result.elements.length : 0,
+    // shown/total, because "120 of 840" is the fact that explains an agent acting half-blind.
+    elements: result.shown == null ? (result.elements || []).length : result.shown,
+    of: result.total == null ? undefined : result.total,
+    dialog: result.dialog || undefined,
     frame: agent.frameId == null ? '(not read yet)'
       : agent.frameId === 0 ? 'main' : 'frame ' + agent.frameId,
     truncated: !!result.truncated,
@@ -914,6 +918,9 @@ async function runAgentTool(name, input) {
        * the frame that produced them, so an iframe would answer with its own ref list and the
        * click would land on a different element entirely. */
       agent.frameId = best.frameId;
+      /* The snapshot the refs came from. Every frame was just snapshotted, so every frame holds
+       * refs; stamping the action means only this snapshot's frame will act on it. */
+      agent.snapshotId = best.page && best.page.snapshotId ? best.page.snapshotId : null;
       return { ok: true, result: best.page };
     }
     case 'navigate': {
@@ -926,6 +933,7 @@ async function runAgentTool(name, input) {
       // on whatever was focused before, which is not the page it just asked for.
       agent.tabId = created.id;
       agent.frameId = null;      // refs from the old page mean nothing here
+      agent.snapshotId = null;
       try { await pollComplete(created.id); } catch (_) { /* the next read_page will show it */ }
       return { ok: true, result: { opened: input.url } };
     }
@@ -942,13 +950,15 @@ async function runAgentTool(name, input) {
       // across steps, exactly as replay does.
       const res = await send(
         tabId,
-        { mf: 'agent/act', command, from: agent.cursor, opts: agent.opts },
+        { mf: 'agent/act', command, from: agent.cursor, opts: agent.opts,
+          snapshotId: agent.snapshotId },
         agent.frameId
       );
       if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'no response from the page' };
       if (res.cursor) agent.cursor = res.cursor;
       // A click often navigates; give the page a moment before the next read_page.
-      await sleep(name === 'click' ? 500 : 150);
+      // A click already waited for the page to settle, in the page itself.
+      await sleep(name === 'click' ? 100 : 150);
       return { ok: true, result: { done: name } };
     }
     default:
@@ -966,7 +976,8 @@ async function agentStart(goal) {
 
   Object.assign(agent, {
     running: true, abort: false, goal: goal.trim(), log: [], result: null, cursor: null,
-    tabId: null, frameId: null, trace: [], startedAt: new Date().toISOString(),
+    tabId: null, frameId: null, snapshotId: null, trace: [],
+    startedAt: new Date().toISOString(),
     opts: await loadSettings(),
   });
   holdWorker(true);
