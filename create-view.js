@@ -118,6 +118,8 @@ How to work:
 - Waiting is free and looking is not. The wait tool blocks until the screen has stopped changing, so ONE wait of 60000 is right for something long - a page researching, a report being written, a file exporting. Never a string of short waits: each of those costs a step, and a run has a limited number of them.
 - If a wait comes back and the thing is still not finished, wait again with a longer limit rather than clicking around it.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
+- Write text the way it should appear, line breaks and all, in ONE type_text call. Do not type a message a line at a time, and do not go back afterwards to fix formatting: Find and Replace, or re-selecting text to correct it, costs steps and rarely ends well. If what you typed came out wrong, select all and type it again.
+- In an email body or a document, a line break is Enter. In a chat box or a comment field, Enter sends - pass newline: "shift-enter" there.
 - Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
 - If activate_window says the window would not come to the front, click it on the taskbar instead. Do not open the application again.
 - If two attempts at the same sub-goal get nowhere, change method. If a third fails, call finish and say precisely what you could not do.
@@ -148,10 +150,17 @@ const DESKTOP_TOOLS = [
   },
   {
     name: 'type_text',
-    description: 'Type text into whatever has focus. Click the field first if it is not focused.',
+    description: 'Type text into whatever has focus. Click the field first if it is not focused. Newlines in the text are typed as real line breaks, so write a message with the paragraphs you want - a blank line between two paragraphs is two newlines. Type the whole thing in one call rather than a line at a time.',
     input_schema: {
       type: 'object',
-      properties: { text: { type: 'string' } },
+      properties: {
+        text: { type: 'string', description: 'The text, with line breaks where you want them' },
+        newline: {
+          type: 'string',
+          enum: ['enter', 'shift-enter'],
+          description: 'How a line break is typed. Use shift-enter in a chat box or a comment field, where a plain Enter would send instead of breaking the line. Default enter, which is right for an email body or a document.',
+        },
+      },
       required: ['text'],
       additionalProperties: false,
     },
@@ -356,8 +365,20 @@ export function actionBody(name, input, shot) {
       ' alt=' + (input.alt ? '1' : '0');
   }
   if (name === 'type_text') {
-    // `text` runs to the end of the line by design, so it needs no escaping - see ParseFields.
-    return 'action=type text=' + String(input.text || '').replace(/[\r\n]+/g, ' ');
+    /* Base64, so line breaks survive.
+     *
+     * The wire format reads `text=` to the end of the line, and the old encoding flattened newlines to
+     * spaces to fit. That turned a formatted email into one long inline paragraph - and then the model
+     * spent its remaining steps trying to repair it with Find and Replace, which is a worse outcome than
+     * failing outright. Base64 carries anything: newlines, quotes, an em dash, a non-Latin name.
+     */
+    const text = String(input.text || '');
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    // Shift+Enter where a plain Enter would send instead of breaking the line - a chat box, a comment.
+    const nl = input.newline === 'shift-enter' ? 'shift' : 'enter';
+    return 'action=type enc=b64 nl=' + nl + ' text=' + btoa(binary);
   }
   if (name === 'activate_window') {
     const title = String(input.title || '').replace(/[\r\n]+/g, ' ').trim();
@@ -863,7 +884,10 @@ export function mountCreate(root) {
     if (event.name === 'scroll') return 'scroll ' + (Number(input.amount) < 0 ? 'down' : 'up') + at;
     if (event.name === 'type_text') {
       const text = String(input.text || '');
-      return 'type "' + (text.length > 60 ? text.slice(0, 60) + '…' : text) + '"';
+      const lines = text.split('\n').length;
+      const shown = text.replace(/\n/g, ' ⏎ ');
+      return 'type "' + (shown.length > 60 ? shown.slice(0, 60) + '…' : shown) + '"' +
+        (lines > 1 ? ' (' + lines + ' lines)' : '');
     }
     if (event.name === 'press_key') {
       const mods = [input.ctrl && 'Ctrl', input.shift && 'Shift', input.alt && 'Alt'].filter(Boolean);

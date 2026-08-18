@@ -46,6 +46,7 @@
     action=move x=400 y=300
     action=scroll x=400 y=300 amount=-3
     action=type text=hello there
+    action=type enc=b64 nl=shift text=<base64 UTF-8>   multi-line text, newlines intact
     action=key key=Enter ctrl=0 shift=0 alt=0
     action=activate title=Outlook            (or process=outlook)
 
@@ -323,7 +324,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.4.0";
+        public const string Version = "0.5.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -761,7 +762,23 @@ namespace MouseFlow
 
         static string Perform(string action, Dictionary<string, string> a)
         {
-            if (action == "type") return TypeText(Get(a, "text", ""));
+            if (action == "type")
+            {
+                /* Base64 when the text has anything in it the line-based format cannot carry - a newline
+                 * above all. `text=` runs to the end of the line by design, so a literal newline would
+                 * end the field; flattening them to spaces instead is what turned a five-paragraph email
+                 * into one inline sentence and left the model fighting its own formatting afterwards.
+                 *
+                 * nl=shift presses Shift+Enter for each break: in a chat box, and in some comment fields,
+                 * a plain Enter sends rather than breaks the line. */
+                string typing = Get(a, "text", "");
+                if (Get(a, "enc", "") == "b64")
+                {
+                    typing = DecodeB64(typing);
+                    if (typing == null) return "the text was not valid base64";
+                }
+                return TypeText(typing, Get(a, "nl", "enter") == "shift");
+            }
             if (action == "activate") return Activate(Get(a, "title", ""), Get(a, "process", ""));
             if (action == "key")
             {
@@ -898,19 +915,37 @@ namespace MouseFlow
             return from.TryGetValue(key, out value) ? value : fallback;
         }
 
-        static string TypeText(string text)
+        /* UTF-8, so anything the user might actually write survives - accents, quotes, an em dash. */
+        public static string DecodeB64(string encoded)
+        {
+            if (encoded == null) return null;
+            try
+            {
+                return Encoding.UTF8.GetString(Convert.FromBase64String(encoded.Trim()));
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        static string TypeText(string text, bool shiftNewline)
         {
             if (text == null || text.Length == 0) return "nothing to type";
-            if (text.Length > 4000) return "that is more text than this will type in one go";
+            if (text.Length > 8000) return "that is more text than this will type in one go";
 
             /* Sent as Unicode rather than as virtual keys: a keycode depends on the keyboard layout,
                and text typed through them comes out wrong on any layout but the author's. */
             for (int i = 0; i < text.Length; i++)
             {
                 char c = text[i];
-                if (c == '\n' || c == '\r')
+                if (c == '\r') continue;                 // CRLF is one break, not two
+                if (c == '\n')
                 {
-                    PressKey("Enter", false, false, false);
+                    PressKey("Enter", false, shiftNewline, false);
+                    /* A break usually makes the application do something - reflow a paragraph, start a
+                     * list item, grow a box - and typing into it mid-reflow drops characters. */
+                    Thread.Sleep(60);
                     continue;
                 }
                 SendUnicode(c, false);
