@@ -36,7 +36,8 @@ const MAX_TURNS = 40;
 const SYSTEM = `You are driving a real Chrome tab on the user's own computer to accomplish a goal they described in plain language.
 
 How to work:
-- Call read_page first, and again after anything that changes the page. Refs come from the most recent snapshot only; after a click or a navigation the old refs are stale.
+- Call read_page first. After that, every action hands back the page as it is afterwards, with fresh refs - so you do NOT need a read_page between actions. Use read_page again when you need the full view, the page text, or after a navigation.
+- Refs always come from the most recent snapshot, whether that came from read_page or from the last action. Older refs are stale.
 - Take one action at a time and check the result. Do not guess a ref you have not seen.
 - When a dialog is open, its controls are listed FIRST and the snapshot names it. Work inside it rather than reaching past it into the page behind.
 - The snapshot may carry notes about the site you are on. They are conventions of that application, worth more than guessing from the element list. Read them.
@@ -310,6 +311,22 @@ export async function runGoal({ goal, apiKey, execute, onEvent, isAborted }) {
             ? JSON.stringify(outcome.result == null ? { ok: true } : outcome.result)
             : String(outcome.error || 'failed'),
         }],
+      });
+    }
+
+    /* Warn before the wall rather than at it.
+     *
+     * A run that hits the limit is cut off mid-task with whatever it had half-done - a saved draft,
+     * an open dialog - and no summary of where it got to. Given a few steps' notice it can finish
+     * cleanly or say plainly what is left. */
+    const left = MAX_TURNS - turns;
+    if (left <= 6) {
+      results.push({
+        type: 'text',
+        text: left <= 1
+          ? 'This is your last step. Call finish now and say exactly what is done and what is not.'
+          : left + ' steps remain. Finish the task, or wrap up and call finish with what is done ' +
+            'and what is left - including anything you opened that should be closed.',
       });
     }
 

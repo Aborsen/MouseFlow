@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 const KEEPALIVE_MS = 20000;
 
 const rec = {
@@ -822,6 +822,19 @@ const TRACE_MAX_TEXT = 300;
 // read_page returns a whole page snapshot; storing it would swamp the trace and tell you little.
 function summariseResult(name, result) {
   if (result == null) return null;
+  /* An action now carries the page back with it. Recording that whole snapshot in the trace would
+   * bury the step it belongs to, so it is reduced the same way read_page's is. */
+  if (name !== 'read_page' && result.page) {
+    return {
+      done: result.done,
+      scrolled: result.scrolled,
+      after: {
+        elements: result.page.shown == null ? undefined : result.page.shown,
+        of: result.page.total,
+        dialog: result.page.dialog || undefined,
+      },
+    };
+  }
   if (name !== 'read_page') return result;
   return {
     url: result.url,
@@ -989,10 +1002,26 @@ async function runAgentTool(name, input) {
       );
       if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'no response from the page' };
       if (res.cursor) agent.cursor = res.cursor;
+
+      /* The page as it is after the action, so the model does not have to spend a turn asking.
+       * These refs replace the ones it was working from, so the snapshot id moves with them -
+       * otherwise the next action would be stamped with a snapshot that no longer exists. */
+      let after = null;
+      if (res.page) {
+        agent.snapshotId = res.page.snapshotId || agent.snapshotId;
+        const notes = siteNotes(res.page.url);
+        if (notes) res.page.notes = notes;
+        after = res.page;
+      }
       // A click often navigates; give the page a moment before the next read_page.
       // A click already waited for the page to settle, in the page itself.
       await sleep(name === 'click' ? 100 : 150);
-      return { ok: true, result: { done: name } };
+      return {
+        ok: true,
+        result: after
+          ? { done: name, scrolled: res.scrolled, page: after }
+          : { done: name, scrolled: res.scrolled },
+      };
     }
     default:
       return { ok: false, error: 'unknown tool ' + name };

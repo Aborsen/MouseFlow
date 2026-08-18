@@ -1143,7 +1143,7 @@
    * A person looks at the dialog that just opened, not the page behind it. So an open dialog's
    * controls come first, then whatever is actually on screen, then the rest.
    */
-  function snapshot(limit) {
+  function snapshot(limit, compact) {
     refs = [];
     snapshotSeq++;
     snapshotId = (IS_TOP ? 'top' : 'frame') + ':' + snapshotSeq + ':' +
@@ -1185,9 +1185,11 @@
       snapshotId,
       url: location.href,
       title: document.title,
-      // A short text sample so the model can tell "search results loaded" from
-      // "still on the form" without another round trip.
-      text: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 1500),
+      /* A short text sample so the model can tell "search results loaded" from "still on the
+       * form" without another round trip. Omitted from the snapshot attached to every action -
+       * that one is about what changed, and the sample is the expensive half. */
+      text: compact ? undefined
+        : (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 1500),
       elements: out,
       // Named, so the model knows a dialog is open and that its controls are the ones listed first.
       dialog: dialog ? (accessibleName(dialog) || 'dialog').slice(0, 60) : null,
@@ -1240,6 +1242,21 @@
     });
   }
 
+  /* What the page looks like now.
+   *
+   * Attached to the result of every action, because the alternative was costing a whole turn per
+   * action: the prompt said to read_page after anything that changes the page, and a run doing so
+   * spent twenty of its forty steps looking rather than acting - and ran out mid-task. Smaller and
+   * text-free, since it answers "what changed", not "what is this page".
+   */
+  function afterState() {
+    try {
+      return snapshot(60, true);
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function agentAct(cmd, from) {
     if (cmd.action === 'scroll') {
       const by = (cmd.amount || 600) * (cmd.direction === 'up' ? -1 : 1);
@@ -1253,7 +1270,7 @@
         scrollBy({ top: by, behavior: 'instant' });
       }
       await settle(120, 800);
-      return { ok: true, result: { scrolled: box ? 'dialog' : 'page' } };
+      return { ok: true, scrolled: box ? 'dialog' : 'page', page: afterState() };
     }
 
     if (cmd.action === 'press_key') {
@@ -1268,7 +1285,7 @@
         target.form.requestSubmit();
       }
       await settle(150, 1200);
-      return { ok: true };
+      return { ok: true, page: afterState() };
     }
 
     const el = elementFor(cmd.ref);
@@ -1290,9 +1307,9 @@
       fire(el, 'pointerup', point, { pointerId: 1, isPrimary: true });
       fire(el, 'mouseup', point);
       fire(el, 'click', point, { detail: 1 });
-      // Let whatever the click started finish before the next read_page looks at the page.
+      // Let whatever the click started finish before we describe the page again.
       await settle();
-      return { ok: true, cursor: cursorEnd };
+      return { ok: true, cursor: cursorEnd, page: afterState() };
     }
 
     if (cmd.action === 'type') {
@@ -1303,8 +1320,10 @@
         pressKey(el, { key: 'Enter' });
         if (el.form && typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
         await settle(150, 1200);
+      } else {
+        await settle(120, 800);
       }
-      return { ok: true, cursor: cursorEnd };
+      return { ok: true, cursor: cursorEnd, page: afterState() };
     }
 
     throw new Error('unknown agent action ' + cmd.action);

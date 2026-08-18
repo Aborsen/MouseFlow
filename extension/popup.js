@@ -319,8 +319,7 @@ function renderFeed(log) {
       line.textContent = event.text;
     } else if (event.type === 'act') {
       line.className = 'act';
-      const detail = event.input && (event.input.url || event.input.text ||
-        (event.input.ref != null ? 'ref ' + event.input.ref : ''));
+      const detail = stepDetail(event.input);
       line.textContent = '· ' + event.name + (detail ? ' ' + String(detail).slice(0, 44) : '');
     } else {
       line.textContent = event.text;
@@ -379,6 +378,21 @@ async function refreshAgent() {
     (result.steps && result.steps.length ? '\n(' + result.steps.length + ' actions taken)' : '');
 }
 
+/* What an action was aimed at, in a few characters. A press_key showed nothing at all, which made
+ * six keyboard steps in a row unreadable - and whether a shortcut was even tried was the question. */
+function stepDetail(input) {
+  if (!input) return '';
+  if (input.key) {
+    return [input.ctrl && 'Ctrl', input.shift && 'Shift', input.alt && 'Alt', input.meta && 'Meta',
+      input.key].filter(Boolean).join('+');
+  }
+  if (input.url) return input.url;
+  if (input.text) return input.text;
+  if (input.direction) return input.direction + (input.amount ? ' ' + input.amount : '');
+  if (input.ref != null) return 'ref ' + input.ref;
+  return '';
+}
+
 /* The whole trace, as text, for pasting somewhere. One line per step with the page it acted on
  * and where it ended up, which is what explains a run going somewhere unexpected.
  *
@@ -400,8 +414,7 @@ $('copy-ai-log').addEventListener('click', async (ev) => {
     '',
   ];
   for (const s of run.steps || []) {
-    const detail = s.input && (s.input.url || s.input.text ||
-      (s.input.ref != null ? 'ref ' + s.input.ref : ''));
+    const detail = stepDetail(s.input);
     lines.push(
       String(s.n).padStart(3) + '. ' + s.tool + (detail ? ' — ' + detail : ''),
       '     on   ' + (s.url || '(no tab yet)'),
