@@ -4,138 +4,37 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MouseFlow — skill gallery</title>
+<meta name="description" content="Browse and install MouseFlow skills people have shared.">
+<meta name="theme-color" content="#0e1116">
 <link rel="icon" href="icons/icon-192.png">
-<style>
-  :root {
-    color-scheme: light dark;
-    --line: color-mix(in srgb, CanvasText 14%, transparent);
-    --soft: color-mix(in srgb, CanvasText 5%, transparent);
-    --dim: color-mix(in srgb, CanvasText 62%, transparent);
-    --blue: #4c8dff;
-    --purple: #8957e5;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    padding: 0 20px 80px;
-    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: Canvas;
-    color: CanvasText;
-  }
-  .wrap { max-width: 760px; margin: 0 auto; }
-
-  header { display: flex; align-items: center; gap: 12px; padding: 22px 0 6px; flex-wrap: wrap; }
-  header img { width: 30px; height: 30px; border-radius: 7px; }
-  header h1 { margin: 0; font-size: 19px; font-weight: 650; }
-  header .spacer { flex: 1; }
-
-  .lede { margin: 6px 0 22px; color: var(--dim); font-size: 14px; max-width: 62ch; }
-
-  button {
-    padding: 9px 14px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--soft);
-    color: inherit;
-    font: inherit;
-    font-size: 14px;
-    font-weight: 550;
-    cursor: pointer;
-  }
-  button:hover:not(:disabled) { border-color: color-mix(in srgb, CanvasText 40%, transparent); }
-  button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .primary { background: var(--blue); border-color: var(--blue); color: #fff; }
-  .google { display: inline-flex; align-items: center; gap: 9px; background: Canvas; }
-  .google svg { width: 17px; height: 17px; }
-
-  .who { display: flex; align-items: center; gap: 9px; font-size: 13.5px; }
-  .who img { width: 26px; height: 26px; border-radius: 50%; }
-
-  input[type=search] {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: Canvas;
-    color: inherit;
-    font: inherit;
-    margin-bottom: 18px;
-  }
-
-  .card {
-    border: 1px solid var(--line);
-    border-radius: 11px;
-    padding: 14px 16px;
-    margin-bottom: 11px;
-    background: var(--soft);
-  }
-  .card h2 { margin: 0 0 3px; font-size: 15.5px; font-weight: 620; }
-  .card p { margin: 0 0 10px; color: var(--dim); font-size: 13.5px; }
-  .card footer { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--dim); }
-  .card footer .spacer { flex: 1; }
-
-  .tag { display: inline-block; padding: 1px 7px; border-radius: 20px; font-size: 10.5px; font-weight: 650; }
-  .tag-recorded { background: color-mix(in srgb, var(--blue) 20%, transparent); color: var(--blue); }
-  .tag-created { background: color-mix(in srgb, var(--purple) 24%, transparent); color: #a97bf0; }
-
-  .note {
-    padding: 12px 14px;
-    border-radius: 9px;
-    border: 1px solid var(--line);
-    background: var(--soft);
-    font-size: 13.5px;
-    margin-bottom: 18px;
-  }
-  .note.bad { border-color: #f85149; background: color-mix(in srgb, #f85149 10%, transparent); }
-  .note.good { border-color: #2ea043; background: color-mix(in srgb, #2ea043 10%, transparent); }
-  .note strong { display: block; margin-bottom: 3px; }
-  .note code {
-    font-family: ui-monospace, Consolas, monospace;
-    font-size: 12.5px;
-    background: color-mix(in srgb, CanvasText 9%, transparent);
-    padding: 1px 5px;
-    border-radius: 4px;
-  }
-
-  .empty { color: var(--dim); font-size: 14px; padding: 26px 0; }
-  .muted { color: var(--dim); font-size: 12.5px; }
-  pre {
-    background: var(--soft); border: 1px solid var(--line); border-radius: 8px;
-    padding: 11px; overflow-x: auto; font-size: 12px; max-height: 190px;
-  }
-  a { color: var(--blue); }
-</style>
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-<div class="wrap">
 
-<header>
-  <img src="icons/icon-192.png" alt="">
-  <h1>Skill gallery</h1>
-  <span class="spacer"></span>
-  <div id="account"></div>
+<!-- A direct entry point for the gallery, kept because the extension's Publish button links straight
+     here and a shared link should not depend on which tab someone was last on. The gallery itself is
+     one implementation, mounted in both places - see gallery-view.js. -->
+<header class="topbar">
+  <a class="brand" href="/">
+    <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor"/>
+    </svg>
+    <span>MouseFlow</span>
+  </a>
+  <nav class="tabs">
+    <a class="tab" href="/#desktop">Desktop</a>
+    <a class="tab" href="/#skills">Skills</a>
+    <a class="tab tab--on" href="/gallery.html">Gallery</a>
+  </nav>
 </header>
 
-<p class="lede">
-  Flows people have kept and shared. A <strong>recorded</strong> skill repeats a sequence of clicks
-  exactly, for free. A <strong>created</strong> skill re-runs its goal through the agent, so it adapts
-  and can take different details each time. Installing one copies it; you run it from the extension.
-</p>
+<main>
+  <section class="card card--wide" id="gallery-root"></section>
+</main>
 
-<div id="publish-box"></div>
-<div id="status"></div>
-
-<input type="search" id="search" placeholder="Search skills…" autocomplete="off">
-
-<div id="list"><p class="empty">Loading…</p></div>
-
-<p class="muted" style="margin-top:26px">
-  Need the extension? It lives in the <a href="https://github.com/Aborsen/Mouse" target="_blank"
-  rel="noopener">MouseFlow repository</a> — load <code>extension/</code> unpacked at
-  <code>chrome://extensions</code>.
-</p>
-
-</div>
-<script src="gallery.js" type="module"></script>
+<script type="module">
+  import { mountGallery } from './gallery-view.js';
+  mountGallery(document.getElementById('gallery-root'));
+</script>
 </body>
 </html>

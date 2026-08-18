@@ -21,13 +21,19 @@
     <span>MouseFlow</span>
   </div>
 
+  <nav class="tabs" id="tabs" aria-label="Sections">
+    <button class="tab" data-view="desktop" type="button">Desktop</button>
+    <button class="tab" data-view="skills" type="button">Skills</button>
+    <button class="tab" data-view="gallery" type="button">Gallery</button>
+  </nav>
+
   <button id="agent-pill" class="pill pill--bad" type="button" aria-expanded="false">
     <span class="dot"></span>
     <span id="agent-label">Agent offline</span>
   </button>
 </header>
 
-<section id="agent-setup" class="setup" hidden>
+<section id="agent-setup" class="setup view-desktop-only" hidden>
   <div class="setup-head">
     <div>
       <h2 id="setup-title">Set up MouseFlow</h2>
@@ -56,7 +62,10 @@
   </details>
 </section>
 
-<main class="grid">
+<main>
+
+<!-- ============================================================ desktop agent -->
+<div id="view-desktop" class="view grid">
 
   <!-- ---------- recorder ---------- -->
   <section class="card">
@@ -153,11 +162,24 @@
     </div>
   </section>
 
+</div>
+
+<!-- ================================================================== skills -->
+<div id="view-skills" class="view" hidden>
+  <section class="card card--wide" id="skills-root"></section>
+</div>
+
+<!-- ================================================================= gallery -->
+<div id="view-gallery" class="view" hidden>
+  <section class="card card--wide" id="gallery-root"></section>
+</div>
+
 </main>
 
 <div id="toasts" class="toasts" aria-live="polite"></div>
 <div id="dropzone" class="dropzone"><span>Drop .mmmacro files to import</span></div>
 
 <script src="app.js"></script>
+<script src="tabs.js" type="module"></script>
 </body>
 </html>
