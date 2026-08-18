@@ -10,6 +10,11 @@
  *
  * A deliberately dumb proxy. It does not interpret Better Auth's protocol, because a proxy that
  * understands the thing it forwards is a second implementation to keep in step with the first.
+ *
+ * The subpath arrives as ?authpath=… from a rewrite in vercel.json rather than from a filesystem
+ * catch-all. A catch-all file reached this function for a one-segment path and 404'd at the platform
+ * for two, because this project has no framework preset and so no framework-aware routing; an
+ * explicit rewrite works the same at every depth.
  */
 
 const AUTH_BASE = process.env.NEON_AUTH_BASE_URL;
@@ -22,6 +27,13 @@ const HOP_BY_HOP = new Set([
   'proxy-authorization', 'proxy-authenticate', 'te', 'trailer',
   'content-length', 'accept-encoding',
 ]);
+
+/* Headers describing OUR hop, which the upstream must not see.
+ *
+ * Forwarding x-forwarded-host told Neon Auth the request was for mouse-agent.vercel.app, which is
+ * not a host it serves, and it answered 400 "Invalid hostname header" for every single call. The
+ * x-vercel-* set is the same kind of thing: true of the hop, false of the request being forwarded. */
+const OUR_HOP = /^(x-forwarded-|x-vercel-|x-real-ip$|forwarded$|cdn-loop$)/i;
 
 // Vercel has already parsed the body by the time we see it, so it is rebuilt rather than streamed.
 function bodyFor(req) {
@@ -40,18 +52,29 @@ export default async function handler(req, res) {
     return;
   }
 
-  const segments = Array.isArray(req.query.path) ? req.query.path : [req.query.path].filter(Boolean);
-  const search = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  const target = AUTH_BASE.replace(/\/$/, '') + '/' + segments.join('/') + search;
+  const subpath = String((req.query && req.query.authpath) || '').replace(/^\/+/, '');
+  if (!subpath) {
+    res.status(404).json({ error: 'no auth path given' });
+    return;
+  }
+  /* The caller's own query string, minus the parameter the rewrite added. Better Auth needs the
+   * original query intact - the OAuth callback carries `code` and `state` there. */
+  const incoming = new URLSearchParams(req.url.includes('?') ? req.url.slice(req.url.indexOf('?') + 1) : '');
+  incoming.delete('authpath');
+  const query = incoming.toString();
+  const target = AUTH_BASE.replace(/\/$/, '') + '/' + subpath + (query ? '?' + query : '');
 
   const headers = {};
   for (const [key, value] of Object.entries(req.headers)) {
-    if (!HOP_BY_HOP.has(key.toLowerCase())) headers[key] = value;
+    const name = key.toLowerCase();
+    if (!HOP_BY_HOP.has(name) && !OUR_HOP.test(name)) headers[key] = value;
   }
   /* Better Auth checks the request origin against its trusted list. Our own origin is what is
    * trusted (see scripts/auth-origin.mjs), so it is stated explicitly rather than left to whatever
    * the hop happened to carry. */
   headers.origin = 'https://' + (req.headers['x-forwarded-host'] || req.headers.host || 'mouse-agent.vercel.app');
+  // Same reasoning as OUR_HOP: the upstream should see a plain request, not a proxied one.
+  delete headers.referer;
 
   let upstream;
   try {
