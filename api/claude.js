@@ -36,7 +36,11 @@ const UPSTREAM = 'https://api.anthropic.com/v1/messages';
 const ALLOWED_MODELS = new Set(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001']);
 const MAX_TOKENS_CAP = 16000;
 const MAX_MESSAGES = 120;              // a runaway loop hits this long before it hits the balance
-const MAX_BODY_BYTES = 1_500_000;
+/* Vision turns carry a picture, and the platform allows ~4.5MB. A cap of 1.5MB made this proxy the
+ * tightest gate in the chain at a third of what the platform permits - and the failure it produced said
+ * only "request too large". The agent sends JPEG now, which is where the real saving is; this is the
+ * backstop, and it reports the size so the number is not a mystery. */
+const MAX_BODY_BYTES = 4_000_000;
 
 /* Per-caller rate limit.
  *
@@ -174,7 +178,11 @@ export default async function handler(req, res) {
   if (body.fallbacks) payload.fallbacks = body.fallbacks;
 
   const encoded = JSON.stringify(payload);
-  if (encoded.length > MAX_BODY_BYTES) { fail(res, 413, 'request too large'); return; }
+  if (encoded.length > MAX_BODY_BYTES) {
+    fail(res, 413, 'request too large: ' + Math.round(encoded.length / 1024) + 'KB, limit ' +
+      Math.round(MAX_BODY_BYTES / 1024) + 'KB');
+    return;
+  }
 
   let upstream;
   try {

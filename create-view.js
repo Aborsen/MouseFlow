@@ -103,6 +103,8 @@ const SETTLE_MAX_MS = 120000;
 /* Longer than the server's own ceiling, so a slow-but-arriving answer is not thrown away by the client
  * that asked for it. Shorter than forever, so a hung request is reported rather than waited on. */
 const MODEL_TIMEOUT_MS = 75000;
+// What /shot is asked for by default. Halved on a 413; see runWave.
+const DEFAULT_SHOT_W = 1280;
 const SETTLE_POLL_MS = 1500;
 /* Two consecutive quiet looks, so a caret blinking between frames does not read as movement. */
 const SETTLE_QUIET_FRAMES = 2;
@@ -209,11 +211,14 @@ const DESKTOP_TOOLS = [
   },
   {
     name: 'finish',
-    description: 'The goal is met, or it cannot be. Say which, in one sentence.',
+    description: 'End the run. Set ok true only if the goal was actually achieved, and false if it was not - including when you got part of the way. Say which in one sentence.',
     input_schema: {
       type: 'object',
-      properties: { said: { type: 'string' }, ok: { type: 'boolean' } },
-      required: ['said'],
+      properties: {
+        said: { type: 'string', description: 'One sentence on what was done, or on what stopped you' },
+        ok: { type: 'boolean', description: 'true only if the goal was achieved' },
+      },
+      required: ['said', 'ok'],
       additionalProperties: false,
     },
   },
@@ -225,6 +230,22 @@ const DESKTOP_TOOLS = [
  * "is anything happening", not "what changed". At that size a spinner still registers and JPEG-ish
  * noise does not, and comparing two of them is 2304 subtractions rather than an image diff.
  */
+/* The agent can fingerprint the screen itself - 64x36 grey samples, about 3KB - which is all that
+ * "has anything changed" needs. Before this, every poll pulled a whole screenshot over loopback and
+ * threw away all but 2KB of it, every 1.5 seconds, for as long as the wait lasted. */
+async function pulse(base) {
+  try {
+    const body = await agentCall(base, '/pulse');
+    if (!body || !body.grid) return null;
+    const raw = atob(body.grid);
+    const grid = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) grid[i] = raw.charCodeAt(i);
+    return grid;
+  } catch (_) {
+    return null;                    // an older agent has no /pulse; the caller falls back
+  }
+}
+
 async function fingerprint(png) {
   try {
     const blob = await (await fetch('data:image/png;base64,' + png)).blob();
@@ -281,11 +302,34 @@ export async function openWindows(base) {
   }
 }
 
+/* Loopback is fast or it is broken, and a request to it that never settles used to leave the console
+ * saying "Running…" over a machine doing nothing at all. Each call gets a deadline, and a failure to
+ * reach the agent is tagged as such so the caller can say which of the two happened. */
+const AGENT_TIMEOUT_MS = { '/shot': 12000, '/windows': 5000, '/pulse': 5000, '/do': 20000 };
+
 async function agentCall(base, path, options) {
-  const res = await fetch(base + path, Object.assign({ mode: 'cors' }, options));
+  const key = Object.keys(AGENT_TIMEOUT_MS).find((p) => path.startsWith(p));
+  const cutoff = new AbortController();
+  const timer = setTimeout(() => cutoff.abort(), (key && AGENT_TIMEOUT_MS[key]) || 10000);
+
+  let res;
+  try {
+    res = await fetch(base + path, Object.assign({ mode: 'cors', signal: cutoff.signal }, options));
+  } catch (err) {
+    const problem = new Error(err && err.name === 'AbortError'
+      ? 'the agent did not answer in time'
+      : 'nothing answered on ' + base.replace('http://', ''));
+    problem.offline = true;
+    throw problem;
+  } finally {
+    clearTimeout(timer);
+  }
+
   const body = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error((body && body.error) || 'the agent answered ' + res.status);
+    const problem = new Error((body && body.error) || 'the agent answered ' + res.status);
+    problem.status = res.status;
+    throw problem;
   }
   return body;
 }
@@ -342,15 +386,18 @@ async function settle(base, limitMs, isAborted, onTick) {
     if (isAborted()) break;
     await new Promise((done) => setTimeout(done, SETTLE_POLL_MS));
 
-    let shot;
-    try {
-      shot = await agentCall(base, '/shot');
-    } catch (_) {
-      // The agent went away mid-wait; the next turn's shot will report it properly.
-      break;
+    let now = await pulse(base);
+    if (!now) {
+      // An agent too old to fingerprint for us: fall back to a picture and do it here.
+      let shot;
+      try {
+        shot = await agentCall(base, '/shot?w=640');
+      } catch (_) {
+        // The agent went away mid-wait; the next turn's shot will report it properly.
+        break;
+      }
+      now = await fingerprint(shot.png);
     }
-
-    const now = await fingerprint(shot.png);
     if (last && !moved(last, now)) {
       if (quietSince === null) quietSince = Date.now();
       const frames = Math.round((Date.now() - quietSince) / SETTLE_POLL_MS) + 1;
@@ -397,11 +444,16 @@ export async function runOnDesktop({ goal, base, onEvent, isAborted }) {
 
     /* Out of turns for this wave, and the goal is not met. Ask for the handoff - one turn, no acting -
      * so the next wave inherits knowledge instead of starting blind. */
-    handoff = await askForHandoff(messages);
-    if (!handoff) {
-      return { ok: false, error: 'It could not summarise where it had got to, so it stopped rather ' +
-        'than starting over blind.', steps };
+    const handed = await askForHandoff(messages);
+    if (!handed.note) {
+      return {
+        ok: false,
+        error: 'It got as far as step ' + stepNo + ', then ' + handed.error +
+          '. It stopped there rather than starting the next stretch with no idea what had been done.',
+        steps,
+      };
     }
+    handoff = handed.note;
     onEvent({ type: 'handoff', text: handoff });
   }
 
@@ -419,6 +471,10 @@ export async function runOnDesktop({ goal, base, onEvent, isAborted }) {
  * though the context is not. */
 async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFrom }) {
   let stepNo = stepFrom;
+  /* Shrunk, not abandoned, when a step comes back too large. Half the width is a quarter of the pixels,
+   * so two retries take a 4K desktop well under any limit - and a smaller picture is worth far more
+   * than a failed run. */
+  let shotWidth = DEFAULT_SHOT_W;
 
   for (let turn = 0; turn < WAVE_TURNS; turn++) {
     if (isAborted()) return { done: false, stepNo };
@@ -430,12 +486,28 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
 
     let shot;
     try {
-      shot = await agentCall(base, '/shot');
+      shot = await agentCall(base, '/shot' + (shotWidth === DEFAULT_SHOT_W ? '' : '?w=' + shotWidth));
     } catch (err) {
-      return done(stepNo, { ok: false, error: 'Could not see the screen: ' + err.message, steps });
+      return done(stepNo, {
+        ok: false,
+        error: err.offline
+          ? 'Lost the local agent at step ' + stepNo + ' — ' + err.message + '. The PowerShell window ' +
+            'may have been closed, or the computer may have slept. Start it again from the Desktop tab.'
+          : 'Could not see the screen at step ' + stepNo + ': ' + err.message,
+        steps,
+      });
     }
     if (!shot || !shot.png) {
-      return done(stepNo, { ok: false, error: 'The agent returned no picture.', steps });
+      /* A screen with nothing on it to photograph - locked, or a disconnected remote session - answers
+       * without a picture. Saying which is the difference between a fix and a shrug. */
+      return done(stepNo, {
+        ok: false,
+        error: 'Could not take a picture of the screen at step ' + stepNo +
+          (shot && shot.error ? ' — the agent said: ' + shot.error : '') +
+          '. If the computer is locked or a remote session has been disconnected there is no desktop ' +
+          'to look at; unlock it and run this again.',
+        steps,
+      });
     }
 
     /* The picture goes in as the newest turn, and older pictures are dropped: a conversation carrying
@@ -449,7 +521,9 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
     messages.push({
       role: 'user',
       content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: shot.png } },
+        /* Whatever the agent actually encoded. It sends JPEG now - a screenshot is text, which PNG
+         * stores faithfully and expensively - and an older agent still sends PNG. */
+        { type: 'image', source: { type: 'base64', media_type: shot.format || 'image/png', data: shot.png } },
         {
           type: 'text',
           text: 'The screen now, ' + shot.w + ' by ' + shot.h + ' pixels.' +
@@ -475,7 +549,10 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
         signal: cutoff.signal,
         body: JSON.stringify({
           model: 'claude-opus-5',
-          max_tokens: 2000,
+          /* Generous, because this budget is shared with the model's own reasoning: at 2000 a turn that
+           * thought hard about a crowded screen could run out mid-answer, and a truncated answer has no
+           * tool call in it - which the loop then read as "nothing left to do" and called a success. */
+          max_tokens: 8000,
           system: DESKTOP_SYSTEM,
           tools: DESKTOP_TOOLS,
           messages,
@@ -497,6 +574,16 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
     clearTimeout(timer);
 
     const text = await res.text();
+
+    if (res.status === 413 && shotWidth > 320) {
+      shotWidth = Math.max(320, Math.round(shotWidth / 2));
+      onEvent({ type: 'text', text: 'That step was too large to send; taking a smaller picture (' +
+        shotWidth + 'px) and trying again.' });
+      turn--;                        // the same decision, retried - it never got made
+      stepNo--;
+      continue;
+    }
+
     if (!res.ok) {
       /* Every one of these has a different thing to do about it, and "the model refused: 504" told the
        * user nothing they could act on - which is how a run that stopped on step one looked like a run
@@ -527,6 +614,27 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
     }
 
     const blocks = answer.content || [];
+
+    /* Why the answer ended, before reading what is in it. A refusal and a truncation both arrive as HTTP
+     * 200 with content that may contain no tool call at all, and treating either as "it had nothing
+     * further to do" reported a run that never acted as a run that had finished. */
+    if (answer.stop_reason === 'refusal') {
+      return done(stepNo, {
+        ok: false,
+        error: 'The model declined to continue at step ' + stepNo +
+          '. Rewording the goal, or doing the sensitive part yourself, is usually the way past it.',
+        steps,
+      });
+    }
+    if (answer.stop_reason === 'max_tokens') {
+      return done(stepNo, {
+        ok: false,
+        error: 'The answer at step ' + stepNo + ' was cut off before it decided anything. The screen is ' +
+          'probably very crowded; closing what you do not need makes each step easier to think about.',
+        steps,
+      });
+    }
+
     messages.push({ role: 'assistant', content: blocks });
 
     const said = blocks.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
@@ -539,12 +647,25 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
 
     const results = [];
     for (const use of uses) {
+      /* Checked per action, not only per turn. A turn can carry several tool calls, and the model is
+       * allowed to pair a long wait with the click that follows it - so pressing Stop during the wait
+       * used to let that click land on a live desktop afterwards. */
+      if (isAborted()) {
+        results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true,
+                       content: 'the user stopped the run' });
+        break;
+      }
+
       if (use.name === 'finish') {
         const closing = (use.input && use.input.said) || said || 'Done.';
+        /* Success has to be claimed explicitly. It used to be the default - anything but an explicit
+         * false counted as done - so a run that gave up said so in words while the console went green,
+         * and "it did not come through" was the first anyone knew. */
+        const claimed = use.input && use.input.ok === true;
         return done(stepNo, {
-          ok: use.input && use.input.ok === false ? false : true,
+          ok: claimed,
           said: closing,
-          error: use.input && use.input.ok === false ? closing : undefined,
+          error: claimed ? undefined : closing,
           steps,
         });
       }
@@ -620,29 +741,57 @@ async function askForHandoff(messages) {
       'a file name, where you got to in a list.',
   });
 
+  const cutoff = new AbortController();
+  const timer = setTimeout(() => cutoff.abort(), MODEL_TIMEOUT_MS);
   let res;
   try {
     res = await fetch('/api/claude', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
+      signal: cutoff.signal,
       body: JSON.stringify({
         model: 'claude-opus-5',
         max_tokens: 700,
         system: 'You are handing an unfinished task to someone who will continue it. Be concrete and brief.',
+        /* The tools have to travel with it even though nothing may be used.
+         *
+         * By the time a wave runs out, the conversation is full of tool_use and tool_result blocks - a
+         * wave only ENDS that way; a turn without a tool call finishes the run instead. The Messages API
+         * rejects a request carrying those blocks with no `tools` defined, so dropping them to mean "do
+         * not act" made every handover a 400, which surfaced as "it could not summarise where it had got
+         * to" and killed the run at the end of wave one. Ten waves were really one.
+         *
+         * tool_choice: none is the actual way to say it: the tools stay declared, and using one is
+         * forbidden. */
+        tools: DESKTOP_TOOLS,
+        tool_choice: { type: 'none' },
         messages,
       }),
     });
-  } catch (_) {
-    return null;
+  } catch (err) {
+    clearTimeout(timer);
+    return { error: err && err.name === 'AbortError'
+      ? 'the handover request timed out'
+      : 'the handover could not reach the server' };
   }
-  if (!res.ok) return null;
+  clearTimeout(timer);
+
+  const text = await res.text();
+  if (!res.ok) {
+    /* Reported as what it was. "It could not summarise where it had got to" blamed the model for an
+     * expired session, a rate limit or a 400 - and sent the next hour of debugging in the wrong
+     * direction. */
+    let detail = '';
+    try { detail = JSON.parse(text).error.message || ''; } catch (_) {}
+    return { error: 'the handover failed (HTTP ' + res.status + ')' + (detail ? ': ' + detail : '') };
+  }
 
   let answer;
-  try { answer = JSON.parse(await res.text()); } catch (_) { return null; }
-  const text = (answer.content || [])
+  try { answer = JSON.parse(text); } catch (_) { return { error: 'the handover answer was unreadable' }; }
+  const said = (answer.content || [])
     .filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
-  return text || null;
+  return said ? { note: said } : { error: 'the handover came back empty' };
 }
 
 export function mountCreate(root) {
@@ -700,6 +849,32 @@ export function mountCreate(root) {
   // A desktop run is driven from here, so this page owns its state - unlike a browser run, which the
   // extension's worker owns and survives this tab closing.
   let desktop = { running: false, abort: false, log: [], result: null };
+
+  /* What a step actually did, not just which verb it used. A column of "click, click, type_text, click"
+   * is unreadable afterwards, and afterwards is when someone is trying to work out where a run went
+   * wrong. Typed text is shown, because knowing WHAT was typed is usually the whole question - and it
+   * is the user's own text, on their own screen. */
+  function describeAction(event) {
+    const input = event.input || {};
+    const at = (Number.isFinite(input.x) && Number.isFinite(input.y)) ? ' at ' + input.x + ',' + input.y : '';
+    if (event.name === 'click') {
+      return (input.double ? 'double-click' : (input.button === 'right' ? 'right-click' : 'click')) + at;
+    }
+    if (event.name === 'scroll') return 'scroll ' + (Number(input.amount) < 0 ? 'down' : 'up') + at;
+    if (event.name === 'type_text') {
+      const text = String(input.text || '');
+      return 'type "' + (text.length > 60 ? text.slice(0, 60) + '…' : text) + '"';
+    }
+    if (event.name === 'press_key') {
+      const mods = [input.ctrl && 'Ctrl', input.shift && 'Shift', input.alt && 'Alt'].filter(Boolean);
+      return 'press ' + mods.concat([input.key || '?']).join('+');
+    }
+    if (event.name === 'activate_window') {
+      return 'switch to ' + (input.title || input.process || 'a window');
+    }
+    if (event.name === 'wait') return 'wait for the screen to settle';
+    return event.name;
+  }
 
   const say = (message, kind) => {
     el.note.textContent = message || '';
@@ -850,7 +1025,7 @@ export function mountCreate(root) {
       const line = document.createElement('div');
       if (event.type === 'tool') {
         line.className = 'c-act';
-        line.textContent = event.name + (event.input && event.input.url ? ' ' + event.input.url : '');
+        line.textContent = describeAction(event);
       } else if (event.type === 'text') {
         line.textContent = event.text;
       } else if (event.type === 'wave') {

@@ -458,6 +458,13 @@ async function handoffNote({ messages, apiKey, authToken }) {
       model: MODEL,
       max_tokens: 700,
       system: 'You are handing an unfinished task to someone who will continue it. Be concrete and brief.',
+      /* The tools travel even though none may be used: by the time a wave runs out the conversation is
+       * full of tool_use and tool_result blocks, and the Messages API rejects those with no `tools`
+       * defined. Dropping them to mean "do not act" made every handover a 400 - so every long run died
+       * at the end of the first wave and blamed the model for not writing a note. tool_choice none is
+       * how to forbid acting without withdrawing the definitions. */
+      tools: TOOLS,
+      tool_choice: { type: 'none' },
       messages: asking,
     });
   } catch (_) {

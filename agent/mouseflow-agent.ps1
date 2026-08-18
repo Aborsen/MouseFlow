@@ -25,6 +25,8 @@
     POST /replay/abort    -> JSON {ok}
     GET  /shot            -> JSON {ok, png, w, h, scale, originX, originY}  a look at the screen
     GET  /windows         -> JSON {ok, windows:[{title, process, active, minimized, x, y, w, h}]}
+    GET  /pulse           -> JSON {ok, grid}  64x36 grey samples: cheap enough to poll while waiting
+    GET  /shot?w=640      -> a smaller picture, for a caller told its request was too large
     POST /do              -> JSON {ok}   one action; body is key=value, see ACTION BODY below
     POST /autostart/enable  -> JSON {ok} - drops a launcher in the Startup folder
     POST /autostart/disable -> JSON {ok} - removes it
@@ -321,7 +323,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.3.1";
+        public const string Version = "0.4.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -613,7 +615,9 @@ namespace MouseFlow
 
             void Finish(bool aborted)
             {
-                if (aborted) ReleaseAllButtons();
+                /* Unconditionally, not only on abort: a flow whose last event is a button-down used to
+                 * leave the mouse held down over the desktop, and everything after it dragged. */
+                ReleaseAllButtons();
                 lock (Gate) { _playing = false; }
             }
         }
@@ -637,6 +641,47 @@ namespace MouseFlow
                 else Thread.SpinWait(1500);
             }
             return true;
+        }
+
+        /* How many events the last injection actually delivered, and what Windows said if it did not.
+         * Checked at the top of DoAction's return path rather than at each call site, so no action can
+         * forget to look. */
+        static int _injected;
+        static int _injectFailures;
+        static int _lastError;
+
+        static void ResetInjection()
+        {
+            _injected = 0;
+            _injectFailures = 0;
+            _lastError = 0;
+        }
+
+        static string InjectionProblem()
+        {
+            if (_injectFailures == 0) return null;
+            string reason;
+            switch (_lastError)
+            {
+                case 5:
+                    reason = "access denied - the window in front is running as administrator, and " +
+                        "input from an ordinary program cannot reach it";
+                    break;
+                case 0:
+                    reason = "the screen may be locked, or a secure prompt has the desktop";
+                    break;
+                default:
+                    reason = "Windows error " + _lastError.ToString(CultureInfo.InvariantCulture);
+                    break;
+            }
+            return "the input was refused: " + reason;
+        }
+
+        static void Injected(uint sent, uint wanted)
+        {
+            if (sent >= wanted) { _injected += (int)sent; return; }
+            _injectFailures++;
+            _lastError = Marshal.GetLastWin32Error();
         }
 
         static void Emit(Ev e)
@@ -679,7 +724,7 @@ namespace MouseFlow
             inputs[0].mi.dwFlags = flags;
             inputs[0].mi.time = 0;
             inputs[0].mi.dwExtraInfo = IntPtr.Zero;
-            Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+            Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT))), 1);
         }
 
         /* ---------------------------------------------------------------- one action at a time
@@ -705,7 +750,17 @@ namespace MouseFlow
         {
             Dictionary<string, string> a = ParseFields(body);
             string action = Get(a, "action", "");
+            ResetInjection();
 
+            string problem = Perform(action, a);
+            if (problem != null) return problem;
+            /* An action that was accepted, encoded and sent, and that the OS then discarded, must not be
+             * reported as done. Checked once, here, so every action is covered by construction. */
+            return InjectionProblem();
+        }
+
+        static string Perform(string action, Dictionary<string, string> a)
+        {
             if (action == "type") return TypeText(Get(a, "text", ""));
             if (action == "activate") return Activate(Get(a, "title", ""), Get(a, "process", ""));
             if (action == "key")
@@ -719,6 +774,22 @@ namespace MouseFlow
                 !int.TryParse(Get(a, "y", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out y))
             {
                 return "x and y are required for " + (action.Length > 0 ? action : "an action");
+            }
+
+            /* On the screen, or not at all. Windows CLAMPS an out-of-range absolute coordinate to the
+             * edge of the desktop, so a bad point does not fail - it clicks a corner, which is both
+             * wrong and occasionally destructive. Better a message the model can correct from. */
+            int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+            int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+            int vw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+            int vh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+            if (x < vx || y < vy || x >= vx + vw || y >= vy + vh)
+            {
+                return "x=" + x.ToString(CultureInfo.InvariantCulture) + " y=" +
+                    y.ToString(CultureInfo.InvariantCulture) + " is off the screen - the desktop runs " +
+                    vx.ToString(CultureInfo.InvariantCulture) + "," + vy.ToString(CultureInfo.InvariantCulture) +
+                    " to " + (vx + vw - 1).ToString(CultureInfo.InvariantCulture) + "," +
+                    (vy + vh - 1).ToString(CultureInfo.InvariantCulture);
             }
 
             if (action == "move")
@@ -776,11 +847,22 @@ namespace MouseFlow
             if (body == null) return found;
             string line = body.Replace("\r", " ").Replace("\n", " ").Trim();
 
-            int textAt = line.IndexOf("text=", StringComparison.Ordinal);
-            if (textAt >= 0)
+            /* `text` and `title` both run to the end of the line: one is a message, the other a window
+             * title, and both contain spaces. Taken at a TOKEN boundary only - a caption containing
+             * "subtitle=" or "action=click" is then just characters in a title rather than a field that
+             * overrides the action. Whichever marker comes first wins the rest of the line, so the two
+             * can never both claim it. */
+            int rest = -1;
+            string restKey = null;
+            foreach (string marker in new string[] { "text=", "title=" })
             {
-                found["text"] = line.Substring(textAt + 5);
-                line = line.Substring(0, textAt);
+                int at = FindField(line, marker);
+                if (at >= 0 && (rest < 0 || at < rest)) { rest = at; restKey = marker.Substring(0, marker.Length - 1); }
+            }
+            if (rest >= 0)
+            {
+                found[restKey] = line.Substring(rest + restKey.Length + 1);
+                line = line.Substring(0, rest);
             }
 
             string[] parts = line.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
@@ -789,10 +871,25 @@ namespace MouseFlow
                 int eq = parts[i].IndexOf('=');
                 if (eq <= 0) continue;
                 string key = parts[i].Substring(0, eq).Trim().ToLowerInvariant();
-                if (key == "text") continue;                     // already taken, whole and unsplit
+                if (key == "text" || key == "title") continue;   // already taken, whole and unsplit
                 found[key] = parts[i].Substring(eq + 1).Trim();
             }
             return found;
+        }
+
+        /* A field marker only counts at the start of a token. Without this, "subtitle=" contains "title="
+         * and the parse would begin four characters into the wrong word. */
+        static int FindField(string line, string marker)
+        {
+            int at = 0;
+            while (at <= line.Length - marker.Length)
+            {
+                int hit = line.IndexOf(marker, at, StringComparison.Ordinal);
+                if (hit < 0) return -1;
+                if (hit == 0 || line[hit - 1] == ' ' || line[hit - 1] == '\t') return hit;
+                at = hit + 1;
+            }
+            return -1;
         }
 
         static string Get(Dictionary<string, string> from, string key, string fallback)
@@ -832,7 +929,7 @@ namespace MouseFlow
             inputs[0].u.ki.dwFlags = Native.KEYEVENTF_UNICODE | (up ? Native.KEYEVENTF_KEYUP : 0);
             inputs[0].u.ki.time = 0;
             inputs[0].u.ki.dwExtraInfo = IntPtr.Zero;
-            Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUTU)));
+            Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUTU))), 1);
         }
 
         static void SendVk(ushort vk, bool up)
@@ -844,13 +941,26 @@ namespace MouseFlow
             inputs[0].u.ki.dwFlags = up ? Native.KEYEVENTF_KEYUP : 0;
             inputs[0].u.ki.time = 0;
             inputs[0].u.ki.dwExtraInfo = IntPtr.Zero;
-            Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUTU)));
+            Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUTU))), 1);
+        }
+
+        /* What the keyboard layout itself requires to produce this character. */
+        static void ModifiersFor(string key, ref bool ctrl, ref bool shift, ref bool alt)
+        {
+            if (key == null || key.Length != 1) return;
+            short scan = Native.VkKeyScan(key[0]);
+            if (scan == -1) return;
+            int state = (scan >> 8) & 0xFF;
+            if ((state & 1) != 0) shift = true;
+            if ((state & 2) != 0) ctrl = true;
+            if ((state & 4) != 0) alt = true;
         }
 
         static string PressKey(string key, bool ctrl, bool shift, bool alt)
         {
             ushort vk = VkFor(key);
             if (vk == 0) return "unknown key: " + key;
+            ModifiersFor(key, ref ctrl, ref shift, ref alt);
 
             if (ctrl) SendVk(0x11, false);
             if (shift) SendVk(0x10, false);
@@ -875,6 +985,9 @@ namespace MouseFlow
                 if (scan == -1) return 0;
                 return (ushort)(scan & 0xFF);
             }
+            /* The high byte carries the modifiers the LAYOUT needs for that character - shift for an
+             * uppercase letter or a percent sign, AltGr for others. Dropping it turned key=A into a
+             * lowercase a and key=% into 5; see ModifiersFor, which PressKey folds in. */
 
             switch (key.ToLowerInvariant())
             {
@@ -902,6 +1015,38 @@ namespace MouseFlow
                 case "f12": return 0x7B;
                 case "win": return 0x5B;
                 default: return 0;
+            }
+        }
+
+        /* The screen as 2,304 grey samples, base64'd. Enough to tell movement from stillness, small
+         * enough to poll. */
+        public static string Pulse()
+        {
+            int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+            int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+            int vw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+            int vh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+            if (vw < 2 || vh < 2) return "{\"ok\":false,\"error\":\"no screen\"}";
+
+            using (System.Drawing.Bitmap full = new System.Drawing.Bitmap(vw, vh))
+            {
+                using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(full))
+                {
+                    g.CopyFromScreen(vx, vy, 0, 0, new System.Drawing.Size(vw, vh));
+                }
+                using (System.Drawing.Bitmap tiny = new System.Drawing.Bitmap(full, 64, 36))
+                {
+                    byte[] grey = new byte[64 * 36];
+                    for (int y = 0; y < 36; y++)
+                    {
+                        for (int x = 0; x < 64; x++)
+                        {
+                            System.Drawing.Color c = tiny.GetPixel(x, y);
+                            grey[y * 64 + x] = (byte)((c.R * 77 + c.G * 150 + c.B * 29) >> 8);
+                        }
+                    }
+                    return "{\"ok\":true,\"grid\":\"" + Convert.ToBase64String(grey) + "\"}";
+                }
             }
         }
 
@@ -1035,9 +1180,18 @@ namespace MouseFlow
              * anything. Detached again immediately: leaving two threads' input queues joined makes each
              * one's stalls the other's.
              */
-            uint targetPid;
-            uint targetThread = Native.GetWindowThreadProcessId(found, out targetPid);
+            /* Attached to the thread that owns the FOREGROUND window, not to the target's.
+             *
+             * The lock belongs to whoever is in front: Windows grants the foreground change to a thread
+             * that shares the current foreground's input queue. Attaching to the target instead borrows
+             * the permissions of the window we are trying to reach, which is the wrong end of the
+             * problem and works only by accident. */
+            uint frontPid;
+            IntPtr frontWindow = Native.GetForegroundWindow();
+            uint frontThread = frontWindow == IntPtr.Zero
+                ? 0 : Native.GetWindowThreadProcessId(frontWindow, out frontPid);
             uint self = Native.GetCurrentThreadId();
+            uint targetThread = frontThread;
             bool attached = targetThread != 0 && targetThread != self &&
                 Native.AttachThreadInput(self, targetThread, true);
             try
@@ -1069,6 +1223,17 @@ namespace MouseFlow
          * starts - a multi-monitor origin is often negative - so a point on the picture maps back to
          * a point on the screen with two multiplications and an add. Nothing is written to disk.
          */
+        /* JPEG, and a pixel budget rather than a width.
+         *
+         * A PNG of a desktop is a screenshot of text, which PNG stores faithfully and expensively: the
+         * same screen is six to thirty times smaller as JPEG at quality 85, and a model reading a
+         * screen cannot tell the difference. That mattered because the whole turn - picture, prompt,
+         * tools, history - goes through a request body with a limit, and a busy screen could exceed it.
+         *
+         * Scaling by WIDTH alone was wrong for the same reason: two monitors side by side are 3840 wide
+         * and one above another is 2160 tall, and only the second of those blows a byte budget that
+         * width cannot see. Megapixels are what cost bytes, so megapixels are what is budgeted.
+         */
         public static string Shot(int maxWidth)
         {
             int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
@@ -1079,9 +1244,14 @@ namespace MouseFlow
             if (maxWidth < 320) maxWidth = 320;
             if (maxWidth > 2560) maxWidth = 2560;
 
-            double scale = vw > maxWidth ? (double)maxWidth / vw : 1.0;
-            int sw = (int)Math.Round(vw * scale);
-            int sh = (int)Math.Round(vh * scale);
+            /* Two limits, and the tighter wins: the caller's width, and a pixel budget scaled to it so
+             * asking for a smaller picture really does buy fewer bytes on a tall desktop too. */
+            double byWidth = vw > maxWidth ? (double)maxWidth / vw : 1.0;
+            double budget = (double)maxWidth * maxWidth * 0.5625;      // 16:9 worth of pixels
+            double byArea = Math.Sqrt(budget / ((double)vw * vh));
+            double scale = Math.Min(1.0, Math.Min(byWidth, byArea));
+            int sw = Math.Max(1, (int)Math.Round(vw * scale));
+            int sh = Math.Max(1, (int)Math.Round(vh * scale));
 
             using (System.Drawing.Bitmap full = new System.Drawing.Bitmap(vw, vh))
             {
@@ -1092,10 +1262,36 @@ namespace MouseFlow
                 using (System.Drawing.Bitmap small = new System.Drawing.Bitmap(full, sw, sh))
                 using (System.IO.MemoryStream buffer = new System.IO.MemoryStream())
                 {
-                    small.Save(buffer, System.Drawing.Imaging.ImageFormat.Png);
+                    System.Drawing.Imaging.ImageCodecInfo jpeg = null;
+                    foreach (System.Drawing.Imaging.ImageCodecInfo codec in
+                             System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders())
+                    {
+                        if (codec.MimeType == "image/jpeg") jpeg = codec;
+                    }
+
+                    string mime = "image/jpeg";
+                    if (jpeg != null)
+                    {
+                        using (System.Drawing.Imaging.EncoderParameters ps =
+                               new System.Drawing.Imaging.EncoderParameters(1))
+                        {
+                            ps.Param[0] = new System.Drawing.Imaging.EncoderParameter(
+                                System.Drawing.Imaging.Encoder.Quality, 85L);
+                            small.Save(buffer, jpeg, ps);
+                        }
+                    }
+                    else
+                    {
+                        // No JPEG encoder is close to impossible on Windows, but a picture beats none.
+                        small.Save(buffer, System.Drawing.Imaging.ImageFormat.Png);
+                        mime = "image/png";
+                    }
+
                     string png = Convert.ToBase64String(buffer.ToArray());
                     StringBuilder sb = new StringBuilder();
-                    sb.Append("{\"ok\":true,\"w\":").Append(sw.ToString(CultureInfo.InvariantCulture));
+                    sb.Append("{\"ok\":true,\"format\":\"").Append(mime).Append("\"");
+                    sb.Append(",\"bytes\":").Append(buffer.Length.ToString(CultureInfo.InvariantCulture));
+                    sb.Append(",\"w\":").Append(sw.ToString(CultureInfo.InvariantCulture));
                     sb.Append(",\"h\":").Append(sh.ToString(CultureInfo.InvariantCulture));
                     sb.Append(",\"scale\":").Append(scale.ToString("0.####", CultureInfo.InvariantCulture));
                     sb.Append(",\"originX\":").Append(vx.ToString(CultureInfo.InvariantCulture));
@@ -1114,7 +1310,9 @@ namespace MouseFlow
                 INPUT[] inputs = new INPUT[1];
                 inputs[0].type = Native.INPUT_MOUSE;
                 inputs[0].mi.dwFlags = ups[i];
-                Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT)));
+                // Counted like every other injection, so "no unchecked SendInput" is a rule with no
+                // exceptions - even on a cleanup path where nobody reads the answer.
+                Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT))), 1);
             }
         }
 
@@ -1436,12 +1634,37 @@ namespace MouseFlow
                 return;
             }
 
-            if (path == "/shot")
+            if (path.StartsWith("/shot", StringComparison.Ordinal))
             {
+                /* ?w= so a caller that has just been told its request was too large can ask for a
+                 * smaller picture instead of giving up. Shot clamps the range itself. */
+                int want = 1280;
+                int q = path.IndexOf("w=", StringComparison.Ordinal);
+                if (q > 0)
+                {
+                    string tail = path.Substring(q + 2);
+                    int amp = tail.IndexOf('&');
+                    if (amp > 0) tail = tail.Substring(0, amp);
+                    int parsed;
+                    if (int.TryParse(tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                    {
+                        want = parsed;
+                    }
+                }
                 /* Deliberately not while replaying: a picture taken mid-replay shows a screen that is
                    already moving, and a decision made from it acts on something that has gone. */
                 if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
-                Respond(stream, 200, "application/json", Shot(1280), origin);
+                Respond(stream, 200, "application/json", Shot(want), origin);
+                return;
+            }
+
+            /* A fingerprint of the screen rather than a picture of it: 64x36 grey samples, which is all
+             * "has anything changed" needs. Waiting used to fetch a whole screenshot every 1.5 seconds
+             * and throw all but 2KB of it away. */
+            if (path == "/pulse")
+            {
+                if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
+                Respond(stream, 200, "application/json", Pulse(), origin);
                 return;
             }
 
