@@ -61,7 +61,7 @@ export const GalleryView = () => {
         name: body.skill.name,
         description: body.skill.description,
         origins: [] as string[],
-        created: body.skill.published,
+        created: body.skill.publishedAt,
         payload,
       };
 
@@ -131,8 +131,8 @@ export const GalleryView = () => {
               </Typography>
 
               <div className="mb-2.5 text-[0.76rem] text-ink-inactive">
-                by {skill.author} · {skill.installs} install{skill.installs === 1 ? '' : 's'} ·{' '}
-                {new Date(skill.published).toLocaleDateString()}
+                by {skill.author.name} · {skill.installs} install{skill.installs === 1 ? '' : 's'} ·{' '}
+                {new Date(skill.publishedAt).toLocaleDateString()}
               </div>
 
               <div className="flex flex-wrap gap-1.5">
@@ -163,7 +163,7 @@ export const GalleryView = () => {
                         name: body.skill.name,
                         description: body.skill.description,
                         origins: [],
-                        created: body.skill.published,
+                        created: body.skill.publishedAt,
                         payload,
                       });
                       void navigate({ to: '/record' });

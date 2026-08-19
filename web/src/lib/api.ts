@@ -51,14 +51,21 @@ export interface Device {
   lastUsedAt: string | null;
 }
 
+/* Exactly what api/gallery.js hands out - read from the endpoint, not from memory, because the first
+ * version of this interface said `author: string` and `published`, and the view then rendered an object
+ * straight into JSX. React throws on an object child, which is a blank page with no clue on it. */
 export interface GallerySkill {
   id: string;
   name: string;
   description: string;
   kind: 'recorded' | 'created';
-  author: string;
+  /** An object, not a name: the endpoint sends who published it and their picture. */
+  author: { name: string; image: string | null };
+  origins: string[];
+  params: string[];
   installs: number;
-  published: string;
+  publishedAt: string;
+  withdrawn: boolean;
   payload?: unknown;
 }
 

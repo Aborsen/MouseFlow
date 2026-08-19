@@ -239,6 +239,28 @@ const moved = (a: Uint8Array | null, b: Uint8Array | null) => {
   return sum / a.length > 3;
 };
 
+/* The same 64x36 grey reduction the agent does in /pulse, for an agent that cannot do it yet. */
+async function fingerprintPng(png: string): Promise<Uint8Array | null> {
+  try {
+    const blob = await (await fetch(`data:image/png;base64,${png}`)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(64, 36);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(bitmap, 0, 0, 64, 36);
+    bitmap.close();
+    const { data } = ctx.getImageData(0, 0, 64, 36);
+    const grey = new Uint8Array(64 * 36);
+    for (let i = 0; i < grey.length; i++) {
+      const at = i * 4;
+      grey[i] = ((data[at] ?? 0) * 77 + (data[at + 1] ?? 0) * 150 + (data[at + 2] ?? 0) * 29) >> 8;
+    }
+    return grey;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function settle(port: number, limitMs: number, aborted: () => boolean, onTick: (ms: number) => void) {
   const started = Date.now();
   let last: Uint8Array | null = null;
@@ -252,7 +274,15 @@ async function settle(port: number, limitMs: number, aborted: () => boolean, onT
     try {
       now = decodeGrid((await pulse(port)).grid);
     } catch (_) {
-      break;                              // the agent went away; the next turn's shot reports it properly
+      /* An agent too old to fingerprint for us - /pulse arrived in 0.4.0 - so fall back to a small picture
+       * and do the same reduction here. Slower and heavier, but a wait that works is worth more than a wait
+       * that returns instantly and leaves the model to guess. */
+      try {
+        const frame = await shot(port, 640);
+        now = await fingerprintPng(frame.png);
+      } catch (_) {
+        break;                            // the agent went away; the next turn's shot reports it properly
+      }
     }
 
     if (last && !moved(last, now)) {
@@ -284,6 +314,33 @@ interface Block {
 interface Answer {
   stop_reason?: string;
   content?: Block[];
+}
+
+/* What an HTTP failure means, in terms of the thing the user can do about it.
+ *
+ * The endpoint's own message is right for the first call of a session and wrong in the middle of a run: a
+ * 401 there means the session expired while working, not that nobody signed in. And every one of these says
+ * which step it reached, because "it died" and "it died on step 19 of 24" call for different reactions.
+ */
+function explainStatus(status: number, stepNo: number, detail: string): string {
+  const got = `The run got as far as step ${stepNo}.`;
+  if (status === 401 || status === 403) {
+    return `Your session has expired, so the server stopped accepting the run at step ${stepNo}. Reload ` +
+      `this page and sign in again. ${got}`;
+  }
+  if (status === 413) {
+    return `That step was still too large to send even at the smallest picture, at step ${stepNo}. A very ` +
+      `wide desktop with a lot open produces a big screenshot; closing what you do not need helps. ${got}`;
+  }
+  if (status === 429) {
+    return `You are being rate limited on the shared key at step ${stepNo}. Wait a minute, or add your own ` +
+      `Anthropic key in the extension to stop sharing a limit. ${got}`;
+  }
+  if (status === 504 || status === 502) {
+    return `The request took longer than the server allows (${status}) at step ${stepNo}. The screen is ` +
+      `probably very crowded, which makes each decision slower. ${got}`;
+  }
+  return `The model refused: HTTP ${status}${detail ? ` - ${detail}` : ''}. ${got}`;
 }
 
 async function ask(body: unknown, signal?: AbortSignal) {
@@ -373,9 +430,9 @@ async function runWave(o: {
         result: {
           ok: false,
           error: offline
-            ? `Lost the local agent at step ${stepNo} — ${(err as Error).message}. The PowerShell window ` +
+            ? `Lost the local agent at step ${stepNo + 1} — ${(err as Error).message}. The PowerShell window ` +
               'may have been closed, or the computer may have slept. Start it again from Connections.'
-            : `Could not see the screen at step ${stepNo}: ${(err as Error).message}`,
+            : `Could not see the screen at step ${stepNo + 1}: ${(err as Error).message}`,
           steps,
         },
       };
@@ -385,7 +442,7 @@ async function runWave(o: {
         stepNo,
         result: {
           ok: false,
-          error: `Could not take a picture of the screen at step ${stepNo}` +
+          error: `Could not take a picture of the screen at step ${stepNo + 1}` +
             (frame.error ? ` — the agent said: ${frame.error}` : '') +
             '. If the computer is locked or a remote session has been disconnected there is no desktop ' +
             'to look at.',
@@ -437,7 +494,7 @@ async function runWave(o: {
       }, cutoff.signal));
     } catch (err) {
       clearTimeout(timer);
-      const timedOut = err instanceof DOMException && err.name === 'AbortError';
+      const timedOut = (err as { name?: string } | null)?.name === 'AbortError';
       return {
         stepNo,
         result: {
@@ -463,9 +520,9 @@ async function runWave(o: {
     }
 
     if (!res.ok) {
-      let message = `The model refused: ${res.status}`;
-      try { message = (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? message; } catch (_) {}
-      return { stepNo, result: { ok: false, error: message, steps } };
+      let detail = '';
+      try { detail = (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? ''; } catch (_) {}
+      return { stepNo, result: { ok: false, error: explainStatus(res.status, stepNo, detail), steps } };
     }
 
     let answer: Answer;
@@ -599,7 +656,7 @@ async function askForHandoff(messages: unknown[]): Promise<{ note?: string; erro
   } catch (err) {
     clearTimeout(timer);
     return {
-      error: err instanceof DOMException && err.name === 'AbortError'
+      error: (err as { name?: string } | null)?.name === 'AbortError'
         ? 'the handover request timed out'
         : 'the handover could not reach the server',
     };
