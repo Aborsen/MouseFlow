@@ -22,6 +22,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { Badge } from '@insightis/ui/Badge';
 import { cn } from '@insightis/ui/cn';
 import { Typography } from '@insightis/ui/Typography';
 import { hoursOf } from '@/lib/api';
@@ -31,11 +32,14 @@ const TIGHT = 'mouseflow.side.tight';
 
 const NAV = [
   { to: '/record', label: 'Record', icon: CircleDot },
-  { to: '/create', label: 'Create', icon: Sparkles },
+  /* Beta on Create alone: of the five things this product does, it is the one that acts on a real machine
+   * from a model's decisions, so it is the one that can be wrong in a way that costs something. Saying so is
+   * more use than a uniform confidence nobody believes. */
+  { to: '/create', label: 'Create', icon: Sparkles, beta: true },
   { to: '/skills', label: 'Skills', icon: FolderOpen },
   { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
   // Asking about the numbers happens on the page that shows them, not at its own address.
-  { to: '/insights', label: 'Insights', icon: ChartNoAxesColumn },
+  { to: '/dashboard', label: 'Dashboard', icon: ChartNoAxesColumn },
 ] as const;
 
 /* One row height, one glyph box, one gap - so a lucide glyph that draws lighter than its neighbours still
@@ -130,7 +134,8 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
       )}
 
       <nav className={cn('flex shrink-0 flex-col gap-0.5', tight && 'items-center')}>
-        {NAV.map(({ to, label, icon: Icon }) => {
+        {NAV.map((row) => {
+          const { to, label, icon: Icon } = row;
           const on = path.startsWith(to);
           return (
             <Link
@@ -145,7 +150,16 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
               )}
             >
               <Icon className={cn(GLYPH, on && 'text-brand-primary')} />
-              {!tight && <span className="truncate">{label}</span>}
+              {!tight && (
+                <>
+                  <span className="truncate">{label}</span>
+                  {'beta' in row && row.beta && (
+                    <Badge variant="attention" size="xs" rounded="full" className="ms-auto shrink-0">
+                      Beta
+                    </Badge>
+                  )}
+                </>
+              )}
             </Link>
           );
         })}

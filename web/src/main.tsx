@@ -32,6 +32,9 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: '/create', component: CreateView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/skills', component: SkillsView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/gallery', component: GalleryView }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/dashboard', component: InsightsView }),
+  /* The old path. A rename should not break a link somebody already has - and this one is in a published
+   * review of the roadmap, which is exactly the sort of link nobody thinks about until it 404s. */
   createRoute({ getParentRoute: () => rootRoute, path: '/insights', component: InsightsView }),
   /* The assistant lives on the Insights page now - the questions are about the numbers beside them, and a
    * separate screen made somebody retype the window they were looking at. Kept as a redirect rather than
@@ -39,7 +42,7 @@ const routes = [
   createRoute({
     getParentRoute: () => rootRoute,
     path: '/chat',
-    beforeLoad: () => { throw redirect({ to: '/insights' }); },
+    beforeLoad: () => { throw redirect({ to: '/dashboard' }); },
   }),
   createRoute({ getParentRoute: () => rootRoute, path: '/connect', component: ConnectView }),
   /* Every link written before this rewrite used a hash - #record, #skills, #gallery. Kept working rather
