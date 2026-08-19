@@ -102,28 +102,13 @@ document.getElementById('side-toggle').addEventListener('click', () => setTight(
 document.getElementById('side-open').addEventListener('click', () => setTight(false));
 
 
-/* How much this account has run, for the one line in the sidebar footer that says so.
- *
- * There used to be a Recent list here as well. It listed what had been run, which sounds useful and was
- * not: the names came from the page or window a recording was made in, so it read as a column of
- * websites - a sidebar full of places rather than of work, competing with the four places that matter.
- */
+/* The footer's numbers come from fillHours now - the account's runs, measured in the unit the sidebar
+ * shows. This is kept as its name because tabs.js calls it once on load, and because a count that nothing
+ * displays is a request nobody needs. */
 async function fillRunCount() {
-  let body = null;
-  try {
-    const res = await fetch('/api/sync', { credentials: 'same-origin' });
-    if (!res.ok) return;
-    body = await res.json();
-  } catch (_) {
-    return;                       // a sidebar is not worth an error message
-  }
-
-  const runs = Array.isArray(body.runs) ? body.runs : [];
-  const stat = document.getElementById('side-stat');
-  if (!stat) return;
-  stat.hidden = false;
-  document.getElementById('side-runs').textContent = String(runs.length);
+  return fillHours();
 }
+
 
 /* ------------------------------------------------------------------------------ my account */
 
@@ -151,6 +136,152 @@ for (const button of document.querySelectorAll('#sheet-theme .seg-btn')) {
 
 const sheet = document.getElementById('account-panel');
 const said = document.getElementById('sheet-said');
+
+/* One dialog, several screens, as in Insightis: a nav down the left and a pane on the right. Settings
+ * that used to be one long scroll is now Account, Connections and Hours - which is also the answer to
+ * "where is the connection page in the menu": it is here, in the menu everything else lives in.
+ *
+ * The screen is part of the URL, so a link can open the dialog on the right page and a refresh does not
+ * lose your place. */
+const SCREENS = { account: 'My account', connections: 'Connections', hours: 'Hours' };
+
+function showScreen(name) {
+  const screen = SCREENS[name] ? name : 'account';
+  for (const pane of document.querySelectorAll('.sheet-screen')) {
+    pane.hidden = pane.dataset.screen !== screen;
+  }
+  for (const item of document.querySelectorAll('.sheet-nav-item[data-screen]')) {
+    item.classList.toggle('is-on', item.dataset.screen === screen);
+  }
+  document.getElementById('sheet-title').textContent = SCREENS[screen];
+  say('');
+  if (screen === 'connections') fillConnections();
+  if (screen === 'hours') fillHours();
+}
+
+for (const item of document.querySelectorAll('.sheet-nav-item[data-screen]')) {
+  item.addEventListener('click', () => showScreen(item.dataset.screen));
+}
+
+/* ---- Connections: the state of the agent, and the command that changes it ---- */
+
+function fillConnections() {
+  /* Read from the console's own state rather than asking again: app.js polls /health every couple of
+   * seconds and puts the answer in the pill, so the dialog can just agree with it - one source of truth
+   * about whether the agent is up, and no second poll running behind a modal. */
+  const label = document.getElementById('agent-label');
+  const pill = document.getElementById('agent-pill');
+  const online = pill && pill.classList.contains('pill--ok');
+  const stale = pill && pill.classList.contains('pill--warn');
+
+  document.getElementById('sheet-agent-label').textContent = label ? label.textContent : 'Agent offline';
+  const dot = document.getElementById('sheet-agent-pill');
+  dot.classList.toggle('pill--ok', online && !stale);
+  dot.classList.toggle('pill--warn', !!stale);
+  dot.classList.toggle('pill--bad', !online);
+
+  document.getElementById('sheet-agent-state').textContent = stale
+    ? 'Running, but older than this app expects — the command below fetches the current one.'
+    : (online
+      ? 'Running on this computer and answering. To stop it, close its PowerShell window.'
+      : 'Not running. Nothing on this page can start it for you, so paste the command below.');
+
+  // The command itself is built by app.js, which owns the port and the origin.
+  const code = document.querySelector('#start-command code');
+  document.getElementById('sheet-command').textContent = code ? code.textContent : '';
+}
+
+document.getElementById('sheet-copy-command').addEventListener('click', async () => {
+  const text = document.getElementById('sheet-command').textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    say('Copied — paste it into PowerShell.', 'good');
+  } catch (_) {
+    say('The clipboard was blocked. Select the command and copy it.', 'bad');
+  }
+});
+
+document.getElementById('sheet-open-guide').addEventListener('click', () => {
+  closeAccount();
+  location.hash = '#connect';
+});
+
+/* ---- Hours: their Balance screen, in the unit that means something here ----
+ *
+ * Insightis counts credits, because a question costs tokens. This counts hours, because a flow costs
+ * time it would otherwise have cost you - and the number is measured, not estimated: every run on the
+ * account has a start and a finish.
+ */
+let hoursCache = null;
+
+function hoursOf(run) {
+  if (!run.startedAt || !run.finishedAt) return 0;
+  const ms = new Date(run.finishedAt) - new Date(run.startedAt);
+  // A negative or absurd span means clocks disagreed across machines; it is not worth propagating.
+  return ms > 0 && ms < 12 * 3600 * 1000 ? ms / 3600000 : 0;
+}
+
+async function fillHours() {
+  if (!hoursCache) {
+    try {
+      const res = await fetch('/api/sync', { credentials: 'same-origin' });
+      hoursCache = res.ok ? await res.json() : { flows: [], runs: [] };
+    } catch (_) {
+      hoursCache = { flows: [], runs: [] };
+    }
+  }
+
+  const runs = (hoursCache.runs || []).filter((r) => hoursOf(r) > 0);
+  const flows = hoursCache.flows || [];
+  const total = runs.reduce((sum, r) => sum + hoursOf(r), 0);
+
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  const month = runs
+    .filter((r) => new Date(r.startedAt) >= monthStart)
+    .reduce((sum, r) => sum + hoursOf(r), 0);
+
+  const fmt = (h) => (h >= 10 ? h.toFixed(0) : h.toFixed(1));
+  document.getElementById('hours-total').textContent = fmt(total);
+  document.getElementById('hours-month').textContent = fmt(month);
+  document.getElementById('hours-runs').textContent = String((hoursCache.runs || []).length);
+  document.getElementById('hours-flows').textContent = String(flows.length);
+
+  const oldest = runs.length ? runs[runs.length - 1].startedAt : null;
+  document.getElementById('hours-since').textContent = oldest
+    ? 'since ' + new Date(oldest).toLocaleDateString() : '';
+
+  const body = document.getElementById('hours-rows');
+  body.textContent = '';
+  const rows = runs.slice(0, 12);
+  document.getElementById('hours-empty').hidden = rows.length > 0;
+
+  for (const run of rows) {
+    const tr = document.createElement('tr');
+    const what = run.kind === 'replay'
+      ? 'Replay'
+      : (run.goal ? run.goal.slice(0, 48) + (run.goal.length > 48 ? '…' : '') : 'Created flow');
+    tr.append(
+      Object.assign(document.createElement('td'), {
+        textContent: new Date(run.startedAt).toLocaleDateString(undefined,
+          { year: 'numeric', month: 'short', day: 'numeric' }),
+      }),
+      Object.assign(document.createElement('td'), { className: 'hours-what', textContent: what }),
+      Object.assign(document.createElement('td'), {
+        className: 'hours-num', textContent: hoursOf(run).toFixed(2),
+      }),
+    );
+    body.appendChild(tr);
+  }
+
+  // The sidebar row says the same number the screen does.
+  const meter = document.getElementById('side-hours');
+  if (meter) {
+    meter.hidden = false;
+    document.getElementById('side-hours-value').textContent = fmt(total) + ' h';
+  }
+}
 
 function say(message, kind) {
   said.textContent = message || '';
@@ -275,21 +406,17 @@ async function signOut() {
   location.href = location.origin + '/';
 }
 
-function openAccount() {
+function openAccount(screen) {
   sheet.hidden = false;
-  say('');
   disarmDelete();
   loadDevices();
+  showScreen(screen || 'account');
   document.getElementById('sheet-close').focus();
 }
 
 document.getElementById('sheet-close').addEventListener('click', closeAccount);
-/* Settings is where this belongs, and the panel closes behind it: a modal over the thing you were sent to
- * read is a modal in the way. */
-document.getElementById('sheet-connections').addEventListener('click', () => {
-  closeAccount();
-  location.hash = '#connect';
-});
+// The balance row opens the screen it summarises, exactly as it does in Insightis.
+document.getElementById('side-hours').addEventListener('click', () => openAccount('hours'));
 document.getElementById('sheet-signout').addEventListener('click', signOut);
 // The backdrop closes it; a click inside the card must not.
 sheet.addEventListener('click', (event) => { if (event.target === sheet) closeAccount(); });
@@ -305,7 +432,7 @@ if (badge) {
   badge.hidden = false;
   document.getElementById('side-name').textContent = label;
   document.getElementById('side-avatar').textContent = (label.trim()[0] || '?').toUpperCase();
-  document.getElementById('side-plan').textContent = me.email && me.name ? me.email : 'View account';
+  document.getElementById('side-plan').textContent = me.email || 'View account';
   badge.title = 'Your account';
   badge.addEventListener('click', openAccount);
   document.getElementById('sheet-email').textContent = me.email || me.name || 'signed in';
@@ -313,3 +440,5 @@ if (badge) {
 
 show(viewFromHash());
 fillRunCount();
+// The meter is part of the furniture, so it is filled without waiting for the dialog to be opened.
+fillHours();

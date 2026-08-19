@@ -845,14 +845,27 @@ async function abortReplay() {
 function wire() {
   /* Enabled even with no agent, on purpose. A disabled Record button is a dead end: it says no and not
    * why. Pressing it now takes you to the page that explains what is missing. */
-  $('#btn-record').addEventListener('click', () => {
+  const startRecording = () => {
     if (!health) {
       location.hash = '#connect';
       toast('The agent is not running yet — here is how to start it.', 'bad');
       return;
     }
+    if (health.recording) { toast('Already recording.', 'good'); return; }
     beginRecording();
-  });
+  };
+
+  $('#btn-record').addEventListener('click', startRecording);
+
+  /* The sidebar's primary action, where Insightis has New Chat. It does the thing rather than navigating
+   * to where the thing is: from Skills or the Gallery it brings you to Record and starts. */
+  const sideNew = document.getElementById('side-new-recording');
+  if (sideNew) {
+    sideNew.addEventListener('click', () => {
+      location.hash = '#record';
+      startRecording();
+    });
+  }
   $('#btn-stop-record').addEventListener('click', endRecording);
   $('#btn-run').addEventListener('click', runFlow);
   $('#btn-abort').addEventListener('click', abortReplay);

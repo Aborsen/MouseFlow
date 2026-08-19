@@ -1,37 +1,175 @@
+/* ==========================================================================================
+ * The Insightis design system, ported.
+ *
+ * Copied from insightis/frontend packages/ui/src/globals.css - the same primitives and the same
+ * semantic names, so the two products look like one company made them. Values are HSL triples, as
+ * there, and are used through hsl(var(--token)).
+ *
+ * Two layers, exactly as in the original:
+ *
+ *   primitives   brand / tertiary / slate / grey / red scales. Theme-independent, never used directly.
+ *   semantic     ink-*, surface-*, stroke-*, state-*, fb-*, brand-*. What components consume.
+ *
+ * Then a third, which is ours: a bridge mapping the names this app already uses onto the semantic
+ * ones. That is what makes the port a change of palette rather than a rewrite of every rule - and it
+ * means anything written from here on can use either vocabulary and stay in step.
+ *
+ * Theme: the original toggles a .dark class. This app answers prefers-color-scheme AND an explicit
+ * [data-theme], so the dark values are stated for all three cases.
+ * ========================================================================================== */
+
 :root {
-  --bg: #0e1116;
-  --bg-raised: #161b22;
-  --bg-inset: #0b0e13;
-  --line: #262d38;
-  --line-soft: #1d232c;
-  --text: #e6edf3;
-  --text-dim: #9aa7b4;
-  --text-faint: #6b7785;
-  --accent: #4c8dff;
-  --accent-ink: #ffffff;
-  --good: #2ea043;
-  --bad: #f85149;
-  --warn: #d29922;
+  /* ---- Layer 1: primitives ---- */
+  --white: 0 0% 100%;
+  --black: 0 0% 0%;
+  --brand-50: 193.8 39.4% 93.5%;
+  --brand-100: 196 37% 84%;
+  --brand-200: 189.1 32.5% 68%;
+  --brand-300: 186 30% 51%;
+  --brand-400: 176.3 55% 41%;
+  --brand-500: 179 75% 32%;
+  --brand-600: 179 89.6% 26.5%;
+  --brand-700: 179.4 89.1% 21.6%;
+  --brand-800: 192.4 42% 13.5%;
+  --brand-900: 194 51% 8%;
+  --brand-50-soft: 195 36.4% 95.7%;
+  --brand-900-soft: 191 24.4% 8.8%;
+  --tertiary-400: 182.4 62% 47.5%;
+  --tertiary-500: 182.7 79.5% 38.2%;
+  --tertiary-600: 183.9 84.1% 32.2%;
+  --slate-50: 210 40% 98%;
+  --slate-100: 210 40% 96%;
+  --slate-150: 213 33% 94%;
+  --slate-200: 214.3 31.8% 91.4%;
+  --slate-300: 213 27% 84%;
+  --slate-400: 215 20% 65%;
+  --slate-450: 215 17% 56%;
+  --slate-500: 215.4 16.3% 46.9%;
+  --slate-550: 214.7 17.4% 42.7%;
+  --slate-700: 215.3 25% 26.7%;
+  --slate-900: 222.2 47.4% 11.2%;
+  --grey-50: 210 20% 98%;
+  --grey-100: 240 5% 96%;
+  --grey-300: 216 12% 84%;
+  --grey-700: 250 13% 18%;
+  --grey-800: 240 14% 15%;
+  --grey-900: 240 13.2% 10.4%;
+  --grey-950: 250 17.6% 6.7%;
+  --red-400: 0 85.8% 64.1%;
+  --red-700: 0 73.7% 41.8%;
+  --red-800: 0 70% 35.3%;
+  --orange-500: 24.7 100% 50%;
+  --green-light-600: 160 100% 30%;
+  --green-dark-500: 160.1 96.6% 34.9%;
+
+  /* ---- Layer 2: semantic (light) ---- */
+  --brand-primary: var(--brand-600);
+  --brand-secondary: var(--brand-700);
+  --brand-tertiary: var(--tertiary-600);
+  --brand-hover: var(--brand-500);
+  --ink-primary: var(--slate-900);
+  --ink-body: var(--slate-700);
+  --ink-secondary: var(--slate-550);
+  --ink-inactive: var(--slate-450);
+  --ink-highlight: var(--brand-primary);
+  --surface-card: var(--white);
+  --surface-card2: var(--slate-100);
+  --surface-chips: var(--slate-50);
+  --surface-page: var(--slate-50);
+  --surface-accent: var(--brand-50-soft);
+  --stroke-border: var(--slate-200);
+  --stroke-border-hover: var(--slate-300);
+  --state-hover: var(--slate-100);
+  --state-pressed: var(--brand-50);
+  --state-disabled: var(--slate-200);
+  --fb-red: var(--red-700);
+  --fb-red-text: var(--red-700);
+  --fb-error-hover: var(--red-800);
+  --fb-attention: var(--orange-500);
+  --fb-green: var(--green-light-600);
+  --tbl-header-bg: var(--slate-150);
+  --logo-ink: var(--slate-900);
+  --logo-mark: var(--brand-600);
+
+  /* ---- Layer 3: the bridge (ours) ---- */
+  --bg: hsl(var(--surface-page));
+  --bg-raised: hsl(var(--surface-card));
+  --bg-inset: hsl(var(--surface-card2));
+  --line: hsl(var(--stroke-border));
+  --line-soft: hsl(var(--stroke-border));
+  --text: hsl(var(--ink-primary));
+  --text-dim: hsl(var(--ink-body));
+  --text-faint: hsl(var(--ink-secondary));
+  --accent: hsl(var(--brand-primary));
+  --accent-ink: hsl(var(--white));
+  --good: hsl(var(--fb-green));
+  --bad: hsl(var(--fb-red-text));
+  --warn: hsl(var(--fb-attention));
   --radius: 10px;
   --radius-sm: 7px;
-  font-synthesis-weight: none;
 }
 
+/* ---- dark: the .dark block from the original, for each way this app can be dark ---- */
+:root[data-theme="dark"],
+:root:not([data-theme="light"]) {
+  color-scheme: dark;
+  --brand-primary: var(--brand-500);
+  --brand-secondary: var(--brand-400);
+  --brand-tertiary: var(--tertiary-500);
+  --brand-hover: var(--brand-400);
+  --ink-primary: var(--grey-50);
+  --ink-body: var(--grey-100);
+  --ink-secondary: var(--grey-300);
+  --ink-inactive: var(--slate-400);
+  --ink-highlight: var(--tertiary-400);
+  --surface-card: var(--grey-900);
+  --surface-card2: var(--grey-800);
+  --surface-chips: var(--grey-700);
+  --surface-page: var(--grey-950);
+  --surface-accent: var(--brand-900-soft);
+  --stroke-border: var(--grey-700);
+  --stroke-border-hover: var(--slate-700);
+  --state-hover: var(--grey-800);
+  --state-pressed: var(--grey-700);
+  --state-disabled: var(--grey-700);
+  --fb-red: var(--red-700);
+  --fb-red-text: var(--red-400);
+  --fb-green: var(--green-dark-500);
+  --tbl-header-bg: var(--grey-700);
+  --logo-ink: var(--brand-50);
+  --logo-mark: var(--brand-500);
+}
+
+/* System-dark for anyone who has not chosen. Same values; the selector above cannot cover this case on
+ * its own, because "no attribute" must mean light when the system is light. */
 @media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f6f8fa;
-    --bg-raised: #ffffff;
-    --bg-inset: #eef1f4;
-    --line: #d5dae0;
-    --line-soft: #e6e9ed;
-    --text: #1c2128;
-    --text-dim: #57606a;
-    --text-faint: #808a94;
-    --accent: #0b62d6;
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --brand-primary: var(--brand-600);
+    --brand-secondary: var(--brand-700);
+    --brand-tertiary: var(--tertiary-600);
+    --brand-hover: var(--brand-500);
+    --ink-primary: var(--slate-900);
+    --ink-body: var(--slate-700);
+    --ink-secondary: var(--slate-550);
+    --ink-inactive: var(--slate-450);
+    --ink-highlight: var(--brand-primary);
+    --surface-card: var(--white);
+    --surface-card2: var(--slate-100);
+    --surface-chips: var(--slate-50);
+    --surface-page: var(--slate-50);
+    --surface-accent: var(--brand-50-soft);
+    --stroke-border: var(--slate-200);
+    --stroke-border-hover: var(--slate-300);
+    --state-hover: var(--slate-100);
+    --state-pressed: var(--brand-50);
+    --fb-red-text: var(--red-700);
+    --fb-green: var(--green-light-600);
+    --tbl-header-bg: var(--slate-150);
+    --logo-ink: var(--slate-900);
+    --logo-mark: var(--brand-600);
   }
 }
-
-* { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -933,39 +1071,6 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 .side [hidden], .side-recent[hidden], .side-stat[hidden], .side-account[hidden],
 .side-icon--bar[hidden] { display: none !important; }
 
-/* ---------- an explicit theme ----------
- *
- * The tokens already answer prefers-color-scheme. These let a choice override it, and are written as
- * attribute selectors so they outrank BOTH the bare :root defaults and the media query - which a
- * later plain :root block would not do.
- */
-
-:root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f6f8fa;
-  --bg-raised: #ffffff;
-  --bg-inset: #eef1f4;
-  --line: #d5dae0;
-  --line-soft: #e6e9ed;
-  --text: #1c2128;
-  --text-dim: #57606a;
-  --text-faint: #808a94;
-  --accent: #0b62d6;
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #0e1116;
-  --bg-raised: #161b22;
-  --bg-inset: #0b0e13;
-  --line: #262d38;
-  --line-soft: #1d232c;
-  --text: #e6edf3;
-  --text-dim: #9aa7b4;
-  --text-faint: #6b7785;
-  --accent: #4c8dff;
-}
-
 /* ---------- my account ---------- */
 
 .sheet {
@@ -1220,3 +1325,161 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 /* The start command, inside the setup panel rather than on the page you use every day. */
 .setup-command { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px solid var(--line-soft); }
 .setup-command.start--stale { border-top-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+
+/* ==========================================================================================
+ * The shell, matching Insightis
+ *
+ * Their sidebar: a primary action above the places you go, then the places, then a balance row and the
+ * account at the foot. Their settings: a 176px nav down the left of the dialog, groups with a small
+ * muted label, and Log out pinned to the bottom in red. Same shapes here, same tokens.
+ * ========================================================================================== */
+
+.side-item--new {
+  color: hsl(var(--ink-primary));
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.side-item--new .side-glyph { color: hsl(var(--brand-primary)); opacity: 1; }
+.side-item--new:hover { background: hsl(var(--state-hover)); }
+
+/* ---- the balance row, in hours ---- */
+
+.side-meter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.25rem 0.4rem;
+  margin-bottom: 0.15rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.side-meter:hover { background: hsl(var(--state-hover)); }
+.side-meter[hidden] { display: none !important; }
+.side-meter-label { font-size: 0.688rem; font-weight: 500; color: hsl(var(--ink-secondary)); }
+.side-meter-value { display: flex; align-items: center; gap: 0.375rem; font-size: 0.688rem; color: hsl(var(--ink-primary)); }
+
+.foot-glyph {
+  width: 16px;
+  height: 16px;
+  padding: 0.1875rem;
+  border-radius: 50%;
+  background: hsl(var(--state-hover));
+  color: hsl(var(--ink-primary));
+}
+
+.foot-chevrons { width: 15px; height: 15px; margin-left: auto; color: hsl(var(--ink-inactive)); flex: 0 0 auto; }
+.side--tight .foot-chevrons, .side--tight .side-meter { display: none; }
+
+/* Their avatar is a filled circle in the tertiary brand, not the primary one. */
+.side-avatar { background: hsl(var(--brand-tertiary)); }
+
+/* ---- the settings dialog: two panes ---- */
+
+.sheet-card { flex-direction: row; overflow: hidden; }
+
+.sheet-nav {
+  flex: 0 0 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 0.75rem;
+  border-right: 1px solid hsl(var(--stroke-border));
+  background: hsl(var(--surface-card));
+}
+
+.sheet-nav-group { display: flex; flex-direction: column; gap: 0.25rem; }
+.sheet-nav-group nav { display: flex; flex-direction: column; gap: 2px; }
+
+.sheet-nav-label {
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+  color: hsl(var(--ink-secondary));
+}
+
+.sheet-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  height: 1.75rem;
+  padding: 0 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: hsl(var(--ink-body));
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.sheet-nav-item:hover { background: hsl(var(--state-hover)); color: hsl(var(--ink-primary)); }
+.sheet-nav-item.is-on { background: hsl(var(--state-pressed)); color: hsl(var(--ink-primary)); font-weight: 600; }
+.sheet-glyph { width: 18px; height: 18px; flex: 0 0 auto; }
+.sheet-glyph--out { margin-left: auto; width: 15px; height: 15px; color: hsl(var(--ink-inactive)); }
+.sheet-nav-out { margin-top: auto; height: 2.25rem; }
+.sheet-nav-out .sheet-glyph { color: hsl(var(--fb-red-text)); }
+
+.sheet-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.sheet-screen[hidden] { display: none !important; }
+
+/* ---- Hours: their Balance screen ---- */
+
+.hours-figure { display: flex; align-items: baseline; gap: 0.4rem; margin: 0.2rem 0 1rem; }
+.hours-figure strong { font-size: 2rem; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.hours-figure > span { color: hsl(var(--ink-secondary)); }
+.hours-since { margin-left: auto; font-size: 0.8rem; color: hsl(var(--ink-inactive)); }
+
+.hours-split {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  margin-bottom: 1.2rem;
+}
+
+.hours-split > div {
+  padding: 0.6rem 0.7rem;
+  border: 1px solid hsl(var(--stroke-border));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--surface-chips));
+}
+
+.hours-split strong { display: block; font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.hours-split span { font-size: 0.78rem; color: hsl(var(--ink-secondary)); }
+
+.hours-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+
+.hours-table th {
+  padding: 0.5rem 0.6rem;
+  background: hsl(var(--tbl-header-bg));
+  color: hsl(var(--ink-secondary));
+  font-weight: 500;
+  text-align: left;
+}
+
+.hours-table th:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.hours-table th:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.hours-table td { padding: 0.55rem 0.6rem; border-bottom: 1px solid hsl(var(--stroke-border)); color: hsl(var(--ink-body)); }
+.hours-table tr:last-child td { border-bottom: 0; }
+.hours-num { text-align: right; font-variant-numeric: tabular-nums; }
+.hours-table td.hours-num { color: hsl(var(--ink-primary)); }
+.hours-what { color: hsl(var(--ink-secondary)); }
+
+@media (max-width: 620px) {
+  /* The nav becomes a row above the pane; a 176px column plus content does not fit a phone. */
+  .sheet-card { flex-direction: column; }
+  .sheet-nav { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; border-right: 0;
+               border-bottom: 1px solid hsl(var(--stroke-border)); }
+  .sheet-nav-group { flex-direction: row; align-items: center; }
+  .sheet-nav-label { display: none; }
+  .sheet-nav-out { margin: 0 0 0 auto; }
+}

@@ -35,6 +35,12 @@
   </div>
 
   <nav class="side-nav" id="tabs" aria-label="Sections">
+    <!-- Where Insightis puts New Chat, and for the same reason: the thing you came to do, above the
+         places you go. Theirs starts a conversation; ours starts a recording. -->
+    <button class="side-item side-item--new" id="side-new-recording" type="button"
+            title="Start a new recording">
+      <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8.5v7M8.5 12h7"/></svg><span class="side-text">New recording</span>
+    </button>
     <button class="side-item tab" data-view="record" type="button" title="Record">
       <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg><span class="side-text">Record</span>
     </button>
@@ -54,16 +60,22 @@
   </nav>
 
   <div class="side-foot">
-    <div class="side-stat" id="side-stat" hidden>
-      <span>Runs logged</span>
-      <span class="mono" id="side-runs">0</span>
-    </div>
+    <!-- Insightis shows a credit balance here. The same row, and the same reason for it - what this is
+         costing you, always in view - except the unit that matters for a tool that does work for you is
+         time rather than tokens. Clicking it opens the Hours screen, as theirs opens Balance. -->
+    <button class="side-meter" id="side-hours" type="button" hidden
+            title="Hours of work these flows have run">
+      <span class="side-meter-label">Hours</span>
+      <span class="side-meter-value"><svg class="foot-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M16.5 14.5h1.5"/></svg><span class="mono" id="side-hours-value">0.0</span></span>
+    </button>
+
     <button id="account-badge" class="side-account" type="button" hidden>
       <span class="side-avatar" id="side-avatar"></span>
       <span class="side-who">
         <strong id="side-name"></strong>
-        <span id="side-plan">Signed in \u00b7 sign out</span>
+        <span id="side-plan"></span>
       </span>
+      <svg class="foot-chevrons" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg>
     </button>
   </div>
 </aside>
@@ -250,6 +262,42 @@
      signing out is a button inside it, next to the things you might have wanted instead. -->
 <div id="account-panel" class="sheet" hidden>
   <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <aside class="sheet-nav">
+        <div class="sheet-nav-group">
+          <span class="sheet-nav-label">Account</span>
+          <nav>
+            <button class="sheet-nav-item is-on" data-screen="account" type="button">
+              <svg class="sheet-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.6 3.1-5.5 7-5.5s7 1.9 7 5.5"/></svg><span>My account</span>
+            </button>
+            <button class="sheet-nav-item" data-screen="connections" type="button">
+              <svg class="sheet-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="12.5" rx="1.6"/><path d="M8 20.5h8M12 16.5v4"/></svg><span>Connections</span>
+            </button>
+            <button class="sheet-nav-item" data-screen="hours" type="button">
+              <svg class="sheet-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><span>Hours</span>
+            </button>
+          </nav>
+        </div>
+
+        <div class="sheet-nav-group">
+          <span class="sheet-nav-label">Support</span>
+          <nav>
+            <a class="sheet-nav-item" id="sheet-feedback"
+               href="https://github.com/Aborsen/Mouse/issues/new" target="_blank" rel="noopener">
+              <svg class="sheet-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A2.5 2.5 0 0 1 17.5 17H8l-4 3.5V6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5z"/></svg><span>Leave feedback</span><svg class="sheet-glyph sheet-glyph--out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 16L16 8M10 8h6v6"/></svg>
+            </a>
+            <a class="sheet-nav-item" id="sheet-resources"
+               href="https://github.com/Aborsen/Mouse#readme" target="_blank" rel="noopener">
+              <svg class="sheet-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 16.5v-.01M12 13c0-1.6 2-1.9 2-3.4A2 2 0 0 0 10.2 8.6"/></svg><span>Resources</span><svg class="sheet-glyph sheet-glyph--out" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 16L16 8M10 8h6v6"/></svg>
+            </a>
+          </nav>
+        </div>
+
+        <button class="sheet-nav-item sheet-nav-out" id="sheet-signout" type="button">
+          <svg class="sheet-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 4.5H18A1.5 1.5 0 0 1 19.5 6v12a1.5 1.5 0 0 1-1.5 1.5h-3"/><path d="M11 8l-4 4 4 4M7 12h8"/></svg><span>Log out</span>
+        </button>
+      </aside>
+
+    <div class="sheet-main">
     <div class="sheet-head">
       <h2 id="sheet-title">My account</h2>
       <button id="sheet-close" class="sheet-x" type="button" aria-label="Close">
@@ -259,12 +307,12 @@
     </div>
 
     <div class="sheet-body">
+      <div class="sheet-screen" data-screen="account">
       <div class="sheet-row">
         <div>
           <span class="sheet-label">Your email</span>
           <p class="sheet-value" id="sheet-email">&mdash;</p>
         </div>
-        <button id="sheet-signout" class="btn btn--sm" type="button">Sign out</button>
       </div>
 
       <div class="sheet-row">
@@ -277,16 +325,6 @@
         <button class="seg-btn" data-theme="light" type="button">Light</button>
         <button class="seg-btn" data-theme="dark" type="button">Dark</button>
         <button class="seg-btn" data-theme="system" type="button">System</button>
-      </div>
-
-      <div class="sheet-row">
-        <div>
-          <span class="sheet-label">Connections</span>
-          <p class="sheet-note">
-            The local agent, how to start it, and how to keep it running after you log in.
-          </p>
-        </div>
-        <button id="sheet-connections" class="btn btn--sm" type="button">Open</button>
       </div>
 
       <div class="sheet-row">
@@ -310,9 +348,72 @@
       </div>
 
       <p class="sheet-said" id="sheet-said"></p>
-    </div>
-  </div>
-</div>
+      </div>
+
+      <!-- Connections: what the agent is doing and the one command that changes it. The six-step guide
+           stays on its own page; this is the part anyone opening settings actually wants. -->
+      <div class="sheet-screen" data-screen="connections" hidden>
+        <div class="sheet-row">
+          <div>
+            <span class="sheet-label">Local agent</span>
+            <p class="sheet-note" id="sheet-agent-state">Checking…</p>
+          </div>
+          <span class="pill" id="sheet-agent-pill"><span class="dot"></span><span
+            id="sheet-agent-label">Agent offline</span></span>
+        </div>
+        <div class="sheet-row">
+          <div>
+            <span class="sheet-label">Start command</span>
+            <p class="sheet-note">
+              Paste it into PowerShell. To stop the agent, close that window — there is no other off
+              switch, and a web page must not be able to shut down a program on your machine.
+            </p>
+          </div>
+        </div>
+        <div class="code-row">
+          <code id="sheet-command"></code>
+          <button class="btn btn--sm btn--primary" id="sheet-copy-command" type="button">Copy</button>
+        </div>
+        <div class="sheet-row">
+          <button class="btn btn--sm btn--ghost" id="sheet-open-guide" type="button">
+            Open the full setup guide
+          </button>
+        </div>
+      </div>
+
+      <!-- Hours: their Balance screen, in the unit that means something here. -->
+      <div class="sheet-screen" data-screen="hours" hidden>
+        <div class="sheet-row">
+          <div>
+            <span class="sheet-label">Hours of work run</span>
+            <p class="sheet-note">
+              Time these flows have spent working, across this browser, the extension and the desktop
+              agent. Every run on your account counts, whichever half did it.
+            </p>
+          </div>
+        </div>
+        <div class="hours-figure">
+          <strong id="hours-total">0.0</strong>
+          <span>hours</span>
+          <span class="hours-since" id="hours-since"></span>
+        </div>
+        <div class="hours-split">
+          <div><strong id="hours-month">0.0</strong><span>this month</span></div>
+          <div><strong id="hours-runs">0</strong><span>runs</span></div>
+          <div><strong id="hours-flows">0</strong><span>flows</span></div>
+        </div>
+        <table class="hours-table">
+          <thead><tr><th>Date</th><th>What</th><th class="hours-num">Hours</th></tr></thead>
+          <tbody id="hours-rows"></tbody>
+        </table>
+        <p class="sheet-note" id="hours-empty" hidden>
+          Nothing has run yet. Record something, or describe a goal in Create.
+        </p>
+      </div>
+    </div><!-- /.sheet-body -->
+    </div><!-- /.sheet-main -->
+  </div><!-- /.sheet-card -->
+</div><!-- /.sheet -->
 
 <div id="toasts" class="toasts" aria-live="polite"></div>
 <div id="dropzone" class="dropzone"><span>Drop .mmmacro files to import</span></div>
