@@ -19,9 +19,13 @@ import { requireAccount } from './gate.js';
  * recording, the start command, the recordings, the flow - which is why it read as clutter. Recording is
  * what that page is for; the setup and the command moved behind the agent pill.
  */
-const VIEWS = ['record', 'create', 'skills', 'gallery'];
+/* Four in the sidebar, five that exist. `connect` is setup rather than a place you work, so it is
+ * reachable and not listed: from the account panel, from the status pill, and by pressing Record with no
+ * agent running - which is the moment anyone actually needs it. */
+const VIEWS = ['record', 'create', 'skills', 'gallery', 'connect'];
 const TITLES = {
   record: 'Record', create: 'Create the flow', skills: 'Skills', gallery: 'Gallery',
+  connect: 'Connections',
 };
 // #desktop is what every link and bookmark in this project used to say. Kept as an alias, not a view.
 const ALIASES = { desktop: 'record' };
@@ -56,11 +60,6 @@ function show(view) {
     const on = tab.dataset.view === view;
     tab.classList.toggle('tab--on', on);
     tab.setAttribute('aria-current', on ? 'page' : 'false');
-  }
-  /* The agent's setup belongs to Record. Left visible on the other tabs it reads as "the gallery needs a
-   * local agent", which it does not. */
-  for (const el of document.querySelectorAll('.view-record-only')) {
-    el.classList.toggle('hidden-by-tab', view !== 'record');
   }
   // The sidebar took the brand, so the top bar says where you are.
   const title = document.getElementById('topbar-title');
@@ -285,6 +284,12 @@ function openAccount() {
 }
 
 document.getElementById('sheet-close').addEventListener('click', closeAccount);
+/* Settings is where this belongs, and the panel closes behind it: a modal over the thing you were sent to
+ * read is a modal in the way. */
+document.getElementById('sheet-connections').addEventListener('click', () => {
+  closeAccount();
+  location.hash = '#connect';
+});
 document.getElementById('sheet-signout').addEventListener('click', signOut);
 // The backdrop closes it; a click inside the card must not.
 sheet.addEventListener('click', (event) => { if (event.target === sheet) closeAccount(); });

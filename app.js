@@ -24,7 +24,6 @@ const state = {
 };
 
 // null = follow the onboarding state, true/false = the user opened or closed it by hand
-let setupOverride = null;
 
 let health = null;         // last /health payload, or null when offline
 
@@ -303,7 +302,8 @@ function setAgentUi() {
   renderStartCommand(stale);
 
   const busy = online && (health.recording || health.playing);
-  $('#btn-record').disabled = !online || busy;
+  // Only while something is already running: see the Record click handler for why offline stays enabled.
+  $('#btn-record').disabled = busy;
   $('#btn-run').disabled = !online || busy || state.flow.length === 0;
 
   renderOnboarding();
@@ -332,7 +332,11 @@ async function pollHealth() {
 // probe logs a console error the page cannot suppress, so idle tabs should stay quiet.
 function scheduleHealth() {
   clearTimeout(healthTimer);
-  const eager = health || healthFailures < 8 || !$('#agent-setup').hidden;
+  /* Poll often while it matters: an agent that is answering, a run of failures short enough that someone
+   * is probably still setting up, or the Connections page being open - which is exactly when somebody is
+   * waiting to see the light go green. */
+  const onConnect = location.hash.replace(/^#/, '').split(/[?&]/)[0] === 'connect';
+  const eager = health || healthFailures < 8 || onConnect;
   healthTimer = setTimeout(async () => {
     await pollHealth();
     scheduleHealth();
@@ -839,15 +843,22 @@ async function abortReplay() {
 /* ------------------------------------------------------------------ wiring */
 
 function wire() {
-  $('#btn-record').addEventListener('click', beginRecording);
+  /* Enabled even with no agent, on purpose. A disabled Record button is a dead end: it says no and not
+   * why. Pressing it now takes you to the page that explains what is missing. */
+  $('#btn-record').addEventListener('click', () => {
+    if (!health) {
+      location.hash = '#connect';
+      toast('The agent is not running yet — here is how to start it.', 'bad');
+      return;
+    }
+    beginRecording();
+  });
   $('#btn-stop-record').addEventListener('click', endRecording);
   $('#btn-run').addEventListener('click', runFlow);
   $('#btn-abort').addEventListener('click', abortReplay);
 
-  $('#agent-pill').addEventListener('click', () => {
-    setupOverride = $('#agent-setup').hidden;
-    renderOnboarding();
-  });
+  // The pill is a status light and a way in: it says what the agent is doing, and opens the page about it.
+  $('#agent-pill').addEventListener('click', () => { location.hash = '#connect'; });
 
   $('#agent-port').addEventListener('change', (ev) => {
     const v = parseInt(ev.target.value, 10);
@@ -1006,8 +1017,10 @@ function renderStartCommand(stale) {
   /* The other way, in the open rather than as a hidden mode. Folded up because most people want the line
    * above; expanded already if this browser has downloaded the file, since that is a signal about which
    * one they meant - a signal, not a decision made on their behalf. */
+  /* Folded, always. Having downloaded the file once used to unfold this on every visit thereafter, which
+   * put a second command in front of everyone who had ever clicked Download - and the piped one above it
+   * is the one almost everybody wants. */
   const other = h('details', { class: 'start-other' });
-  if (state.onboarding.usedDownload) other.open = true;
   other.append(
     h('summary', { text: 'Or run a copy you have downloaded' }),
     h('p', { class: 'start-why' },
@@ -1246,17 +1259,16 @@ function renderOnboarding() {
   const activeIndex = steps.findIndex((s) => !s.done);
   const complete = activeIndex === -1;
 
-  const panel = $('#agent-setup');
-  panel.hidden = setupOverride === null ? complete : !setupOverride;
-  $('#agent-pill').setAttribute('aria-expanded', String(!panel.hidden));
+  /* Always shown. It used to hide itself once setup was complete and reappear when the pill was
+   * clicked - a panel that came and went above the page you were working on. It has its own page now
+   * (#connect), so what is on screen is decided by which page you are on, like everything else. */
 
   $('#setup-progress').textContent = doneCount + ' / ' + steps.length;
-  $('#setup-title').textContent = complete ? 'Setup complete' : 'Set up MouseFlow';
+  $('#setup-title').textContent = complete ? 'Connected' : 'Connect the agent';
   $('#setup-lede').textContent = complete
-    ? 'Everything is connected. Reopen this any time from the status pill.'
-    : 'Six steps, mostly buttons. A browser tab cannot see mouse events outside its own window ' +
-      'or inject real clicks, so one small helper runs on your machine — it talks to this page ' +
-      'over loopback only.';
+    ? 'The agent is running and this page can reach it. To stop it, close its PowerShell window.'
+    : 'A browser tab cannot see mouse events outside its own window or inject real clicks, so one ' +
+      'small helper runs on your machine — it talks to this page over loopback only.';
 
   const list = $('#onboarding');
   list.textContent = '';

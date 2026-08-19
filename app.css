@@ -982,7 +982,6 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 
 .sheet-card {
   width: min(560px, 100%);
-  max-height: min(78vh, 640px);
   display: flex;
   flex-direction: column;
   background: var(--bg-raised);
@@ -1018,7 +1017,9 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 .sheet-x:hover { background: var(--bg-inset); color: var(--text); }
 .sheet-x svg { width: 17px; height: 17px; }
 
-.sheet-body { overflow-y: auto; padding: 1rem 1.1rem 1.15rem; }
+/* No inner scrollbar. The panel is short enough to read at a glance now that the connection guide has a
+ * page of its own, and a scrollbar inside a modal hides the fact that there is more below it. */
+.sheet-body { padding: 1rem 1.1rem 1.15rem; }
 
 .sheet-row {
   display: flex;

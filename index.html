@@ -80,40 +80,6 @@
   </button>
 </header>
 
-<section id="agent-setup" class="setup view-record-only" hidden>
-  <div class="setup-head">
-    <div>
-      <h2 id="setup-title">Set up MouseFlow</h2>
-      <p id="setup-lede">
-        Six steps, mostly buttons. A browser tab cannot see mouse events outside its own window
-        or inject real clicks, so one small helper runs on your machine — it talks to this page
-        over loopback only.
-      </p>
-    </div>
-    <span id="setup-progress" class="setup-progress mono">0 / 6</span>
-  </div>
-
-  <ol id="onboarding" class="ob"></ol>
-
-  <!-- The start command, always filled: needed once to start the agent, and again every time it falls
-       behind what this app expects. It lives here, with the setup, rather than on the page you use every
-       day - the agent pill opens this whenever it matters. -->
-  <div id="start-command" class="setup-command"></div>
-
-  <details class="advanced">
-    <summary>Advanced</summary>
-    <label class="field field--inline">
-      <span>Agent port</span>
-      <input id="agent-port" type="number" min="1" max="65535" step="1" value="8787">
-    </label>
-    <p class="fineprint">
-      The agent installs a low-level mouse hook while it runs. Events are only stored between
-      Start and Stop, nothing is written to disk, and the agent has no outbound network code.
-      Keep <code>-AllowOrigin</code> pinned to this page's origin so other sites cannot reach it.
-    </p>
-  </details>
-</section>
-
 <main>
 
 <!-- ============================================================ desktop agent -->
@@ -223,6 +189,50 @@
 
 <!-- ================================================================= gallery -->
 <!-- ============================================================ create the flow -->
+<!-- ============================================================ connections
+     Not in the sidebar: it is setup, not a place you work. Reached from the account panel, from the
+     status pill, and automatically when you press Record with no agent running. -->
+<div id="view-connect" class="view" hidden>
+<section id="agent-setup" class="setup">
+  <div class="setup-head">
+    <div>
+      <h2 id="setup-title">Set up MouseFlow</h2>
+      <p id="setup-lede">
+        Six steps, mostly buttons. A browser tab cannot see mouse events outside its own window
+        or inject real clicks, so one small helper runs on your machine — it talks to this page
+        over loopback only.
+      </p>
+    </div>
+    <span id="setup-progress" class="setup-progress mono">0 / 6</span>
+  </div>
+
+  <ol id="onboarding" class="ob"></ol>
+
+  <!-- The start command, always filled: needed once to start the agent, and again every time it falls
+       behind what this app expects. It lives here, with the setup, rather than on the page you use every
+       day - the agent pill opens this whenever it matters. -->
+  <div id="start-command" class="setup-command"></div>
+
+  <details class="advanced">
+    <summary>Advanced</summary>
+    <label class="field field--inline">
+      <span>Agent port</span>
+      <input id="agent-port" type="number" min="1" max="65535" step="1" value="8787">
+    </label>
+    <p class="fineprint">
+      <strong>To stop the agent, close its PowerShell window.</strong> There is no other off switch, and
+      nothing here can stop it for you — that is deliberate: a page cannot be allowed to shut down a
+      program on your machine.
+    </p>
+    <p class="fineprint">
+      The agent installs a low-level mouse hook while it runs. Events are only stored between
+      Start and Stop, nothing is written to disk, and the agent has no outbound network code.
+      Keep <code>-AllowOrigin</code> pinned to this page's origin so other sites cannot reach it.
+    </p>
+  </details>
+</section>
+</div>
+
 <div id="view-create" class="view" hidden>
   <div id="create-root"></div>
 </div>
@@ -267,6 +277,16 @@
         <button class="seg-btn" data-theme="light" type="button">Light</button>
         <button class="seg-btn" data-theme="dark" type="button">Dark</button>
         <button class="seg-btn" data-theme="system" type="button">System</button>
+      </div>
+
+      <div class="sheet-row">
+        <div>
+          <span class="sheet-label">Connections</span>
+          <p class="sheet-note">
+            The local agent, how to start it, and how to keep it running after you log in.
+          </p>
+        </div>
+        <button id="sheet-connections" class="btn btn--sm" type="button">Open</button>
       </div>
 
       <div class="sheet-row">
