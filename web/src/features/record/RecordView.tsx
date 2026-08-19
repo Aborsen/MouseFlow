@@ -66,9 +66,17 @@ export const RecordView = () => {
 
   /* Two pollers while recording, at different cadences on purpose: the counter should feel live, and the
    * window list needs one sample a second at most - an application you passed through for half a second is
-   * not what the flow is about. */
+   * not what the flow is about.
+   *
+   * Keyed on WHETHER a recording is live, never on the live object. The counter below calls setLive() with a
+   * fresh object every 250ms, so an effect depending on `live` tore itself down and rebuilt both intervals
+   * four times a second - and the 1000ms sampler never reached its first tick. Every desktop recording came
+   * out with payload.windows empty and a transcript saying "No window was recorded", which is why this is
+   * worth a paragraph: the bug was invisible in the thing it broke. Nothing here reads the object, only
+   * writes it, so the dependency was inherited rather than needed. */
+  const capturing = live !== null;
   useEffect(() => {
-    if (!live) return;
+    if (!capturing) return;
 
     const counter = setInterval(async () => {
       try {
@@ -98,7 +106,7 @@ export const RecordView = () => {
       clearInterval(counter);
       clearInterval(sampler);
     };
-  }, [live, port]);
+  }, [capturing, port]);
 
   const end = useCallback(async () => {
     try {
@@ -358,9 +366,24 @@ export const RecordView = () => {
               Start recording
             </Button>
             <Typography variant="p" className="mt-2 text-ink-inactive text-[0.85rem]">
-              Everything you click, drag and scroll gets captured until you press Stop. Which applications
-              you work in is noted too, so a recording can name itself.
+              Everything you click, drag and scroll gets captured until you press Stop.
+              {' '}
+              {health?.canName
+                ? 'Each click also records which application and window it landed in, and the name of what '
+                  + 'was under the pointer, so the transcript reads as work rather than as coordinates.'
+                : 'Which applications you work in is noted too, so a recording can name itself.'}
             </Typography>
+
+            {/* Said BEFORE the recording rather than discovered in the transcript afterwards. An agent
+              * without the resolver records perfectly good coordinates and nothing that says what they
+              * were aimed at, and nine seconds of work is cheap to redo while nine minutes is not. */}
+            {health && health.canName !== true && (
+              <Typography variant="p" className="mt-2 text-fb-attention text-[0.8rem]">
+                This agent does not read what you click on, so this recording will be coordinates only -
+                no application, no window, no control names. Restart it with the command behind the agent
+                chip in the header first; it takes a few seconds.
+              </Typography>
+            )}
           </div>
         )}
 

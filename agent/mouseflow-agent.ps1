@@ -1823,6 +1823,12 @@ namespace MouseFlow
                        pictures but cannot say what is already open, and the app degrades to that
                        rather than refusing to run. */
                     + ",\"canWindows\":true"
+                    /* Whether a click gets a name. The version number nearly says this and missed the
+                       case that happened: an 0.5.0 started before the resolver existed and one started
+                       after it are identical from outside, and the difference is whether a transcript
+                       reads "clicked the New mail button in OUTLOOK" or "clicked at 1030,1053". An
+                       older agent omits the field, which is the answer. */
+                    + ",\"canName\":true"
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
                 return;

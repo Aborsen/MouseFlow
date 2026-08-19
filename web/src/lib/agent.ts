@@ -22,6 +22,9 @@ export interface AgentHealth {
   playing: boolean;
   canSee?: boolean;
   canWindows?: boolean;
+  /** Whether it resolves what a click landed on - the application, window and control name. Absent on any
+   * build before 0.6.0, and absent is the answer: those recordings carry coordinates and nothing else. */
+  canName?: boolean;
   canAutostart?: boolean;
   originPinned?: boolean;
 }
