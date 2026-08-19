@@ -15,12 +15,20 @@ import { Circle, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
-import { recordStart, recordStatus, recordStop, replay, windows } from '@/lib/agent';
+import {
+  doAction,
+  recordStart,
+  recordStatus,
+  recordStop,
+  replay,
+  replayAbort,
+  replayStatus,
+  windows,
+} from '@/lib/agent';
 import { push } from '@/lib/api';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
 import { type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
-import { FlowBuilder } from './FlowBuilder';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 
 export const RecordView = () => {
@@ -31,6 +39,8 @@ export const RecordView = () => {
 
   const [live, setLive] = useState<{ count: number; elapsedMs: number } | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  /** The name of the recording being replayed, or null. Drives Escape and the status poll. */
+  const [playing, setPlaying] = useState<string | null>(null);
   const seenWindows = useRef<{ title: string; process: string }[]>([]);
 
   const port = state.port;
@@ -130,16 +140,72 @@ export const RecordView = () => {
     if (!health) { setNote('The agent is not running.'); return; }
     const settings = replayOf(rec);
     try {
+      /* Bring the application this was recorded in to the front first.
+       *
+       * A replay is coordinates and clicks: it has no idea what is under them. If the window has been
+       * minimised, or something else is in front, every click lands on whatever happens to be there - and the
+       * failure looks like the recording being wrong rather than the desktop having moved on. The recorder
+       * already noted which applications were in front (this page samples the foreground window every
+       * second), so the first one is where this recording belongs.
+       *
+       * Best effort on purpose: a window that has since closed should not stop a replay the user asked for -
+       * they may be about to open it. The message says what was tried.
+       */
+      const front = rec.windows?.[0];
+      if (front && (front.title || front.process)) {
+        try {
+          await doAction(port, `action=activate ${front.process ? `process=${front.process} ` : ''}` +
+            `${front.title ? `title=${front.title}` : ''}`.trim());
+          // Windows takes a moment to actually raise it; clicking into a window still coming forward misses.
+          await new Promise((done) => setTimeout(done, 350));
+        } catch (_) {
+          setNote(`Could not bring ${front.title || front.process} to the front — replaying anyway.`);
+        }
+      }
+
       await replay(port, flowBody(
         [{ recordingId: rec.id, repeat: settings.repeat, speed: settings.speed, delayAfterMs: 0 }],
         [rec],
         { startDelayMs: state.startDelayMs, flowRepeat: 1, flowForever: settings.loop },
       ));
+      setPlaying(rec.name);
       setNote(`Replaying "${rec.name}" — press Escape to stop.`);
     } catch (err) {
       setNote(err instanceof Error ? err.message : 'could not start the replay');
     }
   }, [health, port, state.startDelayMs]);
+
+  /* Escape stops a replay. The pointer is not the user's while one runs, so the keyboard has to be enough -
+   * this was the flow builder's, and it has to survive the flow builder. */
+  useEffect(() => {
+    if (!playing) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      void replayAbort(port).catch(() => {});
+      setPlaying(null);
+      setNote('Stopped.');
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [playing, port]);
+
+  /* And a poll while it runs, so the page knows when it is over rather than claiming a replay forever. */
+  useEffect(() => {
+    if (!playing) return;
+    const timer = setInterval(async () => {
+      try {
+        const status = await replayStatus(port);
+        if (!status.playing) {
+          setPlaying(null);
+          setNote(`Finished "${playing}".`);
+        }
+      } catch (_) {
+        // The agent went away mid-replay; the health poller will say so.
+        setPlaying(null);
+      }
+    }, 700);
+    return () => clearInterval(timer);
+  }, [playing, port]);
 
   const keepAsSkill = useCallback(async (rec: Recording) => {
     const s = summarize(rec.events);
@@ -270,9 +336,6 @@ export const RecordView = () => {
         onPlay={(rec) => { void playOne(rec); }}
       />
 
-      <div>
-        <FlowBuilder />
-      </div>
     </div>
   );
 };

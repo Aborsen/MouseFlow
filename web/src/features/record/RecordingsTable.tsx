@@ -17,7 +17,6 @@
  *   than on the flow step so that pressing Play on the row and adding it to a flow mean the same thing.
  */
 import { Button } from '@insightis/ui/Button';
-import { Card } from '@insightis/ui/Card';
 import { Checkbox } from '@insightis/ui/Checkbox';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
@@ -25,7 +24,6 @@ import {
   Download,
   Eye,
   Play,
-  Plus,
   Repeat,
   Save,
   Search,
@@ -42,6 +40,15 @@ import { type Recording, useConsole } from '@/lib/store';
 const PAGE = 10;
 
 const SPEEDS = [0.5, 1, 1.5, 2, 4];
+
+/* One grid template for the header and every row, which is what makes a label sit over the column it names.
+ * The name column is the only one that flexes; everything else is FIXED, including the actions.
+ *
+ * The actions column was `auto` first, and that is why the header and the rows disagreed by 280px while being
+ * exactly the same width: `auto` sizes to content, the header's word ACTIONS is narrow, four buttons are not,
+ * so the 1fr name column absorbed a different amount of space in each. A shared template only shares if every
+ * track but one is fixed. */
+const COLUMNS = 'grid-cols-[1.25rem_minmax(11rem,1fr)_5.5rem_4.5rem_3rem_5.5rem_26rem]';
 
 export interface RecordingsTableProps {
   /** Save as skill lives on the page, because it also has to report what happened. */
@@ -113,7 +120,9 @@ export const RecordingsTable = ({
   const remove = useCallback((ids: string[]) => {
     update((prev) => ({
       recordings: prev.recordings.filter((rec) => !ids.includes(rec.id)),
-      // A flow step pointing at a recording that no longer exists would fail at replay time, silently.
+      /* Flows are not being built at the moment, but the store still carries the field and a step pointing at
+       * a recording that no longer exists would fail at replay time and say nothing. Cheaper to keep tidy
+       * than to remember later. */
       flow: prev.flow.filter((step) => !ids.includes(step.recordingId)),
     }));
     setSelected((prev) => {
@@ -186,8 +195,9 @@ export const RecordingsTable = ({
             />
           </label>
 
-          {/* Their count line, with Select all beside it. */}
-          <div className="mb-2 flex flex-wrap items-center gap-3 text-[0.8rem]">
+          {/* Their count line, with Select all beside it. A fixed height because the selection controls
+              appear inside it: without one, ticking a box grew this line and pushed the whole list down. */}
+          <div className="mb-2 flex h-8 flex-wrap items-center gap-3 text-[0.8rem]">
             <Typography variant="span" className="text-ink-secondary">
               {rows.length} recording{rows.length === 1 ? '' : 's'}
               {term && state.recordings.length !== rows.length ? ` of ${state.recordings.length}` : ''}
@@ -245,10 +255,30 @@ export const RecordingsTable = ({
             /* The row is wide by nature - a name, three replay controls, a date and the actions - so when the
                window cannot hold it, this scrolls rather than the page. A page that slides sideways is the
                worse of the two. */
-            <ul
-              className="flex flex-col gap-1.5 overflow-x-auto pb-1"
-              data-has-selection={live.size > 0 ? '' : undefined}
-            >
+            <div className="overflow-x-auto pb-1">
+              <div className="min-w-[64rem]">
+              {/* The labels the controls were missing. Same template as the rows, so they line up rather than
+                  approximately line up. */}
+              <div
+                className={cn(
+                  COLUMNS,
+                  'grid w-full items-center gap-x-3 px-3 pb-1.5',
+                  'text-[0.7rem] uppercase tracking-wide text-ink-inactive',
+                )}
+              >
+                <span />
+                <span>Recording</span>
+                <span title="How many times this recording repeats">Repeat</span>
+                <span title="The recorded delays are divided by this">Speed</span>
+                <span title="Keep repeating until you stop it">Loop</span>
+                <span>Recorded</span>
+                <span className="text-right">Actions</span>
+              </div>
+
+              <ul
+                className="flex flex-col gap-1.5"
+                data-has-selection={live.size > 0 ? '' : undefined}
+              >
               {visible.map((rec) => {
                 const s = summarize(rec.events);
                 const replay = replayOf(rec);
@@ -258,17 +288,20 @@ export const RecordingsTable = ({
 
                 return (
                   <li key={rec.id}>
-                    <Card
-                      variant="row"
-                      fullWidth
+                    {/* Their row's look without their row's behaviour: no cursor-pointer, no press-scale, no
+                        whole-row click. A chat row navigates when you click it; this one does not, and
+                        pretending otherwise made it bounce under the pointer. View is the way in. */}
+                    <div
                       className={cn(
-                        'h-auto min-w-[56rem] gap-x-3 py-1.5',
-                        isSelected && 'border-brand-primary bg-state-pressed shadow-sm',
+                        COLUMNS,
+                        'grid w-full items-center gap-x-3 rounded-lg px-3 py-1.5',
+                        'border border-stroke/45 bg-surface-card shadow-rest transition-colors duration-fast',
+                        'hover:border-card-border-hover',
+                        isSelected && 'border-brand-primary bg-state-pressed',
                         isViewing && !isSelected && 'border-brand-primary',
                       )}
-                      onClick={() => onView(rec)}
                     >
-                      <span onClick={(ev) => ev.stopPropagation()} className="flex flex-none items-center">
+                      <span className="flex items-center">
                         <Checkbox
                           checked={isSelected}
                           aria-label={`Select ${rec.name}`}
@@ -278,7 +311,7 @@ export const RecordingsTable = ({
 
                       {/* The name is editable in place, as it was. Renaming a recording is the commonest thing
                           anybody does to one, and a dialog for it would be three clicks. */}
-                      <span className="flex min-w-[12rem] flex-1 flex-col gap-0.5" onClick={(ev) => ev.stopPropagation()}>
+                      <span className="flex min-w-0 flex-col gap-0.5">
                         <input
                           value={rec.name}
                           onChange={(ev) => update((prev) => ({
@@ -299,57 +332,46 @@ export const RecordingsTable = ({
                         </span>
                       </span>
 
-                      {/* The three questions a replay asks, on the row that answers them. */}
-                      <span
-                        className="flex flex-none items-center gap-2 text-[0.76rem] text-ink-secondary"
-                        onClick={(ev) => ev.stopPropagation()}
-                      >
-                        <label className="flex items-center gap-1" title="How many times this recording repeats">
-                          <Repeat className="size-3.5" />
-                          <input
-                            type="number"
-                            min={1}
-                            max={999}
-                            value={replay.repeat}
-                            aria-label="Repeat"
-                            onChange={(ev) => setReplay(rec.id, { repeat: Math.max(1, Number(ev.target.value) || 1) })}
-                            className="w-12 rounded border-stroke border bg-surface-card2 px-1 py-0.5 text-ink-primary tabular-nums focus:border-input-focus focus:outline-none"
-                          />
-                        </label>
-
-                        <label className="flex items-center gap-1" title="Replay speed. The recorded delays are divided by this.">
-                          <select
-                            value={replay.speed}
-                            aria-label="Speed"
-                            onChange={(ev) => setReplay(rec.id, { speed: Number(ev.target.value) || 1 })}
-                            className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 text-ink-primary focus:border-input-focus focus:outline-none"
-                          >
-                            {SPEEDS.map((speed) => (
-                              <option key={speed} value={speed}>{speed}×</option>
-                            ))}
-                          </select>
-                        </label>
-
-                        <label
-                          className="flex items-center gap-1.5"
-                          title="Keep repeating until you stop it. The toolbar icon becomes the stop button."
-                        >
-                          <Checkbox
-                            checked={replay.loop}
-                            aria-label="Loop"
-                            onCheckedChange={(next) => setReplay(rec.id, { loop: next === true })}
-                          />
-                          Loop
-                        </label>
+                      {/* The three questions a replay asks, one per column so the header can name them. */}
+                      <span className="flex items-center gap-1 text-[0.76rem] text-ink-secondary">
+                        <Repeat className="size-3.5 shrink-0" />
+                        <input
+                          type="number"
+                          min={1}
+                          max={999}
+                          value={replay.repeat}
+                          aria-label="Repeat"
+                          onChange={(ev) => setReplay(rec.id, { repeat: Math.max(1, Number(ev.target.value) || 1) })}
+                          className="w-12 rounded border-stroke border bg-surface-card2 px-1 py-0.5 text-ink-primary tabular-nums focus:border-input-focus focus:outline-none"
+                        />
                       </span>
 
-                      <span className="flex-none text-[0.76rem] text-ink-secondary tabular-nums">
+                      <select
+                        value={replay.speed}
+                        aria-label="Speed"
+                        onChange={(ev) => setReplay(rec.id, { speed: Number(ev.target.value) || 1 })}
+                        className="w-full rounded border-stroke border bg-surface-card2 px-1 py-0.5 text-[0.76rem] text-ink-primary focus:border-input-focus focus:outline-none"
+                      >
+                        {SPEEDS.map((speed) => (
+                          <option key={speed} value={speed}>{speed}×</option>
+                        ))}
+                      </select>
+
+                      <span className="flex items-center">
+                        <Checkbox
+                          checked={replay.loop}
+                          aria-label="Loop"
+                          onCheckedChange={(next) => setReplay(rec.id, { loop: next === true })}
+                        />
+                      </span>
+
+                      <span className="text-[0.76rem] text-ink-secondary tabular-nums">
                         {new Date(rec.created).toLocaleDateString()}
                       </span>
 
                       {/* Visible rather than revealed on hover: these were asked for as labels, and nobody
                           hovers a row to find out that Export exists. */}
-                      <span className="flex flex-none items-center gap-1" onClick={(ev) => ev.stopPropagation()}>
+                      <span className="flex items-center justify-end gap-1">
                         {/* Icon only, with a title: Play and Add to flow are the two that do not need a word,
                             and six labelled buttons wrapped the row onto a third line. The four the owner
                             asked to see as labels - View, Save as skill, Export, Delete - keep them. */}
@@ -378,23 +400,6 @@ export const RecordingsTable = ({
                           Export
                         </Button>
                         <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Add ${rec.name} to the flow`}
-                          title="Add to the flow below, with this repeat and speed"
-                          className="!size-8 !p-0"
-                          onClick={() => update((prev) => ({
-                            flow: [...prev.flow, {
-                              recordingId: rec.id,
-                              repeat: replay.repeat,
-                              speed: replay.speed,
-                              delayAfterMs: 0,
-                            }],
-                          }))}
-                        >
-                          <Plus className="size-4" />
-                        </Button>
-                        <Button
                           variant={armed === rec.id ? 'destructive' : 'destructiveTertiary'}
                           size="sm"
                           leftSlot={<Trash2 className="size-4" />}
@@ -403,19 +408,16 @@ export const RecordingsTable = ({
                             remove([rec.id]);
                           }}
                         >
-                          {armed === rec.id
-                            ? (() => {
-                              const inFlow = state.flow.filter((f) => f.recordingId === rec.id).length;
-                              return inFlow ? `Delete — used by ${inFlow} step(s)` : 'Delete — press again';
-                            })()
-                            : 'Delete'}
+                          {armed === rec.id ? 'Delete — press again' : 'Delete'}
                         </Button>
                       </span>
-                    </Card>
+                    </div>
                   </li>
                 );
-              })}
-            </ul>
+                })}
+                </ul>
+              </div>
+            </div>
           )}
 
           {rows.length > visible.length && (
