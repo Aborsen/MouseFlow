@@ -1,0 +1,44 @@
+/* The Insightis design system's stylesheet, plus the handful of rules this app adds.
+ *
+ * Their globals.css is imported whole - primitives, semantic tokens, component-scoped overrides, light and
+ * dark - so every vendored component behaves exactly as it does there. Nothing below redefines a token;
+ * what is here is page furniture their app has no equivalent of.
+ */
+@import './ui/globals.css';
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background: hsl(var(--surface-page));
+    color: hsl(var(--ink-primary));
+    font-family: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* A long command in a code row scrolls sideways rather than wrapping: a PowerShell line broken across
+   * two lines is a line somebody pastes half of. */
+  code {
+    font-family: ui-monospace, SFMono-Regular, 'Cascadia Mono', Consolas, monospace;
+  }
+}
+
+@layer components {
+  /* The drawn cursor a replay follows, and the trail behind it. Injected into other pages by the
+   * extension, and used here only for the preview in the setup guide. */
+  .mf-cursor {
+    position: fixed;
+    z-index: 2147483647;
+    pointer-events: none;
+    width: 18px;
+    height: 18px;
+    margin: -9px 0 0 -9px;
+    border-radius: 50%;
+    border: 2px solid hsl(var(--brand-primary));
+    background: hsl(var(--brand-primary) / 0.25);
+  }
+}

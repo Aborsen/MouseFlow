@@ -6,3 +6,8 @@ Thumbs.db
 
 .vercel
 .env*.local
+
+# The React app's build output and its public copy of the agent: both are generated, and the agent has one
+# source of truth at agent/mouseflow-agent.ps1 which the build copies in.
+web/dist/
+web/public/agent/

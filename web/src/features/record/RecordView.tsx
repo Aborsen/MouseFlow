@@ -1,0 +1,351 @@
+/* Record: the recorder, the recordings, and the flow. Three things, which is all this page is for.
+ *
+ * Ported from app.js. What it keeps from that version, because each was a bug once:
+ *
+ *   - Record stays enabled with no agent, and pressing it goes to Connections. A disabled button is a
+ *     dead end: it says no and not why.
+ *   - While recording, the front window is sampled once a second, so a recording can be named after where
+ *     it happened - "Outlook (PWA) - 6 clicks" rather than "Recording 3" - and a skill made from it can
+ *     say what it does.
+ *   - A recording is a draft in this browser until it is kept as a skill, which is what puts it on the
+ *     account and in reach of the other half.
+ */
+import { useNavigate } from '@tanstack/react-router';
+import { Circle, Download, Plus, Save, Square, Trash2, Upload } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button } from '@/ui/components/Button';
+import { Typography } from '@/ui/components/Typography';
+import { cn } from '@/ui/lib/utils';
+import { recordStart, recordStatus, recordStop, windows } from '@/lib/agent';
+import { push } from '@/lib/api';
+import { exportMacro, fmtMs, parseMacro, summarize } from '@/lib/macro';
+import { type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
+import { onStartRecording } from '@/shell/record-bus';
+import { useAccount } from '@/shell/AccountProvider';
+import { FlowBuilder } from './FlowBuilder';
+
+export const RecordView = () => {
+  const [state, update] = useConsole();
+  const { health } = useAgent();
+  const { reload } = useAccount();
+  const navigate = useNavigate();
+
+  const [live, setLive] = useState<{ count: number; elapsedMs: number } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const seenWindows = useRef<{ title: string; process: string }[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const port = state.port;
+
+  const begin = useCallback(async () => {
+    if (!health) {
+      void navigate({ to: '/connect' });
+      setNote('The agent is not running yet — here is how to start it.');
+      return;
+    }
+    if (health.recording) { setNote('Already recording.'); return; }
+    try {
+      await recordStart(port);
+      seenWindows.current = [];
+      setLive({ count: 0, elapsedMs: 0 });
+      setNote(null);
+      refreshAgent();
+    } catch (err) {
+      setNote(err instanceof Error ? err.message : 'could not start recording');
+    }
+  }, [health, navigate, port]);
+
+  // The sidebar's New recording asks for this; see record-bus.
+  useEffect(() => onStartRecording(() => { void begin(); }), [begin]);
+
+  /* Two pollers while recording, at different cadences on purpose: the counter should feel live, and the
+   * window list needs one sample a second at most - an application you passed through for half a second is
+   * not what the flow is about. */
+  useEffect(() => {
+    if (!live) return;
+
+    const counter = setInterval(async () => {
+      try {
+        const s = await recordStatus(port);
+        setLive({ count: s.count, elapsedMs: s.elapsedMs });
+        if (!s.recording) setLive(null);
+      } catch (_) {
+        setLive(null);
+      }
+    }, 250);
+
+    const sampler = setInterval(async () => {
+      try {
+        const seen = await windows(port);
+        const front = seen.windows.find((w) => w.active);
+        const label = front?.title || front?.process;
+        if (!label) return;
+        if (!seenWindows.current.some((w) => w.title === label)) {
+          seenWindows.current.push({ title: label, process: front?.process ?? '' });
+        }
+      } catch (_) {
+        // An agent too old to list windows records without the context, exactly as before.
+      }
+    }, 1000);
+
+    return () => {
+      clearInterval(counter);
+      clearInterval(sampler);
+    };
+  }, [live, port]);
+
+  const end = useCallback(async () => {
+    try {
+      const text = await recordStop(port);
+      setLive(null);
+      const { events } = parseMacro(text);
+      if (!events.length) { setNote('Nothing was captured.'); return; }
+
+      const where = seenWindows.current.slice();
+      const s = summarize(events);
+      /* Named after what you were working in. "Outlook (PWA)" is a thing you can find again in a week;
+       * "Recording 3" is not. */
+      const first = where[0]?.title.split(/\s+[-–—|]\s+/)[0]?.slice(0, 40);
+      const name = first
+        ? `${first} · ${s.clicks} click${s.clicks === 1 ? '' : 's'}`
+        : `Recording ${state.recordings.length + 1}`;
+
+      update((prev) => ({
+        recordings: [
+          ...prev.recordings,
+          { id: uid(), name, created: new Date().toISOString(), events, windows: where },
+        ],
+      }));
+      setNote(`${s.count} events captured (${fmtMs(s.durationMs)})${
+        where.length ? ` in ${where.length} window${where.length === 1 ? '' : 's'}` : ''
+      }`);
+    } catch (err) {
+      setLive(null);
+      setNote(err instanceof Error ? err.message : 'could not stop recording');
+    }
+  }, [port, state.recordings.length, update]);
+
+  const keepAsSkill = useCallback(async (rec: Recording) => {
+    const s = summarize(rec.events);
+    const where = rec.windows.map((w) => w.title).filter(Boolean);
+    const name = prompt('Name this skill', rec.name);
+    if (name === null) return;
+
+    const described =
+      `Repeats ${s.count} recorded actions` +
+      (s.clicks ? ` (${s.clicks} click${s.clicks === 1 ? '' : 's'})` : '') +
+      ` over ${fmtMs(s.durationMs)}` +
+      (where.length ? `, in ${where.slice(0, 3).join(', ')}` : '') + '.';
+
+    try {
+      const body = await push({
+        flows: [{
+          id: `dr_${rec.id}`,
+          /* `desktop`, which decides who can run it: these are screen coordinates, so the extension must
+           * not offer to replay them in a page - it would click at meaningless positions. */
+          source: 'desktop',
+          kind: 'recorded',
+          name: (name || rec.name).slice(0, 80),
+          description: described.slice(0, 400),
+          origins: where.slice(0, 12),
+          created: rec.created,
+          payload: {
+            version: 1,
+            kind: 'recorded',
+            agent: 'desktop',
+            name: (name || rec.name).slice(0, 80),
+            description: described.slice(0, 400),
+            events: rec.events,
+            windows: rec.windows,
+            created: rec.created,
+          },
+        }],
+      });
+      if (body.problems.length) throw new Error(body.problems.join('; '));
+      await reload();
+      setNote('Saved as a skill. It is in Skills, on this and any other browser you sign in from.');
+    } catch (err) {
+      setNote(`Could not save it as a skill: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+  }, [reload]);
+
+  const importFiles = useCallback(async (files: FileList) => {
+    let added = 0;
+    for (const file of Array.from(files)) {
+      const { events } = parseMacro(await file.text());
+      if (!events.length) continue;
+      update((prev) => ({
+        recordings: [
+          ...prev.recordings,
+          {
+            id: uid(),
+            name: file.name.replace(/\.[^.]+$/, ''),
+            created: new Date().toISOString(),
+            events,
+            windows: [],
+          },
+        ],
+      }));
+      added++;
+    }
+    setNote(added ? `Imported ${added} recording${added === 1 ? '' : 's'}.` : 'Nothing in those files parsed.');
+  }, [update]);
+
+  const recording = live !== null || !!health?.recording;
+
+  return (
+    <div className="grid items-start gap-4 p-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
+      <section className="rounded-xl border-stroke border bg-surface-card p-4">
+        <Typography variant="h2" weight="semibold" className="mb-3 text-[0.95rem] uppercase tracking-wide text-ink-secondary">
+          Record
+        </Typography>
+
+        {recording ? (
+          <div>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="size-2.5 animate-pulse rounded-full bg-fb-red" />
+              <Typography variant="span" weight="semibold">Recording</Typography>
+              <span className="ms-auto font-mono text-ink-secondary text-sm tabular-nums">
+                {fmtMs(live?.elapsedMs ?? 0)}
+              </span>
+            </div>
+            <div className="mb-3 grid grid-cols-2 gap-2 text-center">
+              {[
+                { value: live?.count ?? 0, label: 'events' },
+                { value: seenWindows.current.length, label: 'windows' },
+              ].map(({ value, label }) => (
+                <div key={label} className="rounded-md border-stroke border bg-surface-chips px-2 py-1.5">
+                  <strong className="block tabular-nums">{value}</strong>
+                  <span className="text-[0.75rem] text-ink-secondary">{label}</span>
+                </div>
+              ))}
+            </div>
+            <Button variant="destructive" fullWidth leftSlot={<Square className="size-4" />} onClick={end}>
+              Stop and save
+            </Button>
+          </div>
+        ) : (
+          <div>
+            <Button fullWidth leftSlot={<Circle className="size-3.5 fill-current" />} onClick={begin}>
+              Start recording
+            </Button>
+            <Typography variant="p" className="mt-2 text-ink-inactive text-[0.85rem]">
+              Everything you click, drag and scroll gets captured until you press Stop. Which applications
+              you work in is noted too, so a recording can name itself.
+            </Typography>
+          </div>
+        )}
+
+        {note && (
+          <Typography variant="p" className="mt-3 text-ink-secondary text-[0.85rem]">
+            {note}
+          </Typography>
+        )}
+      </section>
+
+      <section className="rounded-xl border-stroke border bg-surface-card p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Typography variant="h2" weight="semibold" className="text-[0.95rem] uppercase tracking-wide text-ink-secondary">
+            Recordings
+          </Typography>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ms-auto"
+            leftSlot={<Upload className="size-4" />}
+            onClick={() => fileInput.current?.click()}
+          >
+            Import .mmmacro
+          </Button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".mmmacro,.txt,text/plain"
+            multiple
+            hidden
+            onChange={(ev) => { if (ev.target.files) void importFiles(ev.target.files); }}
+          />
+        </div>
+
+        {state.recordings.length === 0 ? (
+          <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
+            No recordings yet. Press <strong>Start recording</strong>, or import a <code>.mmmacro</code>
+            {' '}file from Mini Mouse Macro.
+          </Typography>
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {state.recordings.map((rec) => {
+              const s = summarize(rec.events);
+              return (
+                <li key={rec.id} className="rounded-lg border-stroke border bg-surface-chips p-2.5">
+                  <input
+                    value={rec.name}
+                    onChange={(ev) => update((prev) => ({
+                      recordings: prev.recordings.map((r) =>
+                        r.id === rec.id ? { ...r, name: ev.target.value } : r),
+                    }))}
+                    className="w-full rounded-md border border-transparent bg-transparent px-1 py-0.5 font-semibold text-ink-primary hover:border-stroke focus:border-brand-primary focus:outline-none"
+                  />
+                  <div className="mb-2 px-1 text-[0.78rem] text-ink-inactive">
+                    {s.count} events · {s.clicks} clicks · {fmtMs(s.durationMs)}
+                    {rec.windows.length ? ` · ${rec.windows.map((w) => w.title).join(', ').slice(0, 60)}` : ''}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leftSlot={<Plus className="size-4" />}
+                      onClick={() => update((prev) => ({
+                        flow: [...prev.flow, { recordingId: rec.id, repeat: 1, speed: 1, delayAfterMs: 0 }],
+                      }))}
+                    >
+                      Add to flow
+                    </Button>
+                    <Button variant="ghost" size="sm" leftSlot={<Save className="size-4" />} onClick={() => keepAsSkill(rec)}>
+                      Save as skill
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leftSlot={<Download className="size-4" />}
+                      onClick={() => {
+                        const blob = new Blob([exportMacro(rec)], { type: 'text/plain' });
+                        const a = document.createElement('a');
+                        a.href = URL.createObjectURL(blob);
+                        a.download = `${rec.name.replace(/[^\w.-]+/g, '-')}.mmmacro`;
+                        a.click();
+                        URL.revokeObjectURL(a.href);
+                      }}
+                    >
+                      Export
+                    </Button>
+                    <Button
+                      variant="destructiveTertiary"
+                      size="sm"
+                      leftSlot={<Trash2 className="size-4" />}
+                      onClick={() => {
+                        const inFlow = state.flow.filter((f) => f.recordingId === rec.id).length;
+                        const warn = inFlow ? ` It is used by ${inFlow} flow step(s).` : '';
+                        if (!confirm(`Delete "${rec.name}"?${warn}`)) return;
+                        update((prev) => ({
+                          recordings: prev.recordings.filter((r) => r.id !== rec.id),
+                          flow: prev.flow.filter((f) => f.recordingId !== rec.id),
+                        }));
+                      }}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <div className={cn('xl:col-span-2')}>
+        <FlowBuilder />
+      </div>
+    </div>
+  );
+};
