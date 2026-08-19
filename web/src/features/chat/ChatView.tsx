@@ -240,8 +240,13 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
             .map((id) => ({ id, provider, available: configured[provider] === true })),
         );
         setModels(list);
+        /* Embedded, there is no picker and no memory of one: the panel is the deployment's own agent, so it
+         * uses the model the route names as its default (OPENAI_MODEL, which is gpt-5.6-luna here). A choice
+         * made on the /chat page must not leak into a panel that shows no choice. */
         let remembered = '';
-        try { remembered = localStorage.getItem(MODEL_KEY) ?? ''; } catch (_) { /* private mode */ }
+        if (!embedded) {
+          try { remembered = localStorage.getItem(MODEL_KEY) ?? ''; } catch (_) { /* private mode */ }
+        }
         const usable = list.find((m) => m.id === remembered && m.available)
           ?? list.find((m) => m.id === body.default && m.available)
           ?? list.find((m) => m.available);
@@ -255,12 +260,12 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
         setModelsProblem(err instanceof Error ? err.message : 'the model list could not be read');
       }
     })();
-  }, []);
+  }, [embedded]);
 
   useEffect(() => {
-    if (!model) return;
+    if (!model || embedded) return;
     try { localStorage.setItem(MODEL_KEY, model); } catch (_) { /* private mode */ }
-  }, [model]);
+  }, [model, embedded]);
 
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'nearest' }); }, [turns, asking]);
 
@@ -382,31 +387,42 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
         )}
 
         <div className={cn('flex flex-wrap items-center gap-2', !embedded && 'mt-3')}>
-          <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
-            Model
-            <select
-              value={model}
-              aria-label="Model"
-              disabled={!models.length}
-              onChange={(ev) => setModel(ev.target.value)}
-              className="rounded-md border-stroke border bg-surface-card px-1.5 py-1 text-ink-primary disabled:opacity-disabled"
-            >
-              {!model && <option value="">none available</option>}
-              {[...new Set(models.map((m) => m.provider))].map((provider) => (
-                <optgroup key={provider} label={provider}>
-                  {models.filter((m) => m.provider === provider).map((m) => (
-                    <option key={m.id} value={m.id} disabled={!m.available}>
-                      {m.available ? m.id : `${m.id} — no key on this deployment`}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </label>
+          {/* A name, not a model id. Which model answered is a fact about the deployment, not a decision to
+              put in front of somebody asking where their week went - the panel uses whatever OPENAI_MODEL
+              names and says nothing about it unless a request fails. The picker survives on the /chat page,
+              where choosing is reasonable. */}
+          <Typography variant="span" weight="semibold" className="text-[0.92rem]">
+            Insightis agent
+          </Typography>
+
+          {!embedded && (
+            <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
+              Model
+              <select
+                value={model}
+                aria-label="Model"
+                disabled={!models.length}
+                onChange={(ev) => setModel(ev.target.value)}
+                className="rounded-md border-stroke border bg-surface-card px-1.5 py-1 text-ink-primary disabled:opacity-disabled"
+              >
+                {!model && <option value="">none available</option>}
+                {[...new Set(models.map((m) => m.provider))].map((provider) => (
+                  <optgroup key={provider} label={provider}>
+                    {models.filter((m) => m.provider === provider).map((m) => (
+                      <option key={m.id} value={m.id} disabled={!m.available}>
+                        {m.available ? m.id : `${m.id} — no key on this deployment`}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+          )}
 
           <Button
             variant="ghost"
             size="sm"
+            className="ms-auto"
             leftSlot={<Eraser className="size-4" />}
             disabled={!turns.length || asking}
             onClick={clear}
@@ -415,7 +431,7 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
           </Button>
         </div>
 
-        {unavailable.length > 0 && (
+        {!embedded && unavailable.length > 0 && (
           <Typography variant="p" className="mt-1.5 text-ink-inactive text-xs">
             {unavailable.map(({ provider, ids }) => (
               <span key={provider} className="mr-3 inline-flex items-center gap-1">
@@ -642,47 +658,52 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
         </div>
       )}
 
+      {/* The send sits inside the field, which is where a chat puts it. The two paragraphs that used to
+          follow this - what travels with a question, and what the data cannot tell you - are gone: the first
+          was housekeeping, and the second is already answered on every reply, which shows the runs it read. */}
       <form
         className={cn('mt-3', embedded ? 'px-3 pb-3' : 'max-w-[900px]')}
         onSubmit={(ev) => { ev.preventDefault(); void ask(question); }}
       >
-        <textarea
-          value={question}
-          onChange={(ev) => setQuestion(ev.target.value)}
-          disabled={asking || !model}
-          aria-label="Your question"
-          placeholder="where did my time go last week?"
-          onKeyDown={(ev) => {
-            // Enter sends, Shift+Enter starts a line. A chat box that needs a mouse to send is a worse chat box.
-            if (ev.key === 'Enter' && !ev.shiftKey) {
-              ev.preventDefault();
-              void ask(question);
-            }
-          }}
-          className="min-h-[72px] w-full resize-y rounded-md border-stroke border bg-surface-card2 px-3 py-2.5 text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none disabled:opacity-disabled"
-        />
-        <div className="mt-2 flex flex-wrap items-center gap-2">
+        <div
+          className={cn(
+            'flex items-end gap-2 rounded-2xl border border-stroke p-2',
+            'bg-surface-card/[0.72] backdrop-blur-[10px]',
+            'focus-within:border-input-focus [&:hover:not(:focus-within)]:border-stroke-field-hover',
+          )}
+        >
+          <textarea
+            value={question}
+            onChange={(ev) => setQuestion(ev.target.value)}
+            disabled={asking || !model}
+            aria-label="Your question"
+            rows={2}
+            placeholder="where did my time go last week?"
+            onKeyDown={(ev) => {
+              // Enter sends, Shift+Enter starts a line. A chat box that needs a mouse to send is a worse one.
+              if (ev.key === 'Enter' && !ev.shiftKey) {
+                ev.preventDefault();
+                void ask(question);
+              }
+            }}
+            className={cn(
+              'max-h-[9rem] min-h-[2.75rem] flex-1 resize-none bg-transparent px-1.5 py-1',
+              'text-ink-primary placeholder:text-ink-inactive focus:outline-none disabled:opacity-disabled',
+            )}
+          />
           <Button
             type="submit"
-            leftSlot={<Send className="size-4" />}
+            size="sm"
+            aria-label={asking ? 'Asking' : 'Ask'}
+            title={model ? `Ask the ${model} agent` : 'Nothing can answer until a model with a key is available'}
             isLoading={asking}
             disabled={asking || !model || !question.trim()}
+            className="!size-9 shrink-0 !p-0"
           >
-            {asking ? 'Asking…' : 'Ask'}
+            {!asking && <Send className="size-4" />}
           </Button>
-          <Typography variant="span" className="text-ink-inactive text-xs">
-            {model
-              ? `Sent to ${model}. The last ${HISTORY_TURNS} turns travel with it, so a follow-up keeps its place.`
-              : 'Nothing can answer until a model with a key is available.'}
-          </Typography>
         </div>
       </form>
-
-      <Typography variant="p" className="mt-4 max-w-[70ch] text-ink-inactive text-xs">
-        Only your own flows and runs are read. Two things this cannot tell you, whatever it is asked: what a
-        run said as it went — that commentary is not readable, and on most runs was never stored at all —
-        and per-step timing for a desktop run, which records only the tool and its input.
-      </Typography>
     </div>
   );
 };

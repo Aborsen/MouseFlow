@@ -1023,10 +1023,13 @@ function probe(res) {
     ok: true,
     configured,
     models: MODELS,
-    /* _provider.js's own default, not this file's opinion of it. It reads the deployment's environment for
-     * the OpenAI half, so restating "the first anthropic entry" here is how the picker comes to preselect a
-     * model the route would not have chosen. */
-    default: DEFAULT_MODEL.anthropic,
+    /* _provider.js's own default, not this file's opinion of it - it reads the deployment's environment for
+     * the OpenAI half, so restating a guess here is how a picker comes to preselect a model the route would
+     * not have chosen.
+     *
+     * OpenAI first when this deployment has that key, because OPENAI_MODEL is where the owner states which
+     * model they want the assistant to be; Anthropic is the fallback for a deployment with only that key. */
+    default: keyFor('openai') ? DEFAULT_MODEL.openai : DEFAULT_MODEL.anthropic,
     database: !!process.env.DATABASE_URL,
     rounds: MAX_ROUNDS,
     tools: TOOL_NAMES,

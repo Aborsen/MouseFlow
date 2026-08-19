@@ -394,6 +394,12 @@ const Meter = ({ fraction, fill }: { fraction: number; fill: string }) => (
 const RANGES = [7, 30, 90];
 
 const ASSISTANT_KEY = 'mouseflow.insights.assistant';
+const ASSISTANT_WIDTH_KEY = 'mouseflow.insights.assistant.width';
+/* 26rem was a guess about every answer. A reply with a table in it needs room, so the width is the user's -
+ * clamped so the dashboard beside it cannot be squeezed into a column of wrapped words. */
+const WIDTH_MIN = 320;
+const WIDTH_MAX = 900;
+const WIDTH_DEFAULT = 416;
 
 export const InsightsView = () => {
   const navigate = useNavigate();
@@ -407,6 +413,42 @@ export const InsightsView = () => {
   useEffect(() => {
     try { localStorage.setItem(ASSISTANT_KEY, assistant ? '1' : '0'); } catch (_) { /* private mode */ }
   }, [assistant]);
+
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem(ASSISTANT_WIDTH_KEY));
+      return Number.isFinite(saved) && saved >= WIDTH_MIN ? Math.min(saved, WIDTH_MAX) : WIDTH_DEFAULT;
+    } catch (_) {
+      return WIDTH_DEFAULT;
+    }
+  });
+
+  /* Dragging the panel's edge. Pointer events rather than mouse events so a trackpad or a pen works, and
+   * capture on the handle so the drag survives the pointer crossing the iframe-less dashboard beneath it. */
+  const drag = useCallback((down: React.PointerEvent<HTMLDivElement>) => {
+    down.preventDefault();
+    const handle = down.currentTarget;
+    handle.setPointerCapture(down.pointerId);
+    const startX = down.clientX;
+    const startWidth = panelWidth;
+
+    const move = (ev: PointerEvent) => {
+      // Dragging left widens: the handle is on the panel's left edge.
+      const next = Math.min(WIDTH_MAX, Math.max(WIDTH_MIN, startWidth - (ev.clientX - startX)));
+      setPanelWidth(next);
+    };
+    const up = () => {
+      handle.releasePointerCapture(down.pointerId);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      setPanelWidth((width) => {
+        try { localStorage.setItem(ASSISTANT_WIDTH_KEY, String(width)); } catch (_) { /* private mode */ }
+        return width;
+      });
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+  }, [panelWidth]);
   const [data, setData] = useState<Insights | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
@@ -968,7 +1010,27 @@ export const InsightsView = () => {
         * Rendered inside the page rather than as its own destination: a separate screen would make somebody
         * retype the window and the numbers they are looking at. */}
       {assistant && (
-        <aside className="flex w-[26rem] shrink-0 flex-col border-stroke border-l bg-surface-card2 max-xl:hidden">
+        <aside
+          className="relative flex shrink-0 flex-col border-stroke border-l bg-surface-card2 max-xl:hidden"
+          style={{ width: panelWidth }}
+        >
+          {/* The handle. Its own hit area is wider than the line it draws, because a 1px target is a target
+              nobody hits. Double-click restores the default, which is the way back from a bad drag. */}
+          <div
+            role="separator"
+            aria-label="Resize the assistant"
+            aria-orientation="vertical"
+            onPointerDown={drag}
+            onDoubleClick={() => {
+              setPanelWidth(WIDTH_DEFAULT);
+              try { localStorage.setItem(ASSISTANT_WIDTH_KEY, String(WIDTH_DEFAULT)); } catch (_) { /* private mode */ }
+            }}
+            className={cn(
+              'absolute top-0 -left-1 z-10 h-full w-2 cursor-col-resize',
+              'after:absolute after:inset-y-0 after:left-1/2 after:w-px after:bg-transparent',
+              'hover:after:bg-brand-primary',
+            )}
+          />
           <ChatView embedded />
         </aside>
       )}
