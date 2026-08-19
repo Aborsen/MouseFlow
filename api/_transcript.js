@@ -441,6 +441,73 @@ function pageLabel(url) {
   return oneLine(host + path, 70);
 }
 
+/* ------------------------------------------------ what was under the pointer, when it is known
+ *
+ * The agent writes a `#ctx` line above a click naming the application, the window, and the accessible
+ * name and kind of the control it landed on (agent/PROTOCOL.md, "#ctx - where a click landed").
+ * macro.ts parses it onto the event; api/sync.js stores the payload as sent; this is where it becomes
+ * words.
+ *
+ * Absent means NOT KNOWN, never "nothing there". It is resolved for clicks only - a pointer move has no
+ * target worth naming and there are hundreds of them - and even for a click it can be missing: an
+ * elevated window is invisible to a normal-integrity agent, an Electron application often exposes no
+ * name at all, the resolver drops context rather than events when it falls behind, and any agent older
+ * than 0.6.0 resolved none of it. So every sentence below has a coordinates-only form and the transcript
+ * says which one it is using.
+ */
+const CTX_MAX = 90;
+
+/* Control kinds that name a shape rather than a thing. UIA's LocalizedControlType is already a human
+ * word - "button", "edit box", "list item" - which is why there is no mapping table here, but these
+ * particular words tell a reader nothing: "clicked the \"Send\" pane" is worse than "clicked \"Send\"". */
+const CTX_VAGUE = new Set(['pane', 'custom', 'group', 'window', 'client', 'unknown', 'separator', '']);
+
+function ctxOf(raw) {
+  const src = raw && typeof raw === 'object' ? raw : null;
+  if (!src) return null;
+  const app = oneLine(src.app, CTX_MAX);
+  const window = oneLine(src.window, CTX_MAX);
+  const control = oneLine(src.control, CTX_MAX);
+  const type = oneLine(src.type, 40);
+  /* A type on its own is not context: "a button" with no name and no application says nothing a reader
+   * could act on, and keeping it would make a step look resolved when it was not. */
+  if (!app && !window && !control) return null;
+  return { app: app || null, window: window || null, control: control || null, type: type || null };
+}
+
+/* Which place a click was in, for segmenting. Application AND window, because one browser is many tabs
+ * and "chrome" is not where the work happened. */
+const placeKey = (ctx) => (ctx ? (ctx.app || '?') + '\u0000' + (ctx.window || '?') : null);
+
+function ctxWhere(ctx) {
+  return {
+    kind: 'app',
+    label: ctx.window || ctx.app,
+    detail: ctx.window && ctx.app ? ctx.app : '',
+  };
+}
+
+// ` in OUTLOOK`, or nothing. The application is worth saying even when the control is not known.
+const inApp = (ctx) => (ctx && ctx.app ? ' in ' + ctx.app : '');
+
+/* `clicked the "Send" button in OUTLOOK`, degrading one clause at a time down to `clicked at 1030,1053`.
+ * The coordinates stay in `target` on every branch, so nothing that replays or edits a step loses them. */
+function actWords(verb, ctx, where) {
+  if (!ctx || !ctx.control) return verb + ' at ' + where + inApp(ctx);
+  const noun = ctx.type && !CTX_VAGUE.has(ctx.type.toLowerCase()) ? ' ' + ctx.type : '';
+  return verb + (noun ? ' the' : '') + ' "' + ctx.control + '"' + noun + inApp(ctx);
+}
+
+/* Said on the step itself, because it is the difference between a recording that could not see and one
+ * that saw an application naming nothing - and a reader who is told which will not ask twice. */
+function ctxNote(ctx) {
+  if (!ctx) return '';
+  if (ctx.control) return '';
+  return (ctx.app || 'the application') + ' was under the pointer, but nothing there had a name the '
+    + 'agent could read - which is normal for an Electron application, a canvas, or a window running '
+    + 'as administrator';
+}
+
 function deskEvent(raw) {
   const event = raw && typeof raw === 'object' ? raw : {};
   const action = oneLine(event.action, 60);
@@ -470,6 +537,7 @@ function deskEvent(raw) {
     x: num(event.x),
     y: num(event.y),
     delay: clamp0(num(event.delayMs !== undefined ? event.delayMs : event.delay)),
+    ctx: ctxOf(event.context),
     readable: !!raw && typeof raw === 'object' && action !== ''
       && Number.isFinite(Number(event.x)) && Number.isFinite(Number(event.y)),
   };
@@ -834,7 +902,19 @@ function deriveWeb(events) {
  * answer "when did it move between them". So one window names the segment; several are all named
  * together with a note saying so; none says that too.
  */
-function desktopWhere(windows, total) {
+function desktopWhere(windows, total, perStep) {
+  /* When clicks carry their own context this segment holds only what came before the first one - the
+   * pointer moving toward it, a wait - and every real step below is placed by the click that named it.
+   * Saying so here stops the sampled list from being read as the answer when a better one follows. */
+  if (perStep) {
+    return {
+      where: { kind: 'unknown', label: 'before the first click', detail: '' },
+      note: 'Whatever happened before anything was clicked: this agent reads the application and window '
+        + 'under the pointer at the moment of each click, so the segments below are named by the work '
+        + 'itself rather than by the once-a-second sample of the front window. A pointer move names no '
+        + 'window, which is why these steps are here and not there.',
+    };
+  }
   if (total === 1) {
     return {
       where: { kind: 'app', label: windows[0].title, detail: windows[0].process },
@@ -882,11 +962,39 @@ function desktopWhere(windows, total) {
 function deriveDesktop(events, seen) {
   const state = newState();
   const parsed = events.map(deskEvent);
-  const counts = { clicks: 0, scrolls: 0, drags: 0, keys: 0, pages: 0, unreadable: 0 };
-  const opening = desktopWhere(seen.windows, seen.total);
+  const counts = {
+    clicks: 0, scrolls: 0, drags: 0, keys: 0, pages: 0, unreadable: 0,
+    // Of the clicks: how many named a place, and how many of those named the control as well.
+    ctxClicks: 0, ctxNamed: 0,
+  };
+  const apps = new Set();
+  const perStep = parsed.some((event) => event.readable && event.ctx);
+  const opening = desktopWhere(seen.windows, seen.total, perStep);
   openSegment(state, opening.where, opening.note);
 
   const point = (event) => Math.round(event.x) + ',' + Math.round(event.y);
+
+  /* The place in force, and a segment cut when it changes.
+   *
+   * Called just before a click is emitted rather than before its pause: the pause happened before
+   * anything revealed the new place, so it belongs to the segment the reader was already in. That is the
+   * same rule openSegment documents for a page change, and it keeps the segment clocks tiling. */
+  let place = null;
+  let firstPlace = true;
+  const enter = (ctx) => {
+    if (!ctx) return;
+    if (ctx.app) apps.add(ctx.app);
+    const key = placeKey(ctx);
+    if (key === place) return;
+    place = key;
+    openSegment(state, ctxWhere(ctx), firstPlace
+      ? 'Named by the clicks in it: the application and window under the pointer at the moment of each '
+        + 'one, read from the accessibility tree. This is per step, unlike the sampled window list on '
+        + 'the recording as a whole - and a step with no name below it is one the agent could not '
+        + 'resolve, not one that happened nowhere.'
+      : null);
+    firstPlace = false;
+  };
 
   let i = 0;
   while (i < parsed.length) {
@@ -941,11 +1049,12 @@ function deriveDesktop(events, seen) {
       }
 
       if (!release) {
+        enter(event.ctx);
         /* The moves stay with the press: they happened while the button was down, and calling them a
          * separate movement step would imply it was not. */
         emit(state, {
           action: 'other',
-          what: 'pressed the ' + event.button + ' button at ' + point(event),
+          what: actWords('pressed the ' + event.button + ' button', event.ctx, point(event)),
           target: point(event),
           note: 'no release was recorded for this press. The recording may have been stopped mid-click, '
             + 'or the release happened while a window the agent cannot see had focus.',
@@ -959,13 +1068,23 @@ function deriveDesktop(events, seen) {
       const straight = Math.hypot(release.x - event.x, release.y - event.y);
       if (straight >= DRAG_MIN_PX) {
         counts.drags++;
+        enter(event.ctx);
+        /* The context belongs to the press, so it says what was picked UP. Where it was dropped is not
+         * resolved - the release is not hit-tested - so this never claims a destination it cannot see. */
+        const grabbed = event.ctx && event.ctx.control
+          ? 'the drag started on "' + event.ctx.control + '"'
+            + (event.ctx.type && !CTX_VAGUE.has(event.ctx.type.toLowerCase()) ? ', a ' + event.ctx.type : '')
+            + '; what it was dropped on is not recorded'
+          : '';
         emit(state, {
           action: 'drag',
           what: 'dragged ' + pxText(straight) + ' from ' + point(event) + ' to ' + point(release)
-            + ' over ' + spanText(own),
+            + ' over ' + spanText(own) + inApp(event.ctx),
           target: point(event) + ' to ' + point(release),
-          note: travel > straight * 1.3 ? 'the pointer travelled ' + pxText(travel) + ' getting there'
-            : '',
+          note: [
+            grabbed,
+            travel > straight * 1.3 ? 'the pointer travelled ' + pxText(travel) + ' getting there' : '',
+          ].filter(Boolean).join('; '),
           own,
           events: group,
         });
@@ -974,17 +1093,23 @@ function deriveDesktop(events, seen) {
       }
 
       const notes = [];
+      const missing = ctxNote(event.ctx);
+      if (missing) notes.push(missing);
       if (moves) notes.push('the pointer moved ' + pxText(travel) + ' while the button was down');
       if (own >= WAIT_MIN_MS) notes.push('held for ' + spanText(own));
+      enter(event.ctx);
+      const verb = event.button === 'left' ? 'clicked' : event.button + '-clicked';
       const step = emit(state, {
         action: 'click',
-        what: (event.button === 'left' ? 'clicked' : event.button + '-clicked') + ' at ' + point(event),
+        what: actWords(verb, event.ctx, point(event)),
         target: point(event),
         note: notes.join('; '),
         own,
         events: group,
       });
       counts.clicks++;
+      if (event.ctx) counts.ctxClicks++;
+      if (event.ctx && event.ctx.control) counts.ctxNamed++;
 
       /* Two presses that close together in the same place are one double click as far as the
        * application receiving them is concerned - the same 400ms and 6px extension/content.js uses.
@@ -1001,7 +1126,8 @@ function deriveDesktop(events, seen) {
         && previous.button === event.button && apart < DOUBLE_MS
         && Math.abs(event.x - previous.x) <= DOUBLE_PX
         && Math.abs(event.y - previous.y) <= DOUBLE_PX) {
-        mergeDouble(state, previous, step, apart, event, point(event));
+        mergeDouble(state, previous, step, apart, event,
+          actWords('double-clicked', event.ctx, point(event)));
         counts.clicks--;
       } else {
         step.button = event.button;
@@ -1015,7 +1141,7 @@ function deriveDesktop(events, seen) {
     if (event.kind === 'up') {
       emit(state, {
         action: 'other',
-        what: 'released the ' + event.button + ' button at ' + point(event),
+        what: actWords('released the ' + event.button + ' button', event.ctx, point(event)),
         target: point(event),
         note: 'no press was recorded before it, so this recording started part-way through a click',
         own: 0,
@@ -1070,7 +1196,8 @@ function deriveDesktop(events, seen) {
       const notches = group.length > 1 ? ' ' + group.length + ' notches' : '';
       emit(state, {
         action: 'scroll',
-        what: (event.direction ? 'scrolled ' + event.direction : 'scrolled') + notches,
+        what: (event.direction ? 'scrolled ' + event.direction : 'scrolled') + notches
+          + inApp(event.ctx),
         target: point(event),
         note: event.direction ? '' : 'the recorded action was "' + event.action + '", which does not '
           + 'say which way the wheel turned',
@@ -1110,14 +1237,14 @@ function deriveDesktop(events, seen) {
     i++;
   }
 
-  return { state, counts, tabs: 0 };
+  return { state, counts, tabs: 0, apps: apps.size, perStep };
 }
 
 /* Two clicks becoming one double click. The step already emitted grows to cover both, which keeps
  * every event in exactly one step's `from` - the property removeSteps() depends on. */
-function mergeDouble(state, previous, step, apart, event, where) {
+function mergeDouble(state, previous, step, apart, event, words) {
   previous.action = 'dblclick';
-  previous.what = 'double-clicked at ' + where;
+  previous.what = oneLine(words, 300);
   previous.note = oneLine('two presses ' + Math.round(apart) + 'ms apart in the same place, recorded '
     + 'as two clicks - an application will read them as a double click'
     + (previous.note ? '; ' + previous.note : '') + (step.note ? '; ' + step.note : ''), NOTE_MAX);
@@ -1231,10 +1358,19 @@ export function transcribe(flow) {
       note: segment.note,
     }));
 
+  const perStep = source === 'desktop' && !!derived.perStep;
   const captured = source === 'desktop'
-    ? 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement, with the '
-      + 'windows this recording saw in front but not which step was in which. No element names, '
-      + 'nothing typed, no screenshots.'
+    ? (perStep
+      ? 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement. For '
+        + counts.ctxClicks + ' of the ' + counts.clicks + ' click'
+        + (counts.clicks === 1 ? '' : 's') + ' the agent also read what was under the pointer - the '
+        + 'application, the window, and for ' + counts.ctxNamed + ' of them the name and kind of the '
+        + 'control - so those steps say where they happened rather than only where they landed. '
+        + 'Nothing typed, no screenshots.'
+      : 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement, with the '
+        + 'windows this recording saw in front but not which step was in which. No element names at '
+        + 'all, which means this was recorded by an agent older than 0.6.0 - a current one reads the '
+        + 'application and control under each click. Nothing typed, no screenshots.')
     : 'Mouse only: every click, scroll and pointer path in the tab being watched, the page each '
       + 'happened on, and the visible text of what was clicked. Nothing typed, no other page text, '
       + 'no screenshots.';
@@ -1250,6 +1386,7 @@ export function transcribe(flow) {
     // The true number of distinct titles, which is what the prose has to quote: `windows` is capped.
     windowTotal: seenWindows.total,
     tabs: derived.tabs,
+    perStep,
     empty: events.length === 0,
   });
 
@@ -1276,7 +1413,9 @@ export function transcribe(flow) {
        * the "Which application was each step in?" gap, because the word here cannot say it. Not the
        * length of `flow.windows`, which is capped at 24 for readability and used to make this
        * under-report a recording that moved between more windows than that. */
-      applications: source === 'desktop' ? seenWindows.total : 0,
+      applications: source === 'desktop'
+        ? (derived.apps > 0 ? derived.apps : seenWindows.total)
+        : 0,
       pages: source === 'desktop' ? 0 : counts.pages,
       captured: events.length === 0
         ? 'Nothing: payload.events is an empty list, so this recording has no steps in it.'
@@ -1355,7 +1494,56 @@ function gapsFor(context) {
           + 'which is told what to write.'),
   });
 
-  if (desktop) {
+  if (desktop && context.perStep) {
+    /* The two desktop gaps this used to open with are answered now, so they are replaced rather than
+     * kept: a gap list that still says "not recorded" about something printed on every step below is
+     * how a reader learns to stop reading the gaps. What is left is what is genuinely still missing. */
+    const unnamed = context.counts.ctxClicks - context.counts.ctxNamed;
+    const unresolved = context.counts.clicks - context.counts.ctxClicks;
+    gaps.push({
+      question: 'Which application was each step in?',
+      why: 'Answered for the clicks, and only for the clicks. Each one is hit-tested at the moment it '
+        + 'happens, so the segments above are named by the work; ' + context.counts.ctxClicks + ' of '
+        + context.counts.clicks + ' carried an answer'
+        + (unresolved > 0 ? ' and ' + unresolved + ' did not' : '')
+        + '. A pointer move, a scroll and a wait are placed in whichever segment was open, because '
+        + 'nothing hit-tests them - so a switch between two applications that involved no click is '
+        + 'invisible here.',
+    });
+    if (unnamed > 0 || unresolved > 0) {
+      gaps.push({
+        question: 'Why do some steps still show only coordinates?',
+        why: (unnamed > 0
+          ? unnamed + ' click' + (unnamed === 1 ? '' : 's') + ' named an application but no control: '
+            + 'the thing under the pointer had no accessible name. Electron applications expose almost '
+            + 'nothing, a canvas or a game exposes nothing at all, and a window running as '
+            + 'administrator is invisible to a normal-integrity agent. '
+          : '')
+          + (unresolved > 0
+            ? unresolved + ' click' + (unresolved === 1 ? '' : 's') + ' named nothing at all, which is '
+              + 'either that same invisibility or the resolver falling behind - it runs off the input '
+              + 'path on purpose, because a mouse hook that takes too long is removed by Windows '
+              + 'without warning, and when its queue fills it drops the context rather than the event.'
+            : ''),
+      });
+    }
+    gaps.push({
+      question: 'Is anything missing from this recording?',
+      why: 'Possibly, and nothing here can tell. A normal-integrity agent cannot see input while an '
+        + 'ELEVATED window has focus - UIPI applies to the mouse hook as well as to SendInput - so a '
+        + 'recording made over an application running as administrator is silently incomplete: the '
+        + 'events never arrive and nothing is left where they should have been. If a stretch below '
+        + 'reads as though a step is missing, check that first (README, "Integrity levels cut both '
+        + 'ways").',
+    });
+    gaps.push({
+      question: 'What did the click actually do?',
+      why: 'Not recorded. The name under the pointer says what was aimed at, not what happened next: '
+        + 'nothing re-reads the screen afterwards, so a click on a disabled button reads exactly like '
+        + 'one that worked, and a control that moved between recording and replay is aimed at by '
+        + 'coordinates regardless of its name.',
+    });
+  } else if (desktop) {
     gaps.push({
       question: 'Which application was each step in?',
       why: 'Not recorded. A .mmmacro line is index | X | Y | delayMs | action, with no window in it; '
@@ -1367,7 +1555,9 @@ function gapsFor(context) {
             + 'the list to argue with it'
             : context.windowTotal + ', so no step below is placed in any of them') + '. What is counted '
         + 'is window TITLES: two documents open in one program are two of these, and the same window '
-        + 'renamed as its document changed is two as well.',
+        + 'renamed as its document changed is two as well. An agent from 0.6.0 onwards resolves this '
+        + 'per click instead; this recording was made by an older one, so re-recording it would answer '
+        + 'the question.',
     });
     gaps.push({
       question: 'Is anything missing from this recording?',

@@ -157,7 +157,10 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-export const AGENT_WANTS = '0.5.0';
+/* 0.6.0 is the build that resolves what a click landed on. An older one records the same coordinates and
+ * no context at all, so its transcripts read as a list of positions - which is a real difference in what
+ * the product does, not an internal one, and worth telling the user to close that PowerShell window for. */
+export const AGENT_WANTS = '0.6.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

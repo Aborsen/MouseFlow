@@ -43,7 +43,7 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 | POST | `/autostart/disable` | — | `{ok}` |
 
 `version` is checked by the client against `AGENT_WANTS` in `web/src/lib/agent.ts`, which currently wants
-**0.5.0**. An older agent is reported to the user as needing an update, with the command to get the current
+**0.6.0** — the build that resolves `#ctx`. An older agent is reported to the user as needing an update, with the command to get the current
 one — so a new implementation should report a version it can actually honour the whole of this table at.
 
 ## Coordinates
