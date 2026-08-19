@@ -176,9 +176,10 @@ const TOOLS = [
       type: 'object',
       properties: {
         summary: { type: 'string', description: 'One or two sentences on what happened' },
+        ok: { type: 'boolean', description: 'True only if the goal was actually achieved. False if it was not - including when you got part of the way, and including when you are handing back to the user.' },
         needs_user: { type: 'boolean', description: 'True when something is genuinely waiting on the user: a credential only they can type, or an irreversible action the goal did not ask for. NOT for an action the goal did ask for - complete those instead of handing them back.' },
       },
-      required: ['summary'],
+      required: ['summary', 'ok'],
       additionalProperties: false,
     },
   },
@@ -345,6 +346,18 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
       });
     }
 
+    /* A truncated turn has no tool_use block in it, so without this the check below reads it as "nothing
+     * left to do" and files a run that was cut off mid-thought as a success. Same rule as the desktop loop
+     * (web/src/lib/desktop-engine.ts:544). */
+    if (reply.stop_reason === 'max_tokens') {
+      return waveDone(stepNo, {
+        ok: false,
+        error: `The answer at step ${stepNo} was cut off before it decided anything. The page is probably ` +
+          'very crowded; closing tabs or scrolling to the part that matters makes each step easier.',
+        steps,
+      });
+    }
+
     const say = textOf(reply.content);
     if (say) onEvent({ type: 'say', text: say });
 
@@ -358,9 +371,14 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
     const finished = calls.find((c) => c.name === 'finish');
     if (finished) {
       onEvent({ type: 'done', text: finished.input.summary });
+      /* Success has to be claimed. The tool's own description invites this call "when you are blocked", and
+       * for as long as there was nothing to say otherwise, a run that failed and explained why in its
+       * summary was stored as a success - and offered as the basis for a reusable skill. */
+      const claimed = finished.input.ok === true;
       return waveDone(stepNo, {
-        ok: true,
-        summary: finished.input.summary,
+        ok: claimed,
+        summary: claimed ? finished.input.summary : undefined,
+        error: claimed ? undefined : finished.input.summary || 'It stopped without saying why.',
         needsUser: !!finished.input.needs_user,
         steps,
       });

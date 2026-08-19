@@ -33,11 +33,13 @@ export const HoursScreen = () => {
   return (
     <div>
       <Typography variant="span" weight="semibold" className="block text-[0.9rem]">
-        Hours of work run
+        Hours these runs took
       </Typography>
       <Typography variant="p" className="mt-0.5 max-w-[52ch] text-ink-inactive text-[0.82rem]">
-        Time these flows have spent working, across this browser, the extension and the desktop agent.
-        Every run on your account counts, whichever half did it.
+        Wall clock, from the first step of a run to its last, across this browser, the extension and the
+        desktop agent. It is what the agent took, not what you saved: a run that thinks and looks at the
+        screen between every click is often slower than doing it yourself. Time saved needs a recording of
+        you doing the same task to compare against, which is not measured yet.
       </Typography>
 
       <div className="mt-3 mb-4 flex items-baseline gap-1.5">
@@ -108,7 +110,9 @@ export const HoursScreen = () => {
 
       {timed.length > ROWS && (
         <Typography variant="p" className="mt-2 text-ink-inactive text-[0.78rem]">
-          The {ROWS} most recent of {timed.length} timed runs. The total above counts all of them.
+          The {ROWS} most recent of {timed.length} timed runs, and the total above covers those
+          {' '}{timed.length} — /api/sync returns the 60 most recent, so neither figure reaches further back
+          than that.
         </Typography>
       )}
     </div>

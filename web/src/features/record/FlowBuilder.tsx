@@ -8,7 +8,7 @@ import { ArrowDown, ArrowUp, Play, Square, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
-import { replay, replayAbort, replayStatus } from '@/lib/agent';
+import { doAction, replay, replayAbort, replayStatus } from '@/lib/agent';
 import { flowBody, fmtMs, summarize } from '@/lib/macro';
 import { useAgent, useConsole } from '@/lib/store';
 
@@ -53,6 +53,30 @@ export const FlowBuilder = () => {
     if (!state.flow.length) { setNote('Add a recording to the flow first.'); return; }
     setNote(null);
     try {
+      /* Bring the application this was recorded in to the front first.
+       *
+       * A replay is coordinates and clicks: it has no idea what is under them. If the window has been
+       * minimised, or something else is in front, every click lands on whatever happens to be there - and
+       * the failure looks like the flow being wrong rather than the desktop having moved on. The recorder
+       * already noted which applications were in front (RecordView samples the foreground window every
+       * second), so the first one is where this flow belongs.
+       *
+       * Best effort on purpose: a window that has since closed should not stop a replay the user asked for -
+       * they may be about to open it. The message says what was tried.
+       */
+      const first = state.recordings.find((r) => r.id === state.flow[0]?.recordingId);
+      const front = first?.windows?.[0];
+      if (front && (front.title || front.process)) {
+        try {
+          await doAction(port, `action=activate ${front.process ? `process=${front.process} ` : ''}` +
+            `${front.title ? `title=${front.title}` : ''}`.trim());
+          // Windows takes a moment to actually raise it; clicking into a window still coming forward misses.
+          await new Promise((done) => setTimeout(done, 350));
+        } catch (_) {
+          setNote(`Could not bring ${front.title || front.process} to the front — replaying anyway.`);
+        }
+      }
+
       await replay(port, flowBody(state.flow, state.recordings, {
         startDelayMs: state.startDelayMs,
         flowRepeat: state.flowRepeat,

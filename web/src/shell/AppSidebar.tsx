@@ -159,7 +159,7 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
           <button
             type="button"
             onClick={() => onOpenSettings('hours')}
-            title="Hours of work these flows have run"
+            title="Hours these runs took — wall clock, not time saved"
             className={cn(ROW, 'w-full justify-between px-2.5 hover:bg-state-hover')}
           >
             <span className="font-medium text-[0.688rem] text-ink-secondary">Hours</span>

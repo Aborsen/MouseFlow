@@ -667,7 +667,12 @@ async function runSkill(msg) {
           'Fill them in and run it again.',
     };
   }
-  return agentStart(fillGoal(skill, msg.values || {}));
+  /* The skill's identity travels with the run. Without it the account has a run and a skill and no way
+   * to say the run WAS that skill - and it cannot be worked out afterwards, so it has to be carried now. */
+  return agentStart(fillGoal(skill, msg.values || {}), {
+    flowId: skill.id,
+    skillVersion: skill.version || skill.created || null,
+  });
 }
 
 /* ------------------------------------------------------------------------ sync */
@@ -753,6 +758,8 @@ async function runsToPush() {
       id,
       kind: 'agent',
       goal: run.goal,
+      // Which skill this run WAS, when it was one. The column and its index have existed all along.
+      flowId: run.flowId || null,
       model: 'claude-opus-5',
       outcome: !run.finished ? 'running' : result.ok ? 'ok' : result.error === 'stopped' ? 'stopped' : 'failed',
       summary: result.summary || null,
@@ -1119,6 +1126,8 @@ async function saveTrace(done) {
     goal: agent.goal,
     startedAt: agent.startedAt,
     version: VERSION,
+    flowId: agent.flowId || null,
+    skillVersion: agent.skillVersion || null,
     steps: agent.trace,
     result: done ? agent.result : null,
     finished: !!done,
@@ -1359,7 +1368,7 @@ async function runAgentTool(name, input) {
   }
 }
 
-async function agentStart(goal) {
+async function agentStart(goal, from) {
   if (agent.running) throw new Error('already running');
   if (!goal || !goal.trim()) throw new Error('describe what you want done');
   /* No key is not an error any more: without one the run goes through the shared demo
@@ -1372,6 +1381,9 @@ async function agentStart(goal) {
     tabId: null, frameId: null, snapshotId: null, trace: [],
     startedAt: new Date().toISOString(),
     opts: await loadSettings(),
+    // Null for a goal typed by hand: there is no skill to point at, and inventing one would be worse.
+    flowId: (from && from.flowId) || null,
+    skillVersion: (from && from.skillVersion) || null,
   });
   holdWorker(true);
   await chrome.action.setBadgeText({ text: 'AI' });
@@ -1796,3 +1808,42 @@ chrome.action.onClicked.addListener(async () => {
   await chrome.action.setPopup({ popup: 'popup.html' });
   try { await chrome.action.openPopup(); } catch (_) {}
 });
+
+/* ------------------------------------------------------------------ orphaned runs
+ *
+ * A worker torn down mid-run - browser closed, extension reloaded, worker crashed - never gets to write a
+ * finished trace, and saveTrace's last write is always `finished: false`. That run then syncs as outcome
+ * 'running' and stays that way for good: nothing else ever revisits it.
+ *
+ * The worker starting again is proof that whatever was running is not running any more. Say so, once, at
+ * startup - before anything else can look at the trace. A row that admits it was interrupted is more use
+ * than one that claims to still be going.
+ */
+async function reapInterruptedRun() {
+  try {
+    const { agentTrace } = await chrome.storage.local.get('agentTrace');
+    if (!agentTrace || agentTrace.finished) return;
+    const closed = Object.assign({}, agentTrace, {
+      finished: true,
+      result: {
+        ok: false,
+        error: 'The browser or the extension stopped before this run finished.',
+        steps: agentTrace.steps || [],
+      },
+    });
+    await chrome.storage.local.set({ agentTrace: closed });
+    const { agentTraceHistory = [] } = await chrome.storage.local.get('agentTraceHistory');
+    if (!agentTraceHistory.some((r) => r && r.startedAt === closed.startedAt)) {
+      agentTraceHistory.unshift(closed);
+      await chrome.storage.local.set({ agentTraceHistory: agentTraceHistory.slice(0, TRACE_MAX_RUNS) });
+    }
+  } catch (_) {
+    // Storage unavailable: a stale row is not worth failing a startup over.
+  }
+}
+
+/* Both events, because neither fires reliably on its own: onStartup misses an extension reload, and
+ * onInstalled misses a browser restart. Reaping twice is harmless - the second call sees `finished`. */
+chrome.runtime.onStartup.addListener(reapInterruptedRun);
+chrome.runtime.onInstalled.addListener(reapInterruptedRun);
+reapInterruptedRun();
