@@ -84,7 +84,6 @@ $('go-record').addEventListener('click', () => { show('record'); refreshRecordVi
 $('go-create').addEventListener('click', () => { show('create'); refreshAgent(); });
 $('go-skills').addEventListener('click', () => { show('skills'); renderSkills(); refreshAccount(); });
 $('go-gallery').addEventListener('click', () => OPENERS.gallery());
-document.querySelectorAll('[data-home]').forEach((b) => b.addEventListener('click', () => show('home')));
 
 /* One handler for the rail: the buttons name the view they open, so adding one is markup only. */
 const OPENERS = {
