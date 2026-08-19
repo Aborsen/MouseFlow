@@ -13,10 +13,18 @@ import { mountSkills } from './skills-view.js';
 import { mountCreate } from './create-view.js';
 import { requireAccount } from './gate.js';
 
-const VIEWS = ['desktop', 'create', 'skills', 'gallery'];
+/* Four places, named after what you do in them.
+ *
+ * "Desktop" described the machinery rather than the task, and the page underneath it had four jobs -
+ * recording, the start command, the recordings, the flow - which is why it read as clutter. Recording is
+ * what that page is for; the setup and the command moved behind the agent pill.
+ */
+const VIEWS = ['record', 'create', 'skills', 'gallery'];
 const TITLES = {
-  desktop: 'Desktop', create: 'Create the flow', skills: 'Skills', gallery: 'Gallery',
+  record: 'Record', create: 'Create the flow', skills: 'Skills', gallery: 'Gallery',
 };
+// #desktop is what every link and bookmark in this project used to say. Kept as an alias, not a view.
+const ALIASES = { desktop: 'record' };
 const mounted = {};
 
 function viewFromHash() {
@@ -26,7 +34,8 @@ function viewFromHash() {
   // A skill arriving from the extension carries #publish=…, which means the gallery.
   if (hash.startsWith('publish=')) return 'gallery';
   const name = hash.split(/[?&]/)[0];
-  return VIEWS.includes(name) ? name : 'desktop';
+  if (ALIASES[name]) return ALIASES[name];
+  return VIEWS.includes(name) ? name : 'record';
 }
 
 function mount(view) {
@@ -34,8 +43,8 @@ function mount(view) {
   if (view === 'gallery') mounted.gallery = mountGallery(document.getElementById('gallery-root'));
   if (view === 'skills') mounted.skills = mountSkills(document.getElementById('skills-root'));
   if (view === 'create') mounted.create = mountCreate(document.getElementById('create-root'));
-  // The desktop console is rendered by app.js on load; there is nothing to mount.
-  if (view === 'desktop') mounted.desktop = true;
+  // Record is rendered by app.js on load; there is nothing to mount.
+  if (view === 'record') mounted.record = true;
 }
 
 function show(view) {
@@ -48,10 +57,10 @@ function show(view) {
     tab.classList.toggle('tab--on', on);
     tab.setAttribute('aria-current', on ? 'page' : 'false');
   }
-  /* The agent's setup panel belongs to the desktop console. Left visible on the other tabs it reads
-   * as "the gallery needs a local agent", which it does not. */
-  for (const el of document.querySelectorAll('.view-desktop-only')) {
-    el.classList.toggle('hidden-by-tab', view !== 'desktop');
+  /* The agent's setup belongs to Record. Left visible on the other tabs it reads as "the gallery needs a
+   * local agent", which it does not. */
+  for (const el of document.querySelectorAll('.view-record-only')) {
+    el.classList.toggle('hidden-by-tab', view !== 'record');
   }
   // The sidebar took the brand, so the top bar says where you are.
   const title = document.getElementById('topbar-title');
@@ -93,26 +102,14 @@ try { if (localStorage.getItem(TIGHT) === '1') setTight(true); } catch (_) {}
 document.getElementById('side-toggle').addEventListener('click', () => setTight(true));
 document.getElementById('side-open').addEventListener('click', () => setTight(false));
 
-/* "New flow" opens Create, and puts the cursor in the box. Describing what you want is the way in
- * that needs no equipment - recording needs the desktop agent running, and installing needs somebody
- * else to have published something. */
-document.getElementById('side-new').addEventListener('click', () => {
-  location.hash = '#create';
-  const box = document.getElementById('c-goal');
-  if (box) box.focus();
-});
 
-/* What you were working on - which means what you RAN, not what you happen to have saved.
+/* How much this account has run, for the one line in the sidebar footer that says so.
  *
- * It used to list flows by when they were last edited, and most of them are recordings whose names are
- * taken from the page they were made on. So "Recent" read as a list of websites: a sidebar full of
- * places rather than of work. Runs are the honest signal - a flow you ran an hour ago is what you were
- * doing, and one you saved in March and never ran is not.
- *
- * From the account rather than from this browser, because the point of an account is that the
- * extension's runs and the desktop agent's runs are one history.
+ * There used to be a Recent list here as well. It listed what had been run, which sounds useful and was
+ * not: the names came from the page or window a recording was made in, so it read as a column of
+ * websites - a sidebar full of places rather than of work, competing with the four places that matter.
  */
-async function fillRecent() {
+async function fillRunCount() {
   let body = null;
   try {
     const res = await fetch('/api/sync', { credentials: 'same-origin' });
@@ -122,65 +119,11 @@ async function fillRecent() {
     return;                       // a sidebar is not worth an error message
   }
 
-  const flows = Array.isArray(body.flows) ? body.flows : [];
   const runs = Array.isArray(body.runs) ? body.runs : [];
-  const byId = new Map(flows.map((flow) => [flow.id, flow]));
-
   const stat = document.getElementById('side-stat');
-  if (stat) {
-    stat.hidden = false;
-    document.getElementById('side-runs').textContent = String(runs.length);
-  }
-
-  /* Runs come back newest first. One entry per thing run - a flow you ran five times is one line, at
-   * the time of the latest of them, not five lines pushing everything else out. */
-  const seen = new Set();
-  const recent = [];
-  for (const run of runs) {
-    const flow = run.flowId ? byId.get(run.flowId) : null;
-    const label = flow ? (flow.name || 'Untitled') : (run.goal || '').trim();
-    if (!label) continue;                       // a replay with nothing to name it
-    const key = run.flowId || label.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    recent.push({
-      label,
-      source: flow ? flow.source : (run.extension ? 'web' : 'desktop'),
-      when: run.startedAt || run.finishedAt || null,
-      outcome: run.outcome,
-      saved: !!flow,
-    });
-    if (recent.length >= 12) break;
-  }
-
-  if (!recent.length) {
-    document.getElementById('side-recent').hidden = true;
-    return;
-  }
-
-  const list = document.getElementById('side-recent-list');
-  list.textContent = '';
-  for (const entry of recent) {
-    const item = document.createElement('li');
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = entry.label;
-    /* Which half ran it, in one word. A flow aimed at page elements and one aimed at screen
-     * coordinates are not interchangeable, and this list is where that gets decided. */
-    const tag = document.createElement('span');
-    tag.className = 'side-src';
-    tag.textContent = entry.source === 'desktop' ? 'desktop' : 'web';
-    button.appendChild(tag);
-    button.title = entry.label +
-      (entry.when ? ' \u2014 ran ' + new Date(entry.when).toLocaleString() : '') +
-      (entry.outcome && entry.outcome !== 'ok' ? ' (' + entry.outcome + ')' : '') +
-      (entry.saved ? '' : ' \u2014 not saved as a skill');
-    // A saved flow lives in Skills; a one-off run has nowhere else to be, so it reopens Create.
-    button.addEventListener('click', () => { location.hash = entry.saved ? '#skills' : '#create'; });
-    item.appendChild(button);
-    list.appendChild(item);
-  }
-  document.getElementById('side-recent').hidden = false;
+  if (!stat) return;
+  stat.hidden = false;
+  document.getElementById('side-runs').textContent = String(runs.length);
 }
 
 /* ------------------------------------------------------------------------------ my account */
@@ -364,4 +307,4 @@ if (badge) {
 }
 
 show(viewFromHash());
-fillRecent();
+fillRunCount();

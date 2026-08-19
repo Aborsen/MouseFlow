@@ -513,7 +513,7 @@ async function runWave({ messages, base, onEvent, isAborted, steps, wave, stepFr
         ok: false,
         error: err.offline
           ? 'Lost the local agent at step ' + stepNo + ' — ' + err.message + '. The PowerShell window ' +
-            'may have been closed, or the computer may have slept. Start it again from the Desktop tab.'
+            'may have been closed, or the computer may have slept. Start it again from the Record tab.'
           : 'Could not see the screen at step ' + stepNo + ': ' + err.message,
         steps,
       });
@@ -970,7 +970,7 @@ export function mountCreate(root) {
         if (!body.canSee) {
           blocked('The agent answering on ' + agentBase().replace('http://', '') + ' is ' +
             (body.version ? 'version ' + body.version : 'an older build') + ', which has no /shot or ' +
-            '/do — the eyes and hands this needs. The Desktop tab has the command that starts the ' +
+            '/do — the eyes and hands this needs. The Record tab has the command that starts the ' +
             'current one: close that PowerShell window first, then paste it into a new one.');
           return false;
         }
@@ -980,7 +980,7 @@ export function mountCreate(root) {
         return true;
       } catch (_) {
         blocked('No local agent answered on ' + agentBase().replace('http://', '') + '. Start it from ' +
-          'the Desktop tab — it is the half that can act outside the browser.');
+          'the Record tab — it is the half that can act outside the browser.');
         return false;
       }
     }

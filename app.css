@@ -842,41 +842,9 @@ kbd {
 .side-item.tab--on .side-glyph { color: var(--accent); opacity: 1; }
 .side-item--new { color: var(--text); margin-bottom: 0.35rem; }
 
-/* Recent takes the leftover height and scrolls on its own, so the account block below it is always
- * reachable however many flows there are. */
-.side-recent { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin-top: 1.1rem; }
-
-.side-label {
-  margin: 0 0 0.35rem 0.6rem;
-  font-size: 0.68rem;
-  font-weight: 650;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-
-.side-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
-
-.side-list button {
-  display: block;
-  width: 100%;
-  padding: 0.34rem 0.55rem;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 0.88rem;
-  text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  /* Faded rather than cut with an ellipsis, as in the design: a hard cut looks like a bug. */
-  mask-image: linear-gradient(to right, #000 82%, transparent);
-  cursor: pointer;
-}
-
-.side-list button:hover { background: var(--bg-raised); color: var(--text); }
-.side-list .side-src { margin-left: 0.4rem; font-size: 0.72rem; color: var(--text-faint); }
+/* The sidebar is four places and an account, so the nav takes the space Recent used to and the footer
+ * stays at the bottom. */
+.side-nav { flex: 1 1 auto; }
 
 .side-foot { flex: 0 0 auto; margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--line-soft); }
 
@@ -1247,3 +1215,7 @@ body:has(.side--tight) .side-icon--bar { display: grid; }
 .start-other summary { font-size: 0.85rem; color: var(--text-dim); cursor: pointer; }
 .start-other summary:hover { color: var(--text); }
 .start-other .start-why { margin: 0.5rem 0 0.6rem; }
+
+/* The start command, inside the setup panel rather than on the page you use every day. */
+.setup-command { margin-top: 1.1rem; padding-top: 0.9rem; border-top: 1px solid var(--line-soft); }
+.setup-command.start--stale { border-top-color: color-mix(in srgb, var(--warn) 55%, transparent); }

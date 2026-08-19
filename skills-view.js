@@ -383,7 +383,7 @@ export function mountSkills(root) {
     src.textContent = flow.source;
     src.title = flow.source === 'web'
       ? 'Points at page elements - run it from the extension'
-      : 'Points at screen coordinates - run it from the Desktop tab';
+      : 'Points at screen coordinates - run it from the Record tab';
     head.append(kind, src);
 
     const foot = document.createElement('div');
@@ -400,11 +400,11 @@ export function mountSkills(root) {
     if (flow.source === 'desktop') {
       const open = document.createElement('button');
       open.className = 'btn btn--sm';
-      open.textContent = 'Open in Desktop';
-      open.title = 'Put this in the Desktop console, ready to play on this computer';
+      open.textContent = 'Open in Record';
+      open.title = 'Put this in Record, ready to play on this computer';
       open.addEventListener('click', () => {
         dispatchEvent(new CustomEvent('mouseflow:adopt', { detail: flow }));
-        location.hash = '#desktop';
+        location.hash = '#record';
       });
       foot.appendChild(open);
     } else {

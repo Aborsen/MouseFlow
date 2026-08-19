@@ -968,7 +968,7 @@ function startCommand() {
  *
  * It used to live in onboarding step one and vanish the moment the agent connected - so the moment it
  * was needed AGAIN, to restart an agent that had fallen behind, there was nowhere to get it. Now it sits
- * in the Desktop console whatever the state, and says which of the two things it is for. */
+ * in the setup panel whatever the state, and says which of the two things it is for. */
 function renderStartCommand(stale) {
   const box = $('#start-command');
   if (!box) return;

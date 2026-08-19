@@ -22,7 +22,7 @@
 <div class="shell">
 <aside class="side" id="side">
   <div class="side-top">
-    <a class="side-brand" href="#desktop">
+    <a class="side-brand" href="#record">
       <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
         <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor"/>
       </svg>
@@ -35,11 +35,8 @@
   </div>
 
   <nav class="side-nav" id="tabs" aria-label="Sections">
-    <button class="side-item side-item--new" id="side-new" type="button" title="New flow">
-      <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="side-text">New flow</span>
-    </button>
-    <button class="side-item tab" data-view="desktop" type="button" title="Desktop">
-      <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="4" width="19" height="12.5" rx="1.6"/><path d="M8 20.5h8M12 16.5v4"/></svg><span class="side-text">Desktop</span>
+    <button class="side-item tab" data-view="record" type="button" title="Record">
+      <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg><span class="side-text">Record</span>
     </button>
     <button class="side-item tab" data-view="create" type="button" title="Create the flow">
       <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
@@ -55,11 +52,6 @@
       <svg class="side-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.4"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.4"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.4"/></svg><span class="side-text">Gallery</span>
     </button>
   </nav>
-
-  <div class="side-recent" id="side-recent" hidden>
-    <h2 class="side-label">Recent</h2>
-    <ul class="side-list" id="side-recent-list"></ul>
-  </div>
 
   <div class="side-foot">
     <div class="side-stat" id="side-stat" hidden>
@@ -88,7 +80,7 @@
   </button>
 </header>
 
-<section id="agent-setup" class="setup view-desktop-only" hidden>
+<section id="agent-setup" class="setup view-record-only" hidden>
   <div class="setup-head">
     <div>
       <h2 id="setup-title">Set up MouseFlow</h2>
@@ -102,6 +94,11 @@
   </div>
 
   <ol id="onboarding" class="ob"></ol>
+
+  <!-- The start command, always filled: needed once to start the agent, and again every time it falls
+       behind what this app expects. It lives here, with the setup, rather than on the page you use every
+       day - the agent pill opens this whenever it matters. -->
+  <div id="start-command" class="setup-command"></div>
 
   <details class="advanced">
     <summary>Advanced</summary>
@@ -120,7 +117,7 @@
 <main>
 
 <!-- ============================================================ desktop agent -->
-<div id="view-desktop" class="view grid">
+<div id="view-record" class="view grid">
 
   <!-- ---------- recorder ---------- -->
   <section class="card">
@@ -149,11 +146,6 @@
       <button id="btn-stop-record" class="btn btn--stop" type="button">Stop recording</button>
     </div>
   </section>
-
-  <!-- ---------- the start command ----------
-       Always present, because it is needed twice: once to start the agent, and again every time the
-       agent falls behind what this app expects. It used to disappear on connect. -->
-  <section class="card" id="start-command"></section>
 
   <!-- ---------- library ---------- -->
   <section class="card">
