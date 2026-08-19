@@ -158,8 +158,11 @@ Read this before sharing the link.
   for this POC.
 - **Display scaling.** `SendInput` works in physical pixels. If a recording was made under a
   different DPI scale, every position is off by the scale ratio.
-- **Mouse only.** No keyboard capture. The format has room for it; the hook does not install
-  `WH_KEYBOARD_LL` yet.
+- **No typed text.** The keyboard hook records *that* a key was pressed and when, never which — so a
+  transcript can say "47s and 132 keystrokes into the Subject field" and can never say what was written.
+  The consequence is that a recording containing typing cannot be replayed faithfully: the replay waits out
+  the typing and presses nothing, and reports how many events it skipped. Work that has to type belongs in
+  a created skill, which is told what to write.
 - **Windows only**, and Chrome/Edge only in practice — Safari has no Local Network Access
   permission to grant and blocks the loopback hop outright.
 - **Integrity levels cut both ways.** A normal (medium-integrity) agent cannot inject into an
@@ -256,8 +259,9 @@ Installer 1.21.3421.0, December 2023, after it was abused to bypass SmartScreen)
 - **Anchored recording.** Capture the target window handle, title and client-relative
   coordinates alongside the screen position, then re-resolve the window at replay time. This
   removes the single biggest fragility.
-- **Keyboard capture** via `WH_KEYBOARD_LL`, with a redaction pass so passwords typed during a
-  recording are never stored.
+- **Text for the steps that need it**, if it can be done safely. Keystroke *timing* is captured now; the
+  content is not, and adding it needs a redaction design rather than a hook. The alternative already
+  works: a created skill is told what to write.
 - **Tauri build.** The same UI shipped as a ~5 MB desktop app removes the agent install, the
   loopback bridge, and the Safari limitation in one move.
 - **Shared flows.** Recordings are small plain text; a flow could be a shareable document

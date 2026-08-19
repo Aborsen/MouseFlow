@@ -66,6 +66,12 @@ const WAIT_MIN_MS = 1_500;
 const SCROLL_JOIN_MS = 1_000;
 const MOVE_JOIN_MS = 1_000;
 
+/* Longer than the other two on purpose. A person pauses mid-sentence - to think, to read back what they
+ * wrote - and cutting a typing run at every one of those turns two minutes of writing an email into
+ * fourteen steps that each say "typed". Two seconds is still typing; past that, the pause is what
+ * happened and gets its own line. */
+const TYPE_JOIN_MS = 2_000;
+
 /* The same numbers extension/content.js uses to recognise a double click, for the same reason: two
  * presses that close together in time and place are one gesture as far as the application receiving
  * them is concerned. The desktop recorder does not fold them itself - it has no idea what it is
@@ -233,6 +239,10 @@ function newState() {
     /* A pause too short to deserve a line of its own, waiting to be added to the step it precedes.
      * Carried rather than dropped so the segment durations still add up to the total. */
     carry: 0,
+    /* Event indices belonging to no step of their own - a `Focus` marker, which names a place rather than
+     * describing an action. Carried onto the next step for the same reason `carry` is: removeSteps() reads
+     * `from.events`, and an event in no step's list can neither be removed nor accounted for. */
+    carryEvents: [],
     droppedMs: 0,
     droppedPauses: 0,
   };
@@ -285,12 +295,13 @@ function emit(state, spec) {
     note: spec.note == null || spec.note === '' ? null : oneLine(spec.note, NOTE_MAX),
     segment: state.current ? state.current.n : 0,
     from: {
-      events: Array.isArray(spec.events) ? spec.events : [],
+      events: state.carryEvents.concat(Array.isArray(spec.events) ? spec.events : []),
       zeroDelay: spec.zeroDelay == null ? null : spec.zeroDelay,
     },
   };
   state.at = state.at + carried + own;
   state.carry = 0;
+  state.carryEvents = [];
   state.steps.push(step);
   if (state.current) state.current.steps.push(step);
   return step;
@@ -517,7 +528,12 @@ function deskEvent(raw) {
   let direction = null;
   /* Order matters: "Scroll Up" and "Scroll Left" both carry a word that also names a button state, so
    * the wheel has to be recognised before anything looks for one. */
-  if (/movement|mouse move/.test(low)) {
+  if (low === 'focus') {
+    /* Not an action. The agent writes it when the foreground window changes, so a step that hit-tests
+     * nothing can still be placed somewhere - and it is the only marker in the format that describes the
+     * world rather than something a person did. */
+    kind = 'focus';
+  } else if (/movement|mouse move/.test(low)) {
     kind = 'move';
   } else if (/scroll|wheel/.test(low)) {
     kind = 'scroll';
@@ -966,6 +982,9 @@ function deriveDesktop(events, seen) {
     clicks: 0, scrolls: 0, drags: 0, keys: 0, pages: 0, unreadable: 0,
     // Of the clicks: how many named a place, and how many of those named the control as well.
     ctxClicks: 0, ctxNamed: 0,
+    /* Typing, as time rather than as text: how long the runs lasted, how many there were, and how many
+     * places moved the work without anything being clicked. */
+    typedMs: 0, typeRuns: 0, focuses: 0,
   };
   const apps = new Set();
   const perStep = parsed.some((event) => event.readable && event.ctx);
@@ -1208,18 +1227,60 @@ function deriveDesktop(events, seen) {
       continue;
     }
 
+    /* A run of typing, as one step.
+     *
+     * One line per keystroke would bury a recording - a hundred and thirty of them for one email - and
+     * would say nothing a reader wants, since no line can say which key. What is worth having is the
+     * shape: how long, how many, and where. */
     if (event.kind === 'key') {
-      counts.keys++;
+      const group = [i];
+      let own = 0;
+      let keys = 1;
+      let j = i + 1;
+      while (j < parsed.length && parsed[j].readable && parsed[j].kind === 'key'
+        && parsed[j].delay < TYPE_JOIN_MS) {
+        own += clampedPause(state, parsed[j].delay);
+        keys++;
+        group.push(j);
+        j++;
+      }
+      counts.keys += keys;
+      counts.typedMs += own;
+      counts.typeRuns++;
+      enter(event.ctx);
+
+      /* Where it went, when the resolver could read it: what had FOCUS, not what was under the pointer -
+       * the pointer is wherever it was last left and has nothing to do with the typing. */
+      const into = event.ctx && event.ctx.control
+        ? ' into the "' + event.ctx.control + '"'
+          + (event.ctx.type && !CTX_VAGUE.has(event.ctx.type.toLowerCase()) ? ' ' + event.ctx.type : '')
+        : '';
       emit(state, {
-        action: 'key',
-        what: 'a key action, recorded as "' + event.action + '"',
-        target: point(event),
-        note: 'the .mmmacro line has no room for a key name - index | X | Y | delayMs | action - so '
-          + 'which key this was is not recorded. The agent does not produce these; it came from an '
-          + 'imported file.',
-        own: 0,
-        events: [i],
+        action: 'type',
+        what: (keys === 1 ? 'pressed a key' : 'typed for ' + spanText(own) + ' - ' + keys + ' keystrokes')
+          + into + inApp(event.ctx),
+        /* No coordinate. The event carries the last known pointer position because the five-column format
+         * demands one, and reporting it here would invite somebody to read it as where the typing went. */
+        target: null,
+        note: 'which keys is not recorded, deliberately: the agent reads that a key was pressed and when, '
+          + 'never which one, so nothing here can carry text - and a replay cannot reproduce it'
+          + (keys > 1 && own >= 1000
+            ? '. ' + keys + ' keystrokes over ' + spanText(own) + ' is about '
+              + round1(keys / (own / 1000)) + ' a second, which includes any key held down'
+            : ''),
+        own,
+        events: group,
       });
+      i = j;
+      continue;
+    }
+
+    /* The work moved. Not a step - it opens a segment and vanishes, its event carried onto whatever is
+     * emitted next so the numbering still accounts for it. */
+    if (event.kind === 'focus') {
+      counts.focuses++;
+      enter(event.ctx);
+      state.carryEvents.push(i);
       i++;
       continue;
     }
@@ -1361,12 +1422,18 @@ export function transcribe(flow) {
   const perStep = source === 'desktop' && !!derived.perStep;
   const captured = source === 'desktop'
     ? (perStep
-      ? 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement. For '
+      ? 'Every click, drag, scroll and pointer movement, as screen coordinates. For '
         + counts.ctxClicks + ' of the ' + counts.clicks + ' click'
         + (counts.clicks === 1 ? '' : 's') + ' the agent also read what was under the pointer - the '
         + 'application, the window, and for ' + counts.ctxNamed + ' of them the name and kind of the '
         + 'control - so those steps say where they happened rather than only where they landed. '
-        + 'Nothing typed, no screenshots.'
+        + (counts.keys > 0
+          ? counts.keys + ' keystroke' + (counts.keys === 1 ? '' : 's') + ' over '
+            + spanText(counts.typedMs) + ', counted and timed but never read: which key was pressed is '
+            + 'not recorded anywhere, so this carries no text. '
+          : 'No typing was captured, which on this agent means none happened rather than that it was '
+            + 'not watched. ')
+        + 'No screenshots.'
       : 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement, with the '
         + 'windows this recording saw in front but not which step was in which. No element names at '
         + 'all, which means this was recorded by an agent older than 0.6.0 - a current one reads the '
@@ -1401,7 +1468,11 @@ export function transcribe(flow) {
       // Scrolls are counted per EVENT, because a collapsed run says "scrolled down 3 times" in words.
       scrolls: counts.scrolls,
       drags: counts.drags,
+      /* Keystrokes, not typing steps: a run of a hundred and thirty is one step and a hundred and
+       * thirty keys, and the number a reader wants beside "typed for 47s" is the second one. */
       keys: counts.keys,
+      // How much of the recording went on typing, which is the question this was added to answer.
+      typedSeconds: secondsOf(counts.typedMs || 0),
       seconds: secondsOf(totalMs),
       /* Which half fills which, and nought rather than one for the other: a browser recording knows
        * pages and nothing about applications, a desktop recording knows applications and nothing
@@ -1449,6 +1520,7 @@ function emptySummary(captured, gaps) {
     scrolls: 0,
     drags: 0,
     keys: 0,
+    typedSeconds: 0,
     seconds: 0,
     applications: 0,
     pages: 0,
@@ -1480,19 +1552,44 @@ function gapsFor(context) {
 
   gaps.push({
     question: 'What did I type?',
-    why: 'Nothing typed is recorded, on either half, by design. '
+    why: 'No text, on either half, by design - and on the desktop side that is now a different sentence '
+      + 'from "no typing". '
       + (desktop
-        ? 'The agent installs a mouse hook only - no WH_KEYBOARD_LL - so keystrokes never reach it. '
+        ? 'The agent hooks the keyboard to learn THAT a key was pressed and when; the callback reads one '
+          + 'flag off the hook struct to tell an injected key from a person\'s and never touches vkCode, '
+          + 'which is how the promise is kept by the code not existing rather than by a policy. '
+          + (context.counts.keys > 0
+            ? 'This recording spent ' + spanText(context.counts.typedMs) + ' on '
+              + context.counts.keys + ' keystroke' + (context.counts.keys === 1 ? '' : 's') + ' across '
+              + context.counts.typeRuns + ' run' + (context.counts.typeRuns === 1 ? '' : 's')
+              + ', and which field each run went into is above where the accessibility tree could name '
+              + 'it. What was written is nowhere.'
+            : 'Nothing was typed during this one - or it was recorded by an agent older than 0.7.0, '
+              + 'which hooked the mouse only. The summary above says which.')
         : 'extension/content.js stopped capturing text because framework-controlled fields and editors '
           + 'inside iframes dropped it silently, and a recording that quietly loses half a message is '
-          + 'worse than one that never claimed to carry it. ')
-      + (context.counts.keys > 0
-        ? 'The ' + context.counts.keys + ' typing step' + (context.counts.keys === 1 ? '' : 's')
-          + ' below came from an older build or an imported file; this counts their characters rather '
-          + 'than printing them.'
-        : 'There are no typing steps in this one. Anything involving text belongs in a created skill, '
-          + 'which is told what to write.'),
+          + 'worse than one that never claimed to carry it. '
+          + (context.counts.keys > 0
+            ? 'The ' + context.counts.keys + ' typing step' + (context.counts.keys === 1 ? '' : 's')
+              + ' below came from an older build or an imported file; this counts their characters '
+              + 'rather than printing them.'
+            : 'There are no typing steps in this one.')),
   });
+
+  /* Only when it applies, and it is the one thing a person is most likely to assume wrongly: everything
+   * else in a desktop recording replays exactly, so a recording with typing in it looks like it would
+   * too. */
+  if (desktop && context.counts.keys > 0) {
+    gaps.push({
+      question: 'Can this be replayed exactly?',
+      why: 'No. The ' + context.counts.typeRuns + ' typing run'
+        + (context.counts.typeRuns === 1 ? '' : 's') + ' cannot be reproduced - a replay knows a key was '
+        + 'pressed and not which - so it waits out the ' + spanText(context.counts.typedMs)
+        + ' and presses nothing, then carries on with the clicks. The agent counts what it skipped and '
+        + '/replay/status reports it, so a replay does not come back looking clean. Work that has to type '
+        + 'belongs in a created skill, which is told what to write.',
+    });
+  }
 
   if (desktop && context.perStep) {
     /* The two desktop gaps this used to open with are answered now, so they are replaced rather than

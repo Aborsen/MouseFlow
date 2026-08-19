@@ -27,7 +27,7 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 
 | Method | Path | Deadline | Returns |
 |---|---|---|---|
-| GET | `/health` | 4s | `{ok, version, screen:{w,h}, recording, playing}` |
+| GET | `/health` | 4s | `{ok, version, screen:{w,h}, recording, playing, canSee, canWindows, canName, canKeys}` |
 | GET | `/shot` | 12s | `{ok, png, format, bytes, w, h, scale, originX, originY}` |
 | GET | `/shot?w=640` | 12s | the same, smaller — asked for after a 413 upstream |
 | GET | `/pulse` | 5s | `{ok, grid}` — 64×36 greyscale samples as a short string |
@@ -37,13 +37,21 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 | GET | `/record/status` | 2.5s | `{recording, count, elapsedMs}` |
 | POST | `/record/stop` | 15s | **text/plain**, one event per line (`.mmmacro`) |
 | POST | `/replay` | 5s | `{ok}` — starts a replay, returns immediately |
-| GET | `/replay/status` | 2.5s | `{playing, step, steps, pass, passes, index, total}` |
+| GET | `/replay/status` | 2.5s | `{playing, step, steps, pass, passes, index, total, unplayable}` |
 | POST | `/replay/abort` | 4s | `{ok}` |
 | POST | `/autostart/enable` | 8s | `{ok}` — needs the agent to exist as a file on disk |
 | POST | `/autostart/disable` | — | `{ok}` |
 
+The four `can*` flags exist because a version number could not answer the question that mattered. An
+agent started before the click resolver existed and one started after it reported the same `0.5.0`, and the
+difference was the whole transcript — a list of coordinates against a list of named actions. So each
+capability is stated: `canSee` (screenshots), `canWindows` (`/windows`), `canName` (`#ctx` on a click),
+`canKeys` (typing as an event). An older agent omits a flag, and absent is the answer. `canKeys` is the one
+that can be **false** rather than absent: the keyboard hook may fail to install, and the agent runs without
+it rather than refusing to start.
+
 `version` is checked by the client against `AGENT_WANTS` in `web/src/lib/agent.ts`, which currently wants
-**0.6.0** — the build that resolves `#ctx`. An older agent is reported to the user as needing an update, with the command to get the current
+**0.7.0** — the build that resolves `#ctx`, times typing and marks focus changes. An older agent is reported to the user as needing an update, with the command to get the current
 one — so a new implementation should report a version it can actually honour the whole of this table at.
 
 ## Coordinates
@@ -122,9 +130,48 @@ index | X | Y | delayMs | action
 2 | 1074 | 159 | 63 | Left Click Release
 ```
 
-`delayMs` is the wait **before** the event. Recording is bounded: the hook may stay installed for the
+`delayMs` is the wait **before** the event. Recording is bounded: the hooks may stay installed for the
 agent's lifetime, but events are only stored between `/record/start` and `/record/stop`. Nothing is captured
 unasked — that is a product decision, not an implementation detail.
+
+Five action words come from the mouse (`Mouse Movement`, `Left/Right/Middle Click Down`, the matching
+`Release`, `Scroll Up`/`Scroll Down`) and two do not:
+
+```
+#ctx	app=OUTLOOK	window=Inbox — Outlook
+1 | 0 | 0 | 0 | Focus
+#ctx	app=OUTLOOK	window=Untitled - Message	control=Subject	type=edit box
+2 | 0 | 0 | 900 | Key Down
+3 | 0 | 0 | 120 | Key Down
+```
+
+`Focus` — **the foreground window changed.** Not an action; a marker saying the work moved, so a step that
+hit-tests nothing can still be placed. It is the only per-step answer for a scroll, a wait or a run of
+typing, and without it those sit in whichever segment a click last opened. The Windows agent polls
+`GetForegroundWindow` on the resolver thread, which is already awake between clicks, rather than adding a
+second hook and a second message pump. Two rules: never emit one **between a press and its release** — the
+transcript pairs a click by looking at the very next event, so a marker there becomes an unreleased press
+plus a stray release — and emit one at `/record/start`, so a recording says where it began.
+
+`Key Down` — **a key was pressed, and when. Never which key.** This is the whole design and it is not
+negotiable: "five of those ten minutes went on typing in Outlook" needs the timing and nothing else, and a
+hook that reads key codes has captured a password whether or not it stores one. The Windows agent marshals
+`KBDLLHOOKSTRUCT` to read a single flag — whether the key was injected, so a replay pressing keys is not
+recorded as a person typing — and never touches `vkCode` or `scanCode`. Auto-repeat arrives as ordinary
+key-downs and is kept: holding a key is time spent typing, and filtering it would need the identity this
+deliberately does not have. The `#ctx` above a keystroke answers a different question from the one above a
+click: what has **focus** (`AutomationElement.FocusedElement`, or `AXFocusedUIElement` on macOS), not what is
+under the pointer, which is wherever it was last left. Resolve once per **run** of typing, not per keystroke.
+
+Both are `#ctx`-bearing lines in a five-column format, so nothing that reads `.mmmacro` needs to know they
+exist.
+
+**A replay cannot perform either, and must say so.** A keystroke has no key in it and a `Focus` is a note.
+The Windows agent names them explicitly in its action switch rather than dropping them through `default`,
+counts them, and reports the count as `unplayable` on `/replay/status` — a replay that pressed nothing for
+the two minutes somebody spent typing must not come back looking like a clean run. The pause before each
+event is still waited out, so the replay keeps the shape of the original. Work that has to type belongs in a
+created skill, which is told what to write.
 
 ### `#ctx` — where a click landed
 
@@ -175,10 +222,11 @@ Blind spots are similar on both: Electron applications expose almost nothing (on
 offers 34 characters of control names in the entire app), and an elevated window is invisible to a
 medium-integrity Windows process. Say so in the transcript; do not paper over it.
 
-**Typing is deliberately not recorded.** The Windows agent installs a mouse hook only. A recording that
-silently drops text is worse than one that never claimed to carry it, and capturing keystrokes without a
-redaction design captures passwords. Do not add a keyboard hook to a new agent without that decision being
-made first.
+**Typed text is deliberately not recorded — the keystroke is.** See `Key Down` above. The distinction is
+the design: a recording that silently drops half a message is worse than one that never claimed to carry it,
+and a hook that reads key codes has captured a password whether or not it stores one. A new agent may record
+that a key was pressed and when. It must not record which, and it must not need a redaction design in order
+to be safe, because there is nothing to redact.
 
 The replay body is text as well:
 

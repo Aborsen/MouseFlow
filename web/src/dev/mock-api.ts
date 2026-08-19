@@ -138,12 +138,16 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         origins: [], windows: [{ title: 'Inbox — Outlook', process: 'chrome' }],
       },
       summary: {
-        events: 18, clicks: 6, scrolls: 2, drags: 1, keys: 0, seconds: 74,
+        events: 18, clicks: 6, scrolls: 2, drags: 1, keys: 132, seconds: 74,
         // A count on both, which is what api/_transcript.js returns; the panel renders either.
         applications: 2, pages: 0,
-        captured: 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement. For 6 '
-          + 'of the 6 clicks the agent also read what was under the pointer - the application, the window, '
-          + 'and for 5 of them the name and kind of the control. Nothing typed, no screenshots.',
+        // Keystrokes and how long they took. No text: the agent never reads which key.
+        typedSeconds: 47.2,
+        captured: 'Every click, drag, scroll and pointer movement, as screen coordinates. For 6 of the 6 '
+          + 'clicks the agent also read what was under the pointer - the application, the window, and for '
+          + '5 of them the name and kind of the control. 132 keystrokes over 47.2s, counted and timed but '
+          + 'never read: which key was pressed is not recorded anywhere, so this carries no text. No '
+          + 'screenshots.',
         gaps: 2,
       },
       segments: [
@@ -155,20 +159,26 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
             { n: 1, at: 0, ms: 0, action: 'click', what: 'clicked the "New mail" button in OUTLOOK', target: '1030,1053', note: null },
             { n: 2, at: 4100, ms: 210, action: 'click', what: 'clicked the "To" edit box in OUTLOOK', target: '158,271', note: null },
             { n: 3, at: 9400, ms: 180, action: 'click', what: 'clicked at 980,612 in OUTLOOK', target: '980,612', note: 'OUTLOOK was under the pointer, but nothing there had a name the agent could read' },
+            { n: 4, at: 11000, ms: 47200, action: 'type', what: 'typed for 47.2s - 132 keystrokes into the "Message body" edit box in OUTLOOK', target: null, note: 'which keys is not recorded, deliberately: the agent reads that a key was pressed and when, never which one, so nothing here can carry text - and a replay cannot reproduce it' },
           ],
           note: null,
         },
         {
           n: 2, where: { kind: 'app', label: 'Book1 - Excel', detail: 'EXCEL' }, startMs: 41000, seconds: 33,
           steps: [
-            { n: 4, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null },
-            { n: 5, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches', target: null, note: null },
+            { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null },
+            { n: 6, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches in EXCEL', target: null, note: null },
           ],
           note: null,
         },
       ],
       gaps: [
-        { question: 'What did they type?', why: 'Typing is not captured on either half, by design.' },
+        { question: 'What did I type?', why: 'No text, by design. The agent hooks the keyboard to learn '
+          + 'THAT a key was pressed and when, and never touches vkCode - this recording spent 47.2s on 132 '
+          + 'keystrokes. What was written is nowhere.' },
+        { question: 'Can this be replayed exactly?', why: 'No. The typing run cannot be reproduced - a '
+          + 'replay knows a key was pressed and not which - so it waits out the 47.2s and presses '
+          + 'nothing, then carries on with the clicks.' },
         { question: 'Was anything missed?', why: 'A recording made over an elevated window is silently '
           + 'incomplete: the hook cannot see input while such a window has focus, and this cannot detect it.' },
       ],

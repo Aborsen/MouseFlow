@@ -25,6 +25,10 @@ export interface AgentHealth {
   /** Whether it resolves what a click landed on - the application, window and control name. Absent on any
    * build before 0.6.0, and absent is the answer: those recordings carry coordinates and nothing else. */
   canName?: boolean;
+  /** Whether typing is recorded as an EVENT - that a key was pressed and when, never which key. False when
+   * the keyboard hook failed to install, absent before 0.7.0; either way a transcript then cannot tell
+   * "typed nothing" from "was not watching", which is why the flag exists rather than being inferred. */
+  canKeys?: boolean;
   canAutostart?: boolean;
   originPinned?: boolean;
 }
@@ -160,10 +164,11 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.6.0 is the build that resolves what a click landed on. An older one records the same coordinates and
- * no context at all, so its transcripts read as a list of positions - which is a real difference in what
- * the product does, not an internal one, and worth telling the user to close that PowerShell window for. */
-export const AGENT_WANTS = '0.6.0';
+/* 0.7.0 is the build that records what a recording is FOR: what each click landed on (0.6.0), plus that a
+ * key was pressed and when, plus the foreground window changing. An older one records the same coordinates
+ * and none of it, so its transcripts read as a list of positions - a real difference in what the product
+ * does, not an internal one, and worth telling somebody to close that PowerShell window for. */
+export const AGENT_WANTS = '0.7.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

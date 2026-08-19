@@ -196,6 +196,22 @@ namespace MouseFlow
         public INPUTDATA u;
     }
 
+    /* The low-level keyboard hook's payload.
+     *
+     * `flags` is read, to tell an injected key from a person's. `vkCode` and `scanCode` are NOT read
+     * anywhere in this file and must not be: the recording says a key was pressed and when, never which,
+     * and the cheapest way to keep that promise is for the code that could break it not to exist. A field
+     * has to be declared for the struct layout to match; declaring it is not reading it. */
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KBDLLHOOKSTRUCT
+    {
+        public uint vkCode;
+        public uint scanCode;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
     public static class Native
     {
         public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -279,7 +295,12 @@ namespace MouseFlow
         public const uint KEYEVENTF_UNICODE = 0x0004;
 
         public const int WH_MOUSE_LL = 14;
+        public const int WH_KEYBOARD_LL = 13;
         public const uint LLMHF_INJECTED = 0x00000001;
+        public const uint LLKHF_INJECTED = 0x00000010;
+
+        public const int WM_KEYDOWN = 0x0100;
+        public const int WM_SYSKEYDOWN = 0x0104;
 
         public const int WM_MOUSEMOVE = 0x0200;
         public const int WM_LBUTTONDOWN = 0x0201;
@@ -344,11 +365,13 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.6.0";
+        public const string Version = "0.7.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
         static IntPtr _hook = IntPtr.Zero;
+        static Native.HookProc _kbProc; // same reason, separately rooted
+        static IntPtr _kbHook = IntPtr.Zero;
 
         static bool _recording;
         static List<Ev> _buffer = new List<Ev>();
@@ -361,6 +384,10 @@ namespace MouseFlow
 
         static bool _playing;
         static bool _abort;
+        /* Events a replay could not perform. A recording with typing in it cannot be replayed faithfully -
+         * nothing in it says which keys - and a replay that quietly pressed nothing for the two minutes
+         * somebody spent typing would report a clean run. Counted, and reported by /replay/status. */
+        static int _unplayable;
         static int _stepIdx, _stepCount, _pass, _passes, _evIdx, _evCount;
         static int _flowPass, _flowPasses;
 
@@ -393,6 +420,17 @@ namespace MouseFlow
                 LastError = "SetWindowsHookEx failed: " + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
                 return;
             }
+
+            /* The keyboard hook is not fatal if it fails. Mouse recording is the product; knowing that
+             * somebody typed for two minutes is an improvement on top of it, and an agent that refused to
+             * start over a missing improvement would be a worse agent. */
+            _kbProc = new Native.HookProc(KeyCallback);
+            _kbHook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, _kbProc, IntPtr.Zero, 0);
+            if (_kbHook == IntPtr.Zero)
+            {
+                LastError = "keyboard hook failed (" + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture)
+                    + "); recording continues without typing";
+            }
             MSG msg;
             while (Native.GetMessage(out msg, IntPtr.Zero, 0, 0) > 0)
             {
@@ -400,6 +438,55 @@ namespace MouseFlow
                 Native.DispatchMessage(ref msg);
             }
             Native.UnhookWindowsHookEx(_hook);
+            if (_kbHook != IntPtr.Zero) Native.UnhookWindowsHookEx(_kbHook);
+        }
+
+        /* A keystroke, and only that it happened.
+         *
+         * The struct is marshalled to read one flag - whether this key was injected, because a replay
+         * pressing keys must not be recorded as a person typing - and vkCode is never touched. Auto-repeat
+         * arrives as ordinary key-downs and is kept: holding a key IS time spent typing, and filtering it
+         * would need the key identity this deliberately does not have. */
+        static IntPtr KeyCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0)
+            {
+                int msg = wParam.ToInt32();
+                if (msg == Native.WM_KEYDOWN || msg == Native.WM_SYSKEYDOWN)
+                {
+                    bool active;
+                    lock (Gate) { active = _recording; }
+                    if (active)
+                    {
+                        KBDLLHOOKSTRUCT data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+                        if ((data.flags & Native.LLKHF_INJECTED) == 0) CaptureKey();
+                    }
+                }
+            }
+            return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
+
+        static void CaptureKey()
+        {
+            Ev first = null;
+            lock (Gate)
+            {
+                long now = _clock.ElapsedMilliseconds;
+                Ev e = new Ev();
+                /* The pointer has not moved for this event, so the last known position is used rather than
+                 * a GetCursorPos in the hook. The five-column format needs a coordinate; typing does not
+                 * have one, and the transcript never reads it for a key. */
+                e.X = _lastX;
+                e.Y = _lastY;
+                e.DelayMs = _buffer.Count == 0 ? 0 : (int)(now - _lastStamp);
+                e.Action = "Key Down";
+                bool continuing = _buffer.Count > 0 && _buffer[_buffer.Count - 1].Action == "Key Down";
+                _buffer.Add(e);
+                _lastStamp = now;
+                // One resolution per RUN of typing. Sixty keystrokes into one field is one answer.
+                if (!continuing) first = e;
+            }
+            if (first != null) EnqueueFocused(first);
         }
 
         static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -492,6 +579,11 @@ namespace MouseFlow
             public Ev Target;
             public int X;
             public int Y;
+            /* Two kinds of question. A click asks "what is at this point" - WindowFromPoint and
+             * AutomationElement.FromPoint. A keystroke asks "what has focus" - GetForegroundWindow and
+             * AutomationElement.FocusedElement - because the pointer is wherever it was left and says
+             * nothing about where the typing went. */
+            public bool Focused;
         }
 
         static readonly Queue<Pending> _toResolve = new Queue<Pending>();
@@ -514,6 +606,18 @@ namespace MouseFlow
             }
         }
 
+        static void EnqueueFocused(Ev e)
+        {
+            lock (ResolveGate)
+            {
+                if (_toResolve.Count >= QueueMax) { _dropped++; return; }
+                Pending p = new Pending();
+                p.Target = e;
+                p.Focused = true;
+                _toResolve.Enqueue(p);
+            }
+        }
+
         static void ResolveLoop()
         {
             while (true)
@@ -524,11 +628,124 @@ namespace MouseFlow
                     if (_toResolve.Count > 0) job = _toResolve.Dequeue();
                     else if (_resolverStop) return;
                 }
-                if (job == null) { Thread.Sleep(15); continue; }
+                if (job == null)
+                {
+                    /* Idle, so this is where the foreground window gets watched. No second hook and no
+                     * second message pump: SetWinEventHook needs one, this thread is already awake, and a
+                     * poll every 15ms is far finer than a person can switch windows. */
+                    try { NoteForeground(); }
+                    catch { /* a window that vanished mid-read is not worth ending the resolver for */ }
+                    Thread.Sleep(15);
+                    continue;
+                }
 
-                try { Describe(job); }
+                try { if (job.Focused) DescribeFocused(job); else Describe(job); }
                 catch { /* One unreadable control must not end the resolver for the rest of the recording. */ }
             }
+        }
+
+        /* ------------------------------------------------------------------ which application, per step
+         *
+         * A click hit-tests its own target, so it always knew where it was. Nothing else did: a scroll, a
+         * wait and a run of typing carry no position worth testing, and a transcript placed them in
+         * whichever segment a click had last opened. A `Focus` event closes that - it is not an action, it
+         * is a marker saying the work moved, and it is the only thing that can place a step that clicked
+         * nothing.
+         *
+         * Runs on the resolver thread while it has nothing else to do, which is why it costs nothing.
+         */
+        static IntPtr _lastFront = IntPtr.Zero;
+
+        static void NoteForeground()
+        {
+            IntPtr front = Native.GetForegroundWindow();
+            if (front == IntPtr.Zero || front == _lastFront) return;
+
+            Ev e = null;
+            lock (Gate)
+            {
+                if (!_recording) { _lastFront = front; return; }
+                /* Never between a press and its release. deriveDesktop pairs a click by looking at the very
+                 * next event, so an event inserted there turns one click into an unreleased press and a
+                 * stray release - two wrong steps from a marker that was only meant to add context.
+                 * `_lastFront` is deliberately not updated, so the change is noticed again next tick. */
+                if (_buffer.Count > 0 && _buffer[_buffer.Count - 1].Action.EndsWith("Click Down")) return;
+
+                long now = _clock.ElapsedMilliseconds;
+                e = new Ev();
+                e.X = _lastX;
+                e.Y = _lastY;
+                e.DelayMs = _buffer.Count == 0 ? 0 : (int)(now - _lastStamp);
+                e.Action = "Focus";
+                _buffer.Add(e);
+                _lastStamp = now;
+            }
+            _lastFront = front;
+            /* Window only. A foreground change has no control under it, and inventing one from the pointer -
+             * which is wherever it was left - would attribute a name to a step it had nothing to do with. */
+            DescribeWindow(e, front);
+        }
+
+        /* What has focus, for a run of typing. Read at resolve time rather than at the keystroke, so a
+         * person who types and immediately clicks elsewhere can have the later window recorded here - the
+         * resolver is normally a few milliseconds behind, and the alternative is a UIA call inside the
+         * keyboard hook, which is how a hook gets removed by Windows for being slow. */
+        static void DescribeFocused(Pending job)
+        {
+            IntPtr hwnd = Native.GetForegroundWindow();
+            if (hwnd != IntPtr.Zero) DescribeWindow(job.Target, hwnd);
+
+            AutomationElement el = AutomationElement.FocusedElement;
+            if (el == null) return;
+
+            string name = null;
+            string type = null;
+            AutomationElement at = el;
+            /* Three levels, not five: what has focus is usually the field itself, and a climb from a text
+             * area lands on the document and then on the window, which is already known. */
+            for (int climbed = 0; climbed <= 3 && at != null; climbed++)
+            {
+                string candidate = null;
+                string kind = null;
+                try
+                {
+                    candidate = at.Current.Name;
+                    kind = at.Current.LocalizedControlType;
+                }
+                catch { break; }
+
+                if (type == null) type = kind;
+                if (!string.IsNullOrEmpty(candidate)) { name = candidate; type = kind; break; }
+
+                try { at = TreeWalker.ControlViewWalker.GetParent(at); }
+                catch { break; }
+            }
+
+            job.Target.Control = string.IsNullOrEmpty(name) ? null : Clip(name, 120);
+            job.Target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
+        }
+
+        /* The title and the process, from the window manager rather than from an accessibility provider -
+         * which is why it works where UIA does not: an Electron app that names no controls still says
+         * "Claude". Shared by every path that needs to name a window. */
+        static void DescribeWindow(Ev target, IntPtr hwnd)
+        {
+            if (target == null || hwnd == IntPtr.Zero) return;
+            IntPtr top = Native.GetAncestor(hwnd, Native.GA_ROOT);
+            if (top != IntPtr.Zero) hwnd = top;
+
+            target.Window = TitleOf(hwnd);
+            uint pid;
+            Native.GetWindowThreadProcessId(hwnd, out pid);
+            if (pid == 0) return;
+            try
+            {
+                using (Process proc = Process.GetProcessById((int)pid))
+                {
+                    target.Process = proc.ProcessName;
+                }
+            }
+            catch { /* Exited between the event and now. The title is still worth keeping. */ }
         }
 
         /* The window first, because it is cheap and it works even where UIA does not: a process name and a
@@ -536,27 +753,7 @@ namespace MouseFlow
          * names no controls still says "Claude". Then the control, which is the part worth having. */
         static void Describe(Pending job)
         {
-            IntPtr hwnd = Native.WindowFromPoint(new POINT { X = job.X, Y = job.Y });
-            if (hwnd != IntPtr.Zero)
-            {
-                IntPtr top = Native.GetAncestor(hwnd, Native.GA_ROOT);
-                if (top != IntPtr.Zero) hwnd = top;
-
-                job.Target.Window = TitleOf(hwnd);
-                uint pid;
-                Native.GetWindowThreadProcessId(hwnd, out pid);
-                if (pid != 0)
-                {
-                    try
-                    {
-                        using (Process proc = Process.GetProcessById((int)pid))
-                        {
-                            job.Target.Process = proc.ProcessName;
-                        }
-                    }
-                    catch { /* Exited between the click and now. The title is still worth keeping. */ }
-                }
-            }
+            DescribeWindow(job.Target, Native.WindowFromPoint(new POINT { X = job.X, Y = job.Y }));
 
             AutomationElement el = AutomationElement.FromPoint(new System.Windows.Point(job.X, job.Y));
             if (el == null) return;
@@ -622,6 +819,9 @@ namespace MouseFlow
                 _toResolve.Clear();
                 _dropped = 0;
                 _resolverStop = false;
+                /* Zeroed, not carried: the first Focus event of a recording should name where the recording
+                 * STARTED, and a value left over from a previous one would suppress it. */
+                _lastFront = IntPtr.Zero;
             }
 
             /* MTA, deliberately. A UIA client on an STA thread marshals every call through that thread's
@@ -718,6 +918,10 @@ namespace MouseFlow
                     + ",\"flowPasses\":" + _flowPasses.ToString(CultureInfo.InvariantCulture)
                     + ",\"index\":" + _evIdx.ToString(CultureInfo.InvariantCulture)
                     + ",\"total\":" + _evCount.ToString(CultureInfo.InvariantCulture)
+                    /* Events this replay skipped because it cannot perform them - keystrokes, whose keys
+                       were never recorded, and focus markers, which are notes rather than actions. Without
+                       this a replay of a recording that was half typing reports a clean run. */
+                    + ",\"unplayable\":" + _unplayable.ToString(CultureInfo.InvariantCulture)
                     + "}";
             }
         }
@@ -741,6 +945,7 @@ namespace MouseFlow
             {
                 _playing = true;
                 _abort = false;
+                _unplayable = 0;
                 _stepIdx = 0;
                 _stepCount = flow.Steps.Count;
                 _pass = 0;
@@ -917,6 +1122,17 @@ namespace MouseFlow
                 case "Middle Click Up": flags |= Native.MOUSEEVENTF_MIDDLEUP; break;
                 case "Scroll Up": flags |= Native.MOUSEEVENTF_WHEEL; data = 120; break;
                 case "Scroll Down": flags |= Native.MOUSEEVENTF_WHEEL; data = unchecked((uint)-120); break;
+
+                /* Named rather than left to `default`, because these two are not malformed lines - they are
+                 * events this agent writes on purpose and cannot perform. A keystroke has no key in it, and
+                 * a Focus is a note about what happened, not something to do. The pause before each is
+                 * still waited out by the caller, so a replay keeps the shape of the original; it just
+                 * presses nothing where a person typed. Counted so /replay/status can say so. */
+                case "Key Down":
+                case "Focus":
+                    lock (Gate) { _unplayable++; }
+                    return;
+
                 default: return;
             }
 
@@ -1829,6 +2045,12 @@ namespace MouseFlow
                        reads "clicked the New mail button in OUTLOOK" or "clicked at 1030,1053". An
                        older agent omits the field, which is the answer. */
                     + ",\"canName\":true"
+                    /* Whether typing is recorded AS AN EVENT - that a key was pressed and when, never
+                       which key. A recording from an older agent has no typing in it at all, so a
+                       transcript cannot tell "did not type" from "was not recorded", and this is how it
+                       can. False, not absent, when the keyboard hook failed to install: the agent runs
+                       without it rather than refusing to start. */
+                    + ",\"canKeys\":" + (_kbHook != IntPtr.Zero ? "true" : "false")
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
                 return;

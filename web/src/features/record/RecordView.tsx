@@ -372,6 +372,8 @@ export const RecordView = () => {
                 ? 'Each click also records which application and window it landed in, and the name of what '
                   + 'was under the pointer, so the transcript reads as work rather than as coordinates.'
                 : 'Which applications you work in is noted too, so a recording can name itself.'}
+              {health?.canKeys && ' Typing is timed and counted - that a key was pressed and when, never '
+                + 'which key, so no text is captured and none can be.'}
             </Typography>
 
             {/* Said BEFORE the recording rather than discovered in the transcript afterwards. An agent
@@ -380,8 +382,18 @@ export const RecordView = () => {
             {health && health.canName !== true && (
               <Typography variant="p" className="mt-2 text-fb-attention text-[0.8rem]">
                 This agent does not read what you click on, so this recording will be coordinates only -
-                no application, no window, no control names. Restart it with the command behind the agent
-                chip in the header first; it takes a few seconds.
+                no application, no window, no control names, and no typing. Restart it with the command
+                behind the agent chip in the header first; it takes a few seconds.
+              </Typography>
+            )}
+
+            {/* A separate case, and a much narrower one: the agent is current but Windows refused the
+              * keyboard hook. Everything else records; only the typing does not, and a transcript that
+              * said "nothing was typed" would then be wrong rather than empty. */}
+            {health?.canName === true && health.canKeys === false && (
+              <Typography variant="p" className="mt-2 text-fb-attention text-[0.8rem]">
+                This agent could not install its keyboard hook, so time spent typing will be missing from
+                the transcript - it will look like a pause. Everything else records normally.
               </Typography>
             )}
           </div>

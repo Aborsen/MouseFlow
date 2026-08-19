@@ -67,6 +67,7 @@ interface Summary {
   scrolls?: number;
   drags?: number;
   keys?: number;
+  typedSeconds?: number;
   seconds?: number;
   applications?: unknown;
   pages?: unknown;
@@ -588,6 +589,7 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => 
   const drags = count(summary?.drags);
   const scrolls = count(summary?.scrolls);
   const keys = count(summary?.keys);
+  const typedSeconds = count(summary?.typedSeconds);
 
   const create = useCallback(async () => {
     setMaking(true);
@@ -730,9 +732,12 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => 
               {!!drags && <Chip value={String(drags)} label={drags === 1 ? 'drag' : 'drags'} />}
               {!!scrolls && <Chip value={String(scrolls)} label={scrolls === 1 ? 'scroll' : 'scrolls'} />}
               {/* Keys only when there were any. A "0 keys" chip beside the rest reads as "they typed
-                * nothing", which is not what an empty count means here - neither recorder captures
-                * typing at all, and the gaps list below says so in the endpoint's own words. */}
+                * nothing", and an empty count can also mean the agent was not watching - which is what the
+                * captured line and the gaps below distinguish, in the endpoint's own words. */}
               {!!keys && <Chip value={String(keys)} label={keys === 1 ? 'key' : 'keys'} />}
+              {/* The time, beside the count, because "five of those ten minutes went on typing" is the
+                * question this answers and a keystroke count alone does not. */}
+              {!!typedSeconds && <Chip value={fmtSeconds(typedSeconds)} label="typing" />}
             </div>
 
             {/* Where it ran. The first three, because a header is scanned - the rest are visible in the
