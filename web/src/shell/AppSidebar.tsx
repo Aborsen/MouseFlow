@@ -87,7 +87,8 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
       )}
     >
       <div className={cn('mb-1 flex items-center gap-1 pb-1', tight ? 'justify-center' : 'ps-2.5')}>
-        <Link to="/record" className="flex min-w-0 items-center gap-2 text-ink-primary" title="MouseFlow">
+        {/* gap-2.5, the nav's gap: at gap-2 the wordmark started two pixels left of every label below it. */}
+        <Link to="/record" className="flex min-w-0 items-center gap-2.5 text-ink-primary" title="MouseFlow">
           <svg viewBox="0 0 24 24" aria-hidden className={cn(GLYPH, 'text-logo-mark')}>
             <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor" />
           </svg>
@@ -178,7 +179,9 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
               tight ? 'w-9 justify-center' : 'w-full px-2.5',
             )}
           >
-            <span className="grid size-[22px] shrink-0 place-items-center rounded-full bg-brand-tertiary font-semibold text-[0.6875rem] text-white">
+            {/* 18px, like every other glyph in this column: at 22 it sat two pixels wide of them expanded
+                and pushed its own label four pixels past the nav's. */}
+            <span className="grid size-[18px] shrink-0 place-items-center rounded-full bg-brand-tertiary font-semibold text-[0.625rem] text-white">
               {initial}
             </span>
             {!tight && (
