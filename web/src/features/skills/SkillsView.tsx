@@ -5,12 +5,12 @@
  * only the local agent can. Offering the wrong one is a button that does something meaningless.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Copy, Link2, Monitor, RefreshCw, Share2, Upload } from 'lucide-react';
+import { Copy, Link2, Monitor, RefreshCw, Share2, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
-import { type Flow, galleryPublish, mintDeviceToken } from '@/lib/api';
+import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
@@ -20,6 +20,37 @@ export const SkillsView = () => {
   const navigate = useNavigate();
   const [bridge, setBridge] = useState({ present: false, paired: false, version: null as string | null });
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
+  /* Which delete is cocked. One at a time, and it disarms itself: a destructive button left ready is one
+   * stray click from being pressed, which is the reasoning MyAccountScreen already carries. */
+  const [armed, setArmed] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!armed) return;
+    const timer = setTimeout(() => setArmed(null), 6000);
+    return () => clearTimeout(timer);
+  }, [armed]);
+
+  const remove = useCallback(async (flow: Flow) => {
+    setRemoving(flow.id);
+    setSaid(null);
+    try {
+      /* Tombstoned rather than erased, which is the sync contract: a delete on one machine has to be able to
+       * propagate instead of the flow reappearing from the next machine that syncs. */
+      const done = await push({ deleted: [flow.id] });
+      if (done.problems.length) throw new Error(done.problems.join('; '));
+      await reload();
+      setSaid({
+        text: `Deleted "${flow.name}".`,
+        kind: 'good',
+      });
+    } catch (err) {
+      setSaid({ text: err instanceof Error ? err.message : 'could not delete it', kind: 'bad' });
+    } finally {
+      setRemoving(null);
+      setArmed(null);
+    }
+  }, [reload]);
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -205,7 +236,32 @@ export const SkillsView = () => {
                 >
                   Copy
                 </Button>
+
+                <Button
+                  variant={armed === flow.id ? 'destructive' : 'destructiveTertiary'}
+                  size="sm"
+                  className="ms-auto"
+                  isLoading={removing === flow.id}
+                  leftSlot={<Trash2 className="size-4" />}
+                  onClick={() => {
+                    if (armed !== flow.id) { setArmed(flow.id); return; }
+                    void remove(flow);
+                  }}
+                >
+                  {armed === flow.id
+                    ? 'Delete — press again'
+                    : 'Delete'}
+                </Button>
               </div>
+
+              {/* Only when it is cocked, and only what is true: a published copy is a separate thing on a
+                * separate table, and deleting this one does not withdraw it. Withdrawing is in the gallery. */}
+              {armed === flow.id && (
+                <Typography variant="p" className="mt-2 text-fb-attention text-[0.78rem]">
+                  This removes it from your account and from every machine that syncs. If you published it,
+                  the gallery listing stays until you withdraw it there.
+                </Typography>
+              )}
             </li>
           ))}
         </ul>

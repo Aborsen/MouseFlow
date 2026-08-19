@@ -30,6 +30,7 @@ import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
 import { type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { RecordingsTable, replayOf } from './RecordingsTable';
+import { TranscriptPanel } from './TranscriptPanel';
 
 export const RecordView = () => {
   const [state, update] = useConsole();
@@ -115,15 +116,57 @@ export const RecordView = () => {
         ? `${first} · ${s.clicks} click${s.clicks === 1 ? '' : 's'}`
         : `Recording ${state.recordings.length + 1}`;
 
-      update((prev) => ({
-        recordings: [
-          ...prev.recordings,
-          { id: uid(), name, created: new Date().toISOString(), events, windows: where },
-        ],
-      }));
+      const made = { id: uid(), name, created: new Date().toISOString(), events, windows: where };
+      update((prev) => ({ recordings: [...prev.recordings, made] }));
       setNote(`${s.count} events captured (${fmtMs(s.durationMs)})${
         where.length ? ` in ${where.length} window${where.length === 1 ? '' : 's'}` : ''
       }`);
+
+      /* And onto the account, at once.
+       *
+       * This used to wait until the recording was kept as a skill - the note at the top of this file said a
+       * recording was a draft in this browser - and that was coherent until the transcript and the dashboard
+       * started reading recordings from the account. The transcript is derived server-side from the stored
+       * payload, so a recording that never left the browser has no transcript to show and View answered 404.
+       *
+       * What this means, plainly: the events, the window titles and the control names go to the user's own
+       * account. That is the same data that already travelled when a recording was kept as a skill, and the
+       * same rows the dashboard counts - but it now travels earlier, which is the trade for being able to ask
+       * questions about a recording straight after making it.
+       *
+       * Best effort: the recording is safe in the browser either way, and a failed sync is worth a line of
+       * text rather than losing what was just captured. */
+      try {
+        const saved = await push({
+          flows: [{
+            id: made.id,
+            // `desktop`, which decides who can replay it: these are screen coordinates, not page elements.
+            source: 'desktop',
+            kind: 'recorded',
+            name: made.name.slice(0, 80),
+            description: `${s.count} events · ${s.clicks} click${s.clicks === 1 ? '' : 's'} · ${fmtMs(s.durationMs)}`,
+            origins: where.map((w) => w.title).filter(Boolean).slice(0, 12),
+            created: made.created,
+            payload: {
+              version: 1,
+              kind: 'recorded',
+              agent: 'desktop',
+              name: made.name.slice(0, 80),
+              events: made.events,
+              windows: made.windows,
+              created: made.created,
+            },
+          }],
+        });
+        if (saved.problems.length) {
+          setNote(`Captured, but the account refused it: ${saved.problems.join('; ')}`);
+        }
+        await reload();
+      } catch (err) {
+        setNote(`Captured ${s.count} events, but syncing failed: ${
+          err instanceof Error ? err.message : 'unknown error'
+        }. The transcript needs the recording on your account.`);
+      }
     } catch (err) {
       setLive(null);
       setNote(err instanceof Error ? err.message : 'could not stop recording');
@@ -336,6 +379,26 @@ export const RecordView = () => {
         onPlay={(rec) => { void playOne(rec); }}
       />
 
+      {/* The transcript, beside the list rather than inside a row: it is long, and a row that expands to
+        * three hundred lines stops being a row. Same shape as the dashboard's assistant panel - fixed to the
+        * right, the page scrolls behind it - because they are the same gesture, looking at one thing in
+        * detail without losing the list you found it in. */}
+      {viewing && (
+        <aside className="fixed inset-y-0 right-0 z-40 flex w-[34rem] max-w-full flex-col border-stroke border-l bg-surface-card2 shadow-dropdown">
+          <TranscriptPanel
+            flowId={viewing}
+            name={state.recordings.find((rec) => rec.id === viewing)?.name ?? 'Recording'}
+            onClose={() => setViewing(null)}
+            onRemoved={() => {
+              /* Removed on the account, so it goes from the browser too - otherwise the row stays, View
+               * answers 404, and the only way back is a reload. */
+              update((prev) => ({ recordings: prev.recordings.filter((rec) => rec.id !== viewing) }));
+              setViewing(null);
+              void reload();
+            }}
+          />
+        </aside>
+      )}
     </div>
   );
 };

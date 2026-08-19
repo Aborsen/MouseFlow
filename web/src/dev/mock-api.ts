@@ -82,6 +82,7 @@ const json = (res: Parameters<Connect.NextHandleFunction>[1], status: number, bo
 
 export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
   const url = req.url ?? '';
+  const method = (req.method ?? 'GET').toUpperCase();
   if (!url.startsWith('/api/')) return next();
 
   if (url.startsWith('/api/auth/get-session')) return json(res, 200, { user: ACCOUNT });
@@ -123,12 +124,59 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     });
   }
 
+  /* The transcript, so the panel can be looked at without a session. A fixture of the SHAPE - the real
+   * derivation is api/_transcript.js and it is pure, so what is worth checking here is that the panel reads
+   * the shape the derivation produces. Two segments, one step with no context, and a gaps list, because
+   * those are the three cases the panel has to render honestly. */
+  if (url.startsWith('/api/transcript')) {
+    if (method !== 'GET') return json(res, 200, { ok: true, removed: 1, remaining: 17, revision: 1, undo: { revision: 0 } });
+    return json(res, 200, {
+      ok: true,
+      flow: {
+        id: 'rec1', name: 'Send the weekly invoice', kind: 'recorded', source: 'desktop',
+        created: new Date(Date.now() - 86400000).toISOString(),
+        origins: [], windows: [{ title: 'Inbox — Outlook', process: 'chrome' }],
+      },
+      summary: {
+        events: 18, clicks: 6, scrolls: 2, drags: 1, keys: 0, seconds: 74,
+        applications: ['chrome'], pages: ['outlook.office.com'],
+        captured: 'Mouse only: clicks, scrolls and pointer paths, with the control under each click where the '
+          + 'accessibility tree could name it. Typing is never captured.',
+        gaps: 2,
+      },
+      segments: [
+        {
+          n: 1, where: { kind: 'app', label: 'Outlook', detail: 'Inbox — Outlook' }, startMs: 0, seconds: 41,
+          steps: [
+            { n: 1, at: 0, ms: 0, action: 'click', what: 'clicked New mail', target: 'New mail (button)', note: null },
+            { n: 2, at: 4100, ms: 210, action: 'click', what: 'clicked the To field', target: 'To (edit)', note: null },
+            { n: 3, at: 9400, ms: 180, action: 'click', what: 'clicked at 980,612', target: null, note: 'the control could not be named' },
+          ],
+          note: null,
+        },
+        {
+          n: 2, where: { kind: 'app', label: 'Excel', detail: 'Book1 - Excel' }, startMs: 41000, seconds: 33,
+          steps: [
+            { n: 4, at: 41000, ms: 260, action: 'click', what: 'clicked cell B4', target: 'B4 (cell)', note: null },
+            { n: 5, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches', target: null, note: null },
+          ],
+          note: null,
+        },
+      ],
+      gaps: [
+        { question: 'What did they type?', why: 'Typing is not captured on either half, by design.' },
+        { question: 'Was anything missed?', why: 'A recording made over an elevated window is silently '
+          + 'incomplete: the hook cannot see input while such a window has focus, and this cannot detect it.' },
+      ],
+    });
+  }
+
   /* The assistant. A FIXTURE, not a fake loop: the reply is canned and says so in its own text, and it
    * exists because the bug it caught was pure layout - a 270px "based on" sidebar laid out beside the answer
    * inside a 416px panel, which left the words about 60px to be read in. That needs a rendered reply to
    * measure and nothing else. The model call itself is still not mocked; see below. */
   if (url.startsWith('/api/chat')) {
-    if ((req.method ?? 'GET').toUpperCase() === 'GET') {
+    if (method === 'GET') {
       return json(res, 200, {
         ok: true,
         configured: { anthropic: true, openai: true },
