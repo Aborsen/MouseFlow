@@ -62,7 +62,8 @@ export interface GallerySkill {
   /** An object, not a name: the endpoint sends who published it and their picture. */
   author: { name: string; image: string | null };
   origins: string[];
-  params: string[];
+  /** Names and types only: the author's example values do not leave api/gallery.js. */
+  params: { name: string; type: string }[];
   installs: number;
   publishedAt: string;
   withdrawn: boolean;

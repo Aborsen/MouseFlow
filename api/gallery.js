@@ -86,7 +86,12 @@ async function caller(req) {
 }
 
 /* A published skill is only ever handed out through this shape, so a column added later cannot leak
- * into a public response by accident. */
+ * into a public response by accident.
+ *
+ * `params` is names and types, never values. A parameter's `example` is the literal string lifted from the
+ * author's own goal - their real email address, their real URL - and this endpoint needs no session, so
+ * anything in this shape is world-readable. The names are what a reader needs ("asks for email, invoice");
+ * the values are the author's business. */
 const listed = (row) => ({
   id: row.id,
   name: row.name,
@@ -97,8 +102,44 @@ const listed = (row) => ({
   installs: row.installs,
   publishedAt: row.published_at,
   withdrawn: !!row.withdrawn_at,
-  params: (row.payload && row.payload.params) || [],
+  params: publicParams(row.payload),
 });
+
+/** Names and types only. An `example` never leaves this file. */
+function publicParams(payload) {
+  const params = (payload && payload.params) || [];
+  if (!Array.isArray(params)) return [];
+  return params
+    .filter((p) => p && typeof p.name === 'string')
+    .map((p) => ({ name: p.name, type: p.type || 'text' }));
+}
+
+/* A value the author lifted from their own goal, put back where it came from.
+ *
+ * Skills created before the description became the template carry the filled goal - "send a follow-up to
+ * vic@example.com" - so publishing one would leak through the description the exact value that params no
+ * longer carry. Replacing each example with its own placeholder leaves a sentence that still reads and no
+ * longer names anybody. Applied at publish, so it covers every publisher rather than only the friendly one. */
+function scrubExamples(text, params) {
+  let out = String(text || '');
+  for (const p of Array.isArray(params) ? params : []) {
+    const example = p && p.example != null ? String(p.example).trim() : '';
+    if (!example || example.length < 4 || !p.name) continue;
+    out = out.split(example).join('{{' + p.name + '}}');
+  }
+  return out;
+}
+
+/* The payload as an installer may have it: the procedure, without the author's values.
+ *
+ * Installing used to copy `example` onto the installer's machine, where fillGoal substitutes it for any
+ * field left blank - so the publisher, not the runner, chose the recipient of a run on somebody else's
+ * computer. The installed copy now has nothing to fall back on, which is the point: it has to be told. */
+function installable(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  if (!Array.isArray(payload.params)) return payload;
+  return Object.assign({}, payload, { params: publicParams(payload) });
+}
 
 export default async function handler(req, res) {
   cors(req, res);
@@ -133,7 +174,7 @@ async function get(req, res, sql) {
      * install, and a counter that needs a second call is a counter that undercounts. */
     await sql`update gallery_skill set installs = installs + 1 where id = ${String(id)}`;
     return res.status(200).json({ ok: true, skill: Object.assign(listed(rows[0]), {
-      payload: rows[0].payload,
+      payload: installable(rows[0].payload),
     }) });
   }
 
@@ -190,8 +231,13 @@ async function publish(req, res, sql) {
       Math.round(encoded.length / 1024) + 'KB, limit ' + Math.round(PAYLOAD_MAX_BYTES / 1024) + 'KB)');
   }
 
-  const name = String(body.name || payload.name || 'Untitled skill').trim().slice(0, 80);
-  const description = String(body.description || payload.description || '').trim().slice(0, 400);
+  /* Scrubbed before it is stored, not on the way out: the row itself should not hold a value the author
+   * did not mean to publish. Old skills carry the filled goal as their description (see scrubExamples). */
+  const params = Array.isArray(payload.params) ? payload.params : [];
+  const name = scrubExamples(String(body.name || payload.name || 'Untitled skill'), params)
+    .trim().slice(0, 80);
+  const description = scrubExamples(String(body.description || payload.description || ''), params)
+    .trim().slice(0, 400);
   const origins = Array.isArray(payload.origins)
     ? payload.origins.filter((o) => typeof o === 'string').slice(0, 12)
     : [];
@@ -200,12 +246,19 @@ async function publish(req, res, sql) {
    * entry, and the id the extension carries is only meaningful on the machine that made it. */
   const id = 'sk_' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
 
+  /* The payload carries its own name and description, so scrubbing only the columns would leave the value
+   * sitting in the JSON an installer downloads. */
+  const stored = Object.assign({}, payload, {
+    name: scrubExamples(payload.name, params),
+    description: scrubExamples(payload.description, params),
+  });
+
   await sql`
     insert into gallery_skill
       (id, author_id, author_name, author_image, name, description, kind, payload, origins)
     values
       (${id}, ${who.id}, ${who.name}, ${who.image}, ${name}, ${description}, ${kind},
-       ${JSON.stringify(payload)}, ${origins})
+       ${JSON.stringify(stored)}, ${origins})
   `;
 
   const rows = await sql`select * from gallery_skill where id = ${id}`;

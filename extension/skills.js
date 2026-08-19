@@ -79,8 +79,25 @@ export function parameterise(goal) {
   return { template, params };
 }
 
+/* Parameters this skill cannot run without: no value given, and no example to fall back on.
+ *
+ * A skill installed from the gallery has no examples by design - the author's real values do not travel
+ * (see publicParams in api/gallery.js) - and fillGoal substitutes '' for a parameter it cannot resolve, so
+ * without this a blank field produced "email the invoice to " and ran it. Better to be told which field. */
+export function missingParams(skill, values) {
+  return (skill.params || [])
+    .filter((p) => {
+      const given = values && values[p.name];
+      const hasValue = given != null && String(given).trim() !== '';
+      const hasExample = p.example != null && String(p.example).trim() !== '';
+      return !hasValue && !hasExample;
+    })
+    .map((p) => p.name);
+}
+
 // Substitutes values into a template. A parameter with no value keeps its example, so a half-filled
-// form still produces a runnable goal rather than a sentence with holes in it.
+// form still produces a runnable goal rather than a sentence with holes in it. Call missingParams first:
+// a parameter with neither is substituted with '' here, which is a sentence with a hole in it.
 export function fillGoal(skill, values) {
   let out = String(skill.goalTemplate || skill.goal || '');
   for (const param of skill.params || []) {
@@ -137,7 +154,11 @@ export function skillFromRun(run, now) {
     id: id(),
     kind: 'created',
     name: suggestName(goal),
-    description: goal,
+    /* The template, not the goal that produced it. A created skill's whole point is that the value varies,
+     * so "send a follow-up to {{recipient}}" describes it and "send a follow-up to vic@example.com"
+     * describes one run of it - and that value is the author's, which matters once this is published. The
+     * name was already scrubbed of emails and URLs by suggestName; this was the one that was not. */
+    description: template,
     created: now,
     goalTemplate: template,
     params,

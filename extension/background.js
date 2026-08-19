@@ -17,7 +17,7 @@
 
 import { runGoal } from './agent.js';
 import {
-  skillFromRecording, skillFromRun, importSkills, exportSkill, exportMany, fillGoal, flowFor,
+  skillFromRecording, skillFromRun, importSkills, exportSkill, exportMany, fillGoal, missingParams, flowFor,
   publishLink,
 } from './skills.js';
 
@@ -654,6 +654,18 @@ async function runSkill(msg) {
 
   if (skill.kind === 'recorded') {
     return replayStart(flowFor(skill, { loop: !!msg.loop }));
+  }
+  /* A skill from the gallery carries no example values, so a field left blank has nothing to fall back
+   * on. Refuse by name rather than running a goal with a hole in it. */
+  const missing = missingParams(skill, msg.values || {});
+  if (missing.length) {
+    return {
+      ok: false,
+      error: missing.length === 1
+        ? `This skill needs ${missing[0]}. Fill it in and run it again.`
+        : `This skill needs ${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}. ` +
+          'Fill them in and run it again.',
+    };
   }
   return agentStart(fillGoal(skill, msg.values || {}));
 }

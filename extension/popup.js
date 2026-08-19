@@ -506,7 +506,11 @@ async function renderSkills() {
       const label = document.createElement('label');
       label.textContent = param.name;
       const input = document.createElement('input');
-      input.placeholder = param.example || param.name;
+      /* No example means nothing to fall back on - a skill from the gallery, whose author's values did not
+         travel with it - so the field is required rather than optional. */
+      const needed = !(param.example && String(param.example).trim());
+      input.placeholder = needed ? 'needed' : param.example;
+      input.required = needed;
       input.setAttribute('aria-label', param.name);
       input.addEventListener('input', () => { values[param.name] = input.value.trim(); });
       row.append(label, input);
