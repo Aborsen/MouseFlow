@@ -73,20 +73,50 @@ export interface GallerySkill {
 class ApiError extends Error {
   status: number;
 
-  constructor(message: string, status: number) {
+  /** The upstream's machine-readable code, when it sent one. Matching on prose is how a message change
+   *  silently turns a handled failure into an unhandled one. */
+  code: string | null;
+
+  constructor(message: string, status: number, code: string | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.code = code;
   }
+}
+
+/* Two failure shapes reach this client, because it talks to two different things.
+ *
+ *   ours          { error: { type, message } }   - api/sync.js, api/insights.js, api/chat.js
+ *   the auth one  { error: "Invalid callbackURL", code: "INVALID_CALLBACKURL" }
+ *
+ * Reading only the first is how the sign-in page came to show "HTTP 403" for a failure whose cause and fix
+ * were both sitting in the body: `error` was a string, so `error.message` was undefined and the status-code
+ * fallback fired. */
+interface Failure {
+  error?: { message?: string; type?: string; code?: string } | string;
+  code?: string;
+  message?: string;
+}
+
+function reasonOf(body: Failure | null, status: number): { message: string; code: string | null } {
+  const error = body?.error;
+  const fromString = typeof error === 'string' ? error : null;
+  const fromObject = error && typeof error === 'object' ? error.message : undefined;
+  return {
+    message: fromString || fromObject || body?.message || `HTTP ${status}`,
+    code: body?.code
+      ?? (error && typeof error === 'object' ? error.code ?? error.type ?? null : null)
+      ?? null,
+  };
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'same-origin', ...init });
-  const body = (await res.json().catch(() => null)) as
-    | (T & { error?: { message?: string } })
-    | null;
+  const body = (await res.json().catch(() => null)) as (T & Failure) | null;
   if (!res.ok) {
-    throw new ApiError(body?.error?.message ?? `HTTP ${res.status}`, res.status);
+    const { message, code } = reasonOf(body, res.status);
+    throw new ApiError(message, res.status, code);
   }
   return body as T;
 }

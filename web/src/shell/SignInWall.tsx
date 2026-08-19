@@ -54,8 +54,8 @@ const Problem = ({ children }: { children: React.ReactNode }) => (
  * INVALID_CALLBACKURL is the one worth naming: it means the auth project does not trust the host the app is
  * being served from, which happens the moment a deployment gains a second domain - and the raw code tells
  * somebody nothing about where to go and fix it. */
-function explain(message: string, host: string): string {
-  if (/INVALID_CALLBACKURL|Invalid callbackURL/i.test(message)) {
+function explain(message: string, host: string, code?: string | null): string {
+  if (/INVALID_CALLBACKURL/i.test(code ?? '') || /INVALID_CALLBACKURL|Invalid callbackURL/i.test(message)) {
     return `The sign-in service does not trust ${host} yet, so it refused to send you to Google. Add ` +
       `https://${host} to the allowed domains and callback URLs on the Neon Auth project - and to the ` +
       `authorised redirect URIs of the Google client it uses - then try again.`;
@@ -88,7 +88,8 @@ export const SignInWall = ({ problem, onSignIn }: Props) => {
       await onSignIn();
     } catch (err) {
       setBusy(null);
-      setFailed(explain(err instanceof Error ? err.message : 'Could not reach the sign-in service.', host));
+      const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: string }).code ?? '') : null;
+      setFailed(explain(err instanceof Error ? err.message : 'Could not reach the sign-in service.', host, code));
     }
   };
 
@@ -110,16 +111,25 @@ export const SignInWall = ({ problem, onSignIn }: Props) => {
           callbackURL: `${location.origin}/api/auth/finish?to=${encodeURIComponent(location.pathname)}`,
         }),
       });
-      const body = (await res.json().catch(() => null)) as { error?: { message?: string } | string; message?: string } | null;
+      const body = (await res.json().catch(() => null)) as
+        | { error?: { message?: string; code?: string } | string; code?: string; message?: string }
+        | null;
       if (!res.ok) {
+        /* Same two shapes as lib/api.ts reads, and for the same reason: the auth service sends `error` as a
+         * string with the code beside it, and reading only our own shape is what turned a precise refusal
+         * into "HTTP 403" on this very screen. */
         const said = typeof body?.error === 'string'
           ? body.error
           : body?.error?.message ?? body?.message ?? `HTTP ${res.status}`;
-        throw new Error(said);
+        const failure = new Error(said) as Error & { code?: string };
+        failure.code = body?.code
+          ?? (body?.error && typeof body.error === 'object' ? body.error.code : undefined);
+        throw failure;
       }
       setSent(address);
     } catch (err) {
-      setFailed(explain(err instanceof Error ? err.message : 'the sign-in link could not be sent', host));
+      const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: string }).code ?? '') : null;
+      setFailed(explain(err instanceof Error ? err.message : 'the sign-in link could not be sent', host, code));
     } finally {
       setBusy(null);
     }
