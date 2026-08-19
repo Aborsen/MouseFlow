@@ -618,9 +618,12 @@ const TOOLS = {
 
   list_skills: {
     description:
-      'The recordings and skills on this account, newest first. `recorded` is a captured recording, '
-      + '`created` is a skill written as a goal. `source` is web for the extension, desktop for the '
-      + 'local agent, and each half can only replay its own.',
+      'Everything the user has made, newest first - recordings AND skills, because both are rows of the '
+      + 'same table and only `kind` separates them: `recorded` is a captured recording, `created` is a '
+      + 'skill written as a goal. Filter by kind when the question names one, and say which you counted - '
+      + '"you have 2 recordings" and "you have 2 skills" are different answers and this tool can give '
+      + 'either. `source` is web for the extension, desktop for the local agent, and each half can only '
+      + 'replay its own.',
     schema: {
       type: 'object',
       additionalProperties: false,
@@ -806,6 +809,8 @@ function systemPrompt(today) {
     '  that carry the point, not everything you read.',
     '- Today is ' + today + '. Read "this week", "yesterday" and "last month" against that date.',
     '- Lead with the answer. Be short. No preamble, no restating the question, no closing offer of help.',
+    '- Plain text only. No markdown: no **bold**, no #headings, no bullet characters, no tables. Nothing',
+    '  renders it where your answer is displayed, so a ** arrives as two asterisks around a number.',
     '',
     'What the stored data does and does not hold. Do not paper over any of these:',
     '- A run has a start and a finish, so its duration is measured, not guessed. A run still marked',

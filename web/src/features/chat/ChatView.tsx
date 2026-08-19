@@ -485,7 +485,10 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
                     {turn.text}
                   </Typography>
                 ) : (
-                  <div className="grid gap-3 md:grid-cols-[1fr_minmax(200px,270px)]">
+                  /* `md:` is a VIEWPORT breakpoint, not a container one, so beside a 1265px window it put a
+                   * 270px sidebar inside a 416px panel and left the answer 60px to be read in. Tailwind 3 has
+                   * no container queries; the panel knows it is a panel, so it says so. */
+                  <div className={cn('grid gap-3', !embedded && 'md:grid-cols-[1fr_minmax(200px,270px)]')}>
                     <div className="min-w-0">
                       {/* Pre-wrapped, not rendered: see the note at the top of this file. */}
                       <Typography variant="p" className="whitespace-pre-wrap text-ink-primary text-[0.88rem]">
@@ -619,11 +622,20 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
                               );
                             })}
                           </ul>
+                        ) : turn.used.length ? (
+                          /* Not ungrounded: a lookup ran and returned rows, they were just not runs. Citations
+                           * are run ids by design (see api/chat.js), so counting skills or recordings cites
+                           * nothing - and the old warning called every one of those answers general
+                           * knowledge, under an answer that had counted actual rows. */
+                          <Typography variant="p" className="mt-1 text-ink-inactive text-[0.72rem]">
+                            Read from {turn.used.filter((u) => u.ok).map((u) => u.tool).join(' and ')} —
+                            those lookups return rows, but no individual run to cite.
+                          </Typography>
                         ) : (
                           <Typography variant="p" className="mt-1 text-fb-attention text-[0.72rem]">
                             <TriangleAlert className="mb-0.5 mr-1 inline size-3" />
-                            Nothing from your account was cited, so read this as general knowledge — it is not
-                            grounded in your runs.
+                            No lookup ran, so nothing here came from your account — read it as general
+                            knowledge.
                           </Typography>
                         )}
                       </div>

@@ -123,6 +123,35 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     });
   }
 
+  /* The assistant. A FIXTURE, not a fake loop: the reply is canned and says so in its own text, and it
+   * exists because the bug it caught was pure layout - a 270px "based on" sidebar laid out beside the answer
+   * inside a 416px panel, which left the words about 60px to be read in. That needs a rendered reply to
+   * measure and nothing else. The model call itself is still not mocked; see below. */
+  if (url.startsWith('/api/chat')) {
+    if ((req.method ?? 'GET').toUpperCase() === 'GET') {
+      return json(res, 200, {
+        ok: true,
+        configured: { anthropic: true, openai: true },
+        models: { anthropic: ['claude-opus-5'], openai: ['gpt-5.6-luna'] },
+        default: 'gpt-5.6-luna',
+        database: true,
+        rounds: 6,
+        tools: ['search_runs', 'get_run', 'summarize_time', 'list_skills', 'find_repeated'],
+      });
+    }
+    return json(res, 200, {
+      ok: true,
+      answer: 'This is a canned reply from the dev mock, long enough to show how an answer wraps when the '
+        + 'panel is narrow and when it is wide. It mentions two recordings and a run so the layout has '
+        + 'something to lay out, and it deliberately contains no markdown.',
+      citations: [],
+      used: [{ tool: 'list_skills', ok: true, detail: '{"limit":20}' }],
+      usage: { input: 2562, output: 65 },
+      provider: 'openai',
+      model: 'gpt-5.6-luna',
+    });
+  }
+
   /* Deliberately not mocked: a model call costs money and a fake one would make the loop look like it
    * works when it has never spoken to anything. */
   return json(res, 501, { error: { message: 'not mocked - run against the deployment for this' } });
