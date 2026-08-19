@@ -1,6 +1,6 @@
 /* The app's entry, on the same stack as insightis/apps/web: React 19, Vite, TanStack Router.
  *
- * Code-based routes rather than the file-based plugin. Five routes is not enough to earn a code generator,
+ * Code-based routes rather than the file-based plugin. Seven routes is not enough to earn a code generator,
  * and one file that lists them all is easier to read than a directory whose names are the routing.
  */
 import { RouterProvider, createRootRoute, createRoute, createRouter, redirect } from '@tanstack/react-router';
@@ -14,6 +14,8 @@ import { CreateView } from '@/features/create/CreateView';
 import { SkillsView } from '@/features/skills/SkillsView';
 import { GalleryView } from '@/features/gallery/GalleryView';
 import { ConnectView } from '@/features/connect/ConnectView';
+import { InsightsView } from '@/features/insights/InsightsView';
+import { ChatView } from '@/features/chat/ChatView';
 
 // Before the first paint, so the page does not flash the wrong colour on the way in.
 bootTheme();
@@ -31,6 +33,8 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: '/create', component: CreateView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/skills', component: SkillsView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/gallery', component: GalleryView }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/insights', component: InsightsView }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/chat', component: ChatView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/connect', component: ConnectView }),
   /* Every link written before this rewrite used a hash - #record, #skills, #gallery. Kept working rather
    * than silently landing people on the fallback. */

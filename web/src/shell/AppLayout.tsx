@@ -19,6 +19,8 @@ const TITLES: Record<string, string> = {
   '/create': 'Create the flow',
   '/skills': 'Skills',
   '/gallery': 'Gallery',
+  '/insights': 'Insights',
+  '/chat': 'Ask about your work',
   '/connect': 'Connections',
 };
 

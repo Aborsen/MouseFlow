@@ -1,17 +1,37 @@
-/* Create the flow: describe what you want, and one of the two halves does it.
+/* Create the flow, as a conversation.
+ *
+ * It used to be one block: a switch, a textarea, a button, and a scrolling log underneath that was replaced
+ * every time you asked for something. Asking for two things in a row left no trace of the first, which is
+ * the wrong shape for the thing this actually is - you say what you want, something goes and does it, you
+ * see what it did, you ask for the next thing. So it is a thread now, following insightis's chat (see
+ * components/chat), with the two executors as a switch inside the composer rather than a mode above it:
  *
  *   In this browser   the extension drives a tab. It aims at page ELEMENTS - it reads the accessibility
  *                     tree - so it clicks "the Send button" rather than a position and survives the page
  *                     moving underneath it. It cannot leave the browser. Default, for that reason.
  *   On this computer  the local agent drives the whole desktop from a picture of the screen, so it reaches
  *                     Excel, Explorer, a native dialog. The decision loop lives here; see desktop-engine.
+ *
+ * The turns are kept in memory only, deliberately: a run is already recorded on the account (that is what
+ * the Insights page reads), and persisting a second copy here would give two records that can disagree.
+ * Reloading the page clears the thread and loses nothing that matters.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Play, Square } from 'lucide-react';
+import { CircleDot, Monitor, Send, Sparkles, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import {
+  AgentTurn,
+  Composer,
+  Opener,
+  Segmented,
+  StepLine,
+  Suggestion,
+  Thread,
+  UserTurn,
+} from '@/components/chat';
 import { AGENT_WANTS } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
 import { push } from '@/lib/api';
@@ -31,6 +51,17 @@ interface ExtensionStatus {
   result?: { ok: boolean; summary?: string; said?: string; error?: string };
   error?: string;
   version?: string;
+}
+
+/** One exchange: what was asked for, and what happened. */
+interface Turn {
+  id: string;
+  goal: string;
+  target: Target;
+  at: string;
+  feed: RunEvent[];
+  state: 'running' | 'ok' | 'failed';
+  note?: string;
 }
 
 /** What a step actually did, not just which verb it used - afterwards is when somebody is working out
@@ -62,6 +93,12 @@ function describe(event: RunEvent): string {
   }
 }
 
+const SUGGESTIONS = [
+  'open my inbox, find the message from Ann about the invoice and reply that it is approved',
+  'download this month’s invoices from the billing page and put them in Downloads',
+  'in the spreadsheet on screen, fill the total column and save it',
+];
+
 export const CreateView = () => {
   const [state] = useConsole();
   const { health, stale } = useAgent();
@@ -72,15 +109,20 @@ export const CreateView = () => {
     try { return localStorage.getItem(KEY) === 'desktop' ? 'desktop' : 'browser'; } catch (_) { return 'browser'; }
   });
   const [goal, setGoal] = useState('');
-  const [feed, setFeed] = useState<RunEvent[]>([]);
-  const [note, setNote] = useState<{ text: string; kind?: 'good' | 'bad' } | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const [blocked, setBlocked] = useState<string | null>('Looking for what can carry this out…');
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [extension, setExtension] = useState<{ present: boolean; version: string | null }>({ present: false, version: null });
 
   const abort = useRef(false);
-  const feedEnd = useRef<HTMLDivElement>(null);
+  const live = useRef<string | null>(null);
+  const threadEnd = useRef<HTMLDivElement>(null);
+
+  /** Only ever the turn being run; a finished turn is never rewritten. */
+  const updateLive = useCallback((change: (turn: Turn) => Turn) => {
+    setTurns((prev) => prev.map((t) => (t.id === live.current ? change(t) : t)));
+  }, []);
 
   useEffect(() => {
     try { localStorage.setItem(KEY, target); } catch (_) { /* private mode */ }
@@ -88,7 +130,7 @@ export const CreateView = () => {
 
   useEffect(() => watchBridge((bridge) => setExtension({ present: bridge.present, version: bridge.version })), []);
 
-  useEffect(() => { feedEnd.current?.scrollIntoView({ block: 'nearest' }); }, [feed]);
+  useEffect(() => { threadEnd.current?.scrollIntoView({ block: 'end', behavior: 'smooth' }); }, [turns]);
 
   /* Can the chosen engine be reached? Each is absent in its own way and each needs a different sentence -
    * "it did not work" would leave the user nowhere to go. Re-checked when the tab regains focus, which is
@@ -127,22 +169,38 @@ export const CreateView = () => {
    * rather than held here. A desktop run is driven from this page, so this page owns it. */
   const pollExtension = useCallback(async () => {
     const status = await askExtension<ExtensionStatus>('page/status');
-    if (!status) { setNote({ text: 'The extension stopped answering. Reload this tab.', kind: 'bad' }); return false; }
-    if (status.signedOut) {
-      setBlocked('The extension is installed but not signed in. Open it and press Continue with Google.');
+    if (!status) {
+      updateLive((t) => ({ ...t, state: 'failed', note: 'The extension stopped answering. Reload this tab.' }));
+      setRunning(false);
       return false;
     }
-    setFeed((status.log ?? []).map((e) => ({
-      type: e.type as RunEvent['type'], name: e.name, text: e.text, message: e.message,
-    })));
-    setRunning(!!status.running);
-    if (!status.running && status.result) {
-      setNote(status.result.ok
-        ? { text: status.result.summary ?? status.result.said ?? 'Done.', kind: 'good' }
-        : { text: status.result.error ?? 'It stopped without finishing.', kind: 'bad' });
+    if (status.signedOut) {
+      setBlocked('The extension is installed but not signed in. Open it and press Continue with Google.');
+      updateLive((t) => ({ ...t, state: 'failed', note: 'The extension is not signed in.' }));
+      setRunning(false);
+      return false;
     }
-    return !!status.running;
-  }, []);
+
+    const feed = (status.log ?? []).map((e) => ({
+      type: e.type as RunEvent['type'], name: e.name, text: e.text, message: e.message,
+    }));
+    setRunning(!!status.running);
+    if (status.running) {
+      updateLive((t) => ({ ...t, feed }));
+      return true;
+    }
+    if (status.result) {
+      updateLive((t) => ({
+        ...t,
+        feed,
+        state: status.result!.ok ? 'ok' : 'failed',
+        note: status.result!.ok
+          ? status.result!.summary ?? status.result!.said ?? 'Done.'
+          : status.result!.error ?? 'It stopped without finishing.',
+      }));
+    }
+    return false;
+  }, [updateLive]);
 
   useEffect(() => {
     if (target !== 'browser' || !running) return;
@@ -150,30 +208,35 @@ export const CreateView = () => {
     return () => clearInterval(timer);
   }, [target, running, pollExtension]);
 
-  const start = useCallback(async () => {
+  const send = useCallback(async () => {
     const text = goal.trim();
-    if (!text) { setNote({ text: 'Say what you want done first.', kind: 'bad' }); return; }
-    setNote({ text: 'Starting…' });
-    setFeed([]);
+    if (!text || running) return;
+
+    const id = `t${Date.now()}`;
+    const startedAt = new Date().toISOString();
+    live.current = id;
+    setTurns((prev) => [...prev, { id, goal: text, target, at: startedAt, feed: [], state: 'running' }]);
+    setGoal('');
 
     if (target === 'desktop') {
       abort.current = false;
       setRunning(true);
-      const startedAt = new Date().toISOString();
 
       void runOnDesktop({
         goal: text,
         port: state.port,
-        onEvent: (event) => setFeed((prev) => [...prev, event]),
+        onEvent: (event) => updateLive((t) => ({ ...t, feed: [...t.feed, event] })),
         isAborted: () => abort.current,
       })
         .then(async (result) => {
-          setNote(result.ok
-            ? { text: result.said ?? 'Done.', kind: 'good' }
-            : { text: result.error ?? 'It stopped without finishing.', kind: 'bad' });
+          updateLive((t) => ({
+            ...t,
+            state: result.ok ? 'ok' : 'failed',
+            note: result.ok ? result.said ?? 'Done.' : result.error ?? 'It stopped without finishing.',
+          }));
 
-          /* Logged to the account, best effort: the sidebar's hours and the Hours screen are built from
-           * runs, so a desktop run that went unrecorded would make them quietly wrong. */
+          /* Logged to the account, best effort: the sidebar's hours, the Hours screen and the Insights page
+           * are built from runs, so a desktop run that went unrecorded would make them quietly wrong. */
           try {
             await push({
               runs: [{
@@ -202,148 +265,207 @@ export const CreateView = () => {
     if (!res?.ok) {
       if (res?.signedOut) {
         setBlocked('The extension is installed but not signed in. Open it and press Continue with Google.');
-        return;
       }
-      setNote({ text: res?.error ?? 'The extension did not take the goal.', kind: 'bad' });
+      updateLive((t) => ({
+        ...t,
+        state: 'failed',
+        note: res?.error ?? 'The extension did not take the goal.',
+      }));
       return;
     }
     setRunning(true);
     void pollExtension();
-  }, [goal, target, state.port, reload, pollExtension]);
+  }, [goal, running, target, state.port, reload, pollExtension, updateLive]);
 
   const stop = useCallback(async () => {
     setStopping(true);
-    setNote({ text: 'Stopping after the current step…' });
     if (target === 'desktop') { abort.current = true; return; }
     await askExtension('page/abort');
     void pollExtension();
   }, [target, pollExtension]);
 
-  const lastTurn = [...feed].reverse().find((e) => e.type === 'turn');
-  const lastWait = feed[feed.length - 1]?.type === 'waiting' ? feed[feed.length - 1] : null;
+  const engine = target === 'desktop'
+    ? health ? `agent ${health.version}${stale ? ' · out of date' : ''}` : 'agent offline'
+    : extension.present ? `extension ${extension.version ?? ''}` : 'extension not found';
 
   return (
-    <div className="p-5">
-      <section className="max-w-[900px] rounded-xl border-stroke border bg-surface-card p-4">
-        <div className="mb-3 flex items-start gap-4">
-          <Typography variant="p" className="max-w-[60ch] text-ink-secondary text-[0.9rem]">
-            Say what you want done, and choose what carries it out.
-          </Typography>
-          <span className="ms-auto shrink-0 font-mono text-[0.78rem] text-ink-inactive">
-            {target === 'desktop'
-              ? health ? `agent ${health.version}${stale ? ' · out of date' : ''}` : ''
-              : extension.present ? `extension ${extension.version ?? ''}` : ''}
-          </span>
-        </div>
+    // The shell gives this route a header and nothing else, so the thread owns the height and only it scrolls.
+    <div className="flex h-[calc(100dvh-3.25rem)] flex-col">
+      <Thread>
+        {turns.length === 0 ? (
+          <Opener
+            title="Say what you want done"
+            note={
+              target === 'desktop'
+                ? 'It works from a picture of your screen, so it reaches Excel, Explorer or any window — not only a browser tab. Each step sends that picture to the model.'
+                : 'The extension drives a tab in this browser. It aims at page elements rather than positions, so it survives the page moving underneath it — but it cannot leave the browser.'
+            }
+          >
+            {SUGGESTIONS.map((text) => (
+              <Suggestion key={text} icon={<Sparkles />} onClick={() => setGoal(text)}>
+                {text.length > 52 ? `${text.slice(0, 52)}…` : text}
+              </Suggestion>
+            ))}
+          </Opener>
+        ) : (
+          turns.map((turn) => {
+            const lastTurnEvent = [...turn.feed].reverse().find((e) => e.type === 'turn');
+            const lastEvent = turn.feed[turn.feed.length - 1];
+            const waiting = lastEvent?.type === 'waiting' ? lastEvent : null;
+            const shown = turn.feed.filter((e) => e.type !== 'turn' && e.type !== 'waiting');
 
-        <div className="grid max-w-[340px] grid-cols-2 gap-0.5 rounded-md border-stroke border bg-surface-card2 p-0.5">
-          {(['browser', 'desktop'] as Target[]).map((id) => (
-            <button
-              key={id}
-              type="button"
-              disabled={running}
-              onClick={() => { setTarget(id); setNote(null); setFeed([]); }}
-              className={cn(
-                'rounded-[5px] px-2 py-1.5 text-[0.86rem] text-ink-secondary hover:text-ink-primary',
-                target === id && 'bg-surface-card font-semibold text-ink-primary shadow-rest',
-                running && 'cursor-not-allowed opacity-disabled',
+            return (
+              <div key={turn.id} className="flex flex-col gap-3">
+                <UserTurn
+                  meta={`${turn.target === 'desktop' ? 'on this computer' : 'in this browser'} · ${
+                    new Date(turn.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  }`}
+                >
+                  {turn.goal}
+                </UserTurn>
+
+                <AgentTurn
+                  tone={turn.state === 'running' ? 'running' : turn.state}
+                  header={
+                    turn.state === 'running' ? (
+                      <div className="flex items-center gap-2 text-[0.82rem] text-ink-secondary">
+                        <CircleDot className="size-3.5 animate-pulse text-brand-primary" />
+                        {lastTurnEvent
+                          ? [
+                            `step ${lastTurnEvent.n}${(lastTurnEvent.wave ?? 1) > 1
+                              ? ` (wave ${lastTurnEvent.wave}, ${lastTurnEvent.inWave} of ${lastTurnEvent.of})`
+                              : ` of ${lastTurnEvent.of}`}`,
+                            waiting ? `waiting ${Math.round((waiting.ms ?? 0) / 1000)}s for the screen to settle` : null,
+                          ].filter(Boolean).join(' · ')
+                          : 'starting…'}
+                      </div>
+                    ) : undefined
+                  }
+                >
+                  {shown.length === 0 && turn.state === 'running' && (
+                    <StepLine kind="waiting">Working out the first step…</StepLine>
+                  )}
+
+                  {shown.map((event, i) => (
+                    <StepLine
+                      key={i}
+                      kind={
+                        event.type === 'tool' ? 'tool'
+                          : event.type === 'error' ? 'error'
+                            : event.type === 'wave' ? 'wave'
+                              : event.type === 'handoff' ? 'handoff'
+                                : 'say'
+                      }
+                    >
+                      {event.type === 'tool'
+                        ? describe(event)
+                        : event.type === 'wave'
+                          ? `Wave ${event.n} — carrying on from what it wrote down`
+                          : event.text ?? event.message ?? ''}
+                    </StepLine>
+                  ))}
+
+                  {turn.note && (
+                    <Typography
+                      variant="p"
+                      className={cn(
+                        'mt-1 text-[0.88rem]',
+                        turn.state === 'ok' && 'text-fb-green',
+                        turn.state === 'failed' && 'text-fb-red-text',
+                      )}
+                    >
+                      {turn.note}
+                    </Typography>
+                  )}
+                </AgentTurn>
+              </div>
+            );
+          })
+        )}
+        <div ref={threadEnd} />
+      </Thread>
+
+      {blocked && (
+        <div className="shrink-0 px-4 pb-2">
+          <div className="mx-auto w-full max-w-[46rem]">
+            <div className="flex flex-wrap items-center gap-3 rounded-md border-stroke border bg-surface-card2 px-3 py-2.5 text-[0.86rem] text-ink-secondary">
+              <span className="max-w-[64ch]">{blocked}</span>
+              <Button variant="ghost" size="sm" onClick={() => void check()}>Check again</Button>
+              {target === 'desktop' && !health && (
+                <Button variant="ghost" size="sm" onClick={() => void navigate({ to: '/connect' })}>
+                  Open the guide
+                </Button>
               )}
-            >
-              {id === 'browser' ? 'In this browser' : 'On this computer'}
-            </button>
-          ))}
+            </div>
+          </div>
         </div>
+      )}
 
-        <Typography variant="p" className="mt-2 max-w-[62ch] text-ink-inactive text-[0.82rem]">
-          {target === 'desktop'
-            ? 'Real clicks and typing anywhere on this computer, so it reaches Excel, Explorer or any window — not only a browser tab. It works from a picture of the screen, and that picture is sent to the model on every step.'
-            : 'Drives a tab in this browser through the extension. It aims at page elements rather than coordinates, so it is the steadier of the two — but it cannot leave the browser.'}
-        </Typography>
+      <Composer
+        footer={
+          <>
+            {/* The choice of executor lives with the message it applies to, not in a mode above the page:
+                the same goal typed against the browser and against the desktop is two different requests. */}
+            <Segmented<Target>
+              value={target}
+              disabled={running}
+              onChange={(id) => { setTarget(id); void check(); }}
+              options={[
+                { id: 'browser', label: 'In this browser', title: 'The extension drives a tab. Steadier, and cannot leave the browser.' },
+                { id: 'desktop', label: 'On this computer', title: 'The local agent drives the whole desktop from a picture of the screen.' },
+              ]}
+            />
 
-        {blocked && (
-          <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border-stroke border bg-surface-card2 px-3 py-2.5 text-[0.86rem] text-ink-secondary">
-            <span className="max-w-[64ch]">{blocked}</span>
-            <Button variant="ghost" size="sm" onClick={() => void check()}>Check again</Button>
-            {target === 'desktop' && !health && (
-              <Button variant="ghost" size="sm" onClick={() => void navigate({ to: '/connect' })}>
-                Open the guide
+            <span className="flex items-center gap-1.5 font-mono text-[0.74rem] text-ink-inactive">
+              <Monitor className="size-3.5" />
+              {engine}
+            </span>
+
+            <span className="ms-auto text-[0.74rem] text-ink-inactive">
+              {target === 'desktop'
+                ? `${WAVE_TURNS} steps a wave, up to ${MAX_WAVES}`
+                : 'aims at elements, not positions'}
+            </span>
+
+            {running ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                leftSlot={<Square className="size-4" />}
+                onClick={stop}
+                disabled={stopping}
+              >
+                {stopping ? 'Stopping…' : 'Stop'}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                leftSlot={<Send className="size-4" />}
+                disabled={!!blocked || !goal.trim()}
+                onClick={send}
+              >
+                Do it
               </Button>
             )}
-          </div>
-        )}
-
+          </>
+        }
+      >
         <textarea
           value={goal}
           onChange={(ev) => setGoal(ev.target.value)}
+          onKeyDown={(ev) => {
+            // Enter sends, Shift+Enter breaks the line - what a chat does. A goal is usually one sentence.
+            if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); void send(); }
+          }}
           disabled={running}
-          placeholder="open my inbox, find the message from Ann about the invoice and reply that it is approved"
-          className="mt-3 min-h-[84px] w-full max-w-[760px] resize-y rounded-md border-stroke border bg-surface-card2 px-3 py-2.5 text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none disabled:opacity-disabled"
-        />
-
-        <div className="mt-2 flex items-center gap-2">
-          {running ? (
-            <Button variant="destructive" leftSlot={<Square className="size-4" />} onClick={stop} disabled={stopping}>
-              {stopping ? 'Stopping…' : 'Stop'}
-            </Button>
-          ) : (
-            <Button leftSlot={<Play className="size-4" />} disabled={!!blocked} onClick={start}>
-              Do it
-            </Button>
+          rows={2}
+          placeholder={running ? 'Working…' : 'open my inbox and reply to Ann that the invoice is approved'}
+          className={cn(
+            'max-h-[9rem] min-h-[3rem] w-full resize-none bg-transparent px-1.5 py-1 text-ink-primary',
+            'placeholder:text-ink-inactive focus:outline-none disabled:opacity-disabled',
           )}
-        </div>
-
-        <Typography variant="p" className="mt-2 max-w-[70ch] text-ink-inactive text-xs">
-          {target === 'desktop'
-            ? `A step is one decision, and each sends a picture of your screen to the model. ${WAVE_TURNS} steps to a wave, up to ${MAX_WAVES} waves — at the end of a wave it writes down where it got to and carries on. Waiting for something to finish costs nothing.`
-            : 'Each step sends the page’s elements to the model, not a picture. Up to 24 steps per wave, and it hands over to a fresh stretch rather than stopping at a wall.'}
-        </Typography>
-
-        {feed.length > 0 && (
-          <div className="mt-3 max-h-[260px] max-w-[760px] overflow-y-auto rounded-md border-stroke border bg-surface-card2 px-3 py-2 text-[0.85rem]">
-            {feed
-              .filter((e) => e.type !== 'turn' && e.type !== 'waiting')
-              .slice(-16)
-              .map((event, i) => (
-                <div
-                  key={i}
-                  className={cn(
-                    'py-0.5',
-                    event.type === 'tool' && 'font-mono text-[0.8rem] text-ink-secondary',
-                    event.type === 'error' && 'text-fb-red-text',
-                    event.type === 'wave' && 'mt-2 border-stroke border-t pt-1.5 font-semibold text-ink-primary',
-                    event.type === 'handoff' && 'border-brand-primary border-l-2 bg-surface-accent px-2 py-1 text-ink-secondary',
-                  )}
-                >
-                  {event.type === 'tool'
-                    ? describe(event)
-                    : event.type === 'wave'
-                      ? `Wave ${event.n} — carrying on from what it wrote down`
-                      : event.text ?? event.message ?? ''}
-                </div>
-              ))}
-            <div ref={feedEnd} />
-          </div>
-        )}
-
-        {(note || (running && lastTurn)) && (
-          <Typography
-            variant="p"
-            className={cn(
-              'mt-3 text-[0.88rem]',
-              note?.kind === 'bad' && 'text-fb-red-text',
-              note?.kind === 'good' && 'text-fb-green',
-              !note?.kind && 'text-ink-secondary',
-            )}
-          >
-            {running && lastTurn
-              ? [
-                  `step ${lastTurn.n}${(lastTurn.wave ?? 1) > 1 ? ` (wave ${lastTurn.wave}, ${lastTurn.inWave} of ${lastTurn.of})` : ` of ${lastTurn.of}`}`,
-                  lastWait ? `waiting ${Math.round((lastWait.ms ?? 0) / 1000)}s for the screen to settle` : null,
-                ].filter(Boolean).join(' · ')
-              : note?.text}
-          </Typography>
-        )}
-      </section>
+        />
+      </Composer>
     </div>
   );
 };
