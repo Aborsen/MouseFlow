@@ -294,6 +294,14 @@ function emit(state, spec) {
     target: spec.target == null || spec.target === '' ? null : oneLine(spec.target, TARGET_MAX),
     note: spec.note == null || spec.note === '' ? null : oneLine(spec.note, NOTE_MAX),
     segment: state.current ? state.current.n : 0,
+    /* Structured, for the narrator. All three are already IN `what` as prose, and a sentence generator
+     * that read its own sentences back would break the first time one was reworded. Stripped by
+     * publicStep, like `segment` and `from`. */
+    ctx: spec.ctx || null,
+    keys: clamp0(num(spec.keys)),
+    notches: clamp0(num(spec.notches)),
+    px: clamp0(num(spec.px)),
+    direction: spec.direction || null,
     from: {
       events: state.carryEvents.concat(Array.isArray(spec.events) ? spec.events : []),
       zeroDelay: spec.zeroDelay == null ? null : spec.zeroDelay,
@@ -1097,6 +1105,8 @@ function deriveDesktop(events, seen) {
           : '';
         emit(state, {
           action: 'drag',
+          ctx: event.ctx,
+          px: Math.round(straight),
           what: 'dragged ' + pxText(straight) + ' from ' + point(event) + ' to ' + point(release)
             + ' over ' + spanText(own) + inApp(event.ctx),
           target: point(event) + ' to ' + point(release),
@@ -1121,6 +1131,7 @@ function deriveDesktop(events, seen) {
       const step = emit(state, {
         action: 'click',
         what: actWords(verb, event.ctx, point(event)),
+        ctx: event.ctx,
         target: point(event),
         note: notes.join('; '),
         own,
@@ -1215,6 +1226,9 @@ function deriveDesktop(events, seen) {
       const notches = group.length > 1 ? ' ' + group.length + ' notches' : '';
       emit(state, {
         action: 'scroll',
+        ctx: event.ctx,
+        notches: group.length,
+        direction: event.direction,
         what: (event.direction ? 'scrolled ' + event.direction : 'scrolled') + notches
           + inApp(event.ctx),
         target: point(event),
@@ -1257,6 +1271,8 @@ function deriveDesktop(events, seen) {
         : '';
       emit(state, {
         action: 'type',
+        ctx: event.ctx,
+        keys,
         what: (keys === 1 ? 'pressed a key' : 'typed for ' + spanText(own) + ' - ' + keys + ' keystrokes')
           + into + inApp(event.ctx),
         /* No coordinate. The event carries the last known pointer position because the five-column format
@@ -1323,6 +1339,201 @@ function mergeDouble(state, previous, step, apart, event, words) {
   if (state.current) state.current.steps.pop();
 }
 
+/* --------------------------------------------------------------------- telling the story
+ *
+ * The same derived steps, read as a sequence rather than as a list. Everything here is a thing that was
+ * recorded: a control name appears because one was read, a duration because a clock ran. Where a name was
+ * not read, the sentence says how many were not rather than leaving the count to the reader.
+ *
+ * What it deliberately does NOT do is name outcomes. "Clicked Send" is what happened; "sent the email" is
+ * an outcome nothing in a recording can see - the click may have landed on a disabled button, the window
+ * may have moved. One paragraph goes past the evidence to read the shape of it, and it is labelled.
+ */
+
+const STORY_CLAUSES = 9;
+
+function joinWords(list, last) {
+  if (list.length === 0) return '';
+  if (list.length === 1) return list[0];
+  return list.slice(0, -1).join(', ') + ' ' + (last || 'and') + ' ' + list[list.length - 1];
+}
+
+const quoted = (name) => '"' + name + '"';
+
+/* One place's paragraph, walked in order. Consecutive clicks with names merge into one clause, because
+ * "clicked New mail, then To, then Send" is the sentence a person would say and three clauses is not. */
+function placeStory(segment) {
+  const clauses = [];
+  let namedRun = [];
+  let unnamed = 0;
+  let dropped = 0;
+
+  const flushNamed = () => {
+    if (namedRun.length) {
+      clauses.push('clicked ' + joinWords(namedRun.map(quoted), 'then'));
+      namedRun = [];
+    }
+    if (unnamed) {
+      clauses.push(unnamed === 1
+        ? 'clicked once on something with no name to read'
+        : 'clicked ' + unnamed + ' more times on things with no names to read');
+      unnamed = 0;
+    }
+  };
+
+  for (const step of segment.steps) {
+    if (clauses.length >= STORY_CLAUSES) { dropped++; continue; }
+
+    if (step.action === 'click' || step.action === 'dblclick') {
+      const name = step.ctx && step.ctx.control;
+      if (name && step.action === 'click') { namedRun.push(name); continue; }
+      flushNamed();
+      clauses.push(step.action === 'dblclick'
+        ? (name ? 'double-clicked ' + quoted(name) : 'double-clicked')
+        : 'clicked something with no name to read');
+      continue;
+    }
+
+    flushNamed();
+
+    if (step.action === 'type') {
+      const into = step.ctx && step.ctx.control ? ' in ' + quoted(step.ctx.control) : '';
+      clauses.push(step.keys > 1
+        ? 'typed for ' + spanText(step.own) + into + ' - ' + step.keys + ' keystrokes'
+        : 'pressed a key' + into);
+    } else if (step.action === 'scroll') {
+      clauses.push((step.direction ? 'scrolled ' + step.direction : 'scrolled')
+        + (step.notches > 8 ? ' a long way' : ''));
+    } else if (step.action === 'drag') {
+      clauses.push('dragged something ' + pxText(step.px));
+    } else if (step.action === 'wait') {
+      // Short waits are the rhythm of working and would fill this with noise.
+      if (step.own >= 5_000) clauses.push('stopped for ' + spanText(step.own));
+      else dropped++;
+    } else if (step.action === 'move') {
+      dropped++;
+    } else {
+      clauses.push('did something this transcript could not read');
+    }
+  }
+  flushNamed();
+
+  if (dropped > 0 && clauses.length >= STORY_CLAUSES) {
+    clauses.push('and ' + dropped + ' more step' + (dropped === 1 ? '' : 's') + ' the list below has');
+  }
+
+  /* The proportions, which are the part a step list cannot show: an hour of clicking and an hour of
+   * sitting still look the same in a list and read as completely different work. */
+  const own = segment.steps.reduce((sum, step) => sum + step.ms, 0);
+  const typed = segment.steps.reduce((sum, step) => sum + (step.action === 'type' ? step.own : 0), 0);
+  const idle = segment.steps.reduce((sum, step) => sum + (step.action === 'wait' ? step.own : 0), 0);
+  const shape = [];
+  if (own > 4_000 && typed / own > 0.4) {
+    shape.push('Most of the time here went on typing (' + spanText(typed) + ' of ' + spanText(own) + ')');
+  }
+  if (own > 8_000 && idle / own > 0.5) {
+    shape.push('More than half of it was nobody touching anything - reading, or waiting for something '
+      + 'to finish');
+  }
+
+  return (clauses.length ? capitalise(joinWords(clauses, 'and then')) + '.' : 'Nothing happened here.')
+    + (shape.length ? ' ' + shape.join('. ') + '.' : '');
+}
+
+const capitalise = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
+
+function tellStory(segments, counts, totalMs, source) {
+  /* No steps, no story. An empty recording used to get an opening line about running 0.0s in a place it
+   * could not name, which is a paragraph about nothing - and `summary.captured` already says what happened
+   * in one sentence. */
+  if (!segments.length) return [];
+  const story = [];
+  const places = segments.filter((segment) => segment.where && segment.where.kind === 'app'
+    || (segment.where && segment.where.kind === 'page'));
+  const named = places.map((segment) => segment.where.label).filter(Boolean);
+
+  /* --------------------------------------------------------------- the overview */
+  let opening = 'This recording runs ' + spanText(totalMs) + '.';
+  const distinct = named.filter((label, i) => named.indexOf(label) === i);
+  if (distinct.length > 1) {
+    /* Stretches and places are counted separately on purpose: going Outlook, Excel, Outlook is three
+     * stretches in two places, and calling it three places would be wrong while calling it two would lose
+     * that the work came back. */
+    opening += ' The work moves through ' + distinct.length + ' place'
+      + (distinct.length === 1 ? '' : 's')
+      + (named.length > distinct.length ? ' over ' + named.length + ' stretches' : '')
+      + ', starting in ' + named[0] + ' and ending in ' + named[named.length - 1] + '.';
+  } else if (distinct.length === 1) {
+    opening += ' All of it happened in ' + distinct[0] + '.';
+  } else {
+    opening += ' Nothing in it names where it happened, so the story below is what was done rather than '
+      + 'where.';
+  }
+  story.push({ kind: 'overview', title: null, text: oneLine(opening, 400) });
+
+  /* --------------------------------------------------------------- one paragraph per place */
+  for (const segment of segments) {
+    const seconds = segment.steps.reduce((sum, step) => sum + step.ms, 0);
+    story.push({
+      kind: 'place',
+      title: oneLine((segment.where && segment.where.label) || 'Somewhere this recording does not name', 120),
+      // Where it sits on the clock, so a paragraph can be found in the step list underneath it.
+      at: Math.round(segment.startMs),
+      seconds: secondsOf(seconds),
+      detail: oneLine((segment.where && segment.where.detail) || '', 120) || null,
+      text: oneLine(placeStory(segment), 700),
+    });
+  }
+
+  /* --------------------------------------------------------------- the reading
+   *
+   * The one paragraph that says more than was recorded, which is why it says that it is doing so. Built
+   * from measured proportions, not from a guess about intent: what the numbers cannot support does not
+   * get written. */
+  const typedMs = counts.typedMs || 0;
+  const bits = [];
+  if (typedMs > 0 && totalMs > 0) {
+    const share = Math.round((typedMs / totalMs) * 100);
+    bits.push(spanText(typedMs) + ' of it - about ' + share + '% - went on typing, in '
+      + counts.typeRuns + ' run' + (counts.typeRuns === 1 ? '' : 's'));
+  }
+  if (counts.clicks > 0) {
+    bits.push(counts.clicks + ' click' + (counts.clicks === 1 ? '' : 's')
+      + (counts.ctxNamed > 0 ? ', ' + counts.ctxNamed + ' of them on something with a name' : ''));
+  }
+  if (counts.scrolls > 0) bits.push(counts.scrolls + ' wheel notch' + (counts.scrolls === 1 ? '' : 'es'));
+  if (counts.drags > 0) bits.push(counts.drags + ' drag' + (counts.drags === 1 ? '' : 's'));
+
+  if (bits.length) {
+    /* Semicolons, not commas. Several of these bits contain a comma of their own - "5 clicks, 4 of them on
+     * something with a name" - and joining those with commas produces one flat list of things that are not
+     * peers. */
+    let reading = bits.join('; ') + '.';
+    /* What the shape suggests, in the terms the measurements support and no further. A recording that is
+     * mostly typing and mostly named clicks is somebody working; one that is mostly pauses is somebody
+     * reading; and a transcript that confidently said which without saying why would be believed. */
+    /* Decided on the share of the recording spent waiting, not on a count of clicks. A count cannot be
+     * compared across lengths - four clicks in ten seconds is busy and four in ten minutes is not - and
+     * judging a short recording quiet because it had few clicks in it was exactly the wrong answer. */
+    const idleMs = segments.reduce((sum, segment) => sum + segment.steps
+      .reduce((inner, step) => inner + (step.action === 'wait' ? step.own : 0), 0), 0);
+    const idle = idleMs / Math.max(1, totalMs);
+    reading += idle < 0.4
+      ? ' Steady input almost throughout, which is the shape of work being done rather than a screen being '
+        + 'watched.'
+      : ' ' + Math.round(idle * 100) + '% of the time nothing was touched at all, which is the shape of '
+        + 'reading or waiting rather than working - or of something happening in a window the recorder '
+        + 'cannot see into.';
+    story.push({
+      kind: 'reading',
+      title: 'Reading it',
+      text: oneLine(capitalise(reading), 600),
+    });
+  }
+
+  return story;
+}
+
 /* ------------------------------------------------------------------- the transcript */
 
 export function transcribe(flow) {
@@ -1358,6 +1569,9 @@ export function transcribe(flow) {
   if (kind === 'created') {
     return {
       flow: head,
+      /* A created skill has no story because it has no sequence: it holds a goal, and the run beside it is
+       * evidence rather than steps. Empty rather than absent, so nothing has to test for the field. */
+      story: [],
       summary: emptySummary(
         'Nothing: this is a created skill, not a recording. It holds a goal the agent re-runs and, '
         + 'beside it, what one successful run did - as evidence, not as steps to replay. There are no '
@@ -1381,6 +1595,7 @@ export function transcribe(flow) {
         : 'payload.events is a ' + typeof payload.events + ', not a list';
     return {
       flow: head,
+      story: [],
       summary: emptySummary(
         'Nothing: ' + trouble + ', so there is nothing to transcribe.', 2),
       segments: [],
@@ -1457,8 +1672,16 @@ export function transcribe(flow) {
     empty: events.length === 0,
   });
 
+  const story = tellStory(
+    state.segments.filter((segment) => segment.steps.length > 0),
+    counts,
+    totalMs,
+    source,
+  );
+
   return {
     flow: head,
+    story,
     summary: {
       // The raw event count, so this reconciles with the "142 events" the recorder itself reported.
       events: events.length,

@@ -75,6 +75,18 @@ interface Summary {
   gaps?: unknown;
 }
 
+/** One paragraph of the recording told as prose. `kind` is what it is for: the opening span-and-places
+ * line, one paragraph per place in the order the work moved, and a closing reading of the proportions -
+ * which is the only one that says more than was recorded, and says so. */
+interface Chapter {
+  kind?: string;
+  title?: unknown;
+  detail?: unknown;
+  text?: unknown;
+  at?: unknown;
+  seconds?: unknown;
+}
+
 interface Where {
   kind?: 'app' | 'page' | 'unknown' | string;
   label?: string;
@@ -114,6 +126,7 @@ interface Transcript {
   summary?: Summary;
   segments?: Segment[];
   gaps?: Gap[];
+  story?: Chapter[];
 }
 
 /* Arrays are read through this rather than trusted: a section that renders as nothing is a far better
@@ -693,6 +706,7 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => 
   }, [armed, flowId, onClose, onRemoved]);
 
   const gaps = list(data?.gaps);
+  const story = list(data?.story) as Chapter[];
 
   return (
     /* Three bands: a header that does not move, a body that scrolls, a footer with the two things you can
@@ -795,6 +809,64 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => 
 
         {data && (
           <div className={cn('space-y-3', busy && 'opacity-60 transition-opacity duration-base')}>
+            {/* --------------------------------------------------------------- the story
+              *
+              * First, because it is what somebody opening a transcript is asking for: what happened, in
+              * order, in words. Every clause under it was derived from a recorded event - no model wrote
+              * this - and the step list below is the evidence for each paragraph, which is why the place
+              * paragraphs carry the clock offset the segments are labelled with. */}
+            {story.length > 0 && (
+              <section className="rounded-lg border-stroke border bg-surface-card p-4">
+                <Typography variant="h3" weight="semibold" className="mb-2.5 text-[0.92rem]">
+                  What happened
+                </Typography>
+                <div className="space-y-2.5">
+                  {story.map((chapter, i) => {
+                    const title = str(chapter.title);
+                    const detail = str(chapter.detail);
+                    const text = str(chapter.text);
+                    if (!text) return null;
+                    const reading = chapter.kind === 'reading';
+                    return (
+                      <div
+                        key={`${i}-${title ?? chapter.kind ?? ''}`}
+                        className={cn(
+                          'max-w-[68ch]',
+                          reading && 'border-stroke border-t pt-2.5',
+                        )}
+                      >
+                        {title && (
+                          <div className="flex flex-wrap items-baseline gap-x-1.5">
+                            <Typography variant="span" weight="semibold" className="break-words text-[0.85rem]">
+                              {title}
+                            </Typography>
+                            {detail && (
+                              <span className="text-[0.75rem] text-ink-inactive">{detail}</span>
+                            )}
+                            {count(chapter.at) != null && (
+                              <span className="ms-auto shrink-0 font-mono text-[0.72rem] text-ink-inactive tabular-nums">
+                                {fmtClock(count(chapter.at) ?? 0)}
+                                {count(chapter.seconds) ? ` · ${fmtSeconds(count(chapter.seconds) ?? 0)}` : ''}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <Typography
+                          variant="p"
+                          className={cn(
+                            'break-words text-[0.85rem]',
+                            reading ? 'text-ink-inactive' : 'text-ink-secondary',
+                          )}
+                        >
+                          {text}
+                        </Typography>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
             {segments.length === 0 ? (
               <section className="rounded-lg border-stroke border bg-surface-card p-4">
                 <Typography variant="h3" weight="semibold" className="text-[0.92rem]">
@@ -820,34 +892,40 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => 
 
             {/* --------------------------------------------------------------- the gaps
               *
-              * Quiet on purpose. These are not errors and they are not warnings: they are the things this
-              * recording genuinely cannot tell you, printed so nobody has to wonder whether an absence
-              * means nought. A guess in their place would be believed. */}
+              * Folded, and closed. These are not errors and not warnings - they are the things this
+              * recording genuinely cannot tell you, and they have to stay somewhere, because a reader who
+              * cannot tell an absence from a nought will invent the difference. But they were opening the
+              * transcript: eight paragraphs of caveat above the fold, where the story now goes. */}
             {gaps.length > 0 && (
-              <section className="rounded-lg border-stroke border bg-surface-chips p-3.5">
-                <div className="mb-1 flex items-center gap-1.5">
-                  <CircleDashed className="size-4 text-ink-inactive" />
-                  <Typography variant="h3" weight="semibold" className="text-[0.88rem] text-ink-secondary">
+              <details className="group rounded-lg border-stroke border bg-surface-chips">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 p-3.5">
+                  <CircleDashed className="size-4 shrink-0 text-ink-inactive" />
+                  <Typography variant="span" weight="semibold" className="text-[0.88rem] text-ink-secondary">
                     What this recording cannot tell you
                   </Typography>
+                  <span className="ms-auto shrink-0 text-[0.75rem] text-ink-inactive tabular-nums">
+                    {gaps.length}
+                  </span>
+                </summary>
+                <div className="px-3.5 pb-3.5">
+                  <Typography variant="p" className="mb-2.5 text-ink-inactive text-[0.78rem]">
+                    Everything above was read from something that was recorded. These were not, so they are
+                    listed rather than estimated.
+                  </Typography>
+                  <dl className="space-y-2">
+                    {gaps.map((gap, i) => (
+                      <div key={str(gap.question) ?? i}>
+                        <dt className="break-words text-[0.82rem] text-ink-body">
+                          {str(gap.question) ?? 'Something this recording does not hold'}
+                        </dt>
+                        {str(gap.why) && (
+                          <dd className="break-words text-[0.78rem] text-ink-inactive">{str(gap.why)}</dd>
+                        )}
+                      </div>
+                    ))}
+                  </dl>
                 </div>
-                <Typography variant="p" className="mb-2.5 text-ink-inactive text-[0.78rem]">
-                  Everything above was read from something that was recorded. These were not, so they are
-                  listed rather than estimated.
-                </Typography>
-                <dl className="space-y-2">
-                  {gaps.map((gap, i) => (
-                    <div key={str(gap.question) ?? i}>
-                      <dt className="break-words text-[0.82rem] text-ink-body">
-                        {str(gap.question) ?? 'Something this recording does not hold'}
-                      </dt>
-                      {str(gap.why) && (
-                        <dd className="break-words text-[0.78rem] text-ink-inactive">{str(gap.why)}</dd>
-                      )}
-                    </div>
-                  ))}
-                </dl>
-              </section>
+              </details>
             )}
           </div>
         )}

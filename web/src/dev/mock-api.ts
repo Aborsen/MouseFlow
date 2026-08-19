@@ -150,6 +150,15 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           + 'screenshots.',
         gaps: 2,
       },
+      /* The narrative, which is what api/_transcript.js now returns first. Derived there from the same
+       * steps below - no model writes it - so a fixture of it is a fixture of the SHAPE, and the wording
+       * is a real example of what the derivation produces. */
+      story: [
+        { kind: 'overview', title: null, text: 'This recording runs 1m 14s. The work moves through 2 places, starting in Inbox — victorg — Outlook and ending in Q3-forecast.xlsx - Excel Online — Microsoft Edge.' },
+        { kind: 'place', title: 'Inbox — victorg — Outlook', detail: 'OUTLOOK', at: 0, seconds: 41, text: 'Clicked "New mail" then "To", clicked once on something with no name to read, typed for 47.2s in "Message body" - 132 keystrokes and then clicked "Send". Most of the time here went on typing (47.2s of 41s).' },
+        { kind: 'place', title: 'Q3-forecast.xlsx - Excel Online — Microsoft Edge', detail: 'msedge', at: 41000, seconds: 33, text: 'Clicked "B4" and then scrolled down.' },
+        { kind: 'reading', title: 'Reading it', text: '47.2s of it - about 64% - went on typing, in 1 run; 6 clicks, 5 of them on something with a name; 2 wheel notches; 1 drag. Steady input for most of the recording, which is the shape of work being done rather than a screen being watched.' },
+      ],
       segments: [
         {
           // Window as the label, application as the detail: one browser is many tabs, and "chrome" is not
