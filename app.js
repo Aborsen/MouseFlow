@@ -980,9 +980,32 @@ function startCommand() {
  * It used to live in onboarding step one and vanish the moment the agent connected - so the moment it
  * was needed AGAIN, to restart an agent that had fallen behind, there was nowhere to get it. Now it sits
  * in the setup panel whatever the state, and says which of the two things it is for. */
+/* Whether the user has unfolded the second command, and what the block was last built from.
+ *
+ * This function is called from setAgentUi, which the health poll calls every two seconds - so it used to
+ * rebuild the whole block, and the <details> the user had just opened was thrown away with it. It looked
+ * like the panel closing itself after two seconds, because that is exactly what it was.
+ *
+ * Two fixes, and the second is the one that matters: remember the fold, and do not rebuild at all unless
+ * something in the block has actually changed. A periodic render that destroys interaction state is a bug
+ * waiting for somewhere else to happen.
+ */
+let commandOpen = false;
+let commandBuiltFrom = null;
+
 function renderStartCommand(stale) {
   const box = $('#start-command');
   if (!box) return;
+
+  /* Everything the block's contents depend on. If none of it has moved, the DOM already says the right
+   * thing and touching it can only take something away. */
+  const signature = JSON.stringify([
+    !!stale, !!health, health && health.version, state.port, location.origin,
+    state.onboarding.usedDownload,
+  ]);
+  if (signature === commandBuiltFrom && box.firstChild) return;
+  commandBuiltFrom = signature;
+
   box.textContent = '';
 
   const online = !!health;
@@ -1017,10 +1040,13 @@ function renderStartCommand(stale) {
   /* The other way, in the open rather than as a hidden mode. Folded up because most people want the line
    * above; expanded already if this browser has downloaded the file, since that is a signal about which
    * one they meant - a signal, not a decision made on their behalf. */
-  /* Folded, always. Having downloaded the file once used to unfold this on every visit thereafter, which
-   * put a second command in front of everyone who had ever clicked Download - and the piped one above it
-   * is the one almost everybody wants. */
+  /* Folded to begin with. Having downloaded the file once used to unfold this on every visit thereafter,
+   * which put a second command in front of everyone who had ever clicked Download - and the piped one
+   * above it is what almost everybody wants. Once opened it STAYS open: the fold is the user's, and a
+   * background poll has no business closing it. */
   const other = h('details', { class: 'start-other' });
+  other.open = commandOpen;
+  other.addEventListener('toggle', () => { commandOpen = other.open; });
   other.append(
     h('summary', { text: 'Or run a copy you have downloaded' }),
     h('p', { class: 'start-why' },
