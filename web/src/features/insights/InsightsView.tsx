@@ -21,6 +21,7 @@ import {
   CircleDashed,
   Clock,
   Film,
+  MessageSquareText,
   RefreshCw,
   Repeat2,
   Sparkles,
@@ -31,6 +32,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { ChatView } from '@/features/chat/ChatView';
 
 /* ------------------------------------------------------------------ the endpoint's shape
  *
@@ -89,17 +91,23 @@ interface FailureRow {
   reason: string;
   times: number;
   lastAt: string | null;
-  example: { runId: string; error: string } | null;
+  /* `example` is always an object, but its runId is nullable: the endpoint takes the most recent run of
+   * the group and a row can carry no client id. Typed nullable rather than asserted, since the whole
+   * point of the example is to be openable and a missing id has to read as "not this one". */
+  example: { runId: string | null; error: string } | null;
 }
 
 interface SkillRow {
   flowId: string;
   name: string;
   kind: string;
+  source: string;
   runs: number;
   ok: number;
   failed: number;
-  medianSeconds: number;
+  /* Null when no run of this skill had a usable start-and-finish pair. Nought would read as instant,
+   * which is why the endpoint sends null and this keeps it null all the way to fmtSeconds. */
+  medianSeconds: number | null;
   lastRunAt: string | null;
 }
 
@@ -108,20 +116,49 @@ interface GapRow {
   why: string;
 }
 
+/* One row per outcome, sent as an ARRAY rather than a map. The endpoint shapes it from the same counts
+ * `totals` carries, so the chart and the header cannot disagree - but it is a list of
+ * { outcome, runs, share }, and reading it as a lookup by key (which the first version of this file did)
+ * silently found nothing on every row and fell through to `totals` for the whole legend. */
+interface OutcomeRow {
+  outcome: string;
+  runs: number;
+  share: number;
+}
+
+/** A capped list: what was shown, what it was cut from, and the cap that cut it. */
+interface Cap {
+  shown: number;
+  total: number;
+  limit: number;
+}
+
 interface Insights {
   ok: true;
-  window: { days: number; from: string; to: string };
+  /** timeZone is the zone the day boundaries were cut on - UTC, since that is Neon's. */
+  window: { days: number; from: string; to: string; timeZone?: string };
   totals: Totals;
-  /* The endpoint sends this as well as the per-outcome fields on `totals`, and the two should agree. Only
-   * `totals` has a documented field per outcome, so that is what a key missing here falls back to. */
-  byOutcome: Record<string, number>;
+  byOutcome: OutcomeRow[];
   byDay: DayRow[];
   applications: AppRow[];
+  /* Real measured time that cannot be attributed to any application. Its share completes the
+   * applications table, which is the only reason the shares there can be read as shares of anything. */
+  unattributed?: { seconds: number; share: number; why: string };
   repeated: RepeatedRow[];
   slowestSteps: StepRow[];
   failures: FailureRow[];
   skills: SkillRow[];
   gaps: GapRow[];
+  /* The endpoint's own count of what each cap cut, because this page only ever sees the rows that
+   * survived one and so cannot work it out for itself. */
+  caps?: {
+    days: number;
+    applications: Cap;
+    repeated: Cap;
+    slowestSteps: Cap & { minCalls: number };
+    failures: Cap;
+    skills: Cap;
+  };
 }
 
 /* Arrays are read through this rather than trusted, because a section that renders as nothing is a far
@@ -139,9 +176,13 @@ async function fetchInsights(days: number, signal: AbortSignal): Promise<Insight
 
 /* -------------------------------------------------------------------------- formatting */
 
-/** 7m 42s, not 462. Nobody divides by sixty in their head while scanning a table. */
-const fmtSeconds = (total: number): string => {
-  if (!Number.isFinite(total) || total <= 0) return '—';
+/** 7m 42s, not 462. Nobody divides by sixty in their head while scanning a table.
+ *
+ * Takes null because the endpoint sends null for "never measured" - a median over runs none of which
+ * were timable, for instance - and an em-dash is the honest rendering of that. Number.isFinite(null) is
+ * false, so the guard below already handled it; the type is what was wrong. */
+const fmtSeconds = (total: number | null): string => {
+  if (total == null || !Number.isFinite(total) || total <= 0) return '—';
   const secs = Math.round(total);
   if (secs < 60) return `${secs}s`;
   const mins = Math.floor(secs / 60);
@@ -265,6 +306,16 @@ const Quiet = ({ children }: { children: ReactNode }) => (
   </Typography>
 );
 
+/* "the top 12 of 34". The endpoint counts the groups BEFORE it applies its cap and sends both numbers,
+ * because a truncated table that does not say it is truncated reads as the whole picture. Silent when
+ * nothing was cut, so a short list is not decorated with a reassurance nobody asked for. */
+const CapNote = ({ cap, what }: { cap?: Cap; what: string }) =>
+  cap && cap.total > cap.shown ? (
+    <Typography variant="p" className="mt-2.5 text-ink-inactive text-[0.76rem]">
+      Showing the top {cap.shown} of {cap.total} {what}.
+    </Typography>
+  ) : null;
+
 /* One column per day, stacked so the column's height is the run count and its colours are the outcomes.
  * The grey segment is runs minus finished minus failed - stopped, or still going. It is drawn rather than
  * dropped, because a column shorter than its own label would be a lie about how much ran that day. */
@@ -342,9 +393,20 @@ const Meter = ({ fraction, fill }: { fraction: number; fill: string }) => (
 
 const RANGES = [7, 30, 90];
 
+const ASSISTANT_KEY = 'mouseflow.insights.assistant';
+
 export const InsightsView = () => {
   const navigate = useNavigate();
   const [days, setDays] = useState(30);
+  /* Open by default on a wide screen: an assistant nobody notices is an assistant nobody uses. Remembered,
+   * because whether you want it is a preference about this page rather than about this visit. */
+  const [assistant, setAssistant] = useState(() => {
+    try { return localStorage.getItem(ASSISTANT_KEY) !== '0'; } catch (_) { return true; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(ASSISTANT_KEY, assistant ? '1' : '0'); } catch (_) { /* private mode */ }
+  }, [assistant]);
   const [data, setData] = useState<Insights | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
@@ -375,9 +437,13 @@ export const InsightsView = () => {
   const totals = data?.totals;
   const counts = useMemo(() => {
     if (!totals) return null;
+    /* byOutcome is a list, so it is turned into a lookup here rather than indexed as though it were one.
+     * `totals` still stands in for an outcome the endpoint did not send a row for: it has a documented
+     * field per outcome, and the two are shaped from the same counts, so they cannot contradict. */
+    const sent = new Map(list(data?.byOutcome).map((row) => [row.outcome, row.runs]));
     return OUTCOMES.map((outcome) => ({
       ...outcome,
-      count: data?.byOutcome?.[outcome.key] ?? totals[outcome.key],
+      count: sent.get(outcome.key) ?? totals[outcome.key],
     })).filter((row) => Number.isFinite(row.count));
   }, [data, totals]);
 
@@ -386,8 +452,12 @@ export const InsightsView = () => {
   const nothingYet = !!totals && runs === 0 && totals.recordings === 0 && totals.createdSkills === 0;
 
   return (
-    <div className="p-5">
-      <header className="mb-4 flex max-w-[1100px] flex-wrap items-end gap-3">
+    /* Two columns, because the questions somebody wants to ask are about the numbers next to them. The
+     * dashboard scrolls; the assistant does not move. Below 1280px there is not room for both, so the panel
+     * becomes a toggle over the page rather than a column beside it. */
+    <div className="flex h-[calc(100dvh-3.25rem)] min-h-0">
+      <div className="min-w-0 flex-1 overflow-y-auto p-5">
+      <header className="mb-4 flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1">
           <Typography variant="h2" weight="semibold" className="text-[1.05rem]">
             What happened, and where the time went
@@ -423,12 +493,21 @@ export const InsightsView = () => {
         <Button variant="ghost" size="sm" leftSlot={<RefreshCw className="size-4" />} isLoading={busy} onClick={reload}>
           Refresh
         </Button>
+
+        <Button
+          variant={assistant ? 'secondary' : 'ghost'}
+          size="sm"
+          leftSlot={<MessageSquareText className="size-4" />}
+          onClick={() => setAssistant((open) => !open)}
+        >
+          {assistant ? 'Hide the assistant' : 'Ask about this'}
+        </Button>
       </header>
 
       {/* A real failure, in the endpoint's own words. It knows what went wrong; repeating "something went
         * wrong" here would throw away the only useful thing on the screen. */}
       {problem && (
-        <section className="mb-4 max-w-[1100px] rounded-xl border-fb-red/40 border bg-surface-card p-4">
+        <section className="mb-4 rounded-xl border-fb-red/40 border bg-surface-card p-4">
           <div className="flex items-center gap-1.5">
             <TriangleAlert className="size-4 text-fb-red-text" />
             <Typography variant="span" weight="semibold" className="text-[0.9rem] text-fb-red-text">
@@ -447,7 +526,7 @@ export const InsightsView = () => {
       {!data && !problem && <Quiet>Reading your history…</Quiet>}
 
       {data && (
-        <div className={cn('max-w-[1100px] space-y-4', busy && 'opacity-60 transition-opacity duration-base')}>
+        <div className={cn('space-y-4', busy && 'opacity-60 transition-opacity duration-base')}>
           {nothingYet ? (
             <section className="rounded-xl border-stroke border bg-surface-card p-5">
               <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
@@ -528,7 +607,10 @@ export const InsightsView = () => {
               {/* --------------------------------------------------------------- by day */}
               <Section
                 title="Day by day"
-                note="Column height is how many runs that day; green finished, red failed, grey stopped or still going. The line below is the agent time those runs took."
+                /* The zone is named because the endpoint cuts its day boundaries in UTC, so a run at one
+                 * in the morning in Kyiv lands on the previous column. Labelling the axis "days" without
+                 * saying whose days is how someone comes to distrust the whole chart over one run. */
+                note={`Column height is how many runs that day; green finished, red failed, grey stopped or still going. The line below is the agent time those runs took.${data.window.timeZone ? ` Days are ${data.window.timeZone} days.` : ''}`}
               >
                 {byDay.length === 0 ? (
                   <Quiet>No runs fell inside this window.</Quiet>
@@ -597,6 +679,7 @@ export const InsightsView = () => {
                       ))}
                     </ul>
                   )}
+                  <CapNote cap={data.caps?.repeated} what="repeated tasks" />
                 </Section>
 
                 <Section
@@ -636,6 +719,7 @@ export const InsightsView = () => {
                       ))}
                     </ul>
                   )}
+                  <CapNote cap={data.caps?.failures} what="reasons" />
                 </Section>
               </div>
 
@@ -645,9 +729,10 @@ export const InsightsView = () => {
                 icon={<AppWindow className="size-4 text-ink-secondary" />}
                 note="By application or site, across recordings and runs together. The bar is the share of the window's time."
               >
-                {list(data.applications).length === 0 ? (
+                {list(data.applications).length === 0 && !(data.unattributed && data.unattributed.seconds > 0) ? (
                   <Quiet>Nothing in this window said which application it was in.</Quiet>
                 ) : (
+                  <>
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[520px] border-collapse text-[0.85rem]">
                       <thead>
@@ -685,9 +770,41 @@ export const InsightsView = () => {
                             </td>
                           </tr>
                         ))}
+
+                        {/* The endpoint's own bucket, printed as a row rather than dropped. Without it
+                          * the Share column adds up to less than everything with no explanation on the
+                          * page for the difference, and a reader's only way to account for it is to
+                          * assume one of the rows above is wrong. */}
+                        {data.unattributed && data.unattributed.seconds > 0 && (
+                          <tr className="border-stroke border-b last:border-0">
+                            <td className="px-2.5 py-2">
+                              <span className="text-ink-secondary">Could not be placed</span>
+                            </td>
+                            <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
+                            <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
+                            <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
+                              {fmtSeconds(data.unattributed.seconds)}
+                            </td>
+                            <td className="w-[26%] px-2.5 py-2">
+                              <div className="flex items-center gap-2">
+                                <Meter fraction={asFraction(data.unattributed.share)} fill="bg-ink-inactive/45" />
+                                <span className="shrink-0 text-[0.78rem] text-ink-inactive tabular-nums">
+                                  {pct(asFraction(data.unattributed.share))}
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
+                  {data.unattributed && data.unattributed.seconds > 0 && (
+                    <Typography variant="p" className="mt-2 max-w-[74ch] text-ink-inactive text-[0.76rem]">
+                      {data.unattributed.why}
+                    </Typography>
+                  )}
+                  <CapNote cap={data.caps?.applications} what="applications and sites" />
+                  </>
                 )}
               </Section>
 
@@ -742,6 +859,7 @@ export const InsightsView = () => {
                     );
                   })()
                 )}
+                <CapNote cap={data.caps?.slowestSteps} what="tools" />
               </Section>
 
               {/* -------------------------------------------------------------- per skill */}
@@ -809,6 +927,7 @@ export const InsightsView = () => {
                     </table>
                   </div>
                 )}
+                <CapNote cap={data.caps?.skills} what="skills" />
               </Section>
 
               {/* --------------------------------------------------------------- the gaps
@@ -841,6 +960,27 @@ export const InsightsView = () => {
               )}
             </>
           )}
+        </div>
+      )}
+      </div>
+
+      {/* The assistant reads the same account this page does, so what it answers about is what is on screen.
+        * Rendered inside the page rather than as its own destination: a separate screen would make somebody
+        * retype the window and the numbers they are looking at. */}
+      {assistant && (
+        <aside className="flex w-[26rem] shrink-0 flex-col border-stroke border-l bg-surface-card2 max-xl:hidden">
+          <ChatView embedded />
+        </aside>
+      )}
+
+      {/* Narrow: the same panel, over the page, because 26rem beside a dashboard leaves neither readable. */}
+      {assistant && (
+        <div className="fixed inset-0 z-40 hidden bg-surface-page max-xl:flex max-xl:flex-col">
+          <div className="flex items-center gap-2 border-stroke border-b px-4 py-2.5">
+            <Typography variant="span" weight="semibold" className="text-[0.95rem]">Ask about this</Typography>
+            <Button variant="ghost" size="sm" className="ms-auto" onClick={() => setAssistant(false)}>Close</Button>
+          </div>
+          <ChatView embedded />
         </div>
       )}
     </div>

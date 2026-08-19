@@ -15,7 +15,6 @@ import { SkillsView } from '@/features/skills/SkillsView';
 import { GalleryView } from '@/features/gallery/GalleryView';
 import { ConnectView } from '@/features/connect/ConnectView';
 import { InsightsView } from '@/features/insights/InsightsView';
-import { ChatView } from '@/features/chat/ChatView';
 
 // Before the first paint, so the page does not flash the wrong colour on the way in.
 bootTheme();
@@ -34,7 +33,14 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: '/skills', component: SkillsView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/gallery', component: GalleryView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/insights', component: InsightsView }),
-  createRoute({ getParentRoute: () => rootRoute, path: '/chat', component: ChatView }),
+  /* The assistant lives on the Insights page now - the questions are about the numbers beside them, and a
+   * separate screen made somebody retype the window they were looking at. Kept as a redirect rather than
+   * deleted: /chat was live, and a bookmark that 404s is a worse answer than one that lands somewhere. */
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/chat',
+    beforeLoad: () => { throw redirect({ to: '/insights' }); },
+  }),
   createRoute({ getParentRoute: () => rootRoute, path: '/connect', component: ConnectView }),
   /* Every link written before this rewrite used a hash - #record, #skills, #gallery. Kept working rather
    * than silently landing people on the fallback. */

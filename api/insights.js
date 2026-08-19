@@ -59,9 +59,9 @@ const SKILLS_MAX = 20;
 const RUN_MAX_SECONDS = 12 * 3600;
 
 /* A gap longer than this inside a recording is somebody away from the machine, not time spent in an
- * application. Counting it would let one abandoned recording claim three hours in the CRM. It is
- * dropped rather than bucketed - it is not activity at all - and how much was dropped is reported in
- * `gaps`, so the drop is visible rather than quietly flattering. */
+ * application. Counting it would let one abandoned recording claim three hours in the CRM. The part
+ * of the gap beyond this is dropped rather than bucketed - it is not activity at all - and how much
+ * was dropped is reported in `gaps`, so the drop is visible rather than quietly flattering. */
 const EVENT_GAP_MAX_MS = 120_000;
 
 /* Per-account, best effort, and for one honest reason: this endpoint unrolls every event of every
@@ -262,8 +262,11 @@ async function gather(sql, userId, fromIso) {
    *                            is the next step's page and not this one's.
    *   the rest of a run        wall clock minus the step time that could be placed. That absorbs
    *                            model thinking time, untimed desktop steps and steps with no page, in
-   *                            one bucket, with nothing double-counted: every run contributes
-   *                            exactly its own wall clock and no more.
+   *                            one bucket, with nothing double-counted: a run's placed step time
+   *                            plus its remainder comes to its wall clock. The exception is a run
+   *                            whose steps are timed but whose start-and-finish pair is not usable:
+   *                            there is no wall clock to divide up, so its step time stands on its
+   *                            own, and `gaps` says how many runs that is.
    */
   const appsQ = sql`
     with flow as (
@@ -508,6 +511,13 @@ async function gather(sql, userId, fromIso) {
       from user_run
       where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
         and (outcome = 'failed' or nullif(trim(error), '') is not null)
+        /* Except somebody pressing Stop. Both halves record a stopped run by writing the single word
+         * "stopped" as its error - extension/agent.js and web/src/lib/desktop-engine.ts both do, and
+         * both map exactly that word to outcome 'stopped' - so without this line the commonest thing
+         * that "went wrong" is a deliberate stop, while the header beside it counts only the runs
+         * that failed, and the two look like they are counting different things. A stopped run that
+         * carries a real message is still a failure with a reason, and still appears. */
+        and not (outcome = 'stopped' and lower(trim(coalesce(error, ''))) = 'stopped')
     )
     select reason,
            count(*)::int as times,
@@ -717,8 +727,8 @@ function gapsFor(t, idleSeconds) {
     {
       question: 'Where did the rest of my day go?',
       why: 'Only runs and recordings are timed. The hours between them are recorded nowhere, so these '
-        + 'day totals are activity, not a working day - and a pause longer than two minutes inside a '
-        + 'recording is dropped rather than counted as time in an application ('
+        + 'day totals are activity, not a working day - and whatever a pause inside a recording runs '
+        + 'past two minutes is dropped rather than counted as time in an application ('
         + round(idleSeconds / 60, 1) + ' minutes of it in this window).',
     },
     {
@@ -729,9 +739,14 @@ function gapsFor(t, idleSeconds) {
     },
     {
       question: 'What did the agent say while it worked?',
-      why: 'user_run.said exists and nothing has ever written to it - ' + num(t.with_said) + ' of '
-        + runs + ' runs in this window have anything in it. The running commentary and closing '
-        + 'narration are not in the database, so nothing here quotes them.',
+      /* This used to state as a fact that nothing has ever written user_run.said, and then print a
+       * count beside it that contradicted the claim - on the test account 6 of 12 runs in the window
+       * carry commentary. The count is the whole claim now, because it is the part that stays true
+       * whichever build wrote the row. */
+      why: num(t.with_said) + ' of ' + runs + ' runs in this window have anything in user_run.said, '
+        + 'so an empty one is not evidence that the run said nothing - some builds never wrote the '
+        + 'column at all. Either way this endpoint counts rather than quotes, so no commentary from '
+        + 'a run is reproduced on this page.',
     },
     {
       question: 'Which skill did each run replay?',

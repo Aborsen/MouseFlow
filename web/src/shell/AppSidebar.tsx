@@ -17,7 +17,6 @@ import {
   CircleDot,
   FolderOpen,
   LayoutGrid,
-  MessageSquareText,
   PanelLeft,
   Sparkles,
   Wallet,
@@ -35,8 +34,8 @@ const NAV = [
   { to: '/create', label: 'Create', icon: Sparkles },
   { to: '/skills', label: 'Skills', icon: FolderOpen },
   { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
+  // Asking about the numbers happens on the page that shows them, not at its own address.
   { to: '/insights', label: 'Insights', icon: ChartNoAxesColumn },
-  { to: '/chat', label: 'Ask', icon: MessageSquareText },
 ] as const;
 
 /* One row height, one glyph box, one gap - so a lucide glyph that draws lighter than its neighbours still

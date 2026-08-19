@@ -15,8 +15,10 @@
  *
  *   markdown          the reply is rendered as plain pre-wrapped text. No renderer is vendored and no new
  *                     dependency is allowed, and a half-hearted regex one turns **bold** into noise.
- *   what a run said   user_run.said is an empty array on every row - nothing ever wrote it - so no citation
- *                     can quote a run's commentary. Goal, outcome and timing are what exist.
+ *   what a run said   user_run.said is empty on most rows and its contents are never handed to the model
+ *                     even where they are not, so no citation can quote a run's commentary - see the
+ *                     matching note in api/chat.js, which counts rather than claims. Goal, outcome and
+ *                     timing are what a citation shows.
  *   a router link     /insights is registered in main.tsx, which belongs to the other half of this change.
  *                     A plain <a> keeps this file from depending on the typed route table existing yet.
  */
@@ -29,25 +31,58 @@ import { cn } from '@insightis/ui/cn';
 import { type Run } from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
 
-/* What GET /api/chat hands out. There is no `reason` field on it, and one is not invented here: with the
- * model allowlist fixed in api/_provider.js, the only thing `available: false` can mean is that the
- * deployment has no key for that provider (see keyFor there). That is the reason shown. */
+/* What GET /api/chat actually answers, which is NOT a list of models: it reports the allowlist
+ * api/_provider.js owns, keyed by provider, and separately which providers this deployment holds a key
+ * for. Both halves are needed before one model can be offered, so they are joined into ModelChoice below.
+ * Read as `{ models: ModelChoice[] }` first - a shape the route has never sent - and the picker then
+ * listed nothing at all while blaming the deployment for having no keys.
+ *
+ * There is no `reason` field on it either, and one is not invented here: with the allowlist fixed in
+ * api/_provider.js, the only thing `available: false` can mean is a missing key (see keyFor there).
+ *
+ * `default` is the route's own first choice, honoured when nothing is remembered so that the page and the
+ * route agree about which model answers when nobody has chosen one. */
+interface Probe {
+  configured?: Record<string, boolean>;
+  models?: Record<string, string[]>;
+  default?: string;
+}
+
+/** One row of the picker: a model, whose it is, and whether this deployment can serve it. */
 interface ModelChoice {
   id: string;
   provider: string;
   available: boolean;
 }
 
-interface Citation {
-  runId: string;
-  label: string;
+/* One lookup the server ran, in api/chat.js's own shape - an object, not a name. It carries the arguments
+ * the lookup was given and whether it worked, and a FAILED lookup is listed too: an answer written after a
+ * lookup failed is precisely what this panel exists to expose. Fields are `unknown` because the route
+ * builds them from a model's tool call, so the tool name is only as trustworthy as that. */
+interface UsedTool {
+  tool?: unknown;
+  input?: unknown;
+  ok?: unknown;
+  note?: unknown;
+}
+
+/** The same lookup, once it has been made safe to render. */
+interface Lookup {
+  tool: string;
+  ok: boolean;
+  /** The arguments, or the failure - whichever the route reported. Shown as the badge's tooltip. */
+  detail: string | null;
 }
 
 interface Reply {
   ok?: boolean;
   answer?: string;
-  citations?: Citation[];
-  used?: string[];
+  /* Run IDS, and nothing else. api/chat.js sends `citations: string[]`, deliberately: a label from the
+   * route would be its second opinion about a row this page already holds from /api/sync. So the wording
+   * is read out of memory here - see labelOf - and falls back to the bare id. */
+  citations?: string[];
+  used?: UsedTool[];
+  /** The route also sends `rounds` and `tools`; only the token counts are shown. */
   usage?: { input?: number; output?: number };
   provider?: string;
 }
@@ -57,8 +92,9 @@ interface Turn {
   n: number;
   role: 'you' | 'model';
   text: string;
-  citations: Citation[];
-  used: string[];
+  /** Run ids, in the order the route cited them. */
+  citations: string[];
+  used: Lookup[];
   usage: { input?: number; output?: number } | null;
   provider: string | null;
 }
@@ -121,6 +157,42 @@ function spanOf(run: Run): string {
   return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
+/** What to call a cited run on its button.
+ *
+ * The route cites ids only, so the wording is read out of the runs this page already holds. A run older
+ * than the sync window is not in memory at all, and its own id is then the only true thing that can be
+ * said about it - which is better than a made-up description of a row nobody here has seen. */
+function labelOf(runId: string, run: Run | undefined): string {
+  if (!run) return runId;
+  const said = (run.goal ?? run.summary ?? '').trim();
+  if (said) return said.length > 90 ? `${said.slice(0, 90)}…` : said;
+  // A replay has no goal by design; the flow it repeated is the closest thing to a name it has.
+  if (run.kind === 'replay') return run.flowId ? `A replay of ${run.flowId}` : 'A replay';
+  return runId;
+}
+
+/** api/chat.js's `used` entries, made safe to render: every field coerced, nothing trusted. */
+function lookupsOf(used: Reply['used']): Lookup[] {
+  if (!Array.isArray(used)) return [];
+  return used
+    .filter((entry): entry is UsedTool => !!entry && typeof entry === 'object')
+    .map((entry) => {
+      /* `note` is only present when the lookup failed, and `input` is an object - stringified rather than
+       * rendered, because React throws on an object child. The GallerySkill mistake lib/api.ts records. */
+      const note = typeof entry.note === 'string' ? entry.note : null;
+      let args: string | null = null;
+      if (entry.input && typeof entry.input === 'object' && Object.keys(entry.input).length) {
+        try { args = JSON.stringify(entry.input).slice(0, 200); } catch (_) { args = null; }
+      }
+      return {
+        tool: typeof entry.tool === 'string' && entry.tool ? entry.tool : 'an unnamed lookup',
+        // Absent means it ran: the route only writes ok: false when something went wrong.
+        ok: entry.ok !== false,
+        detail: note ?? args,
+      };
+    });
+}
+
 function startedOf(run: Run): string {
   if (!run.startedAt) return 'no start time recorded';
   const at = new Date(run.startedAt);
@@ -134,7 +206,10 @@ const OUTCOME_TONE: Record<Run['outcome'], string> = {
   running: 'bg-state-hover text-ink-secondary',
 };
 
-export const ChatView = () => {
+/* `embedded` is the same screen in a 26rem column beside the Insights dashboard - which is where it
+ * actually lives now. The page form is kept because /chat still resolves for anyone who bookmarked it, and
+ * because a panel is a bad place to read a long answer. */
+export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
   const { runs } = useAccount();
 
   const [models, setModels] = useState<ModelChoice[]>([]);
@@ -154,12 +229,22 @@ export const ChatView = () => {
   useEffect(() => {
     (async () => {
       try {
-        const body = await callChat<{ models?: ModelChoice[] }>();
-        const list = (body.models ?? []).filter((m) => m && typeof m.id === 'string');
+        const body = await callChat<Probe>();
+        /* Two facts joined into one row per model: the allowlist, and whether a key for its provider is
+         * present. A model whose provider has no key is still listed - struck through in the picker rather
+         * than hidden - because "not configured here" is a useful thing to be told. */
+        const configured = body.configured ?? {};
+        const list: ModelChoice[] = Object.entries(body.models ?? {}).flatMap(([provider, ids]) =>
+          (Array.isArray(ids) ? ids : [])
+            .filter((id): id is string => typeof id === 'string' && !!id)
+            .map((id) => ({ id, provider, available: configured[provider] === true })),
+        );
         setModels(list);
         let remembered = '';
         try { remembered = localStorage.getItem(MODEL_KEY) ?? ''; } catch (_) { /* private mode */ }
-        const usable = list.find((m) => m.id === remembered && m.available) ?? list.find((m) => m.available);
+        const usable = list.find((m) => m.id === remembered && m.available)
+          ?? list.find((m) => m.id === body.default && m.available)
+          ?? list.find((m) => m.available);
         setModel(usable ? usable.id : '');
         if (!list.length) setModelsProblem('The endpoint listed no models at all, so there is nothing to ask.');
         else if (!list.some((m) => m.available)) {
@@ -242,12 +327,10 @@ export const ChatView = () => {
         n: nextN.current++,
         role: 'model',
         text: String(body.answer ?? '').trim() || 'The model answered with nothing at all.',
-        /* label is coerced rather than trusted: it is rendered as a React child, and React throws on an
-         * object child - the GallerySkill mistake lib/api.ts already records. */
-        citations: (body.citations ?? [])
-          .filter((c) => c && typeof c.runId === 'string')
-          .map((c) => ({ runId: c.runId, label: typeof c.label === 'string' ? c.label : '' })),
-        used: (body.used ?? []).filter((u) => typeof u === 'string'),
+        /* Ids, coerced rather than trusted - they are rendered as React children and used as map keys. */
+        citations: (Array.isArray(body.citations) ? body.citations : [])
+          .filter((id): id is string => typeof id === 'string' && !!id),
+        used: lookupsOf(body.used),
         usage: body.usage ?? null,
         provider: body.provider ?? providerOf(model),
       }]);
@@ -284,17 +367,21 @@ export const ChatView = () => {
   }, []);
 
   return (
-    <div className="flex min-h-0 flex-col p-5">
-      <header className="mb-4 max-w-[900px]">
-        <Typography variant="h2" weight="semibold" className="text-[1.05rem]">
-          Ask about your own work
-        </Typography>
-        <Typography variant="p" className="mt-1 max-w-[70ch] text-ink-inactive text-[0.85rem]">
-          Answers are built from the runs and flows on this account. Every reply shows what it was based on —
-          the tools that ran and the runs cited — so you can check it rather than take it.
-        </Typography>
+    <div className={cn('flex min-h-0 flex-col', embedded ? 'h-full' : 'p-5')}>
+      <header className={cn(embedded ? 'border-stroke border-b px-3 py-2' : 'mb-4 max-w-[900px]')}>
+        {!embedded && (
+          <>
+            <Typography variant="h2" weight="semibold" className="text-[1.05rem]">
+              Ask about your own work
+            </Typography>
+            <Typography variant="p" className="mt-1 max-w-[70ch] text-ink-inactive text-[0.85rem]">
+              Answers are built from the runs and flows on this account. Every reply shows what it was based
+              on — the tools that ran and the runs cited — so you can check it rather than take it.
+            </Typography>
+          </>
+        )}
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
+        <div className={cn('flex flex-wrap items-center gap-2', !embedded && 'mt-3')}>
           <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
             Model
             <select
@@ -346,7 +433,7 @@ export const ChatView = () => {
         )}
       </header>
 
-      <div className="max-w-[900px] flex-1">
+      <div className={cn('flex-1', embedded ? 'min-h-0 overflow-y-auto px-3 py-3' : 'max-w-[900px]')}>
         {turns.length === 0 ? (
           <section className="rounded-xl border-stroke border bg-surface-card p-4">
             <Typography variant="span" weight="semibold" className="block text-[0.9rem]">
@@ -409,9 +496,19 @@ export const ChatView = () => {
                         </Typography>
                         {turn.used.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {turn.used.map((tool) => (
-                              <Badge key={tool} variant="secondary" size="xs" rounded="full" className="font-mono">
-                                {tool}
+                            {/* One badge per lookup, in the order they ran - so the same tool called twice
+                              * shows twice, which is the honest count. A lookup that FAILED is marked, not
+                              * dropped: an answer written after a failed lookup is the thing worth seeing. */}
+                            {turn.used.map((lookup, i) => (
+                              <Badge
+                                key={`${i}:${lookup.tool}`}
+                                variant={lookup.ok ? 'secondary' : 'error'}
+                                size="xs"
+                                rounded="full"
+                                className="font-mono"
+                                title={lookup.detail ?? undefined}
+                              >
+                                {lookup.ok ? lookup.tool : `${lookup.tool} — failed`}
                               </Badge>
                             ))}
                           </div>
@@ -428,10 +525,10 @@ export const ChatView = () => {
 
                         {turn.citations.length > 0 ? (
                           <ul className="mt-1 flex flex-col gap-1">
-                            {turn.citations.map((citation) => {
-                              const key = `${turn.n}:${citation.runId}`;
+                            {turn.citations.map((runId) => {
+                              const key = `${turn.n}:${runId}`;
                               const open = openCitation === key;
-                              const run = byId.get(citation.runId);
+                              const run = byId.get(runId);
                               return (
                                 <li key={key}>
                                   <button
@@ -444,13 +541,13 @@ export const ChatView = () => {
                                       open ? 'bg-state-hover text-ink-primary' : 'text-ink-secondary',
                                     )}
                                   >
-                                    {citation.label || citation.runId}
+                                    {labelOf(runId, run)}
                                   </button>
 
                                   {open && (
                                     <div className="mt-1 rounded-md border-stroke border bg-surface-card p-2">
                                       <div className="font-mono text-[0.7rem] text-ink-inactive break-all">
-                                        {citation.runId}
+                                        {runId}
                                       </div>
                                       {run ? (
                                         <>
@@ -490,11 +587,14 @@ export const ChatView = () => {
                                           and timing cannot be shown here. Insights reads the full history.
                                         </Typography>
                                       )}
+                                      {/* Plain /insights, with no run in the query string: that page counts a
+                                        * whole window and has no per-run view to open, so a ?run= would be a
+                                        * promise the other half of this change does not keep. */}
                                       <a
-                                        href={`/insights?run=${encodeURIComponent(citation.runId)}`}
+                                        href="/insights"
                                         className="mt-1.5 inline-flex items-center gap-1 text-brand-primary text-[0.72rem] hover:underline"
                                       >
-                                        Open in Insights
+                                        See the whole window in Insights
                                         <ExternalLink className="size-3" />
                                       </a>
                                     </div>
@@ -529,7 +629,7 @@ export const ChatView = () => {
       </div>
 
       {problem && (
-        <div className="mt-3 max-w-[900px] rounded-lg border-fb-red/40 border bg-surface-card p-3">
+        <div className={cn('mt-3 rounded-lg border-fb-red/40 border bg-surface-card p-3', !embedded && 'max-w-[900px]')}>
           <Typography variant="p" className="text-fb-red-text text-[0.85rem]">
             {/* The endpoint's own words first: it knows what went wrong and this page does not. */}
             {problem.text}
@@ -543,7 +643,7 @@ export const ChatView = () => {
       )}
 
       <form
-        className="mt-3 max-w-[900px]"
+        className={cn('mt-3', embedded ? 'px-3 pb-3' : 'max-w-[900px]')}
         onSubmit={(ev) => { ev.preventDefault(); void ask(question); }}
       >
         <textarea
@@ -580,8 +680,8 @@ export const ChatView = () => {
 
       <Typography variant="p" className="mt-4 max-w-[70ch] text-ink-inactive text-xs">
         Only your own flows and runs are read. Two things this cannot tell you, whatever it is asked: what a
-        run said as it went — nothing was ever written to that column — and per-step timing for a desktop
-        run, which records only the tool and its input.
+        run said as it went — that commentary is not readable, and on most runs was never stored at all —
+        and per-step timing for a desktop run, which records only the tool and its input.
       </Typography>
     </div>
   );

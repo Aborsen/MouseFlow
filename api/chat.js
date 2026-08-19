@@ -42,8 +42,11 @@
  *
  *   - Time inside a desktop run. A desktop run's steps carry only the tool and its input; there is no
  *     per-step timing and no window title in them. Only the whole-run duration is known.
- *   - What the model said while running. user_run.said exists in the schema and is ALWAYS an empty
- *     array - nothing has ever written it. Only `summary` carries words about a run.
+ *   - What the model said while running. user_run.said is empty on most rows, and this route never sends
+ *     its contents to a model - only whether a row has any. It does NOT claim the column has never been
+ *     written: api/insights.js counts it over the same window and found rows that carry commentary, so a
+ *     flat "always empty" here would be this route contradicting the dashboard beside it. `summary` is the
+ *     only wording about a run that anything here reads.
  *   - Skill-by-skill totals over the whole history. user_run.flow_id was NULL for every historical row
  *     and is only now being written, so anything grouped by skill covers recent runs only.
  *   - Near-duplicate work. find_repeated matches identical goal text; two goals differing by one name
@@ -57,7 +60,7 @@
 
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
-import { ask, MODELS, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
+import { ask, MODELS, DEFAULT_MODEL, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
 
 /* At most six rounds of lookups per question. Six is enough for "find the runs, open the worst one,
  * check what else that day looked like" and small enough that one question cannot quietly become
@@ -412,11 +415,15 @@ const TOOLS = {
           stepTimingAvailable: timed.length > 0,
           msInSteps: timed.length ? timed.reduce((sum, s) => sum + s.ms, 0) : null,
           steps,
-          /* Kept in the output on purpose. `said` is in the schema and always empty, so a model that
-           * is not told will invent the commentary it expects to find. */
+          /* Kept in the output on purpose: a model not told what it cannot see will invent the commentary
+           * it expected to find. The count is reported and the contents are not - `said` is not even
+           * selected above - so both branches say the same thing about what is READABLE, which is nothing.
+           * The empty branch does not claim the column has never been written: api/insights.js counts
+           * non-empty ones over the same window, and two halves of one product must not disagree about a
+           * fact as checkable as that. */
           commentary: int(row.said_count)
-            ? 'this run has stored commentary'
-            : 'no commentary is stored for any run - nothing has ever written user_run.said, so the summary field is the only thing the run said in words',
+            ? 'this run has ' + int(row.said_count) + ' stored commentary entries and none of them are included here, so do not quote or characterise them - the summary is the only wording you have'
+            : 'nothing is stored in user_run.said for this run. Some builds never wrote that column, so an empty one is not evidence that the run said nothing - the summary is the only wording you have',
           timingNote: timed.length
             ? 'ms is per step and covers the step only, not the model deciding between steps, so the step total is less than the run duration'
             : 'this run has no per-step timing - desktop runs record only the tool and its input, so only the whole-run duration is known',
@@ -541,22 +548,28 @@ const TOOLS = {
         };
       }
 
-      /* By application, which means: by the host a browser step acted on.
+      /* By application, which means: by the host a browser step ACTED ON.
+       *
+       * `url` first and `wentTo` only as a fallback, which is the rule api/insights.js applies and for its
+       * reason: wentTo is where a click landed you, so it is the NEXT step's page. Preferring it files this
+       * step's milliseconds under the page it navigated to, and the dashboard and this chat then name
+       * different applications for the same run, both looking authoritative. Got that way round first.
        *
        * This is the one grouping that is NOT a whole-run measure. It sums per-step ms, which exists
-       * only on extension runs, and attributes each step to the page it ended on. Everything between
-       * steps - the model deciding what to do next, which is most of a slow run - belongs to no host
-       * and is not counted anywhere. The note says so, because a total that silently excludes the
-       * majority of a run's wall clock would be read as one that does not.
+       * only on extension runs. Everything between steps - the model deciding what to do next, which is
+       * most of a slow run - belongs to no host and is not counted anywhere. The note says so, because a
+       * total that silently excludes the majority of a run's wall clock would be read as one that does not.
        *
-       * `~ '^[0-9]+$'` before the cast rather than a bare `(s->>'ms')::bigint`: a single step written
-       * by some other build with a non-numeric ms would fail the whole query, and a chat that cannot
-       * answer is worse than one that reports the steps it could time. */
+       * The type is checked before the cast rather than after: a single step written by some other build
+       * with a non-numeric ms would fail the whole query, and a chat that cannot answer is worse than one
+       * that reports the steps it could time. jsonb_typeof rather than a `^[0-9]+$` match on the text,
+       * which was the earlier guard here and quietly dropped a fractional ms - api/insights.js counts
+       * those, so the two routes reported different seconds for the same steps. */
       const rows = await sql`
-        select substring(coalesce(s->>'wentTo', s->>'url') from '^[a-z]+://([^/]+)') as host,
+        select substring(coalesce(s->>'url', s->>'wentTo') from '^[a-z]+://([^/]+)') as host,
                count(*) as steps,
-               count(*) filter (where s->>'ms' ~ '^[0-9]+$') as timed_steps,
-               sum(case when s->>'ms' ~ '^[0-9]+$' then (s->>'ms')::bigint end) as ms,
+               count(*) filter (where jsonb_typeof(s->'ms') = 'number') as timed_steps,
+               sum(case when jsonb_typeof(s->'ms') = 'number' then greatest(0, (s->>'ms')::numeric) end) as ms,
                count(distinct r.client_id) as runs,
                (array_agg(distinct r.client_id))[1:5] as examples
         from user_run r
@@ -753,7 +766,11 @@ const TOOLS = {
             + 'or one address are NOT grouped, because there is no similarity index here and guessing which '
             + 'ones are "really the same" would be presenting an assumption as a finding. So this is a floor '
             + 'on repeated work, never a complete picture - say so if the answer leans on it. Repeated skills '
-            + 'only cover runs that recorded a flow id, which older runs did not.',
+            + 'only cover runs that recorded a flow id, which older runs did not. The Insights page counts '
+            + 'the same thing more loosely - it replaces addresses, urls and quoted phrases before grouping - '
+            + 'so its "worth automating" list can show a higher count than this for the same work. That is '
+            + 'the two measures differing, not either being wrong; if the person quotes a number from that '
+            + 'page, do not contradict it.',
         },
         runIds: [
           ...repeatedGoals.flatMap((g) => g.exampleRunIds),
@@ -798,8 +815,10 @@ function systemPrompt(today) {
     '  inside this desktop run" has no answer here.',
     '- Per-step time never adds up to the run duration. The gaps are the model deciding what to do',
     '  next, and they belong to no application.',
-    '- Nothing has ever written the model\'s running commentary; that field is always empty. A run\'s',
-    '  summary is the only thing it said in words.',
+    '- A run\'s running commentary is not readable here: it is never handed to you, even for a row',
+    '  that stores some. The summary is the only wording you have. So say the commentary is not',
+    '  available - never that the run said nothing, which is a claim about the run and not about what',
+    '  you can see.',
     '- A run is linked to the skill it ran only if it recorded a skill id. Older runs did not, so',
     '  anything grouped by skill covers recent runs only. Say so when it changes the answer.',
     '- A replay has no goal - it repeats a recording. Only agent runs carry a typed goal.',
@@ -1004,7 +1023,10 @@ function probe(res) {
     ok: true,
     configured,
     models: MODELS,
-    default: MODELS.anthropic[0],
+    /* _provider.js's own default, not this file's opinion of it. It reads the deployment's environment for
+     * the OpenAI half, so restating "the first anthropic entry" here is how the picker comes to preselect a
+     * model the route would not have chosen. */
+    default: DEFAULT_MODEL.anthropic,
     database: !!process.env.DATABASE_URL,
     rounds: MAX_ROUNDS,
     tools: TOOL_NAMES,
@@ -1059,7 +1081,7 @@ export default async function handler(req, res) {
   /* An allowlist, not a passthrough, for the same reason api/claude.js has one: an unbounded model
    * name is an unbounded price. _provider.js owns the list, and it owns the wording for a provider
    * this deployment has no key for, so neither is restated here. */
-  const model = body.model ? String(body.model).slice(0, 80) : MODELS.anthropic[0];
+  const model = body.model ? String(body.model).slice(0, 80) : DEFAULT_MODEL.anthropic;
   const provider = providerFor(model);
   if (!provider) {
     return fail(res, 400, 'not a model this route will call: ' + model + '. It serves '

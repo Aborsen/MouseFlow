@@ -29,14 +29,33 @@
  */
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
-const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+/* The Responses API, not Chat Completions. The model this deployment serves - gpt-5.6-luna with reasoning
+ * effort - is called as `client.responses.create({ model, reasoning: { effort }, input })`, which is a
+ * different endpoint and a different body from the one this file first mapped. There is one OpenAI transport
+ * rather than two half-verified ones. */
+const OPENAI_URL = 'https://api.openai.com/v1/responses';
+
+/* What the deployment says it wants, where it says it. Vercel already carries OPENAI_MODEL and
+ * OPENAI_REASONING_EFFORT, so reading them here is one statement of the default rather than two that can
+ * disagree - and changing the model becomes an environment variable rather than a deploy. */
+const OPENAI_DEFAULT = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
+export const DEFAULT_EFFORT = process.env.OPENAI_REASONING_EFFORT || 'high';
 
 /* Which models this file will talk to, per provider. An allowlist rather than a passthrough for the same
  * reason api/claude.js has one: this spends somebody's money, and an unbounded model name is an unbounded
- * price. The first entry is the default. */
+ * price. The first entry is the default.
+ *
+ * api/models.js asks each provider for its own list, which is how this stops being a guess: anything here
+ * that the provider does not list shows up as `missing` there. */
 export const MODELS = {
   anthropic: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
-  openai: ['gpt-5.1', 'gpt-5.1-mini', 'gpt-4.1'],
+  openai: [...new Set([OPENAI_DEFAULT, 'gpt-5.6-luna', 'gpt-5.1', 'gpt-4.1'])],
+};
+
+/** The model this deployment reaches for when a caller does not name one. */
+export const DEFAULT_MODEL = {
+  anthropic: MODELS.anthropic[0],
+  openai: MODELS.openai[0],
 };
 
 export const PROVIDERS = Object.keys(MODELS);
@@ -128,76 +147,113 @@ function fromAnthropic(body) {
 
 /* -------------------------------------------------------------------------- openai */
 
-function toOpenAI({ system, messages, tools, maxTokens, model }) {
-  const out = [];
-  if (system) out.push({ role: 'system', content: system });
+function toOpenAI({ system, messages, tools, maxTokens, model, effort }) {
+  const input = [];
+
+  /* No `system` field on this API: the instruction is either the top-level `instructions` or a message with
+   * role 'system' in the input. It is sent as `instructions` below, which is what the API documents for it. */
 
   for (const m of messages) {
     if (m.role === 'assistant') {
-      out.push({
-        role: 'assistant',
-        content: m.text || null,
-        /* Arguments are a JSON *string* here, where Anthropic sends an object. Forgetting that produces a
-         * request the API accepts and a model that reads its own previous call as gibberish. */
-        ...(m.calls && m.calls.length
-          ? {
-            tool_calls: m.calls.map((c) => ({
-              id: c.id,
-              type: 'function',
-              function: { name: c.name, arguments: JSON.stringify(c.input || {}) },
-            })),
-          }
-          : {}),
-      });
+      /* An assistant turn's text is an output_text part, not input_text - the part types are directional on
+       * this API, and using the input type for something the model said is rejected rather than ignored. */
+      if (m.text) {
+        input.push({ role: 'assistant', content: [{ type: 'output_text', text: m.text }] });
+      }
+      /* A tool call is its own top-level item, not a field on the message. `arguments` is a JSON string
+       * here as it is on Chat Completions, and `call_id` is what the result must quote back. */
+      for (const call of m.calls || []) {
+        input.push({
+          type: 'function_call',
+          call_id: call.id,
+          name: call.name,
+          arguments: JSON.stringify(call.input || {}),
+        });
+      }
       continue;
     }
-    /* And tool output is its own role with one message PER result, not blocks inside a user message. There
-     * is no per-result error flag either, so a failure has to be said in words - which is why Result.isError
-     * is turned into a prefix rather than dropped. */
+
+    /* And a result is an item too - `function_call_output` - rather than a message with a special role.
+     * There is no error flag on it, so a failure is said in words, which is why Result.isError becomes a
+     * prefix instead of being dropped. */
     for (const r of m.results || []) {
-      out.push({
-        role: 'tool',
-        tool_call_id: r.id,
-        content: (r.isError ? 'ERROR: ' : '') + String(r.output ?? ''),
+      input.push({
+        type: 'function_call_output',
+        call_id: r.id,
+        output: (r.isError ? 'ERROR: ' : '') + String(r.output ?? ''),
       });
     }
-    if (m.text) out.push({ role: 'user', content: m.text });
+    if (m.text) input.push({ role: 'user', content: [{ type: 'input_text', text: m.text }] });
   }
 
   return {
     model,
-    max_completion_tokens: maxTokens,
+    input,
+    ...(system ? { instructions: system } : {}),
+    // `max_output_tokens`, not max_tokens and not max_completion_tokens.
+    max_output_tokens: maxTokens,
+    /* Reasoning effort as a nested object, which is the whole reason this endpoint is in use. Sent only when
+     * asked for: a model that does not reason refuses the field rather than ignoring it. */
+    ...(effort ? { reasoning: { effort } } : {}),
+    /* Flat, unlike Chat Completions - name and parameters sit on the tool itself rather than under a
+     * `function` key. Sending the nested shape here is accepted as a tool with no name. */
     ...(tools && tools.length
       ? {
         tools: tools.map((t) => ({
           type: 'function',
-          // `parameters`, not `input_schema`.
-          function: { name: t.name, description: t.description, parameters: t.schema },
+          name: t.name,
+          description: t.description,
+          parameters: t.schema,
         })),
       }
       : {}),
-    messages: out,
   };
 }
 
 function fromOpenAI(body) {
-  const choice = (body.choices || [])[0] || {};
-  const message = choice.message || {};
-  const finish = choice.finish_reason;
+  const items = body.output || [];
+
+  /* `output_text` is the documented convenience field for the whole reply as a string. Falling back to
+   * walking the output items rather than trusting it to exist, because a reply that carried only a tool call
+   * has no text at all and an absent field must not read as an empty answer. */
+  const text = typeof body.output_text === 'string' && body.output_text.trim()
+    ? body.output_text.trim()
+    : items
+      .filter((item) => item.type === 'message')
+      .flatMap((item) => item.content || [])
+      .filter((part) => part.type === 'output_text')
+      .map((part) => part.text)
+      .join('')
+      .trim();
+
+  const calls = items
+    .filter((item) => item.type === 'function_call')
+    .map((item) => {
+      let parsed = {};
+      try { parsed = JSON.parse(item.arguments || '{}'); } catch (_) { parsed = {}; }
+      // call_id is what a result has to quote back; id is the item's own identity and is not interchangeable.
+      return { id: item.call_id || item.id, name: item.name, input: parsed };
+    });
+
+  /* Termination lives in two places here rather than one enum. `status: 'incomplete'` with a reason is the
+   * truncation case - the one both decision loops in this product used to file as a successful run - and a
+   * refusal arrives as a content part of type 'refusal'. */
+  const refused = items
+    .flatMap((item) => item.content || [])
+    .some((part) => part && part.type === 'refusal');
+  const truncated = body.status === 'incomplete' &&
+    (body.incomplete_details || {}).reason === 'max_output_tokens';
+
   return {
-    text: String(message.content || '').trim(),
-    calls: (message.tool_calls || []).map((c) => {
-      let input = {};
-      try { input = JSON.parse(c.function?.arguments || '{}'); } catch (_) { input = {}; }
-      return { id: c.id, name: c.function?.name, input };
-    }),
-    stopReason: finish === 'content_filter' ? 'refused'
-      : finish === 'length' ? 'truncated'
-        : finish === 'tool_calls' ? 'tools'
+    text,
+    calls,
+    stopReason: refused ? 'refused'
+      : truncated ? 'truncated'
+        : calls.length ? 'tools'
           : 'end',
     usage: {
-      input: (body.usage && body.usage.prompt_tokens) || 0,
-      output: (body.usage && body.usage.completion_tokens) || 0,
+      input: (body.usage && body.usage.input_tokens) || 0,
+      output: (body.usage && body.usage.output_tokens) || 0,
     },
     raw: body,
   };
@@ -214,6 +270,7 @@ function fromOpenAI(body) {
  * @param {Array}  opts.messages   Message[] in this file's shape
  * @param {Array}  [opts.tools]    [{ name, description, schema }]
  * @param {number} [opts.maxTokens]
+ * @param {string}  [opts.effort]     'low' | 'medium' | 'high' - reasoning effort, where the provider has one
  * @param {AbortSignal} [opts.signal]
  */
 export async function ask(opts) {
@@ -232,7 +289,12 @@ export async function ask(opts) {
   }
 
   const maxTokens = Math.min(Math.max(Number(opts.maxTokens) || 2000, 256), 16000);
-  const shaped = { ...opts, maxTokens };
+  /* Anthropic expresses this as a thinking budget rather than a word, and mapping one to the other would be
+   * a guess dressed as a translation - so it is passed to OpenAI and dropped for Anthropic, on purpose.
+   * Unset means the deployment's own default, which is what OPENAI_REASONING_EFFORT is for. */
+  const asked = opts.effort ?? (provider === 'openai' ? DEFAULT_EFFORT : null);
+  const effort = ['low', 'medium', 'high'].includes(asked) ? asked : null;
+  const shaped = { ...opts, maxTokens, effort };
 
   const url = provider === 'anthropic' ? ANTHROPIC_URL : OPENAI_URL;
   const headers = provider === 'anthropic'
