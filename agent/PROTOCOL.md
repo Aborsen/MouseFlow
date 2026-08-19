@@ -126,6 +126,55 @@ index | X | Y | delayMs | action
 agent's lifetime, but events are only stored between `/record/start` and `/record/stop`. Nothing is captured
 unasked — that is a product decision, not an implementation detail.
 
+### `#ctx` — where a click landed
+
+A click may be preceded by a comment line naming what was under it:
+
+```
+#ctx	app=chrome	window=Inbox — Outlook	control=Send	type=button
+7 | 1074 | 159 | 240 | Left Click Down
+```
+
+Tab-separated `key=value`, on the line **above** its event, and it attaches to exactly one event. Keys:
+`app` (process or application name), `window` (title), `control` (the accessible name of the thing under the
+pointer), `type` (its control type). Unknown keys are ignored rather than being an error, so an agent may add
+one; a value that is empty is the same as absent.
+
+This is what turns *"clicked at 1074,159"* into *"clicked **Send** in Outlook"*, and it is the only per-event
+answer to "which application was this in" — `payload.windows` is sampled once a second at the recording
+level, so it says which applications appeared, never which one a given click hit.
+
+Rules, all of them learned the hard way:
+
+- **Clicks only, and only the button-down.** A move has no target worth naming and there are hundreds of
+  them; the release is the same target a moment later.
+- **Absent means NOT KNOWN, never "nothing there".** A transcript has to keep that difference, so never emit
+  a `#ctx` line with invented or placeholder values.
+- **Never resolve on the input path.** On Windows a low-level hook that overruns `LowLevelHooksTimeout`
+  (300ms by default) is removed without telling anybody, and the first accessibility call on a thread costs
+  ~120ms. The hook queues the coordinates; a worker resolves them. If the worker falls behind, drop the
+  *context*, never the event.
+- **Never walk the tree.** Hit-test the point and climb for a name — measured on Windows, a full control-view
+  walk is 0.6–4.4 seconds per window and caching makes it worse.
+- A comment line, because the event line has five columns and every reader of this format would choke on a
+  sixth. `#` lines were already skipped, so an older reader loads the recording exactly as before.
+
+**On macOS the mechanism differs and the line does not.** The Windows agent uses UI Automation
+(`AutomationElement.FromPoint`, then a climb of up to five levels for a name). The macOS equivalent is the
+Accessibility API: `AXUIElementCopyElementAtPosition` for the hit test, `kAXTitleAttribute` /
+`kAXRoleDescriptionAttribute` for the name and type, `kAXParentAttribute` for the same climb, and
+`NSWorkspace.frontmostApplication` for the application — which is better than Windows manages, since it gives
+*Microsoft Outlook* rather than a process called `outlook`. Two differences worth planning for:
+
+- It needs the **Accessibility** TCC permission, granted per-binary by the user in System Settings. Without
+  it every call returns nothing, so the agent must detect that and say which permission is missing rather
+  than emitting recordings with no context and no explanation.
+- The event tap has its own timeout, so the queue-and-worker rule above applies for the same reason.
+
+Blind spots are similar on both: Electron applications expose almost nothing (on Windows, ChatGPT desktop
+offers 34 characters of control names in the entire app), and an elevated window is invisible to a
+medium-integrity Windows process. Say so in the transcript; do not paper over it.
+
 **Typing is deliberately not recorded.** The Windows agent installs a mouse hook only. A recording that
 silently drops text is worse than one that never claimed to carry it, and capturing keystrokes without a
 redaction design captures passwords. Do not add a keyboard hook to a new agent without that decision being

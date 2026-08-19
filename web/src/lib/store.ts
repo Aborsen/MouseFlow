@@ -20,6 +20,18 @@ export interface RecordedEvent {
   y: number;
   delayMs: number;
   action: string;
+  /* Where this happened, when the agent could resolve it - the application, the window, and the name and
+   * kind of the control under the pointer, read from the accessibility tree at the moment of the click.
+   *
+   * Present on clicks only: a pointer move has no target worth naming and there are hundreds of them. Absent
+   * means NOT KNOWN, never "nothing there" - an elevated window is invisible to the agent, an Electron
+   * application often names nothing, and a build older than this one resolved nothing at all. */
+  context?: {
+    app?: string;
+    window?: string;
+    control?: string;
+    type?: string;
+  };
 }
 
 export interface Recording {

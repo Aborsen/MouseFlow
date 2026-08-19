@@ -61,6 +61,7 @@
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { ask, MODELS, DEFAULT_MODEL, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
+import { recordingTools } from './_recording-tools.js';
 
 /* At most six rounds of lookups per question. Six is enough for "find the runs, open the worst one,
  * check what else that day looked like" and small enough that one question cannot quietly become
@@ -784,13 +785,30 @@ const TOOLS = {
   },
 };
 
-const TOOL_NAMES = Object.keys(TOOLS);
+/* The lookups above are the same for everybody, so they live at module scope. The recording tools are not:
+ * recordingTools() takes the caller's own sql and user id and closes over them, and throws if either is
+ * missing - a tool bound to nobody cannot be called by accident, which is a better guarantee than passing an
+ * id in on every call and hoping. So the table is assembled per request.
+ *
+ * Names and specs are derived from the ASSEMBLED table, not from the static half. Deriving them from the
+ * static half is exactly how a tool gets registered and then never offered to the model. */
+function toolsFor(ctx) {
+  const table = { ...TOOLS };
+  for (const tool of recordingTools({ sql: ctx.sql, userId: ctx.userId })) {
+    table[tool.name] = tool;
+  }
+  return table;
+}
 
-const TOOL_SPECS = TOOL_NAMES.map((name) => ({
+const spec = (table) => Object.keys(table).map((name) => ({
   name,
-  description: TOOLS[name].description,
-  schema: TOOLS[name].schema,
+  description: table[name].description,
+  schema: table[name].schema,
 }));
+
+/* What the GET probe reports it can do. The static half only - listing the rest would need a caller, and the
+ * probe deliberately has none. The note says so rather than implying this is everything. */
+const TOOL_NAMES = Object.keys(TOOLS);
 
 /* --------------------------------------------------------------------------- the prompt */
 
@@ -849,7 +867,11 @@ const CEILING_NOTE = [
 /* ------------------------------------------------------------------------------ the loop */
 
 async function answerQuestion({ sql, userId, model, question, history }) {
-  const ctx = { sql, userId };
+  /* The table is built here, once, and travels in the context - so the tools the model is OFFERED and the
+   * tools that can be RUN are the same object. Two lists derived separately is how a model comes to call
+   * something that no longer exists. */
+  const tools = toolsFor({ sql, userId });
+  const ctx = { sql, userId, tools, specs: spec(tools) };
   const system = systemPrompt(new Date().toISOString().slice(0, 10));
   const messages = buildTranscript(history, question);
 
@@ -875,7 +897,7 @@ async function answerQuestion({ sql, userId, model, question, history }) {
        *
        * The loop still cannot be extended by asking again: `outOfRounds` is what decides whether calls
        * are run, not whether they were offered, and any call made on this turn is discarded. */
-      tools: TOOL_SPECS,
+      tools: ctx.specs,
       maxTokens: ANSWER_TOKENS,
     });
 
@@ -969,13 +991,14 @@ function buildTranscript(history, question) {
 
 /** One tool call: run it, record it, and hand the model back something it can read. */
 async function runOneTool(call, ctx, used, cited) {
-  const tool = TOOLS[call.name];
+  const table = ctx.tools || TOOLS;
+  const tool = table[call.name];
   if (!tool) {
     used.push({ tool: String(call.name), input: call.input || {}, ok: false, note: 'no such tool' });
     return {
       id: call.id,
       output: 'There is no tool called ' + String(call.name) + '. The ones that exist are: '
-        + TOOL_NAMES.join(', ') + '.',
+        + Object.keys(table).join(', ') + '.',
       isError: true,
     };
   }
@@ -1037,7 +1060,10 @@ function probe(res) {
     default: keyFor('openai') ? DEFAULT_MODEL.openai : DEFAULT_MODEL.anthropic,
     database: !!process.env.DATABASE_URL,
     rounds: MAX_ROUNDS,
+    /* The shared lookups only. The per-recording tools need a caller to bind to and this probe deliberately
+     * has none, so listing them here would report a capability this response cannot prove. */
     tools: TOOL_NAMES,
+    perRecordingTools: 'bound to the caller, so listed only on an answered question',
   });
 }
 

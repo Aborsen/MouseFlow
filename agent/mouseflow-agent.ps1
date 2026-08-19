@@ -110,10 +110,11 @@ $ErrorActionPreference = 'Stop'
 
 # System.Drawing is referenced for /shot: capturing the screen is what lets the app act on a goal
 # described in words rather than only replay something recorded earlier.
-Add-Type -ReferencedAssemblies 'System.Drawing' -TypeDefinition @'
+Add-Type -ReferencedAssemblies 'System.Drawing','UIAutomationClient','UIAutomationTypes','WindowsBase' -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Windows.Automation;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
@@ -237,6 +238,16 @@ namespace MouseFlow
         public static extern int GetWindowTextLength(IntPtr hWnd);
         [DllImport("user32.dll")]
         public static extern IntPtr GetForegroundWindow();
+
+        /* Which window is under a point, and its top-level ancestor. WindowFromPoint answers with the deepest
+         * child - a button rather than the application - and a recording wants the application, so every
+         * lookup climbs to GA_ROOT. Both are window-manager calls: cheap, and they answer even for a process
+         * that exposes no accessibility tree at all, which is what makes an Electron app still say "Claude". */
+        [DllImport("user32.dll")]
+        public static extern IntPtr WindowFromPoint(POINT point);
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+        public const uint GA_ROOT = 2;
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")]
@@ -305,6 +316,15 @@ namespace MouseFlow
         public int DelayMs;
         public string Action;
         public int Wheel;
+
+        /* Where this happened, when it could be resolved. Null on a move (nothing worth naming, and there
+         * are hundreds), and null on a click the resolver could not read - an elevated window, an Electron
+         * app that names nothing, or a queue that was still catching up when recording stopped. Null means
+         * "not known", never "nothing there", and the transcript has to keep that distinction. */
+        public string Process;
+        public string Window;
+        public string Control;
+        public string ControlType;
     }
 
     public class Step
@@ -444,11 +464,145 @@ namespace MouseFlow
                 e.Wheel = wheel;
                 _buffer.Add(e);
 
+                /* Clicks only, and only the DOWN: the release is the same target a moment later, and a move
+                 * has no target worth naming. Queued rather than resolved - see the resolver. */
+                if (action.EndsWith("Click Down")) Enqueue(e, data.pt.X, data.pt.Y);
+
                 _lastStamp = now;
                 _lastX = data.pt.X;
                 _lastY = data.pt.Y;
                 _haveLast = true;
             }
+        }
+
+        /* ------------------------------------------------------------------ where a click landed
+         *
+         * A queue and one worker, because the alternative is doing this inside the hook. A low-level hook
+         * that takes longer than LowLevelHooksTimeout (300ms by default) is removed by Windows without
+         * telling anybody, and the first UIA call on a thread costs 122ms. So the hook does the cheap part -
+         * it already has the coordinates - and the worker does the slow part while the person keeps working.
+         *
+         * Bounded on purpose. If the worker falls behind, the events at the back of the queue lose their
+         * context rather than the recording losing events: a click with no context is a small loss, a click
+         * that never got recorded is a wrong recording. `_dropped` counts what was skipped so /record/stop
+         * can report it instead of quietly returning a thinner transcript.
+         */
+        class Pending
+        {
+            public Ev Target;
+            public int X;
+            public int Y;
+        }
+
+        static readonly Queue<Pending> _toResolve = new Queue<Pending>();
+        static readonly object ResolveGate = new object();
+        static Thread _resolver;
+        static bool _resolverStop;
+        static int _dropped;
+        const int QueueMax = 400;
+
+        static void Enqueue(Ev e, int x, int y)
+        {
+            lock (ResolveGate)
+            {
+                if (_toResolve.Count >= QueueMax) { _dropped++; return; }
+                Pending p = new Pending();
+                p.Target = e;
+                p.X = x;
+                p.Y = y;
+                _toResolve.Enqueue(p);
+            }
+        }
+
+        static void ResolveLoop()
+        {
+            while (true)
+            {
+                Pending job = null;
+                lock (ResolveGate)
+                {
+                    if (_toResolve.Count > 0) job = _toResolve.Dequeue();
+                    else if (_resolverStop) return;
+                }
+                if (job == null) { Thread.Sleep(15); continue; }
+
+                try { Describe(job); }
+                catch { /* One unreadable control must not end the resolver for the rest of the recording. */ }
+            }
+        }
+
+        /* The window first, because it is cheap and it works even where UIA does not: a process name and a
+         * title come from the window manager, not from an accessibility provider, so an Electron app that
+         * names no controls still says "Claude". Then the control, which is the part worth having. */
+        static void Describe(Pending job)
+        {
+            IntPtr hwnd = Native.WindowFromPoint(new POINT { X = job.X, Y = job.Y });
+            if (hwnd != IntPtr.Zero)
+            {
+                IntPtr top = Native.GetAncestor(hwnd, Native.GA_ROOT);
+                if (top != IntPtr.Zero) hwnd = top;
+
+                job.Target.Window = TitleOf(hwnd);
+                uint pid;
+                Native.GetWindowThreadProcessId(hwnd, out pid);
+                if (pid != 0)
+                {
+                    try
+                    {
+                        using (Process proc = Process.GetProcessById((int)pid))
+                        {
+                            job.Target.Process = proc.ProcessName;
+                        }
+                    }
+                    catch { /* Exited between the click and now. The title is still worth keeping. */ }
+                }
+            }
+
+            AutomationElement el = AutomationElement.FromPoint(new System.Windows.Point(job.X, job.Y));
+            if (el == null) return;
+
+            /* Climb for a name. A hit test often lands on an unnamed `group` or `custom` wrapper while the
+             * thing a person would call the target is its parent - measured, this takes naming from 59/106
+             * to 82/110. Five levels, because beyond that the answer is the window and the window is
+             * already known. */
+            string name = null;
+            string type = null;
+            AutomationElement at = el;
+            for (int climbed = 0; climbed <= 5 && at != null; climbed++)
+            {
+                string candidate = null;
+                string kind = null;
+                try
+                {
+                    candidate = at.Current.Name;
+                    kind = at.Current.LocalizedControlType;
+                }
+                catch { break; }   // the element went away mid-read; whatever was found so far stands
+
+                if (type == null) type = kind;
+                if (!string.IsNullOrEmpty(candidate)) { name = candidate; type = kind; break; }
+
+                try { at = TreeWalker.ControlViewWalker.GetParent(at); }
+                catch { break; }
+            }
+
+            job.Target.Control = string.IsNullOrEmpty(name) ? null : Clip(name, 120);
+            job.Target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
+        }
+
+        static string Clip(string text, int max)
+        {
+            if (text == null) return null;
+            text = text.Replace("\r", " ").Replace("\n", " ").Replace("|", "/").Trim();
+            return text.Length <= max ? text : text.Substring(0, max - 1) + "\u2026";
+        }
+
+        static string TitleOf(IntPtr hwnd)
+        {
+            StringBuilder sb = new StringBuilder(300);
+            Native.GetWindowText(hwnd, sb, sb.Capacity);
+            string title = sb.ToString();
+            return string.IsNullOrEmpty(title) ? null : Clip(title, 160);
         }
 
         public static void RecordStart()
@@ -462,6 +616,24 @@ namespace MouseFlow
                 _clock.Start();
                 _recording = true;
             }
+
+            lock (ResolveGate)
+            {
+                _toResolve.Clear();
+                _dropped = 0;
+                _resolverStop = false;
+            }
+
+            /* MTA, deliberately. A UIA client on an STA thread marshals every call through that thread's
+             * message pump, which is the pump the hook is using - and the point of this thread is to not
+             * touch that pump. */
+            if (_resolver == null || !_resolver.IsAlive)
+            {
+                _resolver = new Thread(new ThreadStart(ResolveLoop));
+                _resolver.IsBackground = true;
+                _resolver.SetApartmentState(ApartmentState.MTA);
+                _resolver.Start();
+            }
         }
 
         public static string RecordStop()
@@ -474,7 +646,37 @@ namespace MouseFlow
                 taken = _buffer;
                 _buffer = new List<Ev>();
             }
+
+            /* Give the resolver a moment to finish what it already has. Bounded, because a recording that
+             * hangs on stop is worse than a transcript missing the last control name - and whatever is still
+             * unresolved simply stays null, which the format already means as "not known". */
+            for (int waited = 0; waited < 1500; waited += 50)
+            {
+                lock (ResolveGate) { if (_toResolve.Count == 0) break; }
+                Thread.Sleep(50);
+            }
+            lock (ResolveGate) { _resolverStop = true; }
+
             return Serialize(taken);
+        }
+
+        /* Context rides on a COMMENT line above its event.
+         *
+         * The .mmmacro line is `index | X | Y | delayMs | action` and anything reading it - Mini Mouse Macro
+         * itself included - would choke on a sixth column. Lines starting with # are already ignored by
+         * every reader of this format, including web/src/lib/macro.ts, so an older reader loads the recording
+         * exactly as it did before and a newer one gets the context. Deliberately not JSON: a tab-separated
+         * pair list survives a title containing a quote, a brace or a colon without an encoder.
+         */
+        static void WriteContext(StringBuilder sb, Ev e)
+        {
+            if (e.Process == null && e.Window == null && e.Control == null) return;
+            sb.Append("#ctx");
+            if (e.Process != null) { sb.Append("\tapp="); sb.Append(e.Process); }
+            if (e.Window != null) { sb.Append("\twindow="); sb.Append(e.Window); }
+            if (e.Control != null) { sb.Append("\tcontrol="); sb.Append(e.Control); }
+            if (e.ControlType != null) { sb.Append("\ttype="); sb.Append(e.ControlType); }
+            sb.Append("\n");
         }
 
         public static string Serialize(List<Ev> list)
@@ -483,6 +685,7 @@ namespace MouseFlow
             for (int i = 0; i < list.Count; i++)
             {
                 Ev e = list[i];
+                WriteContext(sb, e);
                 sb.Append((i + 1).ToString(CultureInfo.InvariantCulture));
                 sb.Append(" | ");
                 sb.Append(e.X.ToString(CultureInfo.InvariantCulture));

@@ -19,9 +19,37 @@ export function parseMacro(text: string): { events: RecordedEvent[]; problems: s
   const events: RecordedEvent[] = [];
   const problems: string[] = [];
 
+  /* Context for the NEXT event line, from a `#ctx` comment above it. Comment lines were always skipped, so
+   * this reads what newer agents add without breaking on what older ones do not write. */
+  let pending: RecordedEvent['context'] | undefined;
+
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
+    if (!line) continue;
+
+    if (line.startsWith('#')) {
+      if (line.startsWith('#ctx')) {
+        /* Tab-separated key=value, deliberately not JSON: a window title can contain a quote, a brace or a
+         * colon, and a format with no encoder has nothing to get wrong. Only the keys we know are read - an
+         * agent that adds one is not a parse error. */
+        const found: Record<string, string> = {};
+        for (const field of line.slice(4).split('\t')) {
+          const at = field.indexOf('=');
+          if (at <= 0) continue;
+          const key = field.slice(0, at).trim();
+          const value = field.slice(at + 1).trim();
+          if (value) found[key] = value;
+        }
+        const context = {
+          app: found.app,
+          window: found.window,
+          control: found.control,
+          type: found.type,
+        };
+        pending = Object.values(context).some(Boolean) ? context : undefined;
+      }
+      continue;
+    }
 
     const parts = line.split('|').map((p) => p.trim());
     if (parts.length < 5) {
@@ -41,7 +69,10 @@ export function parseMacro(text: string): { events: RecordedEvent[]; problems: s
       continue;
     }
     if (!Number.isFinite(event.delayMs) || event.delayMs < 0) event.delayMs = 0;
-    events.push(event);
+    /* Attached to this event and cleared, so a context line can never be read as belonging to two events -
+     * which is how a click would come to claim the window of the click before it. */
+    events.push(pending ? { ...event, context: pending } : event);
+    pending = undefined;
   }
 
   return { events, problems };
@@ -75,6 +106,17 @@ export function exportMacro(rec: Recording): string {
     ...(rec.windows.length ? [`# in ${rec.windows.map((w) => w.title).join(', ')}`] : []),
   ];
   rec.events.forEach((e, i) => {
+    /* Context back out the way it came in, or an export-then-import round trip would quietly strip it and the
+     * transcript of the reimported copy would be poorer than the original for no visible reason. */
+    if (e.context) {
+      const fields = [
+        e.context.app && `app=${e.context.app}`,
+        e.context.window && `window=${e.context.window}`,
+        e.context.control && `control=${e.context.control}`,
+        e.context.type && `type=${e.context.type}`,
+      ].filter(Boolean);
+      if (fields.length) lines.push(`#ctx	${fields.join('	')}`);
+    }
     lines.push(`${i + 1} | ${e.x} | ${e.y} | ${e.delayMs} | ${e.action}`);
   });
   return lines.join('\n');
