@@ -30,7 +30,7 @@ export const SignInWall = ({ problem, onSignIn }: Props) => {
     <div className="grid min-h-screen place-items-center bg-surface-page p-6">
       <div className="w-full max-w-[380px] text-center">
         <svg viewBox="0 0 24 24" aria-hidden className="mx-auto size-9 text-logo-mark">
-          <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor" />
+          <path d="M5 4l14 8-6 1.6L10.5 20z" fill="currentColor" />
         </svg>
 
         <Typography variant="h1" weight="semibold" className="mt-3 text-[1.4rem] text-ink-primary">

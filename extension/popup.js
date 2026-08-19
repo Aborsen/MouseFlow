@@ -141,7 +141,9 @@ function showWho(name) {
   $('who').hidden = false;
   $('who-name').textContent = name;
   $('who-mark').textContent = initial;
-  $('rail-avatar').textContent = initial;
+  /* The disc inside the button, not the button itself: writing textContent onto the button would delete the
+     element that draws the circle, which is why the rail's account is one box with a disc in it now. */
+  $('rail-initial').textContent = initial;
   $('rail-avatar').title = 'Signed in as ' + name;
 }
 

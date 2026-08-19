@@ -13,7 +13,7 @@
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
   ChevronsUpDown,
-  Circle,
+  CircleDot,
   FolderOpen,
   LayoutGrid,
   PanelLeft,
@@ -29,7 +29,7 @@ import { useAccount } from '@/shell/AccountProvider';
 const TIGHT = 'mouseflow.side.tight';
 
 const NAV = [
-  { to: '/record', label: 'Record', icon: Circle },
+  { to: '/record', label: 'Record', icon: CircleDot },
   { to: '/create', label: 'Create', icon: Sparkles },
   { to: '/skills', label: 'Skills', icon: FolderOpen },
   { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
@@ -90,7 +90,9 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
         {/* gap-2.5, the nav's gap: at gap-2 the wordmark started two pixels left of every label below it. */}
         <Link to="/record" className="flex min-w-0 items-center gap-2.5 text-ink-primary" title="MouseFlow">
           <svg viewBox="0 0 24 24" aria-hidden className={cn(GLYPH, 'text-logo-mark')}>
-            <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor" />
+            {/* Centred on 12,12. It used to span y 3..19 in a 24 box - a whole unit high - which is
+                invisible on its own and obvious in the extension's rail beside four centred glyphs. */}
+            <path d="M5 4l14 8-6 1.6L10.5 20z" fill="currentColor" />
           </svg>
           {!tight && (
             <Typography variant="span" weight="semibold" className="truncate">
