@@ -1,0 +1,13 @@
+{
+  "name": "@insightis/typescript-config",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "./base.json",
+  "exports": {
+    "./base.json": "./base.json",
+    "./react-library.json": "./react-library.json",
+    "./vite.json": "./vite.json"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "note": "Written by web/scripts/sync-design-system.mjs. Do not edit this tree by hand — see vendor/VENDORED.md.",
+  "repo": "https://git.devart.com/devart/ai-innovations-team/simplebi/insightis.git",
+  "package": "frontend/packages/typescript-config",
+  "ref": "master",
+  "commit": "ec43d43947f50e6f78032b2d57322ac28783c696",
+  "commitDate": "2026-08-19",
+  "files": 4
+}

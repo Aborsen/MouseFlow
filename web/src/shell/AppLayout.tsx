@@ -4,16 +4,15 @@
  * belongs where it can always be seen - and clicking it opens the screen about it, rather than toggling a
  * panel over the page you are working on.
  */
-import { Outlet, useNavigate, useRouterState } from '@tanstack/react-router';
-import { useCallback, useState } from 'react';
-import { cn } from '@/ui/lib/utils';
-import { Typography } from '@/ui/components/Typography';
+import { Outlet, useRouterState } from '@tanstack/react-router';
+import { useState } from 'react';
+import { cn } from '@insightis/ui/cn';
+import { Typography } from '@insightis/ui/Typography';
 import { AGENT_WANTS } from '@/lib/agent';
 import { useAgent } from '@/lib/store';
 import { AccountProvider } from './AccountProvider';
 import { AppSidebar } from './AppSidebar';
 import { SettingsDialog, type SettingsScreen } from './SettingsDialog';
-import { startRecordingRequested } from './record-bus';
 
 const TITLES: Record<string, string> = {
   '/record': 'Record',
@@ -26,20 +25,11 @@ const TITLES: Record<string, string> = {
 const Shell = () => {
   const [settings, setSettings] = useState<SettingsScreen | null>(null);
   const { health, stale } = useAgent();
-  const navigate = useNavigate();
   const path = useRouterState({ select: (s) => s.location.pathname });
-
-  /* New recording, from anywhere: go to Record and tell it to start. The view owns the recorder, so this
-   * asks rather than reaches in - which is also what makes the same action work from the sidebar and from
-   * the button on the page. */
-  const newRecording = useCallback(() => {
-    void navigate({ to: '/record' });
-    startRecordingRequested();
-  }, [navigate]);
 
   return (
     <div className="flex min-h-screen items-stretch bg-surface-page">
-      <AppSidebar onNewRecording={newRecording} onOpenSettings={(screen) => setSettings(screen ?? 'account')} />
+      <AppSidebar onOpenSettings={(screen) => setSettings(screen ?? 'account')} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 flex items-center gap-3 border-stroke border-b bg-surface-page/85 px-5 py-3 backdrop-blur">

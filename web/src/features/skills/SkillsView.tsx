@@ -7,9 +7,9 @@
 import { useNavigate } from '@tanstack/react-router';
 import { Copy, Link2, Monitor, RefreshCw, Share2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import { type Flow, galleryPublish, mintDeviceToken } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { useAccount } from '@/shell/AccountProvider';

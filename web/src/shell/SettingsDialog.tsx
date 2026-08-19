@@ -1,6 +1,10 @@
 /* Settings, following insightis/features/user-profile: a 176px nav down the left of the dialog, groups
  * under a small muted label, Log out pinned to the bottom with a red glyph.
  *
+ * One size for all three, rather than a dialog that grows and shrinks as you move between them: the body
+ * is a declared height and each screen is written to fit it, which is why Hours shows six rows and not
+ * twelve. Nav rows share a height and a glyph box for the same reason the sidebar's do.
+ *
  * Three screens rather than one long scroll:
  *
  *   My account    who you are, the theme, what is paired with you, and the way out of all of it
@@ -19,15 +23,28 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import { useAccount } from './AccountProvider';
 import { MyAccountScreen } from './settings/MyAccountScreen';
 import { ConnectionsScreen } from './settings/ConnectionsScreen';
 import { HoursScreen } from './settings/HoursScreen';
 
 export type SettingsScreen = 'account' | 'connections' | 'hours';
+
+/* The one height all three screens are written to fit (see BODY below), and the row metrics the nav shares
+ * with the sidebar's. Declared once rather than inferred from whichever screen happened to be tallest.
+ *
+ * 560px because that is what the tallest screen needs, measured rather than guessed: My account comes to
+ * ~490px of content once the list of paired devices is bounded. The cap keeps it inside a short window - a
+ * dialog taller than the viewport cannot be closed by the button at its top.
+ *
+ * A class and not an inline style: an inline height would win over max-sm:h-auto, and on a phone the dialog
+ * goes column so a fixed height there would be 560px of dialog on a 600px screen. */
+const BODY = 'h-[560px] max-h-[calc(100dvh-4rem)] max-sm:h-auto';
+const ROW = 'flex h-9 shrink-0 items-center gap-2 rounded-md px-2 text-sm';
+const GLYPH = 'size-[18px] shrink-0';
 
 const TITLES: Record<SettingsScreen, string> = {
   account: 'My account',
@@ -55,13 +72,13 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
       type="button"
       onClick={() => onScreen(id)}
       className={cn(
-        'flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-ink-body text-sm',
-        'hover:bg-state-hover hover:text-ink-primary',
+        ROW,
+        'w-full text-left text-ink-body hover:bg-state-hover hover:text-ink-primary',
         id === screen && 'bg-state-pressed font-semibold text-ink-primary',
       )}
     >
-      <Icon className="size-[18px] shrink-0" />
-      <span>{label}</span>
+      <Icon className={GLYPH} />
+      <span className="truncate">{label}</span>
     </button>
   );
 
@@ -70,10 +87,10 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
       href={href}
       target="_blank"
       rel="noopener"
-      className="flex h-7 w-full items-center gap-2 rounded-md px-2 text-ink-body text-sm hover:bg-state-hover hover:text-ink-primary"
+      className={cn(ROW, 'w-full text-ink-body hover:bg-state-hover hover:text-ink-primary')}
     >
-      <Icon className="size-[18px] shrink-0" />
-      <span>{label}</span>
+      <Icon className={GLYPH} />
+      <span className="truncate">{label}</span>
       <ExternalLink className="ms-auto size-[15px] shrink-0 text-ink-inactive" />
     </a>
   );
@@ -114,14 +131,18 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
             <button
               type="button"
               onClick={leave}
-              className="mt-auto flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-ink-body text-sm hover:bg-state-hover max-sm:mt-0 max-sm:ms-auto max-sm:w-auto"
+              className={cn(
+                ROW,
+                'mt-auto w-full text-left text-ink-body hover:bg-state-hover',
+                'max-sm:mt-0 max-sm:ms-auto max-sm:w-auto',
+              )}
             >
-              <LogOut className="size-[18px] shrink-0 text-fb-red-text" />
+              <LogOut className={cn(GLYPH, 'text-fb-red-text')} />
               <span>Log out</span>
             </button>
           </aside>
 
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className={cn('flex min-w-0 flex-1 flex-col', BODY)}>
             <div className="flex items-center gap-4 border-stroke border-b p-4">
               <Dialog.Title asChild>
                 <Typography variant="h2" weight="semibold" className="text-[1.05rem]">
@@ -139,7 +160,10 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
               </Dialog.Close>
             </div>
 
-            <div className="min-h-[280px] p-4">
+            {/* Fixed above, so this is the same rectangle on every screen. It scrolls only if something
+                unusual is in it - a long list of paired devices - because a clipped control cannot be
+                reached at all, and each screen is written to fit without one. */}
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {screen === 'account' && <MyAccountScreen say={setSaid} />}
               {screen === 'connections' && <ConnectionsScreen say={setSaid} onClose={onClose} />}
               {screen === 'hours' && <HoursScreen />}

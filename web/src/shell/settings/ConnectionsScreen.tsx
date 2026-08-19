@@ -7,9 +7,9 @@
 import { useNavigate } from '@tanstack/react-router';
 import { Copy, Download } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import { AGENT_WANTS, localFileCommand, startCommand } from '@/lib/agent';
 import { useAgent, useConsole } from '@/lib/store';
 import { Row, type Say } from '../SettingsDialog';

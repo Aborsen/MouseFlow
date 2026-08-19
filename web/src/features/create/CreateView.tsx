@@ -9,9 +9,9 @@
 import { useNavigate } from '@tanstack/react-router';
 import { Play, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import { AGENT_WANTS } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
 import { push } from '@/lib/api';

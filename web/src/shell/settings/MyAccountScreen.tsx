@@ -4,9 +4,8 @@
  * easy to lose behind the first; changing the button into the consequence is not.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { cn } from '@insightis/ui/cn';
 import { type Device, devices, eraseAccount, revokeDevice, signOut } from '@/lib/api';
 import { useAccount } from '../AccountProvider';
 import { Row, type Say } from '../SettingsDialog';
@@ -69,11 +68,14 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
         label="Paired devices"
         note={
           paired && paired.length
-            ? 'Extensions and agents signed in as you. Revoking one stops it syncing at once.'
+            ? 'Signed in as you. Revoking one stops it syncing at once.'
             : 'Nothing paired yet. Connect an extension from Skills.'
         }
       />
-      <ul className="mt-1 flex flex-col gap-1.5">
+      {/* The one genuinely unbounded thing on this screen, so it is the one thing that scrolls - rather
+          than the screen growing past the size every settings screen shares. Two rows are visible and a
+          third is half-visible, which is what tells you there is more. */}
+      <ul className="mt-1 flex max-h-[6.5rem] flex-col gap-1.5 overflow-y-auto">
         {(paired ?? []).map((device) => (
           <li
             key={device.id}
@@ -109,7 +111,7 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
       <Row
         danger
         label="Delete my data"
-        note="Every flow and every run, from both halves, and all paired devices. Anything you published is withdrawn from the gallery. Your Google account is not ours to delete — sign out to finish."
+        note="Every flow, every run and every paired device. Anything you published is withdrawn. Your Google account is not ours to delete."
       >
         <Button
           variant={armed ? 'destructive' : 'destructiveOutline'}
@@ -149,9 +151,6 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
         </Button>
       </Row>
 
-      <Typography variant="p" className="mt-2 text-ink-inactive text-xs">
-        Signed in as {account?.name ?? account?.email}. Log out is in the menu on the left.
-      </Typography>
     </div>
   );
 };

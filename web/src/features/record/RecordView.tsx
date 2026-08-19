@@ -13,14 +13,13 @@
 import { useNavigate } from '@tanstack/react-router';
 import { Circle, Download, Plus, Save, Square, Trash2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import { recordStart, recordStatus, recordStop, windows } from '@/lib/agent';
 import { push } from '@/lib/api';
 import { exportMacro, fmtMs, parseMacro, summarize } from '@/lib/macro';
 import { type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
-import { onStartRecording } from '@/shell/record-bus';
 import { useAccount } from '@/shell/AccountProvider';
 import { FlowBuilder } from './FlowBuilder';
 
@@ -54,9 +53,6 @@ export const RecordView = () => {
       setNote(err instanceof Error ? err.message : 'could not start recording');
     }
   }, [health, navigate, port]);
-
-  // The sidebar's New recording asks for this; see record-bus.
-  useEffect(() => onStartRecording(() => { void begin(); }), [begin]);
 
   /* Two pollers while recording, at different cadences on purpose: the counter should feel live, and the
    * window list needs one sample a second at most - an application you passed through for half a second is

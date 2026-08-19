@@ -10,9 +10,9 @@
 import { useNavigate } from '@tanstack/react-router';
 import { Check, Copy, Download, Loader2 } from 'lucide-react';
 import { useCallback, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import { AGENT_WANTS, autostartEnable, localFileCommand, olderThan, startCommand } from '@/lib/agent';
 import { refreshAgent, useAgent, useConsole } from '@/lib/store';
 

@@ -6,8 +6,8 @@
  */
 import { ArrowDown, ArrowUp, Play, Square, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
 import { replay, replayAbort, replayStatus } from '@/lib/agent';
 import { flowBody, fmtMs, summarize } from '@/lib/macro';
 import { useAgent, useConsole } from '@/lib/store';

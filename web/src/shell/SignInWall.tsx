@@ -5,8 +5,8 @@
  * session or a device token on every request. This is the front door.
  */
 import { useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
 
 const GoogleMark = () => (
   <svg viewBox="0 0 48 48" aria-hidden className="size-[18px]">

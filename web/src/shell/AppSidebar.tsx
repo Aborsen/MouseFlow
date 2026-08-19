@@ -1,15 +1,18 @@
 /* The sidebar, following insightis/apps/web's AppSidebar.
  *
- * Their order, and for their reasons: the thing you came to do at the top, then the places you go, then
- * what it is costing you, then who you are. Theirs starts a chat and counts credits; this starts a
- * recording and counts hours, because a tool that does work for you is measured in time.
+ * Their order, minus their first item. Theirs opens with New Chat because a chat is the only way in; here
+ * the way in is Record, which is a place rather than an action, so a sidebar button that starts a recording
+ * was a second door to a room that already has one. Record's own button does it, on the page that shows
+ * what is being recorded. Below the places: what it is costing you, in hours, and who you are.
+ *
+ * Every row is RAIL square: one declared size, used by the nav, the collapse toggle and the avatar alike.
+ * They each sized themselves before - 34px, 32px, 24px - which is why the collapsed rail looked ragged.
  *
  * Collapsing is remembered - it is a preference about this screen rather than about this visit.
  */
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
   ChevronsUpDown,
-  CirclePlus,
   Circle,
   FolderOpen,
   LayoutGrid,
@@ -18,8 +21,8 @@ import {
   Wallet,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { cn } from '@/ui/lib/utils';
-import { Typography } from '@/ui/components/Typography';
+import { cn } from '@insightis/ui/cn';
+import { Typography } from '@insightis/ui/Typography';
 import { hoursOf } from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
 
@@ -32,12 +35,18 @@ const NAV = [
   { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
 ] as const;
 
+/* One row height, one glyph box, one gap - so a lucide glyph that draws lighter than its neighbours still
+ * occupies the same square, and the collapsed rail is a column of identical buttons rather than a stack of
+ * whatever each element happened to measure. */
+const ROW = 'flex h-9 items-center gap-2.5 rounded-md';
+const SQUARE = 'grid size-9 shrink-0 place-items-center rounded-md';
+const GLYPH = 'size-[18px] shrink-0';
+
 interface Props {
-  onNewRecording: () => void;
   onOpenSettings: (screen?: 'account' | 'connections' | 'hours') => void;
 }
 
-export const AppSidebar = ({ onNewRecording, onOpenSettings }: Props) => {
+export const AppSidebar = ({ onOpenSettings }: Props) => {
   const [tight, setTight] = useState(() => {
     try {
       return localStorage.getItem(TIGHT) === '1';
@@ -77,9 +86,9 @@ export const AppSidebar = ({ onNewRecording, onOpenSettings }: Props) => {
         tight ? 'w-14 items-center px-2 py-3' : 'w-[236px] px-2.5 py-3',
       )}
     >
-      <div className={cn('flex items-center gap-2 px-1 pb-2', tight && 'justify-center px-0')}>
-        <Link to="/record" className="flex min-w-0 items-center gap-2 p-0.5 text-ink-primary">
-          <svg viewBox="0 0 24 24" aria-hidden className="size-5 shrink-0 text-logo-mark">
+      <div className={cn('mb-1 flex items-center gap-1 pb-1', tight ? 'justify-center' : 'ps-2.5')}>
+        <Link to="/record" className="flex min-w-0 items-center gap-2 text-ink-primary" title="MouseFlow">
+          <svg viewBox="0 0 24 24" aria-hidden className={cn(GLYPH, 'text-logo-mark')}>
             <path d="M5 3l14 8-6 1.6L10.5 19z" fill="currentColor" />
           </svg>
           {!tight && (
@@ -95,9 +104,9 @@ export const AppSidebar = ({ onNewRecording, onOpenSettings }: Props) => {
             onClick={() => toggle(true)}
             title="Collapse the sidebar"
             aria-label="Collapse the sidebar"
-            className="ms-auto grid size-7 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+            className={cn(SQUARE, 'ms-auto text-ink-inactive hover:bg-state-hover hover:text-ink-primary')}
           >
-            <PanelLeft className="size-4" />
+            <PanelLeft className={GLYPH} />
           </button>
         )}
       </div>
@@ -108,28 +117,13 @@ export const AppSidebar = ({ onNewRecording, onOpenSettings }: Props) => {
           onClick={() => toggle(false)}
           title="Show the sidebar"
           aria-label="Show the sidebar"
-          className="mb-1 grid size-8 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+          className={cn(SQUARE, 'mb-0.5 text-ink-inactive hover:bg-state-hover hover:text-ink-primary')}
         >
-          <PanelLeft className="size-4" />
+          <PanelLeft className={GLYPH} />
         </button>
       )}
 
       <nav className={cn('flex shrink-0 flex-col gap-0.5', tight && 'items-center')}>
-        {/* Where their New Chat sits, and it does the thing rather than navigating to where the thing is. */}
-        <button
-          type="button"
-          onClick={onNewRecording}
-          title="Start a new recording"
-          className={cn(
-            'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-left font-semibold text-ink-primary',
-            'hover:bg-state-hover',
-            tight && 'w-auto justify-center px-2',
-          )}
-        >
-          <CirclePlus className="size-[18px] shrink-0 text-brand-primary" />
-          {!tight && <span className="truncate text-[0.92rem]">New recording</span>}
-        </button>
-
         {NAV.map(({ to, label, icon: Icon }) => {
           const on = path.startsWith(to);
           return (
@@ -138,27 +132,32 @@ export const AppSidebar = ({ onNewRecording, onOpenSettings }: Props) => {
               to={to}
               title={label}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-[0.92rem] text-ink-body',
-                'hover:bg-state-hover hover:text-ink-primary',
+                ROW,
+                'text-[0.92rem] text-ink-body hover:bg-state-hover hover:text-ink-primary',
                 on && 'bg-state-pressed font-semibold text-ink-primary',
-                tight && 'w-auto justify-center px-2',
+                tight ? 'w-9 justify-center' : 'w-full px-2.5',
               )}
             >
-              <Icon className={cn('size-[18px] shrink-0', on && 'text-brand-primary')} />
+              <Icon className={cn(GLYPH, on && 'text-brand-primary')} />
               {!tight && <span className="truncate">{label}</span>}
             </Link>
           );
         })}
       </nav>
 
-      <div className="mt-auto w-full border-stroke border-t pt-2">
+      <div className={cn(
+        'mt-auto flex w-full flex-col gap-0.5 border-stroke border-t pt-2',
+        // Collapsed, the account square has to sit in the same column as the nav's; the footer is what
+        // decides that, and left to itself it aligned the square to the left edge instead.
+        tight && 'items-center',
+      )}>
         {/* Their balance row, in hours. Clicking it opens the screen it summarises, as theirs does. */}
         {!tight && account && (
           <button
             type="button"
             onClick={() => onOpenSettings('hours')}
             title="Hours of work these flows have run"
-            className="mb-0.5 flex w-full items-center justify-between gap-2 rounded-md px-1.5 py-1 hover:bg-state-hover"
+            className={cn(ROW, 'w-full justify-between px-2.5 hover:bg-state-hover')}
           >
             <span className="font-medium text-[0.688rem] text-ink-secondary">Hours</span>
             <span className="flex items-center gap-1.5 text-[0.688rem] text-ink-primary tabular-nums">
@@ -172,12 +171,14 @@ export const AppSidebar = ({ onNewRecording, onOpenSettings }: Props) => {
           <button
             type="button"
             onClick={() => onOpenSettings('account')}
+            title="Your account, connections and hours"
             className={cn(
-              'flex w-full items-center gap-2 rounded-md p-1 text-left hover:bg-state-hover',
-              tight && 'justify-center',
+              ROW,
+              'text-left hover:bg-state-hover',
+              tight ? 'w-9 justify-center' : 'w-full px-2.5',
             )}
           >
-            <span className="grid size-6 shrink-0 place-items-center rounded-full bg-brand-tertiary font-semibold text-[0.6875rem] text-white">
+            <span className="grid size-[22px] shrink-0 place-items-center rounded-full bg-brand-tertiary font-semibold text-[0.6875rem] text-white">
               {initial}
             </span>
             {!tight && (

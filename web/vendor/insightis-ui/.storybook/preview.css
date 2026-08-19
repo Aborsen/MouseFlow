@@ -1,0 +1,6 @@
+/* Match the app shell: screens render on surface-page with primary ink.
+   Tokens flip with the .dark class set by the theme toolbar. */
+body {
+  background-color: hsl(var(--surface-page));
+  color: hsl(var(--ink-primary));
+}

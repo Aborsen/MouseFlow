@@ -16,7 +16,15 @@
     "noEmit": true,
     "types": ["vite/client"],
     "baseUrl": ".",
-    "paths": { "@/*": ["./src/*"] }
+    /* The same map as vite.config.ts's DESIGN_SYSTEM, and for the same reason. Exact keys before the
+     * wildcard so `@insightis/ui/cn` is not read as a component named "cn". */
+    "paths": {
+      "@insightis/ui/cn": ["./vendor/insightis-ui/src/lib/utils.ts"],
+      "@insightis/ui/use-mobile": ["./vendor/insightis-ui/src/hooks/use-mobile.tsx"],
+      "@insightis/ui/*": ["./vendor/insightis-ui/src/components/*/index.tsx"],
+      "@/hooks/*": ["./vendor/insightis-ui/src/hooks/*"],
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src", "vite.config.ts", "tailwind.config.ts"]
 }

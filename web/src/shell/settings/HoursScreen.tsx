@@ -4,11 +4,16 @@
  * it would otherwise have cost you - and the number is measured rather than estimated: every run on the
  * account has a start and a finish, and a span that cannot be real is discarded instead of displayed.
  */
-import { Typography } from '@/ui/components/Typography';
+import { Typography } from '@insightis/ui/Typography';
 import { hoursOf } from '@/lib/api';
 import { useAccount } from '../AccountProvider';
 
 const fmt = (hours: number) => (hours >= 10 ? hours.toFixed(0) : hours.toFixed(1));
+
+/* As many as fit the settings body without a scrollbar - measured, not guessed: six rows and the note
+ * below them came to 427px of a 401px body. The total above is over every run either way, so this is a
+ * preview and says so rather than quietly being the whole truth. */
+const ROWS = 5;
 
 export const HoursScreen = () => {
   const { flows, runs } = useAccount();
@@ -74,7 +79,7 @@ export const HoursScreen = () => {
             </tr>
           </thead>
           <tbody>
-            {timed.slice(0, 12).map((run) => (
+            {timed.slice(0, ROWS).map((run) => (
               <tr key={run.id} className="border-stroke border-b last:border-0">
                 <td className="px-2.5 py-2 text-ink-body">
                   {run.startedAt
@@ -99,6 +104,12 @@ export const HoursScreen = () => {
             ))}
           </tbody>
         </table>
+      )}
+
+      {timed.length > ROWS && (
+        <Typography variant="p" className="mt-2 text-ink-inactive text-[0.78rem]">
+          The {ROWS} most recent of {timed.length} timed runs. The total above counts all of them.
+        </Typography>
       )}
     </div>
   );

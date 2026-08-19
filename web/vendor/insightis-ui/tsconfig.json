@@ -1,0 +1,13 @@
+{
+  "extends": "@insightis/typescript-config/react-library.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src", ".storybook", "postcss.config.ts", "tailwind.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

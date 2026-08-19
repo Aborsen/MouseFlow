@@ -7,9 +7,9 @@
 import { useNavigate } from '@tanstack/react-router';
 import { Download, Monitor, Search } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
-import { Button } from '@/ui/components/Button';
-import { Typography } from '@/ui/components/Typography';
-import { cn } from '@/ui/lib/utils';
+import { Button } from '@insightis/ui/Button';
+import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import { type GallerySkill, galleryGet, galleryList, push } from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';

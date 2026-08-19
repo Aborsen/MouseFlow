@@ -21,12 +21,33 @@ const mockPlugin = (): Plugin => ({
  * The proxy target is the deployment rather than a local server, because these endpoints are Vercel
  * functions with a database and an OAuth issuer behind them - reproducing that locally would be a second
  * environment to keep in step, and the point of the dev server is the UI. */
+/* fileURLToPath rather than URL.pathname: on Windows the latter yields "/D:/AI%20Connecitivty/..." -
+ * percent-encoded and with a leading slash - which rollup then resolves against the drive root. */
+const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
+const ui = (p: string) => here('./vendor/insightis-ui/' + p);
+
+/* The `exports` map from vendor/insightis-ui/package.json, restated as aliases.
+ *
+ * The vendored design system is a copy of a pnpm workspace package, not an installed one, so nothing
+ * resolves `@insightis/ui/Button` for us. Rather than rewrite 227 files' imports on every sync - which is
+ * how a copy stops being updatable - the app resolves the specifiers the package already uses. Read
+ * alongside `exports` there; they say the same thing twice on purpose, and the suite checks they agree.
+ *
+ * Ordered, so the exact subpaths win over the component wildcard. `@/hooks/*` is theirs too: one component
+ * reaches for the workspace's own `@` alias, which means the package's src, not ours.
+ */
+const DESIGN_SYSTEM = [
+  { find: '@insightis/ui/cn', replacement: ui('src/lib/utils.ts') },
+  { find: '@insightis/ui/use-mobile', replacement: ui('src/hooks/use-mobile.tsx') },
+  { find: '@insightis/ui/globals.css', replacement: ui('src/globals.css') },
+  { find: /^@insightis\/ui\/(.+)$/, replacement: ui('src/components/$1/index.tsx') },
+  { find: /^@\/hooks\/(.+)$/, replacement: ui('src/hooks/$1') },
+];
+
 export default defineConfig({
   plugins: [react(), mockPlugin()],
   resolve: {
-    /* fileURLToPath rather than URL.pathname: on Windows the latter yields "/D:/AI%20Connecitivty/..." -
-     * percent-encoded and with a leading slash - which rollup then resolves against the drive root. */
-    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
+    alias: [...DESIGN_SYSTEM, { find: '@', replacement: here('./src') }],
   },
   server: {
     port: 4400,

@@ -4,7 +4,7 @@
  * dark - so every vendored component behaves exactly as it does there. Nothing below redefines a token;
  * what is here is page furniture their app has no equivalent of.
  */
-@import './ui/globals.css';
+@import '../vendor/insightis-ui/src/globals.css';
 
 @layer base {
   html,
