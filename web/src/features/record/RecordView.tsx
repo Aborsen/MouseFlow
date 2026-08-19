@@ -11,17 +11,17 @@
  *     account and in reach of the other half.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Circle, Download, Plus, Save, Square, Trash2, Upload } from 'lucide-react';
+import { Circle, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
-import { cn } from '@insightis/ui/cn';
-import { recordStart, recordStatus, recordStop, windows } from '@/lib/agent';
+import { recordStart, recordStatus, recordStop, replay, windows } from '@/lib/agent';
 import { push } from '@/lib/api';
-import { exportMacro, fmtMs, parseMacro, summarize } from '@/lib/macro';
+import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
 import { type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { FlowBuilder } from './FlowBuilder';
+import { RecordingsTable, replayOf } from './RecordingsTable';
 
 export const RecordView = () => {
   const [state, update] = useConsole();
@@ -32,7 +32,6 @@ export const RecordView = () => {
   const [live, setLive] = useState<{ count: number; elapsedMs: number } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const seenWindows = useRef<{ title: string; process: string }[]>([]);
-  const fileInput = useRef<HTMLInputElement>(null);
 
   const port = state.port;
 
@@ -121,6 +120,27 @@ export const RecordView = () => {
     }
   }, [port, state.recordings.length, update]);
 
+  /* Which recording's transcript is open. One at a time, and owned here rather than in the table, because the
+   * panel is a sibling of the whole page rather than of a row. */
+  const [viewing, setViewing] = useState<string | null>(null);
+
+  /* Play one recording now. A row is a one-step flow, which is why its repeat and speed are the step's - the
+   * alternative was a second replay path that could disagree with the flow builder's. */
+  const playOne = useCallback(async (rec: Recording) => {
+    if (!health) { setNote('The agent is not running.'); return; }
+    const settings = replayOf(rec);
+    try {
+      await replay(port, flowBody(
+        [{ recordingId: rec.id, repeat: settings.repeat, speed: settings.speed, delayAfterMs: 0 }],
+        [rec],
+        { startDelayMs: state.startDelayMs, flowRepeat: 1, flowForever: settings.loop },
+      ));
+      setNote(`Replaying "${rec.name}" — press Escape to stop.`);
+    } catch (err) {
+      setNote(err instanceof Error ? err.message : 'could not start the replay');
+    }
+  }, [health, port, state.startDelayMs]);
+
   const keepAsSkill = useCallback(async (rec: Recording) => {
     const s = summarize(rec.events);
     const where = rec.windows.map((w) => w.title).filter(Boolean);
@@ -190,8 +210,11 @@ export const RecordView = () => {
   const recording = live !== null || !!health?.recording;
 
   return (
-    <div className="grid items-start gap-4 p-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
-      <section className="rounded-xl border-stroke border bg-surface-card p-4">
+    /* One column, not two: a row of a recording carries a name, three replay controls, a date and six
+     * actions, and squeezing that into a 1fr column beside the recorder is what made it wrap to three lines
+     * and push the page sideways. The recorder is small; it goes above. */
+    <div className="flex flex-col gap-4 p-5">
+      <section className="max-w-[46rem] rounded-xl border-stroke border bg-surface-card p-4">
         <Typography variant="h2" weight="semibold" className="mb-3 text-[0.95rem] uppercase tracking-wide text-ink-secondary">
           Record
         </Typography>
@@ -239,107 +262,15 @@ export const RecordView = () => {
         )}
       </section>
 
-      <section className="rounded-xl border-stroke border bg-surface-card p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <Typography variant="h2" weight="semibold" className="text-[0.95rem] uppercase tracking-wide text-ink-secondary">
-            Recordings
-          </Typography>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ms-auto"
-            leftSlot={<Upload className="size-4" />}
-            onClick={() => fileInput.current?.click()}
-          >
-            Import .mmmacro
-          </Button>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".mmmacro,.txt,text/plain"
-            multiple
-            hidden
-            onChange={(ev) => { if (ev.target.files) void importFiles(ev.target.files); }}
-          />
-        </div>
+      <RecordingsTable
+        viewing={viewing}
+        onImport={(files) => { void importFiles(files); }}
+        onSaveAsSkill={(rec) => { void keepAsSkill(rec); }}
+        onView={(rec) => setViewing((open) => (open === rec.id ? null : rec.id))}
+        onPlay={(rec) => { void playOne(rec); }}
+      />
 
-        {state.recordings.length === 0 ? (
-          <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
-            No recordings yet. Press <strong>Start recording</strong>, or import a <code>.mmmacro</code>
-            {' '}file from Mini Mouse Macro.
-          </Typography>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {state.recordings.map((rec) => {
-              const s = summarize(rec.events);
-              return (
-                <li key={rec.id} className="rounded-lg border-stroke border bg-surface-chips p-2.5">
-                  <input
-                    value={rec.name}
-                    onChange={(ev) => update((prev) => ({
-                      recordings: prev.recordings.map((r) =>
-                        r.id === rec.id ? { ...r, name: ev.target.value } : r),
-                    }))}
-                    className="w-full rounded-md border border-transparent bg-transparent px-1 py-0.5 font-semibold text-ink-primary hover:border-stroke focus:border-brand-primary focus:outline-none"
-                  />
-                  <div className="mb-2 px-1 text-[0.78rem] text-ink-inactive">
-                    {s.count} events · {s.clicks} clicks · {fmtMs(s.durationMs)}
-                    {rec.windows.length ? ` · ${rec.windows.map((w) => w.title).join(', ').slice(0, 60)}` : ''}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      leftSlot={<Plus className="size-4" />}
-                      onClick={() => update((prev) => ({
-                        flow: [...prev.flow, { recordingId: rec.id, repeat: 1, speed: 1, delayAfterMs: 0 }],
-                      }))}
-                    >
-                      Add to flow
-                    </Button>
-                    <Button variant="ghost" size="sm" leftSlot={<Save className="size-4" />} onClick={() => keepAsSkill(rec)}>
-                      Save as skill
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      leftSlot={<Download className="size-4" />}
-                      onClick={() => {
-                        const blob = new Blob([exportMacro(rec)], { type: 'text/plain' });
-                        const a = document.createElement('a');
-                        a.href = URL.createObjectURL(blob);
-                        a.download = `${rec.name.replace(/[^\w.-]+/g, '-')}.mmmacro`;
-                        a.click();
-                        URL.revokeObjectURL(a.href);
-                      }}
-                    >
-                      Export
-                    </Button>
-                    <Button
-                      variant="destructiveTertiary"
-                      size="sm"
-                      leftSlot={<Trash2 className="size-4" />}
-                      onClick={() => {
-                        const inFlow = state.flow.filter((f) => f.recordingId === rec.id).length;
-                        const warn = inFlow ? ` It is used by ${inFlow} flow step(s).` : '';
-                        if (!confirm(`Delete "${rec.name}"?${warn}`)) return;
-                        update((prev) => ({
-                          recordings: prev.recordings.filter((r) => r.id !== rec.id),
-                          flow: prev.flow.filter((f) => f.recordingId !== rec.id),
-                        }));
-                      }}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
-      <div className={cn('xl:col-span-2')}>
+      <div>
         <FlowBuilder />
       </div>
     </div>

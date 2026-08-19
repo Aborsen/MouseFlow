@@ -29,6 +29,11 @@ export interface Recording {
   events: RecordedEvent[];
   /** Which applications were in front while this was recorded, in first-touched order. */
   windows: { title: string; process: string }[];
+  /* How a replay of THIS recording should behave. On the recording rather than only on a flow step, so that
+   * pressing Play on its row and adding it to a flow mean the same thing - which they did not when the row
+   * had no answer to "how many times, how fast, does it loop". Optional because every recording made before
+   * this existed has none, and the defaults are read through replayOf(). */
+  replay?: { repeat: number; speed: number; loop: boolean };
 }
 
 export interface FlowStep {
