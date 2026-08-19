@@ -20,7 +20,9 @@ const FLOWS = [
     source: 'desktop',
     kind: 'recorded',
     name: 'Outlook (PWA) · 6 clicks',
-    description: 'Repeats 42 recorded actions (6 clicks) over 20.5s, in Outlook (PWA) - Mail, Book1 - Excel.',
+    // The count agrees with payload.events below: a fixture that disagrees with itself teaches the wrong
+    // thing to whoever reads the Structure fold beside it.
+    description: 'Repeats 2 recorded actions (1 click) over 20.5s, in Outlook (PWA) - Mail, Book1 - Excel.',
     origins: ['Outlook (PWA) - Mail', 'Book1 - Excel'],
     created: hoursAgo(50),
     updated: hoursAgo(3),
@@ -42,7 +44,26 @@ const FLOWS = [
     origins: ['https://outlook.office.com'],
     created: hoursAgo(120),
     updated: hoursAgo(20),
-    payload: { version: 1, kind: 'created', name: 'Reply that the invoice is approved', events: [] },
+    /* A created skill as extension/skills.js writes one: the goal with its variable parts lifted out by
+     * parameterise(), the values that filled them as examples, and what one successful run did beside it as
+     * evidence. This is the shape the Structure fold turns into a tool definition. */
+     payload: {
+      version: 1,
+      kind: 'created',
+      name: 'Reply that the invoice is approved',
+      goalTemplate: 'Reply to {{recipient}} saying "{{text}}" and attach the latest invoice',
+      params: [
+        { name: 'recipient', type: 'email', example: 'accounts@northwind.example' },
+        { name: 'text', type: 'quoted', example: 'the invoice is approved' },
+      ],
+      steps: [
+        { name: 'open the thread', input: 'Invoice 4417' },
+        { name: 'click Reply', input: '' },
+        { name: 'type the message', input: 'the invoice is approved' },
+        { name: 'attach the invoice', input: 'invoice-4417.pdf' },
+      ],
+      events: [],
+    },
   },
 ];
 

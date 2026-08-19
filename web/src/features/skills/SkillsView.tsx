@@ -5,8 +5,8 @@
  * only the local agent can. Offering the wrong one is a button that does something meaningless.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Copy, Link2, Monitor, RefreshCw, Share2, Trash2, Upload } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { Braces, Copy, Link2, Monitor, RefreshCw, Share2, Trash2, Upload } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
@@ -14,6 +14,153 @@ import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
+import {
+  type SkillStructure,
+  type WireFormat,
+  WIRE_FORMATS,
+  WIRE_LABELS,
+  structureOf,
+  wireFor,
+} from '@/lib/skill-schema';
+
+/* ------------------------------------------------------------------ what a skill is, spelled out
+ *
+ * A skill already has the shape of a tool: a name, a description, and the variable parts lifted out of the
+ * goal by parameterise(). This is that shape made visible, and then written the three ways the APIs want it
+ * - which differ by one key each, and seeing that is most of the value.
+ */
+const Structure = ({ skill, wire, onWire }: {
+  skill: SkillStructure;
+  wire: WireFormat;
+  onWire: (next: WireFormat) => void;
+}) => {
+  const json = useMemo(() => JSON.stringify(wireFor(wire, skill), null, 2), [wire, skill]);
+  const [copied, setCopied] = useState(false);
+
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch (_) {
+      /* Refused, which happens without a secure context or a user gesture the browser believes in. The
+       * text is on screen and selectable either way, so this is not worth an error state. */
+    }
+  }, [json]);
+
+  return (
+    <details className="group mt-3 rounded-lg border-stroke border bg-surface-card2">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2">
+        <Braces className="size-4 shrink-0 text-ink-inactive" />
+        <Typography variant="span" weight="semibold" className="text-[0.82rem] text-ink-secondary">
+          Structure
+        </Typography>
+        <span className="ms-auto shrink-0 font-mono text-[0.72rem] text-ink-inactive">
+          {skill.toolName}
+        </span>
+      </summary>
+
+      <div className="space-y-3 border-stroke border-t px-3 py-2.5">
+        {/* The parsed skill first, in words, because the JSON below is the same thing for a machine. */}
+        <dl className="grid grid-cols-[6.5rem_1fr] gap-x-3 gap-y-1 text-[0.8rem]">
+          <dt className="text-ink-inactive">Runs on</dt>
+          <dd className="break-words text-ink-body">{skill.runsHow}</dd>
+
+          {skill.goalTemplate && (
+            <>
+              <dt className="text-ink-inactive">Goal</dt>
+              <dd className="break-words font-mono text-[0.78rem] text-ink-body">{skill.goalTemplate}</dd>
+            </>
+          )}
+
+          {skill.kind === 'recorded' && (
+            <>
+              <dt className="text-ink-inactive">Replays</dt>
+              <dd className="text-ink-body">
+                {skill.events} recorded action{skill.events === 1 ? '' : 's'}
+              </dd>
+            </>
+          )}
+
+          <dt className="text-ink-inactive">Takes</dt>
+          <dd className="text-ink-body">
+            {Object.keys(skill.schema.properties).length === 0 ? (
+              <span className="text-ink-inactive">nothing — it replays as recorded</span>
+            ) : (
+              <ul className="space-y-0.5">
+                {Object.entries(skill.schema.properties).map(([name, shape]) => (
+                  <li key={name} className="break-words">
+                    <span className="font-mono text-[0.78rem]">{name}</span>
+                    <span className="text-ink-inactive">
+                      {' '}{shape.format ?? shape.type}
+                      {skill.schema.required.includes(name) ? ' · required' : ' · optional'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </dd>
+
+          {skill.steps.length > 0 && (
+            <>
+              <dt className="text-ink-inactive">One run did</dt>
+              {/* Evidence, not steps to replay - which is what a created skill keeps beside its goal. */}
+              <dd className="break-words text-ink-secondary">
+                {skill.steps.map((step) => step.name).join(' → ')}
+              </dd>
+            </>
+          )}
+        </dl>
+
+        {/* --------------------------------------------------------- the same thing, on the wire */}
+        <div>
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <div className="flex gap-1">
+              {WIRE_FORMATS.map((format) => (
+                <button
+                  key={format}
+                  type="button"
+                  onClick={() => onWire(format)}
+                  className={cn(
+                    'rounded-md px-2 py-1 text-[0.75rem] transition-colors duration-base',
+                    wire === format
+                      ? 'bg-brand-primary/15 font-semibold text-brand-primary'
+                      : 'text-ink-inactive hover:bg-state-hover',
+                  )}
+                >
+                  {WIRE_LABELS[format]}
+                </button>
+              ))}
+            </div>
+            <Button
+              variant="tertiary"
+              size="sm"
+              className="ms-auto"
+              leftSlot={<Copy className="size-3.5" />}
+              onClick={() => { void copy(); }}
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+          </div>
+          {/* Its own scroller: a schema is wide, and a page that scrolls sideways because of one code
+            * block is a page nobody can read. */}
+          <pre className="max-h-72 overflow-auto rounded-md border-stroke border bg-surface-chips p-2.5 font-mono text-[0.72rem] leading-relaxed text-ink-secondary">
+            {json}
+          </pre>
+          <Typography variant="p" className="mt-1.5 text-ink-inactive text-[0.74rem]">
+            {wire === 'openai'
+              ? 'Responses API shape — name and parameters sit on the tool itself, not under a function key.'
+              : wire === 'anthropic'
+                ? 'Messages API shape — the schema goes under input_schema.'
+                : 'What an MCP server advertises in tools/list — the schema goes under inputSchema.'}
+            {' '}The work still happens on this machine: a tool definition is how something is asked for,
+            not a promise about who does it.
+          </Typography>
+        </div>
+      </div>
+    </details>
+  );
+};
 
 export const SkillsView = () => {
   const { flows, reload } = useAccount();
@@ -53,6 +200,9 @@ export const SkillsView = () => {
   }, [reload]);
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /* One choice for the page, not one per skill: somebody is integrating with a provider, not comparing
+   * providers per skill, and a switch that reset itself on every row would be the wrong shape. */
+  const [wire, setWire] = useState<WireFormat>('anthropic');
 
   useEffect(() => watchBridge((b) => setBridge({ present: b.present, paired: b.paired, version: b.version })), []);
 
@@ -190,11 +340,13 @@ export const SkillsView = () => {
                 </span>
               </div>
 
-              <Typography variant="p" className="mb-3 flex-1 text-ink-secondary text-[0.85rem]">
+              <Typography variant="p" className="flex-1 text-ink-secondary text-[0.85rem]">
                 {flow.description || (flow.origins.length ? `In ${flow.origins.slice(0, 3).join(', ')}.` : '')}
               </Typography>
 
-              <div className="flex flex-wrap gap-1.5">
+              <Structure skill={structureOf(flow)} wire={wire} onWire={setWire} />
+
+              <div className="mt-3 flex flex-wrap gap-1.5">
                 {flow.source === 'desktop' ? (
                   <Button
                     size="sm"
