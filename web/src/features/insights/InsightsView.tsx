@@ -406,6 +406,23 @@ export const InsightsView = () => {
   /* A recording handed over by the transcript panel, read once. In a state initialiser rather than an
    * effect, because the assistant wants its opening question on the first render - an effect would give it
    * an empty thread and then, a frame later, a question, which reads as the app talking to itself. */
+  /* Which of the two assistant shells to render - and only one of them, which was not true before.
+   *
+   * The wide one lives in a resizable aside and the narrow one in a full-screen overlay, and the choice used
+   * to be `hidden max-xl:flex`: a CSS class, so BOTH were mounted, both ran their effects, both probed the
+   * model list. Wasteful then; wrong now that a conversation is saved, because two mounted assistants hold
+   * two thread ids and write the same exchange twice as two different conversations.
+   *
+   * 1280px is Tailwind's `xl`, which is the breakpoint the classes used. Kept in sync by being the only
+   * place either of them is decided. */
+  const [wide, setWide] = useState(() => window.matchMedia('(min-width: 1280px)').matches);
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1280px)');
+    const listen = (ev: MediaQueryListEvent) => setWide(ev.matches);
+    mq.addEventListener('change', listen);
+    return () => mq.removeEventListener('change', listen);
+  }, []);
+
   const [asked] = useState(() => takeAsk());
   const opening = asked ? openingQuestion(asked) : undefined;
   const navigate = useNavigate();
@@ -1015,7 +1032,7 @@ export const InsightsView = () => {
       {/* The assistant reads the same account this page does, so what it answers about is what is on screen.
         * Rendered inside the page rather than as its own destination: a separate screen would make somebody
         * retype the window and the numbers they are looking at. */}
-      {assistant && (
+      {assistant && wide && (
         <aside
           className="relative flex shrink-0 flex-col border-stroke border-l bg-surface-card2 max-xl:hidden"
           style={{ width: panelWidth }}
@@ -1042,8 +1059,8 @@ export const InsightsView = () => {
       )}
 
       {/* Narrow: the same panel, over the page, because 26rem beside a dashboard leaves neither readable. */}
-      {assistant && (
-        <div className="fixed inset-0 z-40 hidden bg-surface-page max-xl:flex max-xl:flex-col">
+      {assistant && !wide && (
+        <div className="fixed inset-0 z-40 flex flex-col bg-surface-page">
           <div className="flex items-center gap-2 border-stroke border-b px-4 py-2.5">
             <Typography variant="span" weight="semibold" className="text-[0.95rem]">Ask about this</Typography>
             <Button variant="ghost" size="sm" className="ms-auto" onClick={() => setAssistant(false)}>Close</Button>

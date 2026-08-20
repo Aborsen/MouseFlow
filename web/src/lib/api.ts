@@ -186,6 +186,61 @@ export const eraseAccount = () =>
     { method: 'DELETE' },
   );
 
+/* ------------------------------------------------------------------ conversations with the assistant
+ *
+ * The page owns the ids. A conversation exists before it has ever been saved - somebody types a question,
+ * the reply arrives, and only then is there anything worth keeping - so asking the server for an id first
+ * would mean a round-trip before the first message could be attached to anything, and a failed round-trip
+ * would mean a conversation that cannot be saved at all. Same reasoning as a recording's id.
+ */
+export interface ThreadRow {
+  id: string;
+  title: string;
+  messages: number;
+  created: string | null;
+  updated: string | null;
+}
+
+/** What a reply was grounded on, as the page renders it. Opaque to the store; see api/chats.js. */
+export interface StoredMeta {
+  citations?: string[];
+  used?: unknown[];
+  usage?: { input?: number; output?: number } | null;
+  provider?: string | null;
+}
+
+export interface StoredMessage {
+  n: number;
+  role: 'user' | 'assistant';
+  text: string;
+  meta: StoredMeta | null;
+}
+
+/** Distinctive enough not to collide across machines, short enough to read in a log. */
+export const newThreadId = () => 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+export const listChats = () =>
+  call<{ ok: true; threads: ThreadRow[] }>('/api/chats').then((body) => body.threads ?? []);
+
+export const readChat = (thread: string) =>
+  call<{ ok: true; thread: ThreadRow; messages: StoredMessage[] }>(
+    `/api/chats?thread=${encodeURIComponent(thread)}`,
+  );
+
+export const saveChat = (thread: string, title: string, messages: StoredMessage[]) =>
+  call<{ ok: true; saved: number }>('/api/chats', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ thread, title, messages }),
+  });
+
+/** Gone, not flagged: api/chats.js deletes the row and the messages go with it. A conversation has no sync
+ * contract to keep a tombstone for, and a request to forget one should be honoured. */
+export const deleteChat = (thread: string) =>
+  call<{ ok: true; deleted: string }>(`/api/chats?thread=${encodeURIComponent(thread)}`, {
+    method: 'DELETE',
+  });
+
 export const galleryList = (q?: string) =>
   call<{ ok: true; skills: GallerySkill[] }>(`/api/gallery${q ? `?q=${encodeURIComponent(q)}` : ''}`);
 

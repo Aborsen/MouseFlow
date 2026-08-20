@@ -12,6 +12,16 @@ import type { Connect } from 'vite';
 const now = Date.now();
 const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString();
 
+/* Conversations, as the real store would hold them. In memory, so they last as long as the dev server does -
+ * which is the same lifetime as the signed-out flag below and for the same reason. */
+const chats = new Map<string, {
+  id: string;
+  title: string;
+  created: string;
+  updated: string;
+  messages: unknown[];
+}>();
+
 /* Whether the fixture has been signed out. Module scope, so it survives between requests in one dev
  * session and resets when the server restarts - which is what a session cookie does. */
 let signedOut = false;
@@ -108,6 +118,74 @@ const json = (res: Parameters<Connect.NextHandleFunction>[1], status: number, bo
 export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
   const url = req.url ?? '';
   const method = (req.method ?? 'GET').toUpperCase();
+  /* ---------------------------------------------------------------- conversations, kept
+   *
+   * Behaves rather than answers. A fixture that accepted a save and then returned an empty list would make a
+   * working history look broken, which is the mistake the sign-out mock made and the reason this one does
+   * the whole loop: saved, listed, read back, deleted. */
+  if (url.startsWith('/api/chats')) {
+    const asked = new URL(url, 'http://x').searchParams.get('thread');
+
+    if (method === 'DELETE') {
+      if (!asked || !chats.has(asked)) {
+        return json(res, 404, { error: { type: 'chat_store_error', message: 'no conversation with that id on this account' } });
+      }
+      chats.delete(asked);
+      return json(res, 200, { ok: true, deleted: asked });
+    }
+
+    if (method === 'POST') {
+      /* Read off the stream. `req.body` is a Vercel convenience and does not exist in a Connect middleware,
+       * so reaching for it made every save fail here with a 400 that production would not have returned -
+       * a fixture failing where the real thing succeeds is worse than no fixture at all. */
+      let text = '';
+      req.on('data', (chunk) => { text += chunk; });
+      req.on('end', () => {
+        let body: Record<string, unknown> = {};
+        try {
+          body = text ? JSON.parse(text) : {};
+        } catch (_) {
+          return json(res, 400, { error: { type: 'chat_store_error', message: 'that body is not JSON' } });
+        }
+        const id = String(body.thread ?? '');
+        if (!id) {
+          return json(res, 400, { error: { type: 'chat_store_error', message: 'thread is required' } });
+        }
+        const messages = Array.isArray(body.messages) ? body.messages : [];
+        const was = chats.get(id);
+        chats.set(id, {
+          id,
+          // Set on first save only, like the real one: a conversation's name comes from how it started.
+          title: was?.title || String(body.title ?? '').slice(0, 120) || 'Untitled',
+          created: was?.created ?? new Date().toISOString(),
+          updated: new Date().toISOString(),
+          messages,
+        });
+        return json(res, 200, { ok: true, saved: messages.length, thread: id });
+      });
+      return undefined;
+    }
+
+    if (asked) {
+      const found = chats.get(asked);
+      if (!found) {
+        return json(res, 404, { error: { type: 'chat_store_error', message: 'no conversation with that id on this account' } });
+      }
+      return json(res, 200, {
+        ok: true,
+        thread: { id: found.id, title: found.title, messages: found.messages.length, created: found.created, updated: found.updated },
+        messages: found.messages,
+      });
+    }
+
+    return json(res, 200, {
+      ok: true,
+      threads: [...chats.values()]
+        .sort((a, b) => (a.updated < b.updated ? 1 : -1))
+        .map((t) => ({ id: t.id, title: t.title, messages: t.messages.length, created: t.created, updated: t.updated })),
+    });
+  }
+
   if (!url.startsWith('/api/')) return next();
 
   /* Signed in until told otherwise. The real endpoint clears a session cookie and the next get-session

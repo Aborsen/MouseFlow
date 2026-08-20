@@ -22,13 +22,24 @@
  *   a router link     /insights is registered in main.tsx, which belongs to the other half of this change.
  *                     A plain <a> keeps this file from depending on the typed route table existing yet.
  */
-import { Ban, Eraser, ExternalLink, Quote, Send, Sparkles, TriangleAlert, Wrench } from 'lucide-react';
+import {
+  Ban, ExternalLink, History, Plus, Quote, Send, Sparkles, Trash2, TriangleAlert, Wrench,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@insightis/ui/Badge';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
-import { type Run } from '@/lib/api';
+import {
+  deleteChat,
+  listChats,
+  newThreadId,
+  readChat,
+  type Run,
+  saveChat,
+  type StoredMessage,
+  type ThreadRow,
+} from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
 
 /* What GET /api/chat actually answers, which is NOT a list of models: it reports the allowlist
@@ -171,8 +182,13 @@ function labelOf(runId: string, run: Run | undefined): string {
   return runId;
 }
 
-/** api/chat.js's `used` entries, made safe to render: every field coerced, nothing trusted. */
-function lookupsOf(used: Reply['used']): Lookup[] {
+/** api/chat.js's `used` entries, made safe to render: every field coerced, nothing trusted.
+ *
+ * Takes `unknown` rather than `Reply['used']`, which is what it has always actually accepted - it guards
+ * every field itself. Two callers now: a live reply, and a conversation read back out of the store, where
+ * the same evidence arrives as opaque jsonb. Typing it as the narrower shape would have meant a cast at the
+ * second call site, which is a way of telling the compiler something nobody has checked. */
+function lookupsOf(used: unknown): Lookup[] {
   if (!Array.isArray(used)) return [];
   return used
     .filter((entry): entry is UsedTool => !!entry && typeof entry === 'object')
@@ -227,6 +243,34 @@ export const ChatView = ({ embedded = false, opening }: {
 
   const nextN = useRef(1);
   const bottom = useRef<HTMLDivElement>(null);
+
+  /* The conversation being had. Made here rather than asked for, so a thread exists before it has ever been
+   * saved - see lib/chats.ts. */
+  const [threadId, setThreadId] = useState(newThreadId);
+  const [history, setHistory] = useState<ThreadRow[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyProblem, setHistoryProblem] = useState<string | null>(null);
+  /* Which thread is being fetched. Named for what it is rather than `opening`, which is already the prop
+   * carrying a question to ask on mount - two different meanings of the same word in one component is how a
+   * rename goes wrong later. */
+  const [loadingThread, setLoadingThread] = useState<string | null>(null);
+  /* Which threads have been written, so a save is not attempted for a conversation that is only being
+   * READ - loading an old thread sets `turns`, and without this the save effect would immediately write the
+   * same messages straight back. */
+  const savedUpTo = useRef(new Map<string, number>());
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      setHistory(await listChats());
+      setHistoryProblem(null);
+    } catch (err) {
+      /* Named rather than swallowed. An empty history and a history that could not be read look identical,
+       * and one of them is a bug worth reporting. */
+      setHistoryProblem(err instanceof Error ? err.message : 'the conversation list could not be read');
+    }
+  }, []);
+
+  useEffect(() => { void refreshHistory(); }, [refreshHistory]);
 
   /* Which models this deployment can actually serve, asked rather than assumed. A hard-coded list is how a
    * picker comes to offer a model that answers 503 to everyone who chooses it. */
@@ -308,6 +352,101 @@ export const ChatView = ({ embedded = false, opening }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opening, model]);
 
+  /* Saved after every completed reply.
+   *
+   * Keyed on the number of turns, so it fires once per turn rather than on every render, and it skips a
+   * thread whose count it has already written - which is what stops a freshly LOADED conversation from being
+   * saved straight back to where it came from. The whole thread goes each time: the store keys a message on
+   * (thread, position), so a re-send overwrites rather than appends and a retry cannot double anything. */
+  useEffect(() => {
+    if (asking || turns.length === 0) return;
+    if (turns[turns.length - 1].role !== 'model') return;
+    if (savedUpTo.current.get(threadId) === turns.length) return;
+
+    const messages: StoredMessage[] = turns.map((t) => ({
+      n: t.n,
+      role: t.role === 'you' ? 'user' : 'assistant',
+      text: t.text,
+      meta: t.role === 'model'
+        ? { citations: t.citations, used: t.used, usage: t.usage, provider: t.provider }
+        : null,
+    }));
+    const title = turns.find((t) => t.role === 'you')?.text ?? '';
+
+    savedUpTo.current.set(threadId, turns.length);
+    (async () => {
+      try {
+        await saveChat(threadId, title, messages);
+        await refreshHistory();
+      } catch (err) {
+        /* Let it be tried again on the next turn: the count is rolled back rather than left as though the
+         * write had happened. A conversation silently not being kept is the failure this feature exists to
+         * prevent, so it must not also be silent. */
+        savedUpTo.current.delete(threadId);
+        setHistoryProblem(err instanceof Error
+          ? `This conversation is not being saved: ${err.message}`
+          : 'this conversation is not being saved');
+      }
+    })();
+  }, [turns, asking, threadId, refreshHistory]);
+
+  /* A fresh thread. Not `clear`, which threw a conversation away - the one being left is already saved, so
+   * this is walking away from it rather than destroying it. */
+  const newChat = useCallback(() => {
+    setTurns([]);
+    setProblem(null);
+    setQuestion('');
+    setOpenCitation(null);
+    nextN.current = 1;
+    setThreadId(newThreadId());
+    setShowHistory(false);
+  }, []);
+
+  const openThread = useCallback(async (id: string) => {
+    setLoadingThread(id);
+    setHistoryProblem(null);
+    try {
+      const body = await readChat(id);
+      const restored: Turn[] = (body.messages ?? []).map((m: StoredMessage) => ({
+        n: m.n,
+        role: m.role === 'assistant' ? 'model' : 'you',
+        text: m.text,
+        /* The evidence comes back with the answer. A restored reply that showed no citations would read as
+         * an answer that had none, which is a different and worse claim than "this is what it cited". */
+        citations: Array.isArray(m.meta?.citations)
+          ? m.meta.citations.filter((c: unknown): c is string => typeof c === 'string')
+          : [],
+        used: lookupsOf(m.meta?.used),
+        usage: m.meta?.usage ?? null,
+        provider: m.meta?.provider ?? null,
+      }));
+      /* Continue the numbering where the stored conversation left off, or a new turn would collide with a
+       * restored one on (thread, position) and overwrite it. */
+      nextN.current = restored.reduce((high, t) => Math.max(high, t.n), 0) + 1;
+      savedUpTo.current.set(id, restored.length);
+      setTurns(restored);
+      setThreadId(id);
+      setProblem(null);
+      setOpenCitation(null);
+      setShowHistory(false);
+    } catch (err) {
+      setHistoryProblem(err instanceof Error ? err.message : 'that conversation could not be opened');
+    } finally {
+      setLoadingThread(null);
+    }
+  }, []);
+
+  const removeThread = useCallback(async (id: string) => {
+    try {
+      await deleteChat(id);
+      await refreshHistory();
+      // The one on screen. Nothing should be left showing a conversation that no longer exists.
+      if (id === threadId) newChat();
+    } catch (err) {
+      setHistoryProblem(err instanceof Error ? err.message : 'that conversation could not be deleted');
+    }
+  }, [refreshHistory, threadId, newChat]);
+
   const ask = useCallback(async (text: string) => {
     const asked = text.trim();
     if (!asked || asking) return;
@@ -382,13 +521,6 @@ export const ChatView = ({ embedded = false, opening }: {
     }
   }, [asking, model, models, providerOf, turns]);
 
-  const clear = useCallback(() => {
-    setTurns([]);
-    setProblem(null);
-    setOpenCitation(null);
-    setQuestion('');
-  }, []);
-
   return (
     <div className={cn('flex min-h-0 flex-col', embedded ? 'h-full' : 'p-5')}>
       <header className={cn(embedded ? 'border-stroke border-b px-3 py-2' : 'mb-4 max-w-[900px]')}>
@@ -441,13 +573,82 @@ export const ChatView = ({ embedded = false, opening }: {
             variant="ghost"
             size="sm"
             className="ms-auto"
-            leftSlot={<Eraser className="size-4" />}
-            disabled={!turns.length || asking}
-            onClick={clear}
+            leftSlot={<Plus className="size-4" />}
+            disabled={asking || !turns.length}
+            onClick={newChat}
           >
-            Clear
+            New chat
+          </Button>
+
+          {/* A disclosure over the thread rather than a list beside it: this panel is 416px wide on the
+            * Dashboard, and the weight is right anyway - you are reading a conversation, not browsing an
+            * archive. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            leftSlot={<History className="size-4" />}
+            onClick={() => {
+              setShowHistory((open) => !open);
+              if (!showHistory) void refreshHistory();
+            }}
+          >
+            History
+            {history.length > 0 && (
+              <span className="ms-1 text-ink-inactive tabular-nums">{history.length}</span>
+            )}
           </Button>
         </div>
+
+        {showHistory && (
+          <div className="mt-2 rounded-lg border-stroke border bg-surface-card2 p-2">
+            {historyProblem && (
+              <Typography variant="p" className="mb-1.5 break-words text-fb-red-text text-[0.78rem]">
+                {historyProblem}
+              </Typography>
+            )}
+            {history.length === 0 ? (
+              <Typography variant="p" className="px-1 py-1 text-ink-inactive text-[0.8rem]">
+                Nothing yet. A conversation is kept as soon as it has an answer in it — there is no save
+                button, and reloading the page will not lose one again.
+              </Typography>
+            ) : (
+              <ul className="max-h-64 space-y-0.5 overflow-y-auto">
+                {history.map((row) => (
+                  <li key={row.id} className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      disabled={loadingThread === row.id}
+                      onClick={() => { void openThread(row.id); }}
+                      className={cn(
+                        'min-w-0 flex-1 rounded-md px-2 py-1.5 text-left transition-colors duration-base',
+                        'hover:bg-state-hover disabled:opacity-disabled',
+                        row.id === threadId && 'bg-brand-primary/10',
+                      )}
+                    >
+                      <span className="block truncate text-[0.82rem] text-ink-body">
+                        {row.title || 'Untitled'}
+                      </span>
+                      <span className="block text-[0.72rem] text-ink-inactive">
+                        {row.messages} message{row.messages === 1 ? '' : 's'}
+                        {row.updated ? ` · ${new Date(row.updated).toLocaleDateString()}` : ''}
+                        {row.id === threadId ? ' · open' : ''}
+                      </span>
+                    </button>
+                    {/* Says which conversation, and removes the row - not a flag. See api/chats.js. */}
+                    <button
+                      type="button"
+                      aria-label={`Delete the conversation "${row.title || 'Untitled'}"`}
+                      onClick={() => { void removeThread(row.id); }}
+                      className="shrink-0 rounded-md p-1.5 text-ink-inactive transition-colors duration-base hover:bg-state-hover hover:text-fb-red-text"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {!embedded && unavailable.length > 0 && (
           <Typography variant="p" className="mt-1.5 text-ink-inactive text-xs">
