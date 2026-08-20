@@ -29,6 +29,33 @@ let signedOut = false;
 const ACCOUNT = { id: 'u_dev', name: 'Vic Gorlenko', email: 'vic@example.dev', image: null };
 
 const FLOWS = [
+  /* A recording the ACCOUNT has and this browser does not - the state that produced "I deleted the
+   * recordings and the assistant still sees them". No `dr_` prefix and no skill role, so it is exactly what
+   * the orphan strip on Record is for: a recording whose local copy is gone, or one made on another
+   * machine. */
+  {
+    id: 'ronly_account_1',
+    source: 'desktop',
+    kind: 'recorded',
+    name: 'Neon Console · 4 clicks',
+    description: 'Repeats 4 recorded actions (4 clicks) over 9.1s, in Neon Console - Google Chrome.',
+    origins: ['Neon Console - Google Chrome'],
+    created: hoursAgo(80),
+    updated: hoursAgo(20),
+    payload: {
+      version: 1,
+      kind: 'recorded',
+      agent: 'desktop',
+      role: 'recording',
+      events: [
+        { x: 640, y: 380, delayMs: 0, action: 'Left Click Down', context: { app: 'chrome', window: 'Neon Console - Google Chrome', control: 'Run', type: 'button' } },
+        { x: 640, y: 380, delayMs: 60, action: 'Left Click Release' },
+        { x: 700, y: 420, delayMs: 900, action: 'Left Click Down' },
+        { x: 700, y: 420, delayMs: 60, action: 'Left Click Release' },
+      ],
+      windows: [{ title: 'Neon Console - Google Chrome', process: 'chrome' }],
+    },
+  },
   {
     id: 'dr_dev_1',
     source: 'desktop',

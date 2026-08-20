@@ -25,11 +25,13 @@ import {
   replayStatus,
   windows,
 } from '@/lib/agent';
-import { push } from '@/lib/api';
+import { type Flow, push } from '@/lib/api';
 import { askAbout } from '@/features/chat/ask-about';
-import { RECORDING_ROLE, SKILL_ROLE } from '@/lib/flow-role';
+import { RECORDING_ROLE, SKILL_ROLE, roleOf } from '@/lib/flow-role';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
-import { type AgentStatus, type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
+import {
+  type AgentStatus, type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
+} from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { TranscriptPanel } from './TranscriptPanel';
@@ -548,6 +550,30 @@ export const RecordView = () => {
     await reload();
   }, [state.recordings, health, reload]);
 
+  /* Забрать осиротевшую запись в этот браузер — под ЕЁ id.
+   *
+   * `adoptRecording` существует для другого: скилл, взятый из Skills или из галереи, кладётся под
+   * `from_<id>`, чтобы копия для проигрывания не путалась с оригиналом на аккаунте. Здесь копии нет - это та
+   * же запись, и под новым id она осталась бы сиротой: строка аккаунта по-прежнему ни с чем не совпадает,
+   * полоса не уходит, дашборд считает её дважды. На этом и попалось в браузере. */
+  const adoptOrphan = useCallback((flow: Flow) => {
+    const events = flow.payload?.events as RecordedEvent[] | undefined;
+    if (!Array.isArray(events) || !events.length) {
+      setNote(`"${flow.name}" has no events stored, so there is nothing to bring here.`);
+      return;
+    }
+    if (state.recordings.some((rec) => rec.id === flow.id)) return;
+    update((prev) => ({
+      recordings: [...prev.recordings, {
+        id: flow.id,
+        name: flow.name || 'From the account',
+        created: flow.created ?? new Date().toISOString(),
+        events,
+        windows: (flow.payload?.windows as { title: string; process: string }[] | undefined) ?? [],
+      }],
+    }));
+  }, [state.recordings, update]);
+
   const recording = live !== null || !!health?.recording;
 
   return (
@@ -605,6 +631,16 @@ export const RecordView = () => {
          * row under `dr_<id>`, so the question is whether that row exists - not whether the recording
          * carries a flag, which it does not and should not: two objects, two lifetimes. */
         hasSkill={(rec) => flows.some((flow) => flow.id === `dr_${rec.id}`)}
+        /* Recordings the account has and this browser does not - the leftovers of a delete that never
+         * propagated, plus anything recorded on another machine. Only ROLE-recording rows, or unstamped ones
+         * that are not skills: a skill on the account is not a missing recording. */
+        orphans={flows.filter((flow) => (
+          flow.kind === 'recorded'
+          && roleOf(flow) !== SKILL_ROLE
+          && !flow.id.startsWith('dr_')
+          && !state.recordings.some((rec) => rec.id === flow.id)
+        ))}
+        onAdopt={(flow) => adoptOrphan(flow)}
         onImport={(files) => { void importFiles(files); }}
         onSaveAsSkill={(rec) => { void keepAsSkill(rec); }}
         onView={(rec) => setViewing((open) => (open === rec.id ? null : rec.id))}

@@ -34,10 +34,10 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { exportMacro, fmtMs, summarize } from '@/lib/macro';
 import { Signal } from '@/components/Signal';
-import { push } from '@/lib/api';
+import { type Flow, push } from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Recording, useConsole } from '@/lib/store';
 
@@ -57,6 +57,11 @@ const SPEEDS = [0.5, 1, 1.5, 2, 4];
 const COLUMNS = 'grid-cols-[1.25rem_minmax(11rem,1fr)_7rem_6.5rem_7rem_16.5rem]';
 
 export interface RecordingsTableProps {
+  /** Recordings the ACCOUNT has that this browser does not. Answered by the caller, which is the half that
+   * can see both. Empty when there are none, and then nothing is shown. */
+  orphans?: Flow[];
+  /** Pull one into this browser, events and all. */
+  onAdopt?: (flow: Flow) => void;
   /** Whether a skill has been made from this recording. Answered by the caller, which is the half that can
    * see the account - the skill is a separate row, not a flag on the recording. Absent means "cannot tell",
    * which reads as Ready rather than as no. */
@@ -92,6 +97,8 @@ export const RecordingsTable = ({
   onImport,
   viewing,
   hasSkill,
+  orphans,
+  onAdopt,
 }: RecordingsTableProps) => {
   const [state, update] = useConsole();
   const { reload } = useAccount();
@@ -107,6 +114,15 @@ export const RecordingsTable = ({
   /* Only ever set when a delete could not reach the account. There is no success message: a delete that
    * worked is a row that is gone, which is the whole of the feedback. */
   const [gone, setGone] = useState<string | null>(null);
+  /* Разоружается сам через шесть секунд: кнопка, снимающая несколько записей с аккаунта, не должна оставаться
+   * взведённой, пока человек читает, что она делает. */
+  const [clearing, setClearing] = useState(false);
+
+  useEffect(() => {
+    if (!clearing) return;
+    const timer = setTimeout(() => setClearing(false), 6000);
+    return () => clearTimeout(timer);
+  }, [clearing]);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const rows = useMemo(() => {
@@ -224,6 +240,53 @@ export const RecordingsTable = ({
         </Typography>
       ) : (
         <>
+          {/* Строки, оставшиеся на аккаунте без локальной копии.
+            *
+            * Их не было видно нигде: таблица рисует то, что в браузере, а дашборд и ассистент читают аккаунт -
+            * поэтому «я удалил, а он всё равно их видит». Два выхода, и ни одного автоматического: сирота
+            * может быть записью с другой машины, которую как раз и хотят получить здесь. */}
+          {orphans && orphans.length > 0 && (
+            <div className="mb-2.5 rounded-lg border-fb-attention/40 border bg-surface-card2 px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <Typography variant="span" className="min-w-0 flex-1 text-[0.82rem] text-ink-secondary">
+                  <strong className="text-ink-primary">{orphans.length}</strong>
+                  {' '}recording{orphans.length === 1 ? ' is' : 's are'} on your account but not in this
+                  browser{orphans.length <= 4
+                    ? ` — ${orphans.map((f) => f.name || 'untitled').join(', ')}.`
+                    : '.'}
+                  {' '}The dashboard counts {orphans.length === 1 ? 'it' : 'them'} and the assistant can read
+                  {orphans.length === 1 ? ' it' : ' them'}.
+                </Typography>
+
+                {onAdopt && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    leftSlot={<Download className="size-4" />}
+                    onClick={() => orphans.forEach(onAdopt)}
+                  >
+                    Bring {orphans.length === 1 ? 'it' : 'them'} here
+                  </Button>
+                )}
+
+                <Button
+                  variant={clearing ? 'destructive' : 'destructiveTertiary'}
+                  size="sm"
+                  leftSlot={<Trash2 className="size-4" />}
+                  onClick={() => {
+                    if (!clearing) { setClearing(true); return; }
+                    setClearing(false);
+                    void remove(orphans.map((f) => f.id));
+                  }}
+                >
+                  {clearing
+                    ? `Remove ${orphans.length} from the account — press again`
+                    : 'Remove from the account'}
+                </Button>
+              </div>
+            </div>
+          )}
+
           {gone && (
             <Typography variant="p" className="mb-2.5 max-w-[80ch] break-words text-fb-attention text-[0.8rem]">
               {gone}
