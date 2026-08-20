@@ -132,8 +132,8 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
         <div className="mt-3 rounded-lg border-fb-attention/40 border bg-fb-attention/[0.08] p-3">
           <Typography variant="p" className="mb-2 max-w-[60ch] text-ink-inactive text-[0.82rem]">
             <strong className="text-ink-primary">Granted, but this agent started before you granted it.</strong>{' '}
-            It installs its event tap when it starts. Paste this in Terminal — it stops the running one and
-            starts the app that is already built, which is what keeps the permission.
+            It installs its event tap when it starts. Press Record and it will pick the permission up; this
+            command is only for when that does not take.
           </Typography>
           <Command text={macRestartCommand(console_.port)} onCopy={copy} />
         </div>

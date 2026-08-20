@@ -101,6 +101,28 @@ enum Permission {
         return true
     }
 
+    /* Asking again, at the moment the answer is actually needed.
+     *
+     * Asking only at startup is not enough, and a login item makes it worse rather than better: launchd
+     * starts the agent when somebody logs in, which is minutes or hours before they open the app and press
+     * Record. A dialog shown then is a dialog shown to an empty chair, and nothing ever asks a second time -
+     * so the agent sits there reporting no access, with a switch in System Settings that was never offered.
+     *
+     * Called from /record/start and /shot, which are the moments a person has just asked for the thing the
+     * permission is for. Cheap when it is already granted: the check is a function call and the prompt only
+     * appears when the answer is not stored. */
+    static func askForAccessibility() {
+        if accessibility { return }
+        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        _ = AXIsProcessTrustedWithOptions([key: kCFBooleanTrue] as CFDictionary)
+    }
+
+    static func askForScreen() {
+        if #available(macOS 10.15, *), !screenRecording {
+            _ = CGRequestScreenCaptureAccess()
+        }
+    }
+
     /* Both prompts are one-shot and only appear if the answer is not already stored, so calling them at
      * startup costs nothing when the permissions are in place - and when they are not, the dialog is the
      * clearest possible instruction. */
@@ -2165,12 +2187,21 @@ func route(method: String, path: String, query: String, body: String) -> Respons
     case "/record/start":
         if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
         if eventTap == nil {
+            /* Ask, and only then refuse. This is the moment the permission is for - somebody has just
+             * pressed Record - and it may be the first moment anybody was watching: the agent starts at
+             * login, so a dialog shown then went to an empty chair. */
+            Permission.askForAccessibility()
+            /* The tap may be installable now, if the answer came from a dialog that is already answered. */
+            if installTap() {
+                Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
+                return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
+            }
             /* Said as the thing to do, not as a state. Without Accessibility there is no tap, and a
              * recording started here would come back empty with no explanation. */
             return Response(status: 500, body: "{\"ok\":false,\"error\":"
-                + jsonString("macOS has not granted Accessibility to MouseFlow Agent, so nothing can be"
-                    + " recorded. Switch it on in System Settings, Privacy & Security, Accessibility - then"
-                    + " restart the agent, because the event tap is installed when it starts") + "}")
+                + jsonString("macOS is asking for Accessibility now - say yes, and press Record again. If no"
+                    + " dialog appeared, switch on MouseFlow Agent in System Settings, Privacy & Security,"
+                    + " Accessibility") + "}")
         }
         Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
         return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
@@ -2211,6 +2242,9 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         if Replayer.shared.isPlaying {
             return Response(status: 409, body: "{\"ok\":false,\"error\":\"busy replaying\"}")
         }
+        /* Same reason as /record/start: this is the moment the permission is for, and it may be the first
+         * moment anybody is looking. */
+        Permission.askForScreen()
         return Response(body: Screen.shot(want: queryInt(query, "w", 1280)))
 
     case "/pulse":
@@ -2258,6 +2292,15 @@ func route(method: String, path: String, query: String, body: String) -> Respons
 }
 
 // ================================================================ main
+
+/* Line-buffered, or the log stays empty forever.
+ *
+ * Swift's `print` block-buffers when its output is not a terminal, and this process never exits - so under
+ * launchd the startup banner sat in a buffer that was never flushed. The banner is the one thing worth
+ * reading when nothing works: it says whether the event tap installed and whether this process is even the
+ * kind that can be granted anything. An empty log read as "it printed nothing", which was wrong. */
+setvbuf(stdout, nil, _IOLBF, 0)
+setvbuf(stderr, nil, _IOLBF, 0)
 
 Permission.ask()
 let tapped = installTap()

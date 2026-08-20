@@ -356,7 +356,10 @@ doctor() {
     echo "source        $([ -f "$source" ] && date -r "$source" '+%Y-%m-%d %H:%M' || echo 'missing')"
     # The signature is what a permission is granted TO. A different cdhash is a different app to TCC, which
     # is why a switch can be on and mean nothing.
-    echo "signature     $(codesign -dv "$app" 2>&1 | grep -E '^Identifier|^CDHash' | tr '\n' ' ' || echo '?')"
+    # The KIND of signature, not just the identifier. "Signature=adhoc" is the difference between a grant
+    # that survives the next build and one that does not, and deciding whether a self-signed certificate
+    # is worth it should be done from the fact rather than from memory.
+    echo "signature     $(codesign -dvvv "$app" 2>&1 | grep -E '^Identifier=|^Signature=|^Authority=|^CDHash=' | tr '\n' ' ' || echo '?')"
     echo "bundle id     $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app}/Contents/Info.plist" 2>/dev/null || echo 'NO Info.plist - this is a loose binary and cannot hold a permission')"
   else
     echo "binary        NOT INSTALLED at ${binary}"
@@ -372,6 +375,7 @@ doctor() {
     echo "plist         $plist"
     echo "keepalive     $(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$plist" 2>/dev/null || echo '?')"
     echo "args          $(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$plist" 2>/dev/null | tr '\n' ' ')"
+    echo "logs to       $(/usr/libexec/PlistBuddy -c 'Print :StandardOutPath' "$plist" 2>/dev/null || echo 'NOWHERE - reinstall to get a log')"
   else
     echo "plist         NOT REGISTERED - it will not start at login"
   fi

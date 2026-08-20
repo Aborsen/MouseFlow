@@ -186,7 +186,7 @@ export const ConnectView = () => {
   const restart = needsRestart(health ?? null);
 
   const permissionStep: Step = {
-    title: 'Allow it to watch and to see, then restart it once',
+    title: 'Allow it to watch and to see',
     done: !!permissions && permissions.accessibility && permissions.screenRecording && !restart,
     note: 'macOS asks the first time the agent needs each one: a dialog saying “MouseFlow Agent would like to control this computer using accessibility features”. Click Open System Settings and switch on MouseFlow Agent. If the dialog never appeared, the list is under Privacy & Security — and if MouseFlow Agent is not in it at all, the agent is running as a loose binary rather than the installed app: run the install command again.',
     body: (
@@ -265,9 +265,12 @@ export const ConnectView = () => {
               Granted, but the running agent started before you granted it
             </Typography>
             <Typography variant="p" className="mt-0.5 mb-2 max-w-[64ch] text-ink-inactive text-[0.8rem]">
-              It installs its event tap when it starts, so this one is still without it. Paste this in
-              Terminal — it restarts the agent that is already built rather than building another one, which
-              is what keeps the permission you just granted.
+              {/* It used to need a restart, and does not any more: the agent asks for what it is missing at
+                * the moment it is asked to record, and installs the tap then. Pressing Record IS the fix,
+                * which is worth saying instead of handing somebody a command. */}
+              It installs its event tap when it starts, so this one is still without it — press{' '}
+              <strong className="text-ink-primary">Record</strong> and it will pick the permission up. The
+              command below is only for when that does not take.
             </Typography>
             <Command text={macRestartCommand(state.port)} onCopy={(t) => void copy(t)} />
           </li>
