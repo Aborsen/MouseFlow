@@ -12,6 +12,7 @@ import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
+import { listedInSkills } from '@/lib/flow-role';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
@@ -165,10 +166,18 @@ const Structure = ({ skill, wire, onWire }: {
 
 export const SkillsView = () => {
   const { flows, reload } = useAccount();
-  /* The recordings this browser holds, only to answer one question honestly: is the flow about to be deleted
-   * the same object as a recording on the Record page? They share a table, so usually yes - and that is the
-   * part the old warning left out. */
+  /* The recordings this browser holds. Two uses, and the first one is a guarantee rather than a caution:
+   * a row this browser knows to be a recording is not listed here at all, so the delete button below cannot
+   * be over one. See lib/flow-role.ts for why an UNSTAMPED row defaults the way it does. */
   const [local] = useConsole();
+  const localRecordings = useMemo(
+    () => new Set(local.recordings.map((rec) => rec.id)),
+    [local.recordings],
+  );
+  const skills = useMemo(
+    () => flows.filter((flow) => listedInSkills(flow, localRecordings)),
+    [flows, localRecordings],
+  );
   const navigate = useNavigate();
   const [bridge, setBridge] = useState({ present: false, paired: false, version: null as string | null });
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
@@ -317,14 +326,27 @@ export const SkillsView = () => {
         )}
       </section>
 
-      {flows.length === 0 ? (
+      {skills.length === 0 ? (
         <Typography variant="p" className="max-w-[60ch] text-ink-inactive">
-          Nothing on your account yet. Record something and press <strong>Save as skill</strong>, or connect
-          the extension above and press <strong>Sync now</strong> in it.
+          {/* Two different emptinesses, and saying the first over the second would be a worse lie than the
+            * bug this replaced: an account holding four recordings is not an empty account. */}
+          {flows.length === 0 ? (
+            <>
+              Nothing on your account yet. Record something and press <strong>Save as skill</strong>, or
+              connect the extension above and press <strong>Sync now</strong> in it.
+            </>
+          ) : (
+            <>
+              No skills yet — your {flows.length} recording{flows.length === 1 ? '' : 's'}{' '}
+              {flows.length === 1 ? 'is' : 'are'} on the <strong>Record</strong> page. Press{' '}
+              <strong>Save as skill</strong> on one there to make a skill from it, which is a separate copy:
+              deleting the skill afterwards leaves the recording alone.
+            </>
+          )}
         </Typography>
       ) : (
         <ul className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-          {flows.map((flow) => (
+          {skills.map((flow) => (
             <li key={flow.id} className="flex flex-col rounded-xl border-stroke border bg-surface-card p-3.5">
               <div className="mb-1 flex items-start gap-2">
                 <Typography variant="h3" weight="semibold" className="min-w-0 flex-1 text-[0.95rem]">

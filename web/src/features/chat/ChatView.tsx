@@ -209,7 +209,11 @@ const OUTCOME_TONE: Record<Run['outcome'], string> = {
 /* `embedded` is the same screen in a 26rem column beside the Insights dashboard - which is where it
  * actually lives now. The page form is kept because /chat still resolves for anyone who bookmarked it, and
  * because a panel is a bad place to read a long answer. */
-export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
+export const ChatView = ({ embedded = false, opening }: {
+  embedded?: boolean;
+  /** A question to ask on mount, once - how the Dashboard opens a conversation about one recording. */
+  opening?: string;
+} = {}) => {
   const { runs } = useAccount();
 
   const [models, setModels] = useState<ModelChoice[]>([]);
@@ -289,6 +293,20 @@ export const ChatView = ({ embedded = false }: { embedded?: boolean } = {}) => {
     for (const run of runs) map.set(run.id, run);
     return map;
   }, [runs]);
+
+  /* The opening question, asked once.
+   *
+   * After `model` is set, not on mount: ask() sends to whatever model is chosen, and firing before the probe
+   * has answered would send an empty one. The ref is what makes it once - `opening` is a string prop and a
+   * re-render with the same string must not ask again. */
+  const openedWith = useRef<string | null>(null);
+  useEffect(() => {
+    if (!opening || !model || openedWith.current === opening) return;
+    openedWith.current = opening;
+    void ask(opening);
+    // ask is stable, and listing it here would re-run this every time a turn is added.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opening, model]);
 
   const ask = useCallback(async (text: string) => {
     const asked = text.trim();

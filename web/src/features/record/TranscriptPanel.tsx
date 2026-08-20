@@ -25,6 +25,7 @@
  */
 import {
   AppWindow,
+  ChevronRight,
   CircleDashed,
   Clock,
   Globe,
@@ -39,6 +40,7 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { pull, push } from '@/lib/api';
+import { SKILL_ROLE } from '@/lib/flow-role';
 
 /* ---------------------------------------------------------------- the endpoint's shape
  *
@@ -480,13 +482,24 @@ const SegmentBlock = ({
           <Quiet>No steps were described for this stretch.</Quiet>
         </div>
       ) : (
-        <ol className="py-1">
-          {/* Keyed on position, not on `n`: `n` is optional, and two steps without one gave two rows the
-            * same key - React then reuses one row's DOM for the other. */}
-          {steps.map((step, i) => (
-            <StepRow key={`${index}-${i}`} step={step} />
-          ))}
-        </ol>
+        /* Closed. The header above says where the work was, how long it took and how many steps it holds -
+         * which is what somebody reads. The coordinates are for checking one particular step, and a
+         * transcript that opens with six hundred lines of them buries the part that was worth writing. */
+        <details className="group">
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-[0.78rem] text-ink-inactive hover:bg-state-hover">
+            <ChevronRight className="size-3.5 shrink-0 transition-transform duration-base group-open:rotate-90" />
+            <span>
+              {steps.length} step{steps.length === 1 ? '' : 's'}, with the positions and timings
+            </span>
+          </summary>
+          <ol className="border-stroke border-t py-1">
+            {/* Keyed on position, not on `n`: `n` is optional, and two steps without one gave two rows the
+              * same key - React then reuses one row's DOM for the other. */}
+            {steps.map((step, i) => (
+              <StepRow key={`${index}-${i}`} step={step} />
+            ))}
+          </ol>
+        </details>
       )}
     </section>
   );
@@ -502,9 +515,14 @@ interface Props {
   /** Put this recording back on the account, when the browser still holds its events. Absent when it does
    * not, because a button that cannot work is worse than the plain error. */
   onRestore?: () => Promise<void>;
+  /** Hand this recording to the assistant on the Dashboard. The panel does not navigate itself - the caller
+   * owns the router - it just says when. */
+  onAnalyze?: () => void;
 }
 
-export const TranscriptPanel = ({ flowId, name, onClose, onRemoved, onRestore }: Props) => {
+export const TranscriptPanel = ({
+  flowId, name, onClose, onRemoved, onRestore, onAnalyze,
+}: Props) => {
   const [data, setData] = useState<Transcript | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
@@ -656,7 +674,8 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved, onRestore }:
             description: skill.description.slice(0, 400),
             origins: skill.origins.slice(0, 12),
             created: skill.created,
-            payload: skill,
+            // Stamped as a skill, so the Skills page lists it and the Record page does not.
+            payload: { ...skill, role: SKILL_ROLE },
           },
         ],
       });
@@ -710,7 +729,6 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved, onRestore }:
     }
   }, [armed, flowId, onClose, onRemoved]);
 
-  const gaps = list(data?.gaps);
   const story = list(data?.story) as Chapter[];
 
   return (
@@ -939,42 +957,34 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved, onRestore }:
               ))
             )}
 
-            {/* --------------------------------------------------------------- the gaps
+            {/* --------------------------------------------------- ask it something instead
               *
-              * Folded, and closed. These are not errors and not warnings - they are the things this
-              * recording genuinely cannot tell you, and they have to stay somewhere, because a reader who
-              * cannot tell an absence from a nought will invent the difference. But they were opening the
-              * transcript: eight paragraphs of caveat above the fold, where the story now goes. */}
-            {gaps.length > 0 && (
-              <details className="group rounded-lg border-stroke border bg-surface-chips">
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 p-3.5">
-                  <CircleDashed className="size-4 shrink-0 text-ink-inactive" />
-                  <Typography variant="span" weight="semibold" className="text-[0.88rem] text-ink-secondary">
-                    What this recording cannot tell you
-                  </Typography>
-                  <span className="ms-auto shrink-0 text-[0.75rem] text-ink-inactive tabular-nums">
-                    {gaps.length}
-                  </span>
-                </summary>
-                <div className="px-3.5 pb-3.5">
-                  <Typography variant="p" className="mb-2.5 text-ink-inactive text-[0.78rem]">
-                    Everything above was read from something that was recorded. These were not, so they are
-                    listed rather than estimated.
-                  </Typography>
-                  <dl className="space-y-2">
-                    {gaps.map((gap, i) => (
-                      <div key={str(gap.question) ?? i}>
-                        <dt className="break-words text-[0.82rem] text-ink-body">
-                          {str(gap.question) ?? 'Something this recording does not hold'}
-                        </dt>
-                        {str(gap.why) && (
-                          <dd className="break-words text-[0.78rem] text-ink-inactive">{str(gap.why)}</dd>
-                        )}
-                      </div>
-                    ))}
-                  </dl>
+              * This is where "What this recording cannot tell you" used to be: eight paragraphs of caveat,
+              * at the bottom of every transcript, that nobody had asked for. Every one of them is still in
+              * the endpoint's response and the assistant reads them, which is the right place for an answer
+              * to a question - it can say what the recording cannot tell you at the moment somebody asks,
+              * rather than pre-emptively, to everybody, forever. */}
+            {onAnalyze && (
+              <section className="rounded-lg border-stroke border bg-surface-chips p-3.5">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
+                      Ask about this recording
+                    </Typography>
+                    <Typography variant="p" className="mt-0.5 max-w-[62ch] text-ink-inactive text-[0.8rem]">
+                      The assistant can read this transcript, say where the time went, and remove steps you
+                      ask it to. It also knows what the recording does not hold, which is worth asking
+                      before trusting a number in it.
+                    </Typography>
+                  </div>
+                  <Button
+                    leftSlot={<Sparkles className="size-4" />}
+                    onClick={onAnalyze}
+                  >
+                    Open in AI Assistant
+                  </Button>
                 </div>
-              </details>
+              </section>
             )}
           </div>
         )}

@@ -33,6 +33,7 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { ChatView } from '@/features/chat/ChatView';
+import { openingQuestion, takeAsk } from '@/features/chat/ask-about';
 
 /* ------------------------------------------------------------------ the endpoint's shape
  *
@@ -402,6 +403,11 @@ const WIDTH_MAX = 900;
 const WIDTH_DEFAULT = 416;
 
 export const InsightsView = () => {
+  /* A recording handed over by the transcript panel, read once. In a state initialiser rather than an
+   * effect, because the assistant wants its opening question on the first render - an effect would give it
+   * an empty thread and then, a frame later, a question, which reads as the app talking to itself. */
+  const [asked] = useState(() => takeAsk());
+  const opening = asked ? openingQuestion(asked) : undefined;
   const navigate = useNavigate();
   const [days, setDays] = useState(30);
   /* Open by default on a wide screen: an assistant nobody notices is an assistant nobody uses. Remembered,
@@ -1031,7 +1037,7 @@ export const InsightsView = () => {
               'hover:after:bg-brand-primary',
             )}
           />
-          <ChatView embedded />
+          <ChatView embedded opening={opening} />
         </aside>
       )}
 
@@ -1042,7 +1048,7 @@ export const InsightsView = () => {
             <Typography variant="span" weight="semibold" className="text-[0.95rem]">Ask about this</Typography>
             <Button variant="ghost" size="sm" className="ms-auto" onClick={() => setAssistant(false)}>Close</Button>
           </div>
-          <ChatView embedded />
+          <ChatView embedded opening={opening} />
         </div>
       )}
     </div>

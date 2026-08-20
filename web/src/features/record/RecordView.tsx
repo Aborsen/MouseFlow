@@ -26,6 +26,8 @@ import {
   windows,
 } from '@/lib/agent';
 import { push } from '@/lib/api';
+import { askAbout } from '@/features/chat/ask-about';
+import { RECORDING_ROLE, SKILL_ROLE } from '@/lib/flow-role';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
 import { type AgentStatus, type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
@@ -55,6 +57,10 @@ function flowFor(rec: Recording, health: AgentStatus['health']) {
       version: 1,
       kind: 'recorded',
       agent: 'desktop',
+      /* What this row IS, so the Skills page can stop listing it. Recordings and skills share a table and
+       * nothing used to say which a row was, so a recording appeared under Skills looking like a skill and
+       * deleting that card deleted the recording - and the transcript with it. */
+      role: RECORDING_ROLE,
       /* What the agent said about ITSELF, now, because later nothing can reconstruct it.
        *
        * "Nothing was typed" and "the keyboard was not being watched" produce an identical recording, and the
@@ -312,6 +318,9 @@ export const RecordView = () => {
             version: 1,
             kind: 'recorded',
             agent: 'desktop',
+            // A skill, and a self-contained one: it carries its own copy of the events below, so deleting
+            // the recording it came from does not empty it either.
+            role: SKILL_ROLE,
             name: (name || rec.name).slice(0, 80),
             description: described.slice(0, 400),
             events: rec.events,
@@ -484,6 +493,10 @@ export const RecordView = () => {
             onRestore={state.recordings.some((rec) => rec.id === viewing)
               ? () => restore(viewing)
               : undefined}
+            onAnalyze={() => {
+              askAbout(viewing, state.recordings.find((rec) => rec.id === viewing)?.name ?? 'Recording');
+              void navigate({ to: '/dashboard' });
+            }}
             onClose={() => setViewing(null)}
             onRemoved={() => {
               /* Removed on the account, so it goes from the browser too - otherwise the row stays, View
