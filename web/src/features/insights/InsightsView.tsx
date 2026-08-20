@@ -318,18 +318,31 @@ const Tile = ({
   </div>
 );
 
+/* `badge` is the one number a section is worth glancing at without reading it. It is a string, and the
+ * caller formats it, because the honest badge is different for every section and a component that computed
+ * one would have to know what each section measures. `badgeTitle` is where the definition goes - a figure
+ * beside a heading gets read as whatever the heading implies, so the ones that could be mistaken for a saving
+ * say what they are on hover. */
 const Section = ({
   title,
   icon,
   note,
   children,
   tone = 'plain',
+  badge,
+  badgeTone = 'plain',
+  badgeTitle,
+  aside,
 }: {
   title: string;
   icon?: ReactNode;
   note?: string;
   children: ReactNode;
   tone?: 'plain' | 'attention';
+  badge?: string | null;
+  badgeTone?: 'plain' | 'attention' | 'good';
+  badgeTitle?: string;
+  aside?: ReactNode;
 }) => (
   <section
     className={cn(
@@ -337,11 +350,25 @@ const Section = ({
       tone === 'attention' ? 'border-fb-red/30' : 'border-stroke',
     )}
   >
-    <div className="mb-2 flex items-center gap-1.5">
+    <div className="mb-2 flex flex-wrap items-center gap-1.5">
       {icon}
       <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
         {title}
       </Typography>
+      {badge && (
+        <span
+          title={badgeTitle}
+          className={cn(
+            'ms-auto shrink-0 rounded-full px-2 py-0.5 text-[0.74rem] font-semibold tabular-nums',
+            badgeTone === 'attention' ? 'bg-fb-red/12 text-fb-red-text'
+              : badgeTone === 'good' ? 'bg-fb-green/12 text-fb-green'
+                : 'bg-brand-primary/12 text-brand-primary',
+          )}
+        >
+          {badge}
+        </span>
+      )}
+      {aside && <span className="ms-auto shrink-0">{aside}</span>}
     </div>
     {note && (
       <Typography variant="p" className="mb-2.5 max-w-[70ch] text-ink-inactive text-[0.8rem]">
@@ -631,6 +658,13 @@ export const InsightsView = () => {
     };
   }, [data?.totals, prev, hadPrev]);
 
+  /* Runs, not reasons. Four reasons over four runs and four reasons over forty are the same list and very
+   * different weeks, so the badge counts what was affected rather than what was grouped. */
+  const affected = useMemo(
+    () => list(data?.failures).reduce((sum, row) => sum + (num(row.times) ?? 0), 0),
+    [data?.failures],
+  );
+
   /* The agent time already spent on goals that ran more than once. Not a saving - see the tile. */
   const repeatCost = useMemo(
     () => list(data?.repeated).reduce((sum, row) => sum + (num(row.seconds) ?? 0), 0),
@@ -835,6 +869,11 @@ export const InsightsView = () => {
                 <Section
                   title="Worth automating"
                   icon={<Repeat2 className="size-4 text-brand-primary" />}
+                  /* Measured, and labelled as measured. The macro this follows puts "18m/week" here, which
+                   * would be a saving - and nothing stored says what these tasks cost by hand, which is why
+                   * the gaps list has said so from the beginning. This is what the repeats already took. */
+                  badge={repeatCost ? fmtSeconds(repeatCost) : null}
+                  badgeTitle="Agent time these repeated runs already took. Not a saving — nothing here holds what the same task costs by hand."
                   note="The same task, done more than once in this window. Each of these is time you would get back by running it instead of doing it."
                 >
                   {list(data.repeated).length === 0 ? (
@@ -890,6 +929,11 @@ export const InsightsView = () => {
                   title="What went wrong"
                   icon={<TriangleAlert className="size-4 text-fb-red-text" />}
                   tone={list(data.failures).length > 0 ? 'attention' : 'plain'}
+                  /* Runs affected, not reasons listed. Four reasons over four runs and four reasons over
+                   * forty are the same list and very different weeks. */
+                  badge={affected ? `${affected} affected` : null}
+                  badgeTone="attention"
+                  badgeTitle="How many runs these reasons account for, across every reason listed."
                   note="Grouped by reason, most frequent first. A reason that keeps coming back is usually one fix, not many."
                 >
                   {list(data.failures).length === 0 ? (

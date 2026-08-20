@@ -1011,44 +1011,60 @@ export const TranscriptPanel = ({
         )}
       </div>
 
-      <footer className="shrink-0 border-stroke border-t px-4 py-3">
+      {/* One strip, not a block. The text above it is what the panel is for, and two full-size buttons with
+        * the note on its own line above them took a chunk of that - worst of all right after an action, when
+        * the note appears and pushes everything up. */}
+      <footer className="flex shrink-0 flex-wrap items-center gap-2 border-stroke border-t px-3 py-2">
+        <Button
+          size="sm"
+          leftSlot={<Sparkles className="size-4" />}
+          isLoading={making}
+          /* Disabled once it has been made rather than left pressable: a second press would put a
+            * second copy of the same macro on the account under a new id. */
+          disabled={made || removing || !!problem}
+          onClick={() => void create()}
+        >
+          {made ? 'Skill created' : 'Create skill'}
+        </Button>
+
+        {/* Icon only until it is armed. The word on a destructive button earns its space when it is warning
+          * you - which is the second press, not the first. */}
+        <Button
+          variant={armed ? 'destructive' : 'destructiveOutline'}
+          size="sm"
+          className={cn(!armed && '!size-8 !p-0')}
+          aria-label={armed ? 'Remove this recording — press again' : 'Remove this recording'}
+          title={armed ? undefined : 'Remove this recording'}
+          leftSlot={armed ? <Trash2 className="size-4" /> : undefined}
+          isLoading={removing}
+          onClick={() => void remove()}
+        >
+          {armed ? 'Remove — press again' : <Trash2 className="size-4" />}
+        </Button>
+
+        {/* In the strip rather than above it, and one line: the note can run to a sentence and a half - "on
+          * this and any other browser you sign in from" - and on its own row it doubled the footer at the
+          * exact moment somebody is reading the result. The whole text is in the title. */}
         {note && (
-          <Typography
-            variant="p"
+          <span
+            title={note.text}
             className={cn(
-              'mb-2 break-words text-[0.8rem]',
+              'min-w-0 flex-1 truncate text-[0.78rem]',
               note.kind === 'good' ? 'text-fb-green' : 'text-fb-red-text',
             )}
           >
             {note.text}
-          </Typography>
-        )}
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            leftSlot={<Sparkles className="size-4" />}
-            isLoading={making}
-            /* Disabled once it has been made rather than left pressable: a second press would put a
-              * second copy of the same macro on the account under a new id. */
-            disabled={made || removing || !!problem}
-            onClick={() => void create()}
-          >
-            {made ? 'Skill created' : 'Create skill'}
-          </Button>
-          <Button
-            variant={armed ? 'destructive' : 'destructiveOutline'}
-            size="sm"
-            leftSlot={<Trash2 className="size-4" />}
-            isLoading={removing}
-            onClick={() => void remove()}
-          >
-            {armed ? 'Remove — press again' : 'Remove'}
-          </Button>
-          <span className="ms-auto flex items-center gap-1 text-[0.74rem] text-ink-inactive">
-            <Clock className="size-3.5" />
-            {fmtSeconds(totalSeconds)}
           </span>
-        </div>
+        )}
+
+        <span className={cn(
+          'flex shrink-0 items-center gap-1 text-[0.74rem] text-ink-inactive',
+          !note && 'ms-auto',
+        )}
+        >
+          <Clock className="size-3.5" />
+          {fmtSeconds(totalSeconds)}
+        </span>
       </footer>
     </aside>
   );
