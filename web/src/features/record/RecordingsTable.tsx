@@ -246,24 +246,26 @@ export const RecordingsTable = ({
             * поэтому «я удалил, а он всё равно их видит». Два выхода, и ни одного автоматического: сирота
             * может быть записью с другой машины, которую как раз и хотят получить здесь. */}
           {orphans && orphans.length > 0 && (
-            <div className="mb-2.5 rounded-lg border-fb-attention/40 border bg-surface-card2 px-3 py-2.5">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <Typography variant="span" className="min-w-0 flex-1 text-[0.82rem] text-ink-secondary">
-                  <strong className="text-ink-primary">{orphans.length}</strong>
-                  {' '}recording{orphans.length === 1 ? ' is' : 's are'} on your account but not in this
-                  browser{orphans.length <= 4
-                    ? ` — ${orphans.map((f) => f.name || 'untitled').join(', ')}.`
-                    : '.'}
-                  {' '}The dashboard counts {orphans.length === 1 ? 'it' : 'them'} and the assistant can read
-                  {orphans.length === 1 ? ' it' : ' them'}.
-                </Typography>
-
+            <div className="mt-3 rounded-lg border-stroke/60 border bg-surface-card2 px-3 py-2">
+              <Typography variant="p" className="max-w-[80ch] text-ink-inactive text-[0.82rem]">
+                {/* No longer an offer to sync, because signing in already does that - and an offer was the
+                  * problem: it meant two devices could quietly hold different sets. What is left here is
+                  * what reconciling deliberately did NOT bring: rows with no events stored, and older ones
+                  * this browser has no room for. */}
+                <strong className="text-ink-primary">{orphans.length}</strong>
+                {' '}recording{orphans.length === 1 ? '' : 's'} on your account {orphans.length === 1 ? 'is' : 'are'}{' '}
+                not held here — either nothing was stored with {orphans.length === 1 ? 'it' : 'them'}, or this
+                browser has no room. The dashboard counts {orphans.length === 1 ? 'it' : 'them'} and the
+                assistant can read {orphans.length === 1 ? 'it' : 'them'} either way.
+              </Typography>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {/* Still offered, because one of the two reasons is fixable by hand: a row this browser had
+                  * no room for can be fetched deliberately if that is the one somebody wants. */}
                 {onAdopt && (
                   <Button
                     variant="ghost"
                     size="sm"
-                    leftSlot={<Download className="size-4" />}
-                    onClick={() => orphans.forEach(onAdopt)}
+                    onClick={() => orphans.forEach((flow) => onAdopt(flow))}
                   >
                     Bring {orphans.length === 1 ? 'it' : 'them'} here
                   </Button>

@@ -28,10 +28,10 @@ import {
 } from '@/lib/agent';
 import { type Flow, push } from '@/lib/api';
 import { askAbout } from '@/features/chat/ask-about';
-import { RECORDING_ROLE, SKILL_ROLE, roleOf } from '@/lib/flow-role';
+import { SKILL_ROLE, roleOf } from '@/lib/flow-role';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
 import {
-  type AgentStatus, type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
+  type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
 } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { hasSkillFor, saveAsSkill } from './save-as-skill';
@@ -42,56 +42,7 @@ import {
   ledgerEntry, partFlow, partHeader, partName, sessionOf, shouldCut,
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
-
-/* One recording, as a row on the account.
- *
- * Two callers: the push on stop, and the restore when a recording has been deleted from Skills - which is
- * the same row, since recordings and skills share a table. They must build the identical payload or a
- * restored recording quietly stops matching the one that was saved, so there is one of these rather than
- * two literals that look alike.
- */
-function flowFor(rec: Recording, health: AgentStatus['health']) {
-  const s = summarize(rec.events);
-  const where = rec.windows ?? [];
-  return {
-    id: rec.id,
-    // `desktop`, which decides who can replay it: these are screen coordinates, not page elements.
-    source: 'desktop' as const,
-    kind: 'recorded' as const,
-    name: rec.name.slice(0, 80),
-    description: `${s.count} events · ${s.clicks} click${s.clicks === 1 ? '' : 's'} · ${fmtMs(s.durationMs)}`,
-    origins: where.map((w) => w.title).filter(Boolean).slice(0, 12),
-    created: rec.created,
-    payload: {
-      version: 1,
-      kind: 'recorded',
-      agent: 'desktop',
-      /* What this row IS, so the Skills page can stop listing it. Recordings and skills share a table and
-       * nothing used to say which a row was, so a recording appeared under Skills looking like a skill and
-       * deleting that card deleted the recording - and the transcript with it. */
-      role: RECORDING_ROLE,
-      /* What the agent said about ITSELF, now, because later nothing can reconstruct it.
-       *
-       * "Nothing was typed" and "the keyboard was not being watched" produce an identical recording, and the
-       * transcript was asserting the first without being able to tell - a 0.6.0 agent names every click it
-       * lands on and hooks no keyboard at all, so the named clicks it was reasoning from proved nothing.
-       * Read from /health at the moment of recording, which is the only moment the answer exists.
-       *
-       * On a RESTORE this is whatever the agent says now, which may differ from what recorded it. Better
-       * than nothing and honest either way: the flags describe an agent, and the transcript only ever uses
-       * them to decide whether "no typing" means none happened. */
-      recorder: {
-        version: health?.version ?? null,
-        canName: health?.canName === true,
-        canKeys: health?.canKeys === true,
-      },
-      name: rec.name.slice(0, 80),
-      events: rec.events,
-      windows: rec.windows,
-      created: rec.created,
-    },
-  };
-}
+import { flowFor } from './flow-for';
 
 /* mm:ss, for the readout beside the disc.
  *
@@ -545,6 +496,16 @@ export const RecordView = () => {
         const saved = await push({ flows: [flowFor(made, health)] });
         if (saved.problems.length) {
           setNote(`Captured, but the account refused it: ${saved.problems.join('; ')}`);
+        } else {
+          /* Stamped only on a clean push, because the stamp is a fact about the ACCOUNT: it is what later
+           * separates "this exists only here, send it" from "this was deleted on another machine, drop it".
+           * Setting it hopefully would make the second reconciliation delete a recording that never
+           * arrived. */
+          update((prev) => ({
+            recordings: prev.recordings.map((rec) => (
+              rec.id === made.id ? { ...rec, syncedAt: new Date().toISOString() } : rec
+            )),
+          }));
         }
         await reload();
       } catch (err) {
@@ -871,6 +832,36 @@ export const RecordView = () => {
           )
         }
       />
+
+      {/* What the last reconciliation did, when it did anything.
+        *
+        * Recordings appearing needs no announcement. Recordings DISAPPEARING does: they were deleted on
+        * another machine, and somebody who does not know that will think this one lost them. Shown once, for
+        * the reconciliation that just happened rather than forever. */}
+      {state.lastSync && Date.now() - Date.parse(state.lastSync.at) < 60_000
+        && (state.lastSync.pulled || state.lastSync.forgotten || state.lastSync.pushed) > 0 && (
+        <Typography variant="p" className="text-ink-inactive text-[0.84rem]">
+          {/* Assembled from the parts that happened, rather than glued together with commas and hope: the
+            * dash belonged to the first clause, and when the first clause did not happen the sentence began
+            * with a comma. */}
+          {[
+            'Synced with your account',
+            [
+              state.lastSync.pulled ? `${state.lastSync.pulled} brought here` : '',
+              state.lastSync.pushed ? `${state.lastSync.pushed} sent up` : '',
+              state.lastSync.forgotten
+                ? `${state.lastSync.forgotten} removed because another device deleted ${
+                  state.lastSync.forgotten === 1 ? 'it' : 'them'}`
+                : '',
+            ].filter(Boolean).join(', '),
+          ].filter(Boolean).join(' — ')}
+          {state.lastSync.left
+            ? `. ${state.lastSync.left} older ${state.lastSync.left === 1 ? 'one' : 'ones'} stayed on the `
+              + 'account — this browser holds about 3MB of recordings, and the transcript reads them from '
+              + 'the account anyway.'
+            : '.'}
+        </Typography>
+      )}
 
       {/* Sessions above the recordings table: a session is the bigger object, and its parts are on the
         * account rather than in this browser, so they do not appear in the table below at all. */}

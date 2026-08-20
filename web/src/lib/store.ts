@@ -41,6 +41,13 @@ export interface Recording {
   events: RecordedEvent[];
   /** Which applications were in front while this was recorded, in first-touched order. */
   windows: { title: string; process: string }[];
+  /* When the account last acknowledged this recording, or absent if it never has.
+   *
+   * The one fact that separates "this exists only here, send it up" from "this was deleted on another
+   * machine, drop it" - and without it a two-way sync resurrects every delete, because api/sync.js clears
+   * `deleted_at` on upsert. Absent on every recording made before this field existed; features/record/
+   * reconcile.ts says what it does about that. */
+  syncedAt?: string;
   /* How a replay of THIS recording should behave. On the recording rather than only on a flow step, so that
    * pressing Play on its row and adding it to a flow mean the same thing - which they did not when the row
    * had no answer to "how many times, how fast, does it loop". Optional because every recording made before
@@ -69,6 +76,18 @@ export interface Console {
   recordings: Recording[];
   /** Long recording sessions and their parts. See features/record/long-session.ts for the shape. */
   sessions: unknown[];
+  /* What the last reconciliation with the account did.
+   *
+   * Kept because one of its outcomes has to be said out loud: recordings appearing is welcome, recordings
+   * DISAPPEARING because another machine deleted them is something somebody needs told once. Null until a
+   * reconciliation has run. */
+  lastSync: {
+    at: string;
+    pulled: number;
+    pushed: number;
+    forgotten: number;
+    left: number;
+  } | null;
   flow: FlowStep[];
   startDelayMs: number;
   flowRepeat: number;
@@ -79,6 +98,7 @@ const EMPTY: Console = {
   port: 8787,
   recordings: [],
   sessions: [],
+  lastSync: null,
   flow: [],
   startDelayMs: 3000,
   flowRepeat: 1,
@@ -96,6 +116,7 @@ function read(): Console {
       // Trusted only as far as its shape: this is data an older build wrote.
       recordings: Array.isArray(saved.recordings) ? saved.recordings : [],
       sessions: Array.isArray(saved.sessions) ? saved.sessions : [],
+      lastSync: saved.lastSync && typeof saved.lastSync === 'object' ? saved.lastSync : null,
       flow: Array.isArray(saved.flow) ? saved.flow : [],
       port: Number.isFinite(saved.port) ? (saved.port as number) : 8787,
     };

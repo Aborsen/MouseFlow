@@ -13,6 +13,10 @@ import { useAgent } from '@/lib/store';
 import { AccountProvider } from './AccountProvider';
 import { AppSidebar } from './AppSidebar';
 import { SettingsDialog, type SettingsScreen } from './SettingsDialog';
+/* Makes this browser and the account agree, on load and on every change, without asking. Mounted here rather
+ * than on the Record page because signing in on another machine can land anywhere, and waiting for somebody to
+ * visit the right page before their recordings appear is the same bug in a longer form. */
+import { Reconciler } from '@/features/record/Reconciler';
 
 const TITLES: Record<string, string> = {
   '/record': 'Record',
@@ -32,6 +36,7 @@ const Shell = () => {
 
   return (
     <div className="flex min-h-screen items-stretch bg-surface-page">
+      <Reconciler />
       <AppSidebar onOpenSettings={(screen) => setSettings(screen ?? 'account')} />
 
       <div className="flex min-w-0 flex-1 flex-col">

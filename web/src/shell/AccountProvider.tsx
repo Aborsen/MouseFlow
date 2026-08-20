@@ -15,6 +15,14 @@ interface AccountValue {
   account: Account | null;
   flows: Flow[];
   runs: Run[];
+  /* Whether the account has actually ANSWERED, as opposed to `flows` being empty because nothing has been
+   * asked yet.
+   *
+   * The difference is not academic. Anything that compares this browser against the account has to know it -
+   * the reconciliation read an empty `flows` on the first render and concluded that every local recording had
+   * been deleted on another machine. They came back when the answer arrived, so the damage was invisible;
+   * had the request failed, they would simply have gone. */
+  loaded: boolean;
   reload: () => Promise<void>;
   leave: () => Promise<void>;
   /** Why the last log-out did not happen, if it did not. Null while nothing has gone wrong. */
@@ -34,6 +42,7 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [checked, setChecked] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -41,6 +50,10 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
       const body = await pull();
       setFlows(body.flows);
       setRuns(body.runs);
+      /* Only on success. A failed read leaves `loaded` false, so nothing that compares the two sides runs at
+       * all - which is the right answer: an account that could not be read has told us nothing about what it
+       * holds. */
+      setLoaded(true);
     } catch (_) {
       /* An account with nothing in it and an account that could not be read look the same from here, and
        * neither is worth a message over the top of the app. */
@@ -107,8 +120,8 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const value = useMemo(
-    () => ({ account, flows, runs, reload, leave, leaveProblem: leaving }),
-    [account, flows, runs, reload, leave, leaving],
+    () => ({ account, flows, runs, loaded, reload, leave, leaveProblem: leaving }),
+    [account, flows, runs, loaded, reload, leave, leaving],
   );
 
   // Nothing renders while the answer is unknown: a flash of the app before the wall is worse than a pause.
