@@ -1448,12 +1448,124 @@ function joinWords(list, last) {
 
 const quoted = (name) => '"' + name + '"';
 
+/* What UIA and AX call a thing, in the words a person would use.
+ *
+ * Only the containers are here - the things you click INSIDE rather than ON. A named control needs no
+ * translation because its name carries it ("Send", "Inbox"); an unnamed one is only ever describable by what
+ * kind of thing it was, and "pane" is a word out of somebody else's dictionary. */
+const PLACE_NOUNS = {
+  pane: 'the window',
+  window: 'the window',
+  client: 'the window',
+  document: 'the page',
+  main: 'the page',
+  region: 'the page',
+  group: 'the page',
+  custom: 'a control with no name',
+  list: 'a list',
+  table: 'a table',
+  tree: 'a tree',
+  toolbar: 'the toolbar',
+  'menu bar': 'the menu bar',
+  'tool bar': 'the toolbar',
+  'title bar': 'the title bar',
+  'status bar': 'the status bar',
+  'scroll bar': 'a scroll bar',
+  canvas: 'the canvas',
+  image: 'an image',
+  'text': 'some text',
+  'edit': 'a text box',
+  'edit box': 'a text box',
+  button: 'a button with no name',
+  link: 'a link with no name',
+};
+
+/* An unnamed click, said with everything that IS known.
+ *
+ * Measured over the recordings this project has made: 70.8% of clicks carry a control name, and the rest
+ * split three ways - an explorer pane (the Windows desktop or taskbar), a browser window with no control
+ * under the pointer, and no context at all from an agent older than 0.7.0. Only the third of those is
+ * genuinely unknown, and it was the only one the old sentence described.
+ *
+ * The place is not repeated: the segment this clause sits in is already titled by application and window, so
+ * "clicked in the window" inside "Chrome - MouseFlow" says the useful half without saying it twice. */
+/* WHAT the click landed on, when it has no name - or null when even that is unknown.
+ *
+ * Returned as a fragment rather than a sentence so the caller can put a count in front of it and the
+ * coordinates behind it. The first version returned the whole sentence and produced "clicked at a point this
+ * recording could not name at 1030,1053": the phrase already said where, so the coordinate said it twice. */
+function unnamedWhat(ctx) {
+  const type = ctx && ctx.type ? ctx.type.toLowerCase().trim() : '';
+
+  /* An explorer pane with no name is the desktop or the taskbar - nothing else in that shell hit-tests to an
+   * unnamed pane - and saying so is the difference between a step a reader can place and one they cannot. */
+  if (type === 'pane' && ctx && ctx.app && /^explorer$/i.test(ctx.app)) {
+    return 'on the desktop or the taskbar';
+  }
+
+  const noun = PLACE_NOUNS[type];
+  if (noun) return (noun.startsWith('the ') ? 'in ' : 'on ') + noun;
+
+  /* An application was under the pointer and named nothing in itself: normal for Electron, a canvas, or a
+   * window running as administrator. Different from knowing nothing at all, and worth the distinction. */
+  if (ctx && ctx.app) return 'on something ' + ctx.app + ' did not name';
+  return null;
+}
+
+/* The point, when there is nothing better to identify it by.
+ *
+ * This is the opposite of the complaint that started all of this. That one was "we show ONLY coordinates" - a
+ * list of numbers standing in for meaning. A coordinate ADDED to what is known is the reverse: it is the
+ * last thing said rather than the only thing, and it appears exactly where the alternative was "something".
+ * Two unnamed clicks in different places are two different facts, and without the numbers they read as one. */
+function atPoints(points) {
+  const seen = [];
+  for (const point of points) {
+    if (point && !seen.includes(point)) seen.push(point);
+  }
+  if (!seen.length) return '';
+  if (seen.length === 1) return ' at ' + seen[0];
+  /* Four is where a list stops being readable. Past that the count carries it, and the first two say
+   * whereabouts on the screen the work was. */
+  if (seen.length <= 4) return ' at ' + joinWords(seen, 'and');
+  return ' at ' + seen.slice(0, 2).join(', ') + ' and ' + (seen.length - 2) + ' other points';
+}
+
+/* A run of unnamed clicks, assembled from the parts that are known: how many, what it was, and where.
+ *
+ * Each part appears only if there is something to put in it, which is what keeps "clicked 6 times at
+ * 1030,1053 and 5 other points" from becoming "clicked 6 times at a point this recording could not name at
+ * 1030,1053 ...". */
+function unnamedClicks(count, ctx, points) {
+  const what = unnamedWhat(ctx);
+  const where = atPoints(points || []);
+  let said = 'clicked';
+  // "twice" rather than "2 times": the number is only worth spelling out once it stops having a word.
+  if (count === 2) said += ' twice';
+  else if (count > 2) said += ' ' + count + ' times';
+  if (what) said += ' ' + what;
+  /* A comma before the coordinates when something already followed the verb, so the two facts do not run
+   * together into one noun phrase. */
+  if (where) said += (what ? ',' : '') + where;
+  /* Neither a name, nor a kind, nor a coordinate. Only an agent older than the resolver produces this, and
+   * saying nothing at all would read as a step that did nothing. */
+  if (!what && !where) said += ' somewhere this recording could not name';
+  return said;
+}
+
 /* One place's paragraph, walked in order. Consecutive clicks with names merge into one clause, because
  * "clicked New mail, then To, then Send" is the sentence a person would say and three clauses is not. */
 function placeStory(segment) {
   const clauses = [];
   let namedRun = [];
   let unnamed = 0;
+  /* The context of the unnamed run being counted, so the clause can say what KIND of thing it was. The first
+   * one's, not the last: a run is only ever collapsed when the clicks are alike, and if they are not, the
+   * first is the one the reader is already looking at. */
+  let unnamedCtx = null;
+  /* Where those clicks landed. Kept because a coordinate is the only thing that distinguishes one unnamed
+   * click from another, and the run collapsing was throwing exactly that away. */
+  let unnamedAt = [];
   let dropped = 0;
 
   const flushNamed = () => {
@@ -1462,10 +1574,10 @@ function placeStory(segment) {
       namedRun = [];
     }
     if (unnamed) {
-      clauses.push(unnamed === 1
-        ? 'clicked once on something with no name to read'
-        : 'clicked ' + unnamed + ' more times on things with no names to read');
+      clauses.push(unnamedClicks(unnamed, unnamedCtx, unnamedAt));
       unnamed = 0;
+      unnamedCtx = null;
+      unnamedAt = [];
     }
   };
 
@@ -1484,10 +1596,30 @@ function placeStory(segment) {
     if (step.action === 'click' || step.action === 'dblclick') {
       const name = step.ctx && step.ctx.control;
       if (name && step.action === 'click') { namedRun.push(name); continue; }
-      flushNamed();
-      clauses.push(step.action === 'dblclick'
-        ? (name ? 'double-clicked ' + quoted(name) : 'double-clicked')
-        : 'clicked something with no name to read');
+      if (step.action === 'dblclick') {
+        flushNamed();
+        clauses.push(name
+          ? 'double-clicked ' + quoted(name)
+          : 'double-clicked ' + unnamedClick(step.ctx).replace(/^clicked /, '')
+            + atPoints([step.target]));
+        continue;
+      }
+      /* Counted rather than written out, so five clicks on the same unnamed thing are one clause. The named
+       * run is flushed first: "clicked Send, then clicked 3 more times in the page" keeps the order the
+       * person worked in. */
+      if (namedRun.length) flushNamed();
+      if (!unnamed) unnamedCtx = step.ctx || null;
+      unnamed++;
+      if (step.target) unnamedAt.push(step.target);
+      continue;
+    }
+
+    /* Movement and a short pause are dropped from the story entirely (`dropped++` below), so flushing the
+     * click run on them broke a sentence on something the sentence does not mention - which is what turned
+     * six clicks in a row into the same phrase six times. The run now spans them, exactly as a named run
+     * spans the moves between "New", "To" and "Send". */
+    if (step.action === 'move' || (step.action === 'wait' && step.own < 5_000)) {
+      dropped++;
       continue;
     }
 
@@ -1504,11 +1636,9 @@ function placeStory(segment) {
     } else if (step.action === 'drag') {
       clauses.push('dragged something ' + pxText(step.px));
     } else if (step.action === 'wait') {
-      // Short waits are the rhythm of working and would fill this with noise.
-      if (step.own >= 5_000) clauses.push('stopped for ' + spanText(step.own));
-      else dropped++;
-    } else if (step.action === 'move') {
-      dropped++;
+      /* Only the long ones reach here: a short wait is the rhythm of working and is dropped above, with the
+       * moves, so that neither breaks a run of clicks in half. */
+      clauses.push('stopped for ' + spanText(step.own));
     } else {
       /* Its own words, not an apology. These are the `other` steps - a press with no release, a release
        * with no press, an action from an imported file - and every one of them carries a sentence saying
