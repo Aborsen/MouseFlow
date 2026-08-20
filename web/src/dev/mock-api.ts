@@ -12,6 +12,12 @@ import type { Connect } from 'vite';
 const now = Date.now();
 const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString();
 
+/* Что в мок записали через POST /api/sync. В памяти, как и всё остальное состояние фикстуры: живёт столько,
+ * сколько живёт dev-сервер. */
+const pushedFlows = new Map<string, unknown>();
+const deletedFlows = new Set<string>();
+const pushedRuns: unknown[] = [];
+
 /* Conversations, as the real store would hold them. In memory, so they last as long as the dev server does -
  * which is the same lifetime as the signed-out flag below and for the same reason. */
 const chats = new Map<string, {
@@ -245,9 +251,58 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     return json(res, 201, { ok: true, token: 'mf_dev_' + 'x'.repeat(38), device: { id: 'dev_3', label: 'Chrome extension', createdAt: new Date().toISOString(), lastUsedAt: null } });
   }
   if (url.startsWith('/api/sync')) {
-    if (req.method === 'POST') return json(res, 200, { ok: true, saved: { flows: 1, runs: 1 }, problems: [] });
+    /* Записанное запоминается.
+     *
+     * POST отвечал успехом и ничего не менял, а GET отдавал неподвижную фикстуру - значит «сохранил, и список
+     * изменился» в превью не проверялось вообще. На этом я попадался дважды: мок выхода отвечал успехом и
+     * продолжал отдавать сессию, мок разговоров принимал сохранение и возвращал пустую историю. Один раз
+     * работающая функция выглядела сломанной, другой - наоборот. */
+    if (req.method === 'POST') {
+      let text = '';
+      req.on('data', (chunk) => { text += chunk; });
+      req.on('end', () => {
+        let body: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] } = {};
+        try {
+          body = text ? JSON.parse(text) : {};
+        } catch (_) {
+          return json(res, 400, { error: { type: 'sync_error', message: 'that body is not JSON' } });
+        }
+
+        const flows = Array.isArray(body.flows) ? body.flows : [];
+        for (const flow of flows) {
+          const id = String((flow as { id?: unknown }).id ?? '');
+          if (!id) continue;
+          // Upsert по id, как настоящий: сохранить одно и то же дважды обновляет строку, а не удваивает её.
+          pushedFlows.set(id, flow);
+          deletedFlows.delete(id);
+        }
+        for (const id of Array.isArray(body.deleted) ? body.deleted : []) {
+          deletedFlows.add(String(id));
+          pushedFlows.delete(String(id));
+        }
+        const runs = Array.isArray(body.runs) ? body.runs : [];
+        for (const run of runs) pushedRuns.push(run);
+
+        return json(res, 200, {
+          ok: true,
+          saved: { flows: flows.length, runs: runs.length },
+          problems: [],
+        });
+      });
+      return undefined;
+    }
     if (req.method === 'DELETE') return json(res, 200, { ok: true });
-    return json(res, 200, { ok: true, flows: FLOWS, runs: RUNS, you: ACCOUNT });
+    return json(res, 200, {
+      ok: true,
+      /* Фикстуры плюс записанное, минус помеченное удалённым - то есть тот же порядок правил, что у
+       * настоящего эндпоинта, и «сохранил → видно» наконец проверяется. */
+      flows: [
+        ...FLOWS.filter((f) => !deletedFlows.has(f.id) && !pushedFlows.has(f.id)),
+        ...pushedFlows.values(),
+      ],
+      runs: [...RUNS, ...pushedRuns],
+      you: ACCOUNT,
+    });
   }
 
   if (url.startsWith('/api/gallery')) {

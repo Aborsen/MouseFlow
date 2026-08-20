@@ -20,6 +20,7 @@ import { Signal } from '@/components/Signal';
 import { type RecordedEvent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
+import { describeRecording, hasSkillFor, saveAsSkill } from '@/features/record/save-as-skill';
 import {
   type SkillStructure,
   type WireFormat,
@@ -220,6 +221,36 @@ export const SkillsView = () => {
   /* Which row has its structure open. One at a time: two open panels push the list twice and the second is
    * never the one being read. */
   const [openRow, setOpenRow] = useState<string | null>(null);
+  /* Какая запись сейчас превращается в скилл. По одной: две одновременные записи в аккаунт по одной кнопке -
+   * это два прогона одного намерения, и второй не нужен. */
+  const [making, setMaking] = useState<string | null>(null);
+
+  /* Записи, из которых скилла ещё НЕТ.
+   *
+   * Только такие: предложить «сделать скилл» из записи, у которой он есть, значит пригласить к дублю - а id
+   * выведен из id записи, поэтому второе нажатие молча перезаписало бы существующий скилл. Те, что уже
+   * превращены, и так ниже, в списке скиллов. */
+  const convertible = useMemo(
+    () => local.recordings.filter((rec) => !hasSkillFor(flows, rec.id)),
+    [local.recordings, flows],
+  );
+
+  const convert = useCallback(async (rec: typeof local.recordings[number]) => {
+    setMaking(rec.id);
+    setSaid(null);
+    try {
+      await saveAsSkill(rec);
+      await reload();
+      setSaid({ text: `"${rec.name}" is a skill now — the recording is untouched.`, kind: 'good' });
+    } catch (err) {
+      setSaid({
+        text: err instanceof Error ? err.message : 'it could not be saved as a skill',
+        kind: 'bad',
+      });
+    } finally {
+      setMaking(null);
+    }
+  }, [reload]);
 
   const shownSkills = useMemo(() => {
     const needle = term.trim().toLowerCase();
@@ -485,6 +516,69 @@ export const SkillsView = () => {
           </Typography>
         )}
       </section>
+
+      {/* Записи, готовые стать скиллом.
+        *
+        * Раньше за этим надо было идти на Record - при том что вся страница про скиллы и человек пришёл сюда
+        * именно за этим. Показываются только те, у которых скилла ещё нет: id скилла выведен из id записи,
+        * так что второе нажатие перезаписало бы существующий, а список, приглашающий к этому, - ловушка. */}
+      {convertible.length > 0 && (
+        <section className="mb-4 rounded-xl border-stroke border bg-surface-card p-4">
+          <div className="mb-2.5 flex flex-wrap items-center gap-2">
+            <CircleDot className="size-4 shrink-0 text-brand-primary" />
+            <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
+              Ready to become a skill
+            </Typography>
+            <span className="ms-auto shrink-0 rounded-full bg-brand-primary/12 px-2 py-0.5 text-[0.74rem] font-semibold text-brand-primary tabular-nums">
+              {convertible.length} recording{convertible.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          <Typography variant="p" className="mb-2.5 max-w-[74ch] text-ink-inactive text-[0.82rem]">
+            Recordings in this browser that have no skill yet. Making one is a separate copy — the recording
+            stays exactly as it is, and deleting the skill later leaves it alone.
+          </Typography>
+
+          <ul className="flex flex-col gap-1.5">
+            {convertible.slice(0, 6).map((rec) => (
+              <li
+                key={rec.id}
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2"
+              >
+                <span className="flex items-center"><Signal events={rec.events} bars={10} className="h-4" /></span>
+
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <Typography variant="span" weight="semibold" className="truncate text-[0.88rem]">
+                    {rec.name || 'Untitled recording'}
+                  </Typography>
+                  <span className="truncate text-[0.76rem] text-ink-inactive">
+                    {describeRecording(rec)}
+                  </span>
+                </span>
+
+                <Button
+                  size="sm"
+                  leftSlot={<Sparkles className="size-4" />}
+                  isLoading={making === rec.id}
+                  disabled={!!making}
+                  onClick={() => void convert(rec)}
+                >
+                  Save as skill
+                </Button>
+              </li>
+            ))}
+          </ul>
+
+          {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
+            * остальные, а не оставить человека считать. */}
+          {convertible.length > 6 && (
+            <Typography variant="p" className="mt-2 text-ink-inactive text-[0.78rem]">
+              {convertible.length - 6} more {convertible.length - 6 === 1 ? 'is' : 'are'} on the{' '}
+              <strong>Record</strong> page.
+            </Typography>
+          )}
+        </section>
+      )}
 
       {/* The library's own heading, under the builder rather than inside it: what a skill is and what you
         * have are two different statements, and one card saying both said neither clearly. */}

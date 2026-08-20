@@ -33,6 +33,7 @@ import {
   type AgentStatus, type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
 } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
+import { hasSkillFor, saveAsSkill } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { TranscriptPanel } from './TranscriptPanel';
 
@@ -446,45 +447,12 @@ export const RecordView = () => {
   }, [playing, port]);
 
   const keepAsSkill = useCallback(async (rec: Recording) => {
-    const s = summarize(rec.events);
-    const where = rec.windows.map((w) => w.title).filter(Boolean);
     const name = prompt('Name this skill', rec.name);
     if (name === null) return;
-
-    const described =
-      `Repeats ${s.count} recorded actions` +
-      (s.clicks ? ` (${s.clicks} click${s.clicks === 1 ? '' : 's'})` : '') +
-      ` over ${fmtMs(s.durationMs)}` +
-      (where.length ? `, in ${where.slice(0, 3).join(', ')}` : '') + '.';
-
     try {
-      const body = await push({
-        flows: [{
-          id: `dr_${rec.id}`,
-          /* `desktop`, which decides who can run it: these are screen coordinates, so the extension must
-           * not offer to replay them in a page - it would click at meaningless positions. */
-          source: 'desktop',
-          kind: 'recorded',
-          name: (name || rec.name).slice(0, 80),
-          description: described.slice(0, 400),
-          origins: where.slice(0, 12),
-          created: rec.created,
-          payload: {
-            version: 1,
-            kind: 'recorded',
-            agent: 'desktop',
-            // A skill, and a self-contained one: it carries its own copy of the events below, so deleting
-            // the recording it came from does not empty it either.
-            role: SKILL_ROLE,
-            name: (name || rec.name).slice(0, 80),
-            description: described.slice(0, 400),
-            events: rec.events,
-            windows: rec.windows,
-            created: rec.created,
-          },
-        }],
-      });
-      if (body.problems.length) throw new Error(body.problems.join('; '));
+      /* Общая реализация - см. save-as-skill.ts. Skills предлагает то же самое со своей страницы, и payload,
+       * написанный в двух местах, однажды разойдётся: это уже случалось с flowFor. */
+      await saveAsSkill(rec, name);
       await reload();
       setNote('Saved as a skill. It is in Skills, on this and any other browser you sign in from.');
     } catch (err) {
@@ -630,7 +598,7 @@ export const RecordView = () => {
         /* Answered here because this is the half that can see the account. Save as skill writes a separate
          * row under `dr_<id>`, so the question is whether that row exists - not whether the recording
          * carries a flag, which it does not and should not: two objects, two lifetimes. */
-        hasSkill={(rec) => flows.some((flow) => flow.id === `dr_${rec.id}`)}
+        hasSkill={(rec) => hasSkillFor(flows, rec.id)}
         /* Recordings the account has and this browser does not - the leftovers of a delete that never
          * propagated, plus anything recorded on another machine. Only ROLE-recording rows, or unstamped ones
          * that are not skills: a skill on the account is not a missing recording. */
