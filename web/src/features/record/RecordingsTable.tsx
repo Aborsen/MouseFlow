@@ -252,7 +252,15 @@ export const RecordingsTable = ({
                 >
                   {armed === 'selection' ? `Delete ${live.size} — press again` : 'Delete'}
                 </Button>
-                <Button variant="ghost" size="sm" leftSlot={<X className="size-4" />} onClick={() => setSelected(new Set())}>
+                {/* Disarms as well as clears. Clearing the selection hides this bar, and `armed` used to stay
+                    at 'selection' behind it - so selecting something again brought Delete back already
+                    cocked, one click from deleting several recordings, with nothing on screen to say it. */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  leftSlot={<X className="size-4" />}
+                  onClick={() => { setArmed(null); setSelected(new Set()); }}
+                >
                   Clear
                 </Button>
               </span>
@@ -473,12 +481,26 @@ export const RecordingsTable = ({
                             : `${replay.repeat}×`} at {replay.speed}×
                         </Button>
 
+                        {/* The way out of a cocked delete. There is no timer on `armed` here, so without this
+                            the only ways back were pressing the destructive button or leaving the page -
+                            which is not a choice, it is a corner. */}
+                        {armed === rec.id && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="ms-auto"
+                            onClick={() => setArmed(null)}
+                          >
+                            Cancel
+                          </Button>
+                        )}
+
                         {/* Behind one deliberate click, and armed in the button rather than a confirm() -
                             the pattern the rest of the app settled on. */}
                         <Button
                           variant={armed === rec.id ? 'destructive' : 'destructiveTertiary'}
                           size="sm"
-                          className="ms-auto"
+                          className={cn(armed !== rec.id && 'ms-auto')}
                           leftSlot={<Trash2 className="size-4" />}
                           onClick={() => {
                             if (armed !== rec.id) { setArmed(rec.id); return; }
@@ -486,6 +508,19 @@ export const RecordingsTable = ({
                           }}
                         >
                           {armed === rec.id ? 'Delete — press again' : 'Delete'}
+                        </Button>
+
+                        {/* Closing disarms. A panel that reopened with its delete still cocked would be one
+                            click from deleting something, with nothing on screen saying so. */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label="Close these settings"
+                          title="Close"
+                          className="!size-8 !p-0"
+                          onClick={() => { setArmed(null); setOpenRow(null); }}
+                        >
+                          <X className="size-4" />
                         </Button>
                       </div>
                     )}
