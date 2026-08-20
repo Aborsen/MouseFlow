@@ -35,6 +35,34 @@ import {
  * row out by hundreds of pixels. */
 const SKILL_COLUMNS = 'grid-cols-[2rem_minmax(12rem,1fr)_7.5rem_7rem_6rem_6.5rem_15rem]';
 
+/* Блок «Ready to become a skill» - одного размера всегда.
+ *
+ * Шесть строк это и максимум (больше здесь не нужно - остальные на Record), и МИНИМУМ высоты. Без второго
+ * блок терял строку на каждое «Save as skill»: страница подпрыгивала под курсором ровно в тот момент, когда
+ * человек тянулся к следующей кнопке, и вторым нажатием попадал не туда, куда смотрел.
+ *
+ * Высота строки и высота списка выведены из ОДНОГО числа. Два похожих литерала - `3.25rem` в строке и
+ * посчитанный руками итог в списке - однажды разойдутся, и разойдутся молча: список станет короче своего
+ * содержимого и обрежет последнюю строку. minHeight, а не height, по той же причине: в узком окне строка
+ * переносит кнопку на второй ряд и должна вырасти, а не спрятать её под краем.
+ */
+const READY_SHOWN = 6;
+/* Измеренная высота строки, а не выбранная: две строки текста (0.88rem и 0.76rem) плюс py-2 дают ровно
+ * 57px = 3.5625rem. Число, взятое на глаз, я тут уже поставил - 3.25rem - и получил блок, который при шести
+ * строках всё равно выше, чем при трёх, то есть ровно ту прыгающую страницу, от которой резерв и заводился.
+ * Проверяется единственным способом, которым такое проверяется: измерить блок с одной строкой и с шестью и
+ * сравнить: 57.33px на строку, шесть строк и пять промежутков - 374px, и столько же при одной строке. */
+const READY_ROW = 3.583;
+const READY_GAP = 0.375;  // rem - gap-1.5 между строками
+const READY_MIN = `${READY_SHOWN * READY_ROW + (READY_SHOWN - 1) * READY_GAP}rem`;
+
+/* Когда запись сделана. Нечитаемое значение - 0, чтобы оно тонуло в конец списка, а не тасовало его: NaN в
+ * компараторе оставляет порядок на усмотрение движка. */
+const madeAt = (rec: { created?: string }) => {
+  const t = Date.parse(rec.created ?? '');
+  return Number.isFinite(t) ? t : 0;
+};
+
 /* Filters over the library. `all` is not a state a skill is in - it is the absence of a filter - so it sits
  * beside them rather than being one of them in the data. */
 const FILTERS = [
@@ -231,7 +259,16 @@ export const SkillsView = () => {
    * выведен из id записи, поэтому второе нажатие молча перезаписало бы существующий скилл. Те, что уже
    * превращены, и так ниже, в списке скиллов. */
   const convertible = useMemo(
-    () => local.recordings.filter((rec) => !hasSkillFor(flows, rec.id)),
+    () => local.recordings
+      .filter((rec) => !hasSkillFor(flows, rec.id))
+      /* Новейшие первыми, и это исправление, а не вкус: записи дописываются в КОНЕЦ списка, а список
+       * обрезан шестью - то есть показывались шесть самых СТАРЫХ, а сделанная минуту назад пряталась за
+       * «4 more are on the Record page». Ровно наоборот тому, зачем сюда приходят.
+       *
+       * Ключ - created, а не позиция в массиве: после восстановления с аккаунта порядок массива - это
+       * порядок ответа сервера, а created переживает и сохранение, и восстановление. Нечитаемое значение
+       * тонет в конец, а не тасует список: NaN в компараторе делает порядок неопределённым. */
+      .sort((a, b) => madeAt(b) - madeAt(a)),
     [local.recordings, flows],
   );
 
@@ -591,11 +628,12 @@ export const SkillsView = () => {
             stays exactly as it is, and deleting the skill later leaves it alone.
           </Typography>
 
-          <ul className="flex flex-col gap-1.5">
-            {convertible.slice(0, 6).map((rec) => (
+          <ul className="flex flex-col gap-1.5" style={{ minHeight: READY_MIN }}>
+            {convertible.slice(0, READY_SHOWN).map((rec) => (
               <li
                 key={rec.id}
                 className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2"
+                style={{ minHeight: `${READY_ROW}rem` }}
               >
                 <span className="flex items-center"><Signal events={rec.events} bars={10} className="h-4" /></span>
 
@@ -623,9 +661,13 @@ export const SkillsView = () => {
 
           {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
             * остальные, а не оставить человека считать. */}
-          {convertible.length > 6 && (
+          {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
+            * остальные, а не оставить человека считать. Показаны при этом САМЫЕ СВЕЖИЕ - что и делает
+            * усечение приемлемым: спрятано старое, а не только что записанное. */}
+          {convertible.length > READY_SHOWN && (
             <Typography variant="p" className="mt-2 text-ink-inactive text-[0.78rem]">
-              {convertible.length - 6} more {convertible.length - 6 === 1 ? 'is' : 'are'} on the{' '}
+              {convertible.length - READY_SHOWN} older{' '}
+              {convertible.length - READY_SHOWN === 1 ? 'one is' : 'ones are'} on the{' '}
               <strong>Record</strong> page.
             </Typography>
           )}
@@ -807,7 +849,13 @@ export const SkillsView = () => {
       )}
 
       {skills.length === 0 ? (
-        <Typography variant="p" className="max-w-[60ch] text-ink-inactive">
+        /* На всю ширину, а не колонкой слева.
+         *
+         * Это место, где на странице стоит ТАБЛИЦА, и текст, занимающий шестую часть той же строки, читается
+         * как обрывок, а не как ответ на «где мои скиллы». Полоса во всю ширину занимает ровно то место,
+         * которое займёт библиотека, когда первый скилл появится. */
+        <div className="rounded-xl border-stroke border bg-surface-card px-4 py-3.5">
+        <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
           {/* Two different emptinesses, and saying the first over the second would be a worse lie than the
             * bug this replaced: an account holding four recordings is not an empty account. */}
           {flows.length === 0 ? (
@@ -824,6 +872,7 @@ export const SkillsView = () => {
             </>
           )}
         </Typography>
+        </div>
       ) : (
         <div className="overflow-x-auto pb-1">
           <div className="min-w-[56rem]">
@@ -1051,11 +1100,15 @@ export const SkillsView = () => {
         </div>
       )}
 
-      <Typography variant="p" className="mt-5 max-w-[70ch] text-ink-inactive text-xs">
-        <Upload className="mb-0.5 inline size-3.5" /> A skill made in the extension appears here once it
-        syncs; one made here appears there after the extension’s next sync. Publishing is always a separate,
-        deliberate act.
-      </Typography>
+      {/* Подвал во всю ширину. Прижатый влево, он читался как недоверстанный абзац; черта сверху и полная
+        * ширина говорят то, чем он является - примечание ко всей странице, а не к последней её колонке. */}
+      <div className="mt-5 border-stroke/60 border-t pt-3">
+        <Typography variant="p" className="text-ink-inactive text-xs">
+          <Upload className="mb-0.5 inline size-3.5" /> A skill made in the extension appears here once it
+          syncs; one made here appears there after the extension’s next sync. Publishing is always a
+          separate, deliberate act.
+        </Typography>
+      </div>
     </div>
   );
 };
