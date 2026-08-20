@@ -81,9 +81,13 @@ export const AgentTurn = ({
 export const Composer = ({
   children,
   footer,
+  hint,
 }: {
   children: ReactNode;
   footer?: ReactNode;
+  /* Справка, а не управление: она стоит ПОД карточкой мелким шрифтом. Внутри строки управления она отнимала
+   * место у кнопок и сталкивала их на второй ряд - справка, описывающая кнопку, не должна её выдавливать. */
+  hint?: ReactNode;
 }) => (
   <div className="shrink-0 px-4 pb-5">
     <div className={THREAD_WIDTH}>
@@ -95,8 +99,15 @@ export const Composer = ({
         )}
       >
         {children}
+        {/* `flex-nowrap` до `sm`, потому что в этой строке теперь только управление, и разъезжаться ему не
+          * на чем - а перенос как раз и был тем, из-за чего кнопка уезжала под поле. */}
         {footer && <div className="flex flex-wrap items-center gap-2">{footer}</div>}
       </div>
+      {hint && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[0.74rem] text-ink-inactive">
+          {hint}
+        </div>
+      )}
     </div>
   </div>
 );

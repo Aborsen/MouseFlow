@@ -671,6 +671,27 @@ export const CreateView = () => {
       )}
 
       <Composer
+        /* Справка под полем: бюджет шагов, версия агента и то, что делает Enter. Ни одно из этого не решение,
+         * которое принимают, набирая задачу - а в строке управления они выдавливали кнопку на второй ряд. */
+        hint={(
+          <>
+            <span className="flex items-center gap-1.5">
+              <Monitor className="size-3.5" />
+              <span className="font-mono">{engine}</span>
+            </span>
+            <span>
+              {target === 'desktop'
+                ? `${WAVE_TURNS} steps a wave, up to ${MAX_WAVES}`
+                : 'aims at elements, not positions'}
+            </span>
+            {!running && (
+              <span>
+                <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">Enter</kbd>
+                {' runs it without a plan'}
+              </span>
+            )}
+          </>
+        )}
         footer={
           <>
             {/* The choice of executor lives with the message it applies to, not in a mode above the page:
@@ -684,26 +705,6 @@ export const CreateView = () => {
                 { id: 'desktop', label: 'On this computer', title: 'The local agent drives the whole desktop from a picture of the screen.' },
               ]}
             />
-
-            <span className="flex items-center gap-1.5 font-mono text-[0.74rem] text-ink-inactive">
-              <Monitor className="size-3.5" />
-              {engine}
-            </span>
-
-            <span className="ms-auto text-[0.74rem] text-ink-inactive">
-              {target === 'desktop'
-                ? `${WAVE_TURNS} steps a wave, up to ${MAX_WAVES}`
-                : 'aims at elements, not positions'}
-            </span>
-
-            {/* It has always sent on Enter and never said so. A keyboard shortcut nobody is told about is a
-              * shortcut for whoever wrote it. */}
-            {!running && (
-              <span className="hidden text-[0.74rem] text-ink-inactive sm:inline">
-                <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">Enter</kbd>
-                {' to run without a plan'}
-              </span>
-            )}
 
             {/* Не «дать картинку» - снимок цикл делает каждый шаг и так. Это ограничение области: работать на
                 том окне, что впереди, и никуда не уходить. Только для desktop: расширение целится в элементы
