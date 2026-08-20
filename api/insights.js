@@ -305,7 +305,7 @@ async function gather(sql, userId, fromIso) {
               * A browser recording names a page on every focus and navigate; a desktop recording names
               * an APPLICATION on every click and on every Focus marker, from an 0.6.0 agent onwards.
               * They go in one column because everything downstream carries it forward identically -
-              * the only difference is the word used for it, which `kind` decides further down. */
+              * the only difference is the word used for it, which the kind column decides below. */
              case
                when e.v->>'url' ~ '^https?://'
                  then left(lower(regexp_replace(e.v->>'url', '^(https?://[^/?#]+).*$', '\\1')), 120)
