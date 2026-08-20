@@ -38,6 +38,7 @@ import { push } from '@/lib/api';
 import { MAX_WAVES, type RunEvent, WAVE_TURNS, runOnDesktop } from '@/lib/desktop-engine';
 import { useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
+import { LiveContext } from './LiveContext';
 
 type Target = 'browser' | 'desktop';
 const KEY = 'mouseflow.create.target';
@@ -289,8 +290,15 @@ export const CreateView = () => {
     : extension.present ? `extension ${extension.version ?? ''}` : 'extension not found';
 
   return (
-    // The shell gives this route a header and nothing else, so the thread owns the height and only it scrolls.
-    <div className="flex h-[calc(100dvh-3.25rem)] flex-col">
+    /* Two columns on a wide window: the thread, and what the executor can see. The shell gives this route a
+     * header and nothing else, so the thread owns the height and only it scrolls.
+     *
+     * The panel is desktop-only, and it says so rather than disappearing. The browser half drives a tab
+     * through the extension and aims at page ELEMENTS, so a screenshot of the desktop there would be a
+     * picture of something the executor does not use - and a column that vanishes when you flip a toggle
+     * raises a worse question than one that explains itself. */
+    <div className="flex h-[calc(100dvh-3.25rem)] gap-4">
+      <div className="flex min-w-0 flex-1 flex-col">
       <Thread>
         {turns.length === 0 ? (
           <Opener
@@ -427,6 +435,15 @@ export const CreateView = () => {
                 : 'aims at elements, not positions'}
             </span>
 
+            {/* It has always sent on Enter and never said so. A keyboard shortcut nobody is told about is a
+              * shortcut for whoever wrote it. */}
+            {!running && (
+              <span className="hidden text-[0.74rem] text-ink-inactive sm:inline">
+                <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">Enter</kbd>
+                {' to run'}
+              </span>
+            )}
+
             {running ? (
               <Button
                 variant="destructive"
@@ -466,6 +483,28 @@ export const CreateView = () => {
           )}
         />
       </Composer>
+      </div>
+
+      {/* Its own scroller, so a long window list cannot push the thread's height around. */}
+      <div className="hidden w-[24rem] shrink-0 overflow-y-auto py-4 pr-5 xl:block">
+        {target === 'desktop' ? (
+          <LiveContext port={state.port} enabled={!!health && !health.recording} />
+        ) : (
+          <aside className="rounded-xl border-stroke border bg-surface-card p-3.5">
+            <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+              Live context
+            </Typography>
+            <Typography variant="span" weight="semibold" className="mt-1.5 block text-[0.9rem]">
+              Not used in this browser
+            </Typography>
+            <Typography variant="p" className="mt-1 text-ink-inactive text-[0.8rem]">
+              The extension aims at page elements rather than at positions on a screen, so it does not work
+              from a picture and there is nothing here to show it. Switch to <strong>On this computer</strong>
+              {' '}to see what the agent sees.
+            </Typography>
+          </aside>
+        )}
+      </div>
     </div>
   );
 };

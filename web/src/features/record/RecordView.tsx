@@ -492,25 +492,47 @@ export const RecordView = () => {
 
   const importFiles = useCallback(async (files: FileList) => {
     let added = 0;
+    const made: Recording[] = [];
     for (const file of Array.from(files)) {
       const { events } = parseMacro(await file.text());
       if (!events.length) continue;
-      update((prev) => ({
-        recordings: [
-          ...prev.recordings,
-          {
-            id: uid(),
-            name: file.name.replace(/\.[^.]+$/, ''),
-            created: new Date().toISOString(),
-            events,
-            windows: [],
-          },
-        ],
-      }));
+      const rec: Recording = {
+        id: uid(),
+        name: file.name.replace(/\.[^.]+$/, ''),
+        created: new Date().toISOString(),
+        events,
+        /* Empty, and not recoverable: `.mmmacro` has five columns and comment lines. The #ctx comments come
+         * back, so every click keeps the application and control it landed on - but the once-a-second window
+         * SAMPLE was never in the file, and neither was what the agent could do when it recorded. The
+         * transcript reads both absences correctly rather than guessing at them. */
+        windows: [],
+      };
+      made.push(rec);
+      update((prev) => ({ recordings: [...prev.recordings, rec] }));
       added++;
     }
     setNote(added ? `Imported ${added} recording${added === 1 ? '' : 's'}.` : 'Nothing in those files parsed.');
-  }, [update]);
+
+    /* And onto the account, which importing did not used to do.
+     *
+     * Export a recording, import it back, press View, and it offered to put it back on your account - the
+     * right answer for a recording that WAS there and is not, and the wrong one for a recording that has
+     * never been, where putting it there is simply the next step. Same helper as the stop path, because it is
+     * the same operation: a recording that only exists in this browser has no transcript, and every screen
+     * that reads one asks the account. */
+    if (!made.length) return;
+    try {
+      const saved = await push({ flows: made.map((rec) => flowFor(rec, health)) });
+      if (saved.problems.length) {
+        setNote(`Imported ${added}, but the account refused ${saved.problems.length}: ${saved.problems.join('; ')}`);
+      }
+      await reload();
+    } catch (err) {
+      setNote(`Imported ${added} into this browser, but syncing failed: ${
+        err instanceof Error ? err.message : 'unknown error'
+      }. View needs the recording on your account.`);
+    }
+  }, [update, health, reload]);
 
   /* Put a recording back on the account.
    *
