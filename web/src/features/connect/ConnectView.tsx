@@ -20,16 +20,20 @@
  * working agent is returning a black screenshot.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Apple, Check, Copy, Download, Loader2, Monitor } from 'lucide-react';
-import { type ReactNode, useCallback, useEffect, useState } from 'react';
+import { Check, Copy, Loader2 } from 'lucide-react';
+import { type ReactNode, useCallback, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
-  AGENT_WANTS, type HostOS, MAC_TOOLS_COMMAND, autostartEnable, hostOS, localFileCommand,
-  macInstallCommand, macRestartCommand, olderThan, startCommand,
+  AGENT_WANTS, MAC_TOOLS_COMMAND, autostartEnable, localFileCommand, macInstallCommand,
+  macRestartCommand, olderThan, startCommand,
 } from '@/lib/agent';
 import { refreshAgent, useAgent, useConsole } from '@/lib/store';
+/* Общее с панелью настроек: определение платформы, переключатель, строка с командой и ссылка на скачивание.
+ * Вынесено туда после того, как выяснилось, что установочная команда живёт на ДВУХ экранах, а про macOS
+ * узнал только один. */
+import { Command, DownloadLink, PlatformPicker, needsRestart, usePlatform } from './platform';
 
 interface Step {
   title: string;
@@ -38,22 +42,6 @@ interface Step {
   body?: ReactNode;
 }
 
-/* A command, copyable.
- *
- * Written once because the macOS path needs four of them - install, the compiler Apple ships, the restart
- * after a permission, and the uninstall - and a command somebody has to retype from a paragraph is a command
- * they will get wrong. Every one of these was prose on this screen before, which is what "the instructions
- * are not enough" meant. */
-const Command = ({ text, onCopy }: { text: string; onCopy: (text: string) => void }) => (
-  <div className="flex items-center gap-2 rounded-md border-stroke border bg-surface-card2 p-1.5">
-    <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-1 font-mono text-[0.78rem] text-ink-primary">
-      {text}
-    </code>
-    <Button variant="ghost" size="sm" leftSlot={<Copy className="size-4" />} onClick={() => onCopy(text)}>
-      Copy
-    </Button>
-  </div>
-);
 
 export const ConnectView = () => {
   const [state, update] = useConsole();
@@ -63,22 +51,13 @@ export const ConnectView = () => {
   const [copied, setCopied] = useState(false);
   const [showLocal, setShowLocal] = useState(false);
 
-  /* Which set of steps to show. Guessed from the browser, then corrected by fact: an agent that is already
-   * answering knows which platform it is, and that outranks a user agent string. Switchable either way,
-   * because somebody on one machine reading this out to somebody on another is a real thing that happens. */
-  const [os, setOs] = useState<HostOS>(hostOS);
-  useEffect(() => {
-    if (health?.platform) setOs(health.platform);
-  }, [health?.platform]);
-
-  /* 'other' means the browser would not say - Linux, or something that reports nothing useful. There is no
-   * agent for that platform, so the Windows steps are shown and the reason is said out loud rather than
-   * leaving both buttons unlit, which reads as the chooser being broken. */
-  const unknown = os === 'other';
-  const mac = os === 'macos';
+  /* Shared with the Connections panel in settings, which is the surface most people actually open. It used
+   * to live here and only here, and that is precisely why that panel went on handing macOS users a
+   * PowerShell one-liner. */
+  const platform = usePlatform(health ?? null);
+  const { mac, unknown, terminal } = platform;
   const stale = olderThan(health?.version);
   const command = mac ? macInstallCommand(state.port) : startCommand(state.port);
-  const terminal = mac ? 'Terminal' : 'PowerShell';
 
   const copy = useCallback(async (text: string) => {
     try {
@@ -137,14 +116,12 @@ export const ConnectView = () => {
                   shell is worth reading first, and this is the copy that would run.
                 </Typography>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="tertiary" size="sm" leftSlot={<Download className="size-4" />} asChild>
-                    <a href="/agent/install-mac.sh" download="install-mac.sh">install-mac.sh</a>
-                  </Button>
-                  <Button variant="tertiary" size="sm" leftSlot={<Download className="size-4" />} asChild>
-                    <a href="/agent/mouseflow-agent.swift" download="mouseflow-agent.swift">
-                      mouseflow-agent.swift
-                    </a>
-                  </Button>
+                  <DownloadLink href="/agent/install-mac.sh" name="install-mac.sh">
+                    install-mac.sh
+                  </DownloadLink>
+                  <DownloadLink href="/agent/mouseflow-agent.swift" name="mouseflow-agent.swift">
+                    mouseflow-agent.swift
+                  </DownloadLink>
                 </div>
                 <Typography variant="p" className="mt-2 max-w-[62ch] text-ink-inactive text-xs">
                   Then: <code className="font-mono">bash ~/Downloads/install-mac.sh --origin {location.origin}</code>
@@ -164,9 +141,11 @@ export const ConnectView = () => {
                     Copy
                   </Button>
                 </div>
-                <Button variant="tertiary" size="sm" className="mt-2" leftSlot={<Download className="size-4" />} asChild>
-                  <a href="/agent/mouseflow-agent.ps1" download="mouseflow-agent.ps1">Download the agent</a>
-                </Button>
+                <div className="mt-2">
+                  <DownloadLink href="/agent/mouseflow-agent.ps1" name="mouseflow-agent.ps1">
+                    Download the agent
+                  </DownloadLink>
+                </div>
               </>
             )}
           </div>
@@ -204,14 +183,11 @@ export const ConnectView = () => {
    * failures: without Accessibility a recording is empty, and without Screen Recording a screenshot is
    * black and every window title is missing. */
   const permissions = health?.permissions;
-  /* Granted, but the agent started before it was: the tap goes in at startup, so Accessibility flipped
-   * afterwards does not reach the process that is running. Detected rather than assumed - `canKeys` is the
-   * tap, and permission-granted-but-no-tap is exactly this case and nothing else. */
-  const needsRestart = !!permissions?.accessibility && health?.canKeys === false;
+  const restart = needsRestart(health ?? null);
 
   const permissionStep: Step = {
     title: 'Allow it to watch and to see, then restart it once',
-    done: !!permissions && permissions.accessibility && permissions.screenRecording && !needsRestart,
+    done: !!permissions && permissions.accessibility && permissions.screenRecording && !restart,
     note: 'macOS asks the first time the agent needs each one: a dialog saying it “would like to control this computer using accessibility features”. Click Open System Settings, find mouseflow-agent in the list, and switch it on. The switch only appears after the agent has asked once.',
     body: (
       <ul className="flex flex-col gap-1.5">
@@ -283,7 +259,7 @@ export const ConnectView = () => {
           * The BINARY, not the installer: re-running the installer rebuilds, and macOS ties a permission to
           * the exact build, so that restart would take away the permission it was made for. The installer
           * skips the rebuild when nothing changed, and this command skips it entirely. */}
-        {needsRestart && (
+        {restart && (
           <li className="rounded-lg border-fb-attention/40 border bg-fb-attention/[0.08] px-3 py-2">
             <Typography variant="span" weight="semibold" className="block text-[0.86rem]">
               Granted, but the running agent started before you granted it
@@ -360,27 +336,10 @@ export const ConnectView = () => {
 
           {/* Both always reachable. Guessed from this browser, corrected by a running agent, and switchable
             * either way - reading the macOS steps out to somebody from a Windows machine is a real thing. */}
-          <div className="flex shrink-0 items-center gap-1 rounded-lg border-stroke border bg-surface-card2 p-1">
-            {([
-              { id: 'windows' as const, label: 'Windows', icon: <Monitor className="size-4" /> },
-              { id: 'macos' as const, label: 'macOS', icon: <Apple className="size-4" /> },
-            ]).map((choice) => (
-              <button
-                key={choice.id}
-                type="button"
-                onClick={() => { setOs(choice.id); setCopied(false); setShowLocal(false); }}
-                className={cn(
-                  'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.84rem] transition-colors duration-base',
-                  (mac ? choice.id === 'macos' : choice.id === 'windows')
-                    ? 'bg-brand-primary/15 font-semibold text-brand-primary'
-                    : 'text-ink-secondary hover:bg-state-hover',
-                )}
-              >
-                {choice.icon}
-                {choice.label}
-              </button>
-            ))}
-          </div>
+          <PlatformPicker
+            platform={platform}
+            onPick={() => { setCopied(false); setShowLocal(false); }}
+          />
         </div>
 
         {unknown && (

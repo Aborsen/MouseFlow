@@ -1,17 +1,26 @@
 /* Connections: the local agent, what it is doing, and the one command that changes it.
  *
  * This is where the connection guide went - in the menu, next to everything else that is settings. The
- * six-step first-run walkthrough stays on its own page; what belongs here is the part anybody opening
- * settings actually wants: is it running, is it current, and what do I paste.
+ * first-run walkthrough stays on its own page; what belongs here is the part anybody opening settings
+ * actually wants: is it running, is it current, and what do I paste.
+ *
+ * And "what do I paste" depends on the machine. This panel said PowerShell to everybody for a while after
+ * the macOS agent existed, because the platform switch was built on the /connect page and this is the
+ * surface people actually open - one bug, two places, only one of them fixed. The shared half now lives in
+ * features/connect/platform.tsx so a third surface cannot be half-right either.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Copy, Download } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
-import { AGENT_WANTS, localFileCommand, startCommand } from '@/lib/agent';
+import {
+  AGENT_WANTS, MAC_TOOLS_COMMAND, localFileCommand, macInstallCommand, macRestartCommand, startCommand,
+} from '@/lib/agent';
 import { useAgent, useConsole } from '@/lib/store';
+import {
+  Command, DownloadLink, PlatformPicker, needsRestart, usePlatform,
+} from '@/features/connect/platform';
 import { Row, type Say } from '../SettingsDialog';
 
 export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => void }) => {
@@ -19,17 +28,24 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
   const [console_] = useConsole();
   const navigate = useNavigate();
   const [showLocal, setShowLocal] = useState(false);
+  const platform = usePlatform(health ?? null);
+  const { mac, terminal } = platform;
+
+  const restart = needsRestart(health ?? null);
+  const permissions = health?.permissions;
 
   const state = stale
-    ? `Running ${health?.version}, which is older than this app expects (${AGENT_WANTS}). The command below fetches the current one — close the old PowerShell window first.`
+    ? mac
+      ? `Running ${health?.version}, which is older than this app expects (${AGENT_WANTS}). Run the install command again — it stops the old one, rebuilds and starts the new one.`
+      : `Running ${health?.version}, which is older than this app expects (${AGENT_WANTS}). The command below fetches the current one — close the old PowerShell window first.`
     : health
-      ? `Running on this computer and answering, version ${health.version}. To stop it, close its PowerShell window.`
+      ? `Running on this computer and answering, version ${health.version}. To stop it, close its ${terminal} window.`
       : 'Not running. Nothing on this page can start it for you, which is deliberate — paste the command below.';
 
   const copy = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      say({ text: 'Copied — paste it into PowerShell.', kind: 'good' });
+      say({ text: `Copied — paste it into ${terminal}.`, kind: 'good' });
     } catch (_) {
       say({ text: 'The clipboard was blocked. Select the command and copy it.', kind: 'bad' });
     }
@@ -60,56 +76,105 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
 
       <Row
         label="Start command"
-        note="Nothing is installed: it fetches the agent and runs it in one go. Leave the window open — closing it is how you stop the agent."
-      />
-      <div className="flex items-center gap-2 rounded-md border-stroke border bg-surface-card2 p-1.5">
-        <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-1 font-mono text-[0.78rem] text-ink-primary">
-          {startCommand(console_.port)}
-        </code>
-        <Button size="sm" leftSlot={<Copy className="size-4" />} onClick={() => copy(startCommand(console_.port))}>
-          Copy
-        </Button>
-      </div>
+        note={mac
+          ? 'It fetches the agent and builds it on your machine — building locally is what keeps Gatekeeper out of the way. Leave the Terminal window open: closing it is how you stop the agent.'
+          : 'Nothing is installed: it fetches the agent and runs it in one go. Leave the window open — closing it is how you stop the agent.'}
+      >
+        {/* The switch sits on the command, which is the thing it changes. Guessed from the browser and
+          * corrected by a running agent, but always switchable - and on this panel that matters more than on
+          * the guide, because this is the surface people open when something is already wrong. */}
+        <PlatformPicker platform={platform} onPick={() => setShowLocal(false)} />
+      </Row>
 
-      {/* Folded, always. The piped command above is what almost everybody wants; this is for reading the
-          script first, and for autostart, which needs a file for the launcher to point at. */}
+      <Command text={mac ? macInstallCommand(console_.port) : startCommand(console_.port)} onCopy={copy} />
+
+      {mac && (
+        <div className="mt-3">
+          <Typography variant="p" className="mb-1.5 max-w-[58ch] text-ink-inactive text-[0.82rem]">
+            If it answers <em>“The Swift compiler is not installed”</em>: run this, accept the dialog, then
+            run the install command again.
+          </Typography>
+          <Command text={MAC_TOOLS_COMMAND} onCopy={copy} />
+        </div>
+      )}
+
+      {/* macOS permissions, in the compact form. The guide explains them; a settings panel only has to say
+        * which one is missing, because that is the answer to "it is running and nothing works". */}
+      {mac && permissions && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.82rem]">
+          {([
+            { label: 'Accessibility', ok: permissions.accessibility, pane: 'Privacy & Security → Accessibility' },
+            { label: 'Screen Recording', ok: permissions.screenRecording, pane: 'Privacy & Security → Screen Recording' },
+          ]).map((row) => (
+            <span key={row.label} className={row.ok ? 'text-fb-green' : 'text-fb-attention'}>
+              {row.ok ? '✓' : '!'} {row.label}
+              {row.ok ? '' : ` — ${row.pane}`}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {mac && restart && (
+        <div className="mt-3 rounded-lg border-fb-attention/40 border bg-fb-attention/[0.08] p-3">
+          <Typography variant="p" className="mb-2 max-w-[60ch] text-ink-inactive text-[0.82rem]">
+            <strong className="text-ink-primary">Granted, but this agent started before you granted it.</strong>{' '}
+            It installs its event tap when it starts. Press Ctrl-C in Terminal and paste this — it starts the
+            binary that is already built, which is what keeps the permission.
+          </Typography>
+          <Command text={macRestartCommand(console_.port)} onCopy={copy} />
+        </div>
+      )}
+
+      {/* Folded, always. The command above is what almost everybody wants; this is for reading the script
+          first, and on Windows for autostart, which needs a file for the launcher to point at. */}
       <button
         type="button"
         onClick={() => setShowLocal((v) => !v)}
         className="mt-3 text-ink-secondary text-[0.82rem] hover:text-ink-primary"
       >
-        {showLocal ? '▾' : '▸'} Or run a copy you have downloaded
+        {showLocal ? '▾' : '▸'} {mac ? 'Or read it before you run it' : 'Or run a copy you have downloaded'}
       </button>
 
       {showLocal && (
         <div className="mt-2">
-          <Typography variant="p" className="mb-2 max-w-[52ch] text-ink-inactive text-[0.82rem]">
-            Same agent, read first. The command assumes your Downloads folder. Autostart needs this route:
-            a piped command leaves no file for the launcher to point at.
-          </Typography>
-          <div className="flex items-center gap-2 rounded-md border-stroke border bg-surface-card2 p-1.5">
-            <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-1 font-mono text-[0.78rem]">
-              {localFileCommand(console_.port)}
-            </code>
-            <Button variant="ghost" size="sm" onClick={() => copy(localFileCommand(console_.port))}>
-              Copy
-            </Button>
-          </div>
-          <Button
-            variant="tertiary"
-            size="sm"
-            className="mt-2"
-            leftSlot={<Download className="size-4" />}
-            asChild
-          >
-            <a href="/agent/mouseflow-agent.ps1" download="mouseflow-agent.ps1">
-              Download the agent
-            </a>
-          </Button>
+          {mac ? (
+            <>
+              <Typography variant="p" className="mb-2 max-w-[54ch] text-ink-inactive text-[0.82rem]">
+                Both files, unchanged — the installer and the agent it compiles. Piping a script into a shell
+                is worth reading first.
+              </Typography>
+              <div className="flex flex-wrap gap-2">
+                <DownloadLink href="/agent/install-mac.sh" name="install-mac.sh">
+                  install-mac.sh
+                </DownloadLink>
+                <DownloadLink href="/agent/mouseflow-agent.swift" name="mouseflow-agent.swift">
+                  mouseflow-agent.swift
+                </DownloadLink>
+              </div>
+            </>
+          ) : (
+            <>
+              <Typography variant="p" className="mb-2 max-w-[52ch] text-ink-inactive text-[0.82rem]">
+                Same agent, read first. The command assumes your Downloads folder. Autostart needs this
+                route: a piped command leaves no file for the launcher to point at.
+              </Typography>
+              <Command text={localFileCommand(console_.port)} onCopy={copy} />
+              <div className="mt-2">
+                <DownloadLink href="/agent/mouseflow-agent.ps1" name="mouseflow-agent.ps1">
+                  Download the agent
+                </DownloadLink>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      <Row label="First time here?" note="The full walkthrough, with the browser permission it needs and how to keep it running after you log in.">
+      <Row
+        label="First time here?"
+        note={mac
+          ? 'The full walkthrough: opening Terminal, the compiler Apple ships, both permissions one at a time, and how to keep it running after you log in.'
+          : 'The full walkthrough, with the browser permission it needs and how to keep it running after you log in.'}
+      >
         <Button
           variant="ghost"
           size="sm"

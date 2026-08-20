@@ -11,7 +11,7 @@
  *     account and in reach of the other half.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Square } from 'lucide-react';
+import { Play, Square } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
@@ -164,7 +164,40 @@ const RecorderCard = ({ live, screen, elapsedMs, events, windows, onToggle, foot
 }) => (
   <section className="rounded-xl border-stroke border bg-surface-card p-4">
     <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
-      {/* A fixed box, so the button inside it can change size and the row cannot. */}
+      <div className="min-w-0 flex-1">
+        <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+          Recorder
+        </Typography>
+        <div className="mt-0.5 flex items-center gap-2">
+          <span
+            className={cn(
+              'size-2 shrink-0 rounded-full',
+              live ? 'animate-pulse bg-fb-red' : 'bg-ink-inactive/60',
+            )}
+          />
+          <Typography variant="span" weight="semibold" className="text-[1.15rem]">
+            {live ? 'Recording' : 'Ready to record'}
+          </Typography>
+        </div>
+        {/* Measured, not decorative. The reference this follows shows "System audio"; there is no audio in
+          * this product, and a status line that names something it does not do is worse than a shorter one. */}
+        <Typography variant="p" className="mt-1 font-mono text-[0.78rem] text-ink-inactive tabular-nums">
+          {clock(elapsedMs)}
+          {screen ? ` · ${screen.w}×${screen.h}` : ''}
+          {live
+            ? ` · ${events} events · ${windows} window${windows === 1 ? '' : 's'}`
+            : ' · mouse and keystroke timing, no text'}
+        </Typography>
+      </div>
+
+      <LiveSignal live={live} count={events} />
+
+      {/* Last in the row, and a fixed box either way.
+        *
+        * Fixed because the button inside grows when recording starts, and a row that resizes with it is the
+        * jumping card this component was written to stop. Last because the control belongs at the edge the
+        * hand reaches for - the reading order is what happened, then how much of it, then the thing that
+        * changes it. */}
       <div className="relative grid size-32 shrink-0 place-items-center">
         {live && [0, 1, 2].map((i) => (
           <span
@@ -201,40 +234,16 @@ const RecorderCard = ({ live, screen, elapsedMs, events, windows, onToggle, foot
               : 'size-14 bg-brand-primary hover:bg-brand-primary/90',
           )}
         >
+          {/* A shape in the middle of each state, saying what pressing it will DO.
+            *
+            * A dot said nothing - it was the same mark the status light uses, in the middle of a control.
+            * A triangle and a square are the two shapes every player anybody has ever used agrees on, so
+            * they need no label and survive every language. */}
           {live
-            // A square, which is what a stop control is everywhere else a person has ever used one.
             ? <Square className="size-7 fill-current text-white" />
-            : <span className="size-5 rounded-full bg-white/95" />}
+            : <Play className="size-7 fill-current text-white ps-1" />}
         </button>
       </div>
-
-      <div className="min-w-0 flex-1">
-        <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
-          Recorder
-        </Typography>
-        <div className="mt-0.5 flex items-center gap-2">
-          <span
-            className={cn(
-              'size-2 shrink-0 rounded-full',
-              live ? 'animate-pulse bg-fb-red' : 'bg-ink-inactive/60',
-            )}
-          />
-          <Typography variant="span" weight="semibold" className="text-[1.15rem]">
-            {live ? 'Recording' : 'Ready to record'}
-          </Typography>
-        </div>
-        {/* Measured, not decorative. The reference this follows shows "System audio"; there is no audio in
-          * this product, and a status line that names something it does not do is worse than a shorter one. */}
-        <Typography variant="p" className="mt-1 font-mono text-[0.78rem] text-ink-inactive tabular-nums">
-          {clock(elapsedMs)}
-          {screen ? ` · ${screen.w}×${screen.h}` : ''}
-          {live
-            ? ` · ${events} events · ${windows} window${windows === 1 ? '' : 's'}`
-            : ' · mouse and keystroke timing, no text'}
-        </Typography>
-      </div>
-
-      <LiveSignal live={live} count={events} />
     </div>
 
     {/* Always here, whatever state the card is in. This is the whole reason the card stops changing height:
