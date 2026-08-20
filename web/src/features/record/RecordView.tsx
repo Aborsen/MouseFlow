@@ -11,10 +11,10 @@
  *     account and in reach of the other half.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Circle, Square } from 'lucide-react';
+import { Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
+import { cn } from '@insightis/ui/cn';
 import {
   doAction,
   recordStart,
@@ -84,10 +84,115 @@ function flowFor(rec: Recording, health: AgentStatus['health']) {
   };
 }
 
+/* mm:ss, for the readout beside the disc.
+ *
+ * fmtMs() is the right thing everywhere else - it says "1.4s" and "2m 12s", which is how a DURATION reads in
+ * prose - and it is the wrong thing for a clock: idle, it printed "0ms", which is a stopwatch reporting its
+ * own precision instead of showing zero. A clock counts. */
+const clock = (ms: number) => {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+
+/* Sixteen bars, driven by the event count rather than by a clock.
+ *
+ * The reference this follows shows an audio waveform; there is no audio in this product, and bars that moved
+ * because time passed would be a meter measuring nothing. These are the one thing the recorder knows while it
+ * runs - how many events have arrived - so they move when input moves and stand still when it stops. A still
+ * meter over a running clock means the recorder is seeing nothing, which is a thing worth noticing.
+ *
+ * The shape is a deterministic function of the count, not random: the same count draws the same bars, so the
+ * movement is the data changing rather than an animation running.
+ */
+const BARS = 16;
+
+const LiveSignal = ({ live, count }: { live: boolean; count: number }) => (
+  <div className="flex h-12 shrink-0 items-end gap-[3px]" aria-hidden>
+    {Array.from({ length: BARS }, (_, i) => {
+      /* Idle: a flat, dim floor. Live: a height that depends on both the bar and the count, so the pattern
+       * travels as events arrive. Sine rather than random so it is smooth and repeatable. */
+      const height = live
+        ? 22 + Math.abs(Math.sin((count / 7) + i * 0.7)) * 78
+        : 14 + Math.abs(Math.sin(i * 0.9)) * 10;
+      return (
+        <span
+          key={i}
+          className={cn(
+            'w-[5px] rounded-full transition-[height] duration-300 ease-out',
+            live ? 'bg-brand-primary' : 'bg-stroke',
+          )}
+          style={{ height: `${height}%` }}
+        />
+      );
+    })}
+  </div>
+);
+
+/* The record control: a ring, a disc, and three waves that only move while capture is running.
+ *
+ * `animate-ping` is Tailwind's own keyframe - scale and fade - and three of them at staggered delays read as
+ * ripples coming off the button rather than as one pulse. Rendered only while live, so the DOM says what the
+ * screen says: a still control is a still recorder.
+ *
+ * prefers-reduced-motion is honoured by motion-reduce:hidden on the waves rather than by dropping the state
+ * entirely - the ring stays coloured and the timer still runs, so somebody who has asked for less movement
+ * still knows it is recording.
+ */
+const RecordDisc = ({ live, onClick, busy }: {
+  live: boolean;
+  busy: boolean;
+  onClick: () => void;
+}) => (
+  <div className="relative grid size-[104px] shrink-0 place-items-center">
+    {live && [0, 1, 2].map((i) => (
+      <span
+        key={i}
+        aria-hidden
+        className="absolute size-full animate-ping rounded-full border-fb-red/45 border-2 motion-reduce:hidden"
+        // Staggered, so they read as waves leaving the button rather than one thing breathing.
+        style={{ animationDelay: `${i * 0.6}s`, animationDuration: '1.8s' }}
+      />
+    ))}
+    <span
+      aria-hidden
+      className={cn(
+        'absolute size-full rounded-full border-2 transition-colors duration-base',
+        live ? 'border-fb-red/60' : 'border-stroke',
+      )}
+    />
+    <span
+      aria-hidden
+      className={cn(
+        'absolute size-[76px] rounded-full border transition-colors duration-base',
+        live ? 'border-fb-red/35' : 'border-stroke/60',
+      )}
+    />
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      aria-label={live ? 'Stop and save this recording' : 'Start recording'}
+      className={cn(
+        'relative grid size-14 place-items-center rounded-full transition-all duration-base',
+        'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-primary',
+        'disabled:opacity-disabled',
+        live
+          ? 'bg-fb-red shadow-[0_0_0_6px_rgba(239,68,68,0.14)] hover:bg-fb-red/90'
+          : 'bg-brand-primary hover:bg-brand-primary/90',
+      )}
+    >
+      {live
+        // A square, which is what a stop control is everywhere else a person has ever used one.
+        ? <Square className="size-5 fill-current text-white" />
+        : <span className="size-5 rounded-full bg-white/95" />}
+    </button>
+  </div>
+);
+
 export const RecordView = () => {
   const [state, update] = useConsole();
   const { health } = useAgent();
-  const { reload } = useAccount();
+  const { reload, flows } = useAccount();
   const navigate = useNavigate();
 
   const [live, setLive] = useState<{ count: number; elapsedMs: number } | null>(null);
@@ -380,57 +485,47 @@ export const RecordView = () => {
      * actions, and squeezing that into a 1fr column beside the recorder is what made it wrap to three lines
      * and push the page sideways. The recorder is small; it goes above. */
     <div className="flex flex-col gap-4 p-5">
-      {/* Full width, like the recordings table under it. Which means the buttons inside can no longer be
-        * `fullWidth` - a 1600px "Start recording" is not a button, it is a banner - so the room is used
-        * rather than stretched into: the control on one side, what it does on the other. */}
+      {/* Full width, like the recordings table under it - and laid out around the control rather than
+        * stretched: the disc on the left, what it is doing beside it, what it has captured on the right. */}
       <section className="rounded-xl border-stroke border bg-surface-card p-4">
-        <Typography variant="h2" weight="semibold" className="mb-3 text-[0.95rem] uppercase tracking-wide text-ink-secondary">
-          Record
-        </Typography>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
+          <RecordDisc live={recording} busy={false} onClick={() => { if (recording) void end(); else void begin(); }} />
 
-        {recording ? (
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
-            <div className="flex items-center gap-2">
-              <span className="size-2.5 animate-pulse rounded-full bg-fb-red" />
-              <Typography variant="span" weight="semibold">Recording</Typography>
-              <span className="ms-2 font-mono text-ink-secondary text-sm tabular-nums">
-                {fmtMs(live?.elapsedMs ?? 0)}
-              </span>
+          <div className="min-w-0 flex-1">
+            <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+              Recorder
+            </Typography>
+            <div className="mt-0.5 flex items-center gap-2">
+              <span
+                className={cn(
+                  'size-2 shrink-0 rounded-full',
+                  recording ? 'animate-pulse bg-fb-red' : 'bg-ink-inactive/60',
+                )}
+              />
+              <Typography variant="span" weight="semibold" className="text-[1.05rem]">
+                {recording ? 'Recording' : 'Ready to record'}
+              </Typography>
             </div>
-            {/* Beside the timer rather than stacked under it: at this width a two-column grid of counters
-              * stretched each one into a panel, and they are two numbers. */}
-            <div className="flex flex-wrap gap-2">
-              {[
-                { value: live?.count ?? 0, label: 'events' },
-                { value: seenWindows.current.length, label: 'windows' },
-              ].map(({ value, label }) => (
-                <div key={label} className="min-w-[5.5rem] rounded-md border-stroke border bg-surface-chips px-2.5 py-1.5 text-center">
-                  <strong className="block tabular-nums">{value}</strong>
-                  <span className="text-[0.75rem] text-ink-secondary">{label}</span>
-                </div>
-              ))}
-            </div>
-            <Button
-              variant="destructive"
-              className="w-full sm:ms-auto sm:w-[16rem]"
-              leftSlot={<Square className="size-4" />}
-              onClick={end}
-            >
-              Stop and save
-            </Button>
+            {/* Measured, not decorative. The reference this follows shows "System audio"; there is no audio
+              * in this product, and a status line that names something it does not do is worse than a
+              * shorter one. */}
+            <Typography variant="p" className="mt-1 font-mono text-[0.78rem] text-ink-inactive tabular-nums">
+              {clock(live?.elapsedMs ?? 0)}
+              {health?.screen ? ` · ${health.screen.w}×${health.screen.h}` : ''}
+              {recording ? ` · ${live?.count ?? 0} events · ${seenWindows.current.length} window${seenWindows.current.length === 1 ? '' : 's'}` : ' · mouse and keystroke timing, no text'}
+            </Typography>
           </div>
-        ) : (
-          <div className="flex flex-wrap items-start gap-x-5 gap-y-3">
-            <Button
-              className="w-full sm:w-[20rem]"
-              leftSlot={<Circle className="size-3.5 fill-current" />}
-              onClick={begin}
-            >
-              Start recording
-            </Button>
-            <div className="min-w-0 flex-1">
-            <Typography variant="p" className="max-w-[80ch] text-ink-inactive text-[0.85rem]">
-              Everything you click, drag and scroll gets captured until you press Stop.
+
+          {/* The bars. Live, and honestly so - see LiveSignal. */}
+          <LiveSignal live={recording} count={live?.count ?? 0} />
+        </div>
+
+        {/* Only while idle. Mid-recording these describe a decision already made, and the meta line above
+          * is the thing worth reading. */}
+        {!recording && (
+          <div className="mt-3 border-stroke/60 border-t pt-3">
+            <Typography variant="p" className="max-w-[86ch] text-ink-inactive text-[0.85rem]">
+              Everything you click, drag and scroll gets captured until you press stop.
               {' '}
               {health?.canName
                 ? 'Each click also records which application and window it landed in, and the name of what '
@@ -444,7 +539,7 @@ export const RecordView = () => {
               * without the resolver records perfectly good coordinates and nothing that says what they
               * were aimed at, and nine seconds of work is cheap to redo while nine minutes is not. */}
             {health && health.canName !== true && (
-              <Typography variant="p" className="mt-2 max-w-[80ch] text-fb-attention text-[0.8rem]">
+              <Typography variant="p" className="mt-2 max-w-[86ch] text-fb-attention text-[0.8rem]">
                 This agent does not read what you click on, so this recording will be coordinates only -
                 no application, no window, no control names, and no typing. Restart it with the command
                 behind the agent chip in the header first; it takes a few seconds.
@@ -455,12 +550,11 @@ export const RecordView = () => {
               * keyboard hook. Everything else records; only the typing does not, and a transcript that
               * said "nothing was typed" would then be wrong rather than empty. */}
             {health?.canName === true && health.canKeys === false && (
-              <Typography variant="p" className="mt-2 max-w-[80ch] text-fb-attention text-[0.8rem]">
+              <Typography variant="p" className="mt-2 max-w-[86ch] text-fb-attention text-[0.8rem]">
                 This agent could not install its keyboard hook, so time spent typing will be missing from
                 the transcript - it will look like a pause. Everything else records normally.
               </Typography>
             )}
-            </div>
           </div>
         )}
 
@@ -473,6 +567,10 @@ export const RecordView = () => {
 
       <RecordingsTable
         viewing={viewing}
+        /* Answered here because this is the half that can see the account. Save as skill writes a separate
+         * row under `dr_<id>`, so the question is whether that row exists - not whether the recording
+         * carries a flag, which it does not and should not: two objects, two lifetimes. */
+        hasSkill={(rec) => flows.some((flow) => flow.id === `dr_${rec.id}`)}
         onImport={(files) => { void importFiles(files); }}
         onSaveAsSkill={(rec) => { void keepAsSkill(rec); }}
         onView={(rec) => setViewing((open) => (open === rec.id ? null : rec.id))}

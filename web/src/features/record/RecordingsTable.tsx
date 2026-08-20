@@ -28,12 +28,15 @@ import {
   Save,
   Search,
   Trash2,
+  Check,
+  Ellipsis,
+  Sparkles,
   Upload,
   X,
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { exportMacro, fmtMs, summarize } from '@/lib/macro';
-import { type Recording, useConsole } from '@/lib/store';
+import { type RecordedEvent, type Recording, useConsole } from '@/lib/store';
 
 /* How many rows before Load more. Ten is theirs, and it is about the point where a list stops being
  * scannable rather than a number with a reason behind it. */
@@ -48,9 +51,59 @@ const SPEEDS = [0.5, 1, 1.5, 2, 4];
  * exactly the same width: `auto` sizes to content, the header's word ACTIONS is narrow, four buttons are not,
  * so the 1fr name column absorbed a different amount of space in each. A shared template only shares if every
  * track but one is fixed. */
-const COLUMNS = 'grid-cols-[1.25rem_minmax(11rem,1fr)_5.5rem_4.5rem_3rem_5.5rem_26rem]';
+const COLUMNS = 'grid-cols-[1.25rem_minmax(11rem,1fr)_7rem_6.5rem_7rem_16.5rem]';
+
+/* Bars per recording, derived rather than drawn.
+ *
+ * The recording's own span, split into sixteen buckets, with each bar's height from the events that fell in
+ * it. Which makes the column worth its width: a recording that was one long pause looks like one, a dense
+ * one looks dense, and the shape is the same every time it is drawn because it is a function of the data.
+ *
+ * The floor is 8% rather than 0 so an empty bucket is a visible gap rather than a missing bar - "nothing
+ * happened here" and "there is no bar here" should not look the same. */
+const SIGNAL_BARS = 16;
+
+const Signal = ({ events }: { events: RecordedEvent[] }) => {
+  const buckets = useMemo(() => {
+    const out = new Array(SIGNAL_BARS).fill(0);
+    if (!events.length) return out;
+    /* Cumulative delay is the clock: every event carries the gap BEFORE it, so the position of an event in
+     * time is the sum of the delays up to it. The same arithmetic api/_transcript.js does. */
+    let at = 0;
+    const stamps = events.map((e) => {
+      at += Math.max(0, Number(e.delayMs) || 0);
+      return at;
+    });
+    const span = stamps[stamps.length - 1] || 1;
+    for (const stamp of stamps) {
+      const slot = Math.min(SIGNAL_BARS - 1, Math.floor((stamp / span) * SIGNAL_BARS));
+      out[slot] += 1;
+    }
+    return out;
+  }, [events]);
+
+  const peak = Math.max(1, ...buckets);
+  return (
+    <div
+      className="flex h-6 items-end gap-[2px]"
+      title={`When the ${events.length} events happened, across the length of the recording`}
+    >
+      {buckets.map((n, i) => (
+        <span
+          key={i}
+          className={cn('w-[3px] rounded-full', n > 0 ? 'bg-brand-primary/80' : 'bg-stroke')}
+          style={{ height: `${8 + (n / peak) * 92}%` }}
+        />
+      ))}
+    </div>
+  );
+};
 
 export interface RecordingsTableProps {
+  /** Whether a skill has been made from this recording. Answered by the caller, which is the half that can
+   * see the account - the skill is a separate row, not a flag on the recording. Absent means "cannot tell",
+   * which reads as Ready rather than as no. */
+  hasSkill?: (rec: Recording) => boolean;
   /** Save as skill lives on the page, because it also has to report what happened. */
   onSaveAsSkill: (rec: Recording) => void;
   /** View opens the transcript panel; the page owns that so only one is open at a time. */
@@ -81,6 +134,7 @@ export const RecordingsTable = ({
   onPlay,
   onImport,
   viewing,
+  hasSkill,
 }: RecordingsTableProps) => {
   const [state, update] = useConsole();
   const [term, setTerm] = useState('');
@@ -89,6 +143,9 @@ export const RecordingsTable = ({
   /* Delete arms in the button rather than in a confirm() - the same pattern MyAccountScreen uses, and for the
    * same reason: a dialog is easy to click through and a second one is easy to lose behind the first. */
   const [armed, setArmed] = useState<string | null>(null);
+  /* Which row has its replay controls open. One at a time: two open panels push the list twice and the
+   * second one is never the one being looked at. */
+  const [openRow, setOpenRow] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const rows = useMemo(() => {
@@ -256,7 +313,7 @@ export const RecordingsTable = ({
                window cannot hold it, this scrolls rather than the page. A page that slides sideways is the
                worse of the two. */
             <div className="overflow-x-auto pb-1">
-              <div className="min-w-[64rem]">
+              <div className="min-w-[52rem]">
               {/* The labels the controls were missing. Same template as the rows, so they line up rather than
                   approximately line up. */}
               <div
@@ -268,10 +325,9 @@ export const RecordingsTable = ({
               >
                 <span />
                 <span>Recording</span>
-                <span title="How many times this recording repeats">Repeat</span>
-                <span title="The recorded delays are divided by this">Speed</span>
-                <span title="Keep repeating until you stop it">Loop</span>
-                <span>Recorded</span>
+                <span title="When the events happened, across the length of the recording">Signal</span>
+                <span>Captured</span>
+                <span title="Whether a skill has been made from this recording">Status</span>
                 <span className="text-right">Actions</span>
               </div>
 
@@ -332,41 +388,29 @@ export const RecordingsTable = ({
                         </span>
                       </span>
 
-                      {/* The three questions a replay asks, one per column so the header can name them. */}
-                      <span className="flex items-center gap-1 text-[0.76rem] text-ink-secondary">
-                        <Repeat className="size-3.5 shrink-0" />
-                        <input
-                          type="number"
-                          min={1}
-                          max={999}
-                          value={replay.repeat}
-                          aria-label="Repeat"
-                          onChange={(ev) => setReplay(rec.id, { repeat: Math.max(1, Number(ev.target.value) || 1) })}
-                          className="w-12 rounded border-stroke border bg-surface-card2 px-1 py-0.5 text-ink-primary tabular-nums focus:border-input-focus focus:outline-none"
-                        />
-                      </span>
-
-                      <select
-                        value={replay.speed}
-                        aria-label="Speed"
-                        onChange={(ev) => setReplay(rec.id, { speed: Number(ev.target.value) || 1 })}
-                        className="w-full rounded border-stroke border bg-surface-card2 px-1 py-0.5 text-[0.76rem] text-ink-primary focus:border-input-focus focus:outline-none"
-                      >
-                        {SPEEDS.map((speed) => (
-                          <option key={speed} value={speed}>{speed}×</option>
-                        ))}
-                      </select>
-
-                      <span className="flex items-center">
-                        <Checkbox
-                          checked={replay.loop}
-                          aria-label="Loop"
-                          onCheckedChange={(next) => setReplay(rec.id, { loop: next === true })}
-                        />
-                      </span>
+                      {/* Derived from this recording's own events - see Signal. */}
+                      <span className="flex items-center"><Signal events={rec.events} /></span>
 
                       <span className="text-[0.76rem] text-ink-secondary tabular-nums">
                         {new Date(rec.created).toLocaleDateString()}
+                      </span>
+
+                      {/* Read from the account rather than from a flag here: Save as skill writes a separate
+                          row, so this asks whether that row exists. "Ready" when it cannot see one, which is
+                          also what a skill created from the transcript panel shows - that mints its own id,
+                          and under-reporting is a smaller error than claiming a skill that may not be there. */}
+                      <span>
+                        {hasSkill?.(rec) ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-brand-tertiary/15 px-2 py-0.5 text-[0.72rem] font-semibold text-brand-tertiary">
+                            <Sparkles className="size-3" />
+                            Skill saved
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-fb-green/12 px-2 py-0.5 text-[0.72rem] font-semibold text-fb-green">
+                            <Check className="size-3" />
+                            Ready
+                          </span>
+                        )}
                       </span>
 
                       {/* Visible rather than revealed on hover: these were asked for as labels, and nobody
@@ -394,14 +438,75 @@ export const RecordingsTable = ({
                           View
                         </Button>
                         <Button variant="ghost" size="sm" leftSlot={<Save className="size-4" />} onClick={() => onSaveAsSkill(rec)}>
-                          Save as skill
+                          Skill
                         </Button>
                         <Button variant="ghost" size="sm" leftSlot={<Download className="size-4" />} onClick={() => exportOne(rec)}>
                           Export
                         </Button>
+                        {/* Everything that is not reached for while scanning: the three replay knobs, and
+                            Delete - which belongs behind one deliberate click rather than beside Export. */}
+                        <Button
+                          variant={openRow === rec.id ? 'secondary' : 'ghost'}
+                          size="sm"
+                          aria-label={`More for ${rec.name}`}
+                          aria-expanded={openRow === rec.id}
+                          title="Repeat, speed, loop and delete"
+                          className="!size-8 !p-0"
+                          onClick={() => setOpenRow((open) => (open === rec.id ? null : rec.id))}
+                        >
+                          <Ellipsis className="size-4" />
+                        </Button>
+                      </span>
+                    </div>
+
+                    {/* Under the row, not over it. A popover needs positioning, a click-outside, a focus trap
+                        and a scroll listener to stay where it was put; this needs none of them and cannot end
+                        up half off the screen. The list moving when one opens is honest - something opened. */}
+                    {openRow === rec.id && (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2.5">
+                        <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
+                          <Repeat className="size-3.5 shrink-0" />
+                          Repeat
+                          <input
+                            type="number"
+                            min={1}
+                            max={999}
+                            value={replay.repeat}
+                            aria-label="Repeat"
+                            onChange={(ev) => setReplay(rec.id, { repeat: Math.max(1, Number(ev.target.value) || 1) })}
+                            className="w-14 rounded border-stroke border bg-surface-card px-1.5 py-0.5 text-ink-primary tabular-nums focus:border-input-focus focus:outline-none"
+                          />
+                        </label>
+
+                        <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
+                          Speed
+                          <select
+                            value={replay.speed}
+                            aria-label="Speed"
+                            onChange={(ev) => setReplay(rec.id, { speed: Number(ev.target.value) || 1 })}
+                            className="rounded border-stroke border bg-surface-card px-1.5 py-0.5 text-ink-primary focus:border-input-focus focus:outline-none"
+                          >
+                            {SPEEDS.map((speed) => (
+                              <option key={speed} value={speed}>{speed}×</option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
+                          <Checkbox
+                            checked={replay.loop}
+                            aria-label="Loop"
+                            onCheckedChange={(next) => setReplay(rec.id, { loop: next === true })}
+                          />
+                          Loop until stopped
+                        </label>
+
+                        {/* Behind one deliberate click, and armed in the button rather than a confirm() -
+                            the pattern the rest of the app settled on. */}
                         <Button
                           variant={armed === rec.id ? 'destructive' : 'destructiveTertiary'}
                           size="sm"
+                          className="ms-auto"
                           leftSlot={<Trash2 className="size-4" />}
                           onClick={() => {
                             if (armed !== rec.id) { setArmed(rec.id); return; }
@@ -410,8 +515,8 @@ export const RecordingsTable = ({
                         >
                           {armed === rec.id ? 'Delete — press again' : 'Delete'}
                         </Button>
-                      </span>
-                    </div>
+                      </div>
+                    )}
                   </li>
                 );
                 })}
