@@ -1955,6 +1955,16 @@ enum Autostart {
 
     static var enabled: Bool { FileManager.default.fileExists(atPath: plistPath) }
 
+    /* Somewhere for the startup banner to go.
+     *
+     * Under launchd the agent's own output goes nowhere, and that banner is the one thing worth reading when
+     * it will not work: it says whether the event tap installed and whether this process is even the kind
+     * that can be granted anything. */
+    static var logPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/mouseflow-agent.log").path
+    }
+
     static var binary: String {
         let raw = CommandLine.arguments.first ?? ""
         if raw.hasPrefix("/") { return raw }
@@ -1975,7 +1985,10 @@ enum Autostart {
             <string>--allow-origin</string><string>\(allowOrigin)</string>
           </array>
           <key>RunAtLoad</key><true/>
-          <key>KeepAlive</key><false/>
+          <key>KeepAlive</key><true/>
+          <key>ProcessType</key><string>Interactive</string>
+          <key>StandardOutPath</key><string>\(logPath)</string>
+          <key>StandardErrorPath</key><string>\(logPath)</string>
         </dict>
         </plist>
         """
@@ -1987,7 +2000,11 @@ enum Autostart {
             return "the launch agent could not be written: \(error.localizedDescription)"
         }
         /* Loaded now as well as written, so "it will start when you log in" is not the only thing that
-         * became true - the same command run twice is not an error for launchctl. */
+         * became true - the same command run twice is not an error for launchctl.
+         *
+         * The same content the installer writes, deliberately: both write ONE file under one label, and
+         * writing different things there means pressing "Enable autostart" quietly downgrades what the
+         * installer set up - no KeepAlive, and nowhere for the banner to go. */
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         task.arguments = ["load", "-w", plistPath]
