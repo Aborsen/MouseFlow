@@ -12,6 +12,10 @@ import type { Connect } from 'vite';
 const now = Date.now();
 const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString();
 
+/* Whether the fixture has been signed out. Module scope, so it survives between requests in one dev
+ * session and resets when the server restarts - which is what a session cookie does. */
+let signedOut = false;
+
 const ACCOUNT = { id: 'u_dev', name: 'Vic Gorlenko', email: 'vic@example.dev', image: null };
 
 const FLOWS = [
@@ -106,8 +110,22 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
   const method = (req.method ?? 'GET').toUpperCase();
   if (!url.startsWith('/api/')) return next();
 
-  if (url.startsWith('/api/auth/get-session')) return json(res, 200, { user: ACCOUNT });
-  if (url.startsWith('/api/auth/sign-out')) return json(res, 200, { ok: true });
+  /* Signed in until told otherwise. The real endpoint clears a session cookie and the next get-session
+   * answers null; this is the same claim at the level a fixture can make it, and it matters because
+   * AccountProvider.leave() now reads the session back rather than trusting the 200 - against a mock that
+   * kept answering with a user, a working log-out reported itself as broken. */
+  if (url.startsWith('/api/auth/get-session')) {
+    return json(res, 200, { user: signedOut ? null : ACCOUNT });
+  }
+  if (url.startsWith('/api/auth/sign-out')) {
+    signedOut = true;
+    return json(res, 200, { success: true });
+  }
+  // So the wall can be gone through again without restarting the dev server.
+  if (url.startsWith('/api/auth/sign-in')) {
+    signedOut = false;
+    return json(res, 200, { url: '/?auth=ok' });
+  }
 
   if (url.startsWith('/api/sync?tokens=1')) {
     return json(res, 200, {

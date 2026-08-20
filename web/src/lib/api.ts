@@ -146,12 +146,18 @@ export async function signInWithGoogle(returnTo: string): Promise<string> {
   return body.url;
 }
 
+/* Throws, like everything else here.
+ *
+ * It used to end in `.catch(() => ({}))`, and that one clause is why a broken sign-out looked like a working
+ * one for as long as it did: the endpoint was answering 403 INVALID_ORIGIN, the error went in the bin, the
+ * caller redirected, and the app came back still signed in. A sign-out that cannot report failure cannot be
+ * debugged from the outside - there is nothing to see. */
 export const signOut = () =>
-  call<{ ok?: boolean }>('/api/auth/sign-out', {
+  call<{ success?: boolean }>('/api/auth/sign-out', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{}',
-  }).catch(() => ({}));
+  });
 
 export const pull = () => call<{ ok: true; flows: Flow[]; runs: Run[]; you: Account }>('/api/sync');
 

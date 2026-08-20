@@ -17,6 +17,8 @@ interface AccountValue {
   runs: Run[];
   reload: () => Promise<void>;
   leave: () => Promise<void>;
+  /** Why the last log-out did not happen, if it did not. Null while nothing has gone wrong. */
+  leaveProblem: string | null;
 }
 
 const AccountContext = createContext<AccountValue | null>(null);
@@ -72,14 +74,41 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     })();
   }, [reload]);
 
+  const [leaving, setLeaving] = useState<string | null>(null);
+
+  /* Log out, and CHECK.
+   *
+   * Both halves of this were missing and both mattered. signOut() swallowed every error, so a 403 from the
+   * auth service was indistinguishable from success; and nothing read the session back afterwards, so even
+   * an honest 200 was taken on trust. A sign-out response can succeed and still leave the browser signed in
+   * - it clears cookies by name, path and partition, and any of those can fail to match the one that is
+   * actually held. The only proof is asking who is signed in, after.
+   *
+   * The redirect only happens once that answer is nobody. Otherwise the message stays on screen next to the
+   * button, which is the difference between a bug somebody can report and one that looks like nothing
+   * happening. */
   const leave = useCallback(async () => {
-    await signOut();
+    setLeaving(null);
+    try {
+      await signOut();
+    } catch (err) {
+      setLeaving((err instanceof Error ? err.message : 'the sign-out request failed')
+        + ' \u2014 you are still signed in.');
+      return;
+    }
+
+    const still = await whoAmI();
+    if (still) {
+      setLeaving('The sign-out was accepted but the session is still here, so you are still signed in. '
+        + 'Closing the browser will end it; the session cookie is the thing that did not clear.');
+      return;
+    }
     location.href = location.origin + '/';
   }, []);
 
   const value = useMemo(
-    () => ({ account, flows, runs, reload, leave }),
-    [account, flows, runs, reload, leave],
+    () => ({ account, flows, runs, reload, leave, leaveProblem: leaving }),
+    [account, flows, runs, reload, leave, leaving],
   );
 
   // Nothing renders while the answer is unknown: a flash of the app before the wall is worse than a pause.

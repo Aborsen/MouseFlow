@@ -134,7 +134,19 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
                 kind: 'good',
               });
               setTimeout(async () => {
-                await signOut();
+                /* The data is already gone, so the page has to leave whatever the sign-out says. Caught
+                 * rather than ignored: signOut() throws now, and an unhandled rejection in here would skip
+                 * the redirect and leave somebody looking at an emptied account. */
+                try {
+                  await signOut();
+                } catch (err) {
+                  say({
+                    text: `Your data was deleted, but signing out failed: ${
+                      err instanceof Error ? err.message : 'unknown error'
+                    }. Leaving anyway.`,
+                    kind: 'bad',
+                  });
+                }
                 location.href = location.origin + '/';
               }, 1200);
             } catch (err) {

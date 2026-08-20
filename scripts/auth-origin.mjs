@@ -14,6 +14,13 @@
  *   node scripts/auth-origin.mjs --remove https://…    stop trusting it
  *
  * Additive and idempotent: adding an origin twice changes nothing.
+ *
+ * THE SHAPE. The column holds objects - [{ "domain": "https://example.com" }] - which is what the Neon
+ * Console writes and what Neon reads. This file used to assume an array of strings, and every consequence of
+ * that was a failure that reported success: the listing printed "[object Object]", an add compared a string
+ * against an object and always "added" a bare string that Neon then ignored, and a remove filtered on a
+ * comparison no object satisfies. A malformed entry therefore sat in there unseen and unfixable. Read and
+ * written as objects now, and a string is still accepted on read so an older row does not become unreadable.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +39,25 @@ function connectionString() {
     // fall through
   }
   throw new Error('No DATABASE_URL. Run `vercel env pull .env.local` first.');
+}
+
+/* One entry, whatever shape it is stored in. Objects are what Neon writes; a bare string is accepted
+ * because this script used to write them, and a row it wrote must not be unreadable now. */
+const domainOf = (entry) => {
+  if (typeof entry === 'string') return entry;
+  if (entry && typeof entry === 'object' && typeof entry.domain === 'string') return entry.domain;
+  return null;
+};
+
+/* Exactly an origin, or not trusted at all. Better Auth compares the request's Origin header by string, so
+ * "https://example.com/" matches nothing - that one trailing slash is the whole difference between sign-out
+ * working and answering INVALID_ORIGIN, and it is invisible in a console text field. */
+function looksExact(value) {
+  try {
+    return new URL(value).origin === value;
+  } catch (_) {
+    return false;
+  }
 }
 
 // An origin is scheme + host + optional port, and nothing else. A path here would silently never
@@ -73,7 +99,19 @@ async function main() {
     console.log('providers      ' +
       (config.social_providers || []).map((p) => p.id + (p.isShared ? ' (shared keys)' : '')).join(', '));
     console.log('localhost      ' + (config.allow_localhost ? 'allowed' : 'not allowed'));
-    console.log('trusted        ' + (current.length ? current.join('\n               ') : '(nothing)'));
+    const lines = current.map((entry) => {
+      const domain = domainOf(entry);
+      if (domain == null) return JSON.stringify(entry) + '   <- not a domain at all; matches nothing';
+      /* Flagged rather than tidied. Better Auth string-compares the Origin header, so this entry is trusted
+       * for nothing - and the whole reason this listing exists is to make that visible. */
+      if (!looksExact(domain)) {
+        return domain + '   <- NOT an exact origin, so it is trusted for nothing. Add '
+          + (() => { try { return new URL(domain).origin; } catch (_) { return 'a valid origin'; } })()
+          + ' instead.';
+      }
+      return domain;
+    });
+    console.log('trusted        ' + (lines.length ? lines.join('\n               ') : '(nothing)'));
   };
 
   if (!target) {
@@ -84,12 +122,17 @@ async function main() {
   }
 
   const origin = normalise(target);
+  /* Compared on the domain, whichever shape the entry is in, and written as an object because that is what
+   * Neon reads. Comparing the whole entry is what made every add a no-op that reported success. */
+  const has = current.some((entry) => domainOf(entry) === origin);
   const next = removing
-    ? current.filter((o) => o !== origin)
-    : current.includes(origin) ? current : current.concat(origin);
+    ? current.filter((entry) => domainOf(entry) !== origin)
+    : has ? current : current.concat([{ domain: origin }]);
 
-  if (next.length === current.length && !removing) {
-    console.log(origin + ' is already trusted. Nothing to do.');
+  if (next.length === current.length) {
+    console.log(removing
+      ? origin + ' is not in the list. Nothing to do.'
+      : origin + ' is already trusted. Nothing to do.');
     await client.end();
     return;
   }

@@ -60,7 +60,7 @@ interface Props {
 }
 
 export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
-  const { leave } = useAccount();
+  const { leave, leaveProblem } = useAccount();
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
 
   // A message belongs to the screen it was said on; carrying it across reads as an error about the wrong thing.
@@ -140,6 +140,14 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
               <LogOut className={cn(GLYPH, 'text-fb-red-text')} />
               <span>Log out</span>
             </button>
+
+            {/* Beside the button that failed, because the alternative is what this replaced: a redirect that
+              * looked like it had worked, back to an app the person was still signed in to. */}
+            {leaveProblem && (
+              <Typography variant="p" className="mt-1.5 max-w-[22rem] break-words text-fb-red-text text-[0.78rem]">
+                {leaveProblem}
+              </Typography>
+            )}
           </aside>
 
           <div className={cn('flex min-w-0 flex-1 flex-col', BODY)}>
