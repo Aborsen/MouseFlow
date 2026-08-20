@@ -623,6 +623,37 @@ final class Recorder {
 enum Accessibility {
     private static let systemWide = AXUIElementCreateSystemWide()
 
+    /* Applications already asked to expose their full tree. Once each, for the life of the agent. */
+    private static var awakened = Set<pid_t>()
+    private static let awakenGate = NSLock()
+
+    /* Ask an application to build its accessibility tree.
+     *
+     * Chromium builds it LAZILY and only when it detects an assistive technology, so a click anywhere in a
+     * web page resolves to nothing at all: the window is there and everything inside it is invisible. That
+     * is not a subtlety, it is the difference between "clicked Delete" and "clicked on something Google
+     * Chrome did not name" - measured against the same browser on Windows, which names 146 clicks out of
+     * 151.
+     *
+     * `AXManualAccessibility` is the switch Chromium reads. `AXEnhancedUserInterface` is the older one that
+     * Electron applications and VS Code read. Both are set, because an agent cannot know which kind of
+     * application it is looking at and setting the wrong one costs nothing.
+     *
+     * Lazily and once per process: a full tree costs the application memory and time, and it should only be
+     * paid for where there would otherwise be nothing to read. */
+    private static func awaken(pid: pid_t) {
+        guard pid > 0 else { return }
+        awakenGate.lock()
+        let already = awakened.contains(pid)
+        if !already { awakened.insert(pid) }
+        awakenGate.unlock()
+        if already { return }
+
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+    }
+
     private static func copyAttr(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
         var value: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
@@ -751,6 +782,11 @@ enum Accessibility {
         guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element) == .success,
               let hit = element else { return nil }
 
+        /* Aiming by name needs names to exist. In a browser that has not been asked for its tree there are
+         * none, so every correction would silently decline - and the replay would look like it had checked. */
+        var pid: pid_t = 0
+        if AXUIElementGetPid(hit, &pid) == .success { awaken(pid: pid) }
+
         // Already on it: say so by returning nothing to change.
         if let now = nameOf(hit), sameName(now, name) { return nil }
 
@@ -778,15 +814,29 @@ enum Accessibility {
         let err = AXUIElementCopyElementAtPosition(systemWide, Float(job.x), Float(job.y), &element)
         guard err == .success, let hit = element else { return }
 
-        let named = nameByClimbing(hit)
+        var pid: pid_t = 0
+        let hasPid = AXUIElementGetPid(hit, &pid) == .success
+
+        var named = nameByClimbing(hit)
+
+        /* Nothing had a name. Before believing that, ask the application to build its tree and look once
+         * more: a browser that has never seen an assistive technology answers exactly like this - a window,
+         * and nothing inside it. The retry costs one hit test and only happens the first time a given
+         * application comes up empty. */
+        if named.control == nil, hasPid {
+            awaken(pid: pid)
+            var again: AXUIElement?
+            if AXUIElementCopyElementAtPosition(systemWide, Float(job.x), Float(job.y), &again) == .success,
+               let second = again {
+                let retry = nameByClimbing(second)
+                if retry.control != nil { named = retry }
+            }
+        }
+
         job.target.app = appName(of: hit)
         job.target.control = named.control
         job.target.controlType = named.type
-
-        var pid: pid_t = 0
-        if AXUIElementGetPid(hit, &pid) == .success {
-            job.target.window = frontWindowTitle(pid: pid)
-        }
+        if hasPid { job.target.window = frontWindowTitle(pid: pid) }
     }
 
     /* What has FOCUS, which is a different question from what is under the pointer.
@@ -800,6 +850,9 @@ enum Accessibility {
         job.target.app = clip(front.localizedName ?? "", 80).isEmpty ? nil : clip(front.localizedName ?? "", 80)
         job.target.window = frontWindowTitle(pid: pid)
 
+        /* Typing into a web page has the same problem as clicking in one: without the tree there is no
+         * focused element to find, so the field somebody typed into has no name. */
+        awaken(pid: pid)
         let app = AXUIElementCreateApplication(pid)
         guard let focused = elementAttr(app, kAXFocusedUIElementAttribute) else { return }
         let named = nameByClimbing(focused)
@@ -901,34 +954,66 @@ enum Windows {
         return out
     }
 
+    /* Compared without its spaces, on both sides.
+     *
+     * The client strips whitespace out of `process`, and that is right rather than sloppy: a Windows process
+     * name has none, and on the wire `process=` does not take the rest of the line, so a space would break
+     * the field. But on macOS the space is IN the name - both the localized name and the executable are
+     * "Google Chrome" - so "googlechrome" was being compared with "google chrome" and never matched. Hence
+     * "switch to Google Chrome" failing where "switch to Chrome" worked. */
+    private static func squashed(_ text: String) -> String {
+        text.lowercased().filter { !$0.isWhitespace }
+    }
+
+    private static func names(of app: NSRunningApplication) -> [String] {
+        var out: [String] = []
+        if let name = app.localizedName { out.append(name) }
+        if let exe = app.executableURL?.lastPathComponent { out.append(exe) }
+        if let bundle = app.bundleIdentifier {
+            out.append(bundle)
+            // "com.google.Chrome" also answers to "Chrome", which is what a person would say.
+            if let last = bundle.split(separator: ".").last { out.append(String(last)) }
+        }
+        return out
+    }
+
     /// Bring something to the front without opening anything.
     static func activate(title: String?, process: String?) -> String? {
         let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        let asked = [process, title].compactMap { $0 }.filter { !$0.isEmpty }
 
-        if let wanted = process?.lowercased(), !wanted.isEmpty {
-            for app in apps {
-                let name = (app.localizedName ?? "").lowercased()
-                let exe = (app.executableURL?.lastPathComponent ?? "").lowercased()
-                let bundle = (app.bundleIdentifier ?? "").lowercased()
-                if name.contains(wanted) || exe.contains(wanted) || bundle.contains(wanted) {
+        for wanted in asked {
+            let want = squashed(wanted)
+            if want.isEmpty { continue }
+
+            for app in apps where names(of: app).contains(where: { squashed($0).contains(want) }) {
+                return raise(app)
+            }
+
+            /* By window title, which is what the model has been reading. The window list carries the owning
+             * pid, so the title leads to the application without a second search. */
+            for window in list() where squashed(window.title).contains(want) {
+                if let app = NSRunningApplication(processIdentifier: window.pid) { return raise(app) }
+            }
+        }
+
+        /* Word by word, and only then. "Google Chrome" should find Chrome and "Microsoft Outlook" should find
+         * Outlook - a caller naming an application in full is not a caller naming the wrong one. Four
+         * characters is the floor: shorter words match half the machine. */
+        for wanted in asked {
+            for word in wanted.split(whereSeparator: { $0.isWhitespace }) where word.count >= 4 {
+                let want = squashed(String(word))
+                for app in apps where names(of: app).contains(where: { squashed($0).contains(want) }) {
                     return raise(app)
                 }
             }
         }
 
-        if let wanted = title?.lowercased(), !wanted.isEmpty {
-            /* By window title, which is what the model has been reading. The window list carries the owning
-             * pid, so the title leads to the application without a second search. */
-            for window in list() where window.title.lowercased().contains(wanted) {
-                if let app = NSRunningApplication(processIdentifier: window.pid) { return raise(app) }
-            }
-            // The title may be the application's own name, which is what the fallback above writes.
-            for app in apps where (app.localizedName ?? "").lowercased().contains(wanted) {
-                return raise(app)
-            }
-        }
-
-        return "nothing open matches that title or process"
+        /* Says what IS open. "Nothing matches" leaves the caller guessing, and a model's next guess costs a
+         * step; a list turns it into a choice. */
+        let open = apps.compactMap { $0.localizedName }.prefix(8).joined(separator: ", ")
+        if open.isEmpty { return "nothing matches, and nothing is open to match" }
+        return "nothing open matches that title or process. Open right now: " + open
     }
 
     private static func raise(_ app: NSRunningApplication) -> String? {
