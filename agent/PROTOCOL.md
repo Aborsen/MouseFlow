@@ -334,6 +334,15 @@ grammar was written on Windows where Ctrl+C is copy, and on macOS the same inten
 literal Control+C would send an interrupt to a terminal instead. `cmd=` and `meta=` are accepted as
 themselves, and `raw-ctrl=` asks for the literal Control key.
 
+**Screenshots go through ScreenCaptureKit, and that costs one monitor.**
+`CGWindowListCreateImage` is not deprecated on macOS 15, it is *unavailable* - "Please use ScreenCaptureKit
+instead" - and it cannot even be kept behind an `#available`, because referencing it fails to compile against
+that SDK. So `/shot` and `/pulse` need macOS 14 or newer, and everything else works below it. ScreenCaptureKit
+captures ONE DISPLAY, so a multi-monitor desk is a real limitation: the agent captures the display the cursor
+is on and reports THAT display's bounds as `originX`/`originY`, so a point measured on the picture still maps
+back onto the right screen - but the other monitor is invisible to it. Bounds checking still uses the union of
+all displays, because a click on the second monitor is a legitimate click even when the agent cannot see it.
+
 **Coordinates are points, and a screenshot is pixels.** CGEvent works in global display points; a capture
 comes back in backing pixels, twice that on a Retina display. Same trap as Windows from the other direction,
 same answer: `/shot` reports `scale` as picture-pixels-per-point and the client converts in one place.

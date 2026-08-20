@@ -39,6 +39,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 import ImageIO
+import ScreenCaptureKit
 
 let VERSION = "0.8.0"
 
@@ -132,6 +133,25 @@ struct Desktop {
             union = union.isNull ? CGDisplayBounds(id) : union.union(CGDisplayBounds(id))
         }
         return union.isNull ? CGRect(x: 0, y: 0, width: 1920, height: 1080) : union
+    }
+
+    /* The one display a point is on.
+     *
+     * Needed because a screenshot now comes from a single display rather than from the whole desktop - see
+     * Screen.grab. Bounds checking still uses the union: a click on the second monitor is a legitimate click
+     * even when the agent cannot see that monitor. */
+    static func displayContaining(_ point: CGPoint) -> CGRect {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        if count > 0 {
+            var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+            CGGetActiveDisplayList(count, &ids, &count)
+            for id in ids.prefix(Int(count)) {
+                let bounds = CGDisplayBounds(id)
+                if bounds.contains(point) { return bounds }
+            }
+        }
+        return CGDisplayBounds(CGMainDisplayID())
     }
 
     /// Refused rather than clamped. The OS would place an out-of-bounds click somewhere real; the protocol
@@ -846,21 +866,91 @@ enum Windows {
                 }
             }
         }
-        let ok = app.activate(options: [.activateIgnoringOtherApps])
+        /* ignoringOtherApps does nothing from macOS 14 on, and saying so in a warning on every build is
+         * worse than the two lines it takes to stop asking for it. */
+        /* The deprecated thing is the OPTION, not the method, so an empty set is the same call without the
+         * warning - and on macOS 14 and later the option was doing nothing anyway. */
+        let ok: Bool
+        if #available(macOS 14.0, *) {
+            ok = app.activate()
+        } else {
+            ok = app.activate(options: [])
+        }
         return ok ? nil : "macOS refused to bring \(app.localizedName ?? "it") forward"
     }
 }
 
 // ================================================================ seeing
 
+/* Somewhere for an async capture to leave its answer. `@unchecked Sendable` because the semaphore is what
+ * orders the two accesses: nothing reads it until the Task has signalled. */
+private final class Captured: @unchecked Sendable {
+    var value: (image: CGImage, frame: CGRect)?
+}
+
 enum Screen {
-    /* The whole desktop, in backing pixels.
+    /* One picture, through ScreenCaptureKit, because the old way is gone.
      *
-     * Returns nil without Screen Recording, which is the detectable failure the permission section is about:
-     * the caller gets "you have not granted this" instead of a black picture. */
-    private static func grab() -> CGImage? {
+     * CGWindowListCreateImage is not deprecated on macOS 15 - it is UNAVAILABLE: "Please use
+     * ScreenCaptureKit instead", and the header marks it obsoleted. There is no keeping it behind an
+     * #available either, since referencing it at all fails to compile against that SDK. So this is the only
+     * path, and macOS 14 is the floor for seeing the screen at all; everything else still works below it.
+     *
+     * Two things this changes, and both are improvements. SCK scales during capture, so the picture arrives
+     * at the size we want instead of being captured huge and shrunk. And it captures ONE DISPLAY - which is
+     * a real limitation on a multi-monitor desk, and is why the frame reports the bounds of the display it
+     * actually took rather than the union of all of them. A coordinate measured on the returned picture then
+     * still maps back onto the right screen; what the agent cannot do is see the other one.
+     *
+     * Synchronous on purpose: every route here answers on its own thread and the client has a deadline. The
+     * semaphore blocks that worker thread, never the accept loop. */
+    @available(macOS 14.0, *)
+    private static func grab(width: Int, height: Int) -> (image: CGImage, frame: CGRect)? {
         guard Permission.screenRecording else { return nil }
-        return CGWindowListCreateImage(CGRect.infinite, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
+
+        let waiter = DispatchSemaphore(value: 0)
+        /* The result travels in an object rather than a captured `var`: mutating a local from inside a Task
+         * is a warning under Swift 5 and an error under Swift 6, and which one this gets compiled with is
+         * somebody else's machine to decide. */
+        let slot = Captured()
+
+        Task {
+            defer { waiter.signal() }
+            do {
+                /* Desktop windows excluded and on-screen only: the wallpaper and off-screen windows are not
+                 * what anybody is looking at, and asking for less is faster. */
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    true, onScreenWindowsOnly: true
+                )
+                /* The display the pointer is on, falling back to the first. A person driving one window has
+                 * that window under their cursor, and capturing the other monitor would be a picture of
+                 * something nobody asked about. */
+                let cursor = CGEvent(source: nil)?.location ?? .zero
+                let display = content.displays.first(where: {
+                    CGDisplayBounds($0.displayID).contains(cursor)
+                }) ?? content.displays.first
+                guard let display else { return }
+
+                let filter = SCContentFilter(display: display, excludingWindows: [])
+                let config = SCStreamConfiguration()
+                config.width = max(1, width)
+                config.height = max(1, height)
+                config.captureResolution = .best
+                config.showsCursor = true
+
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: filter, configuration: config
+                )
+                slot.value = (image, CGDisplayBounds(display.displayID))
+            } catch {
+                // Reported by the caller as a missing permission or a screen that could not be read.
+            }
+        }
+
+        /* Bounded: a capture that never returns would hold this thread for the life of the agent, and the
+         * client has already given up by then. */
+        if waiter.wait(timeout: .now() + 8) == .timedOut { return nil }
+        return slot.value
     }
 
     private static func resize(_ image: CGImage, _ w: Int, _ h: Int, gray: Bool) -> CGContext? {
@@ -886,17 +976,22 @@ enum Screen {
      * `points * scale` wide, a point measured on it lands where it was measured. Capturing at full
      * resolution and then shrinking to that width is what makes it true on both kinds of display. */
     static func shot(want: Int) -> String {
-        let desktop = Desktop.rect
-        let vw = Double(desktop.width)
-        let vh = Double(desktop.height)
-        if vw < 2 || vh < 2 { return "{\"ok\":false,\"error\":\"no screen\"}" }
-        guard let full = grab() else {
-            return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent - "
-                + "System Settings, Privacy & Security, Screen Recording\"}"
+        guard #available(macOS 14.0, *) else {
+            return "{\"ok\":false,\"error\":\"seeing the screen needs macOS 14 or newer - "
+                + "the API this used before was removed\"}"
         }
 
-        /* Two limits, and the tighter wins: the caller's width, and a pixel budget scaled to it so a
-         * three-monitor desktop does not arrive as a novel. */
+        /* The frame is worked out from the display the capture will come from, and that is a chicken and egg:
+         * the size is needed before the capture and the display is known after it. Solved by measuring
+         * against the display the CURSOR is on, which is the same one grab() will choose. */
+        let cursor = CGEvent(source: nil)?.location ?? .zero
+        let here = Desktop.displayContaining(cursor)
+        let vw = Double(here.width)
+        let vh = Double(here.height)
+        if vw < 2 || vh < 2 { return "{\"ok\":false,\"error\":\"no screen\"}" }
+
+        /* Two limits, and the tighter wins: the caller's width, and a pixel budget scaled to it so a large
+         * display does not arrive as a novel. */
         let budget = 1_200_000.0
         let byWidth = Double(max(160, min(4096, want))) / vw
         let byArea = (budget / (vw * vh)).squareRoot()
@@ -904,25 +999,31 @@ enum Screen {
         let sw = max(1, Int((vw * scale).rounded()))
         let sh = max(1, Int((vh * scale).rounded()))
 
-        guard let ctx = resize(full, sw, sh, gray: false), let small = ctx.makeImage() else {
-            return "{\"ok\":false,\"error\":\"the screen could not be resized\"}"
+        guard let got = grab(width: sw, height: sh) else {
+            return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent - "
+                + "System Settings, Privacy & Security, Screen Recording\"}"
         }
 
         let data = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else {
             return "{\"ok\":false,\"error\":\"no JPEG encoder\"}"
         }
-        CGImageDestinationAddImage(dest, small, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        CGImageDestinationAddImage(dest, got.image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
         guard CGImageDestinationFinalize(dest) else {
             return "{\"ok\":false,\"error\":\"the screen could not be encoded\"}"
         }
 
+        /* Measured off the picture that actually arrived, not off what was asked for: SCK may hand back a
+         * slightly different size, and a scale computed from the request would then be wrong by that much -
+         * which is a click landing next to its target rather than on it. */
+        let actual = Double(got.image.width) / Double(got.frame.width)
+
         let b64 = (data as Data).base64EncodedString()
         var json = "{\"ok\":true,\"format\":\"jpeg\",\"bytes\":\(data.length)"
         json += ",\"png\":\"\(b64)\""
-        json += ",\"w\":\(sw),\"h\":\(sh)"
-        json += ",\"scale\":\(String(format: "%.4f", scale))"
-        json += ",\"originX\":\(Int(desktop.origin.x)),\"originY\":\(Int(desktop.origin.y))}"
+        json += ",\"w\":\(got.image.width),\"h\":\(got.image.height)"
+        json += ",\"scale\":\(String(format: "%.4f", actual))"
+        json += ",\"originX\":\(Int(got.frame.origin.x)),\"originY\":\(Int(got.frame.origin.y))}"
         return json
     }
 
@@ -934,10 +1035,16 @@ enum Screen {
      * difference - matching them costs nothing and means the two agents cannot disagree about what "the
      * screen changed" means. */
     static func pulse() -> String {
-        guard let full = grab() else {
+        guard #available(macOS 14.0, *) else {
+            return "{\"ok\":false,\"error\":\"seeing the screen needs macOS 14 or newer\"}"
+        }
+        /* Captured small and then squashed to 64x36. The aspect ratio is deliberately not kept: the client
+         * only ever compares one grid with the next, and matching the Windows agent's 64x36 exactly means
+         * the two cannot disagree about what "the screen changed" means. */
+        guard let got = grab(width: 128, height: 72) else {
             return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent\"}"
         }
-        guard let ctx = resize(full, 64, 36, gray: false), let data = ctx.data else {
+        guard let ctx = resize(got.image, 64, 36, gray: false), let data = ctx.data else {
             return "{\"ok\":false,\"error\":\"no screen\"}"
         }
         let bytes = data.bindMemory(to: UInt8.self, capacity: 64 * 36 * 4)
@@ -1532,19 +1639,26 @@ private func tapCallback(
 func installTap() -> Bool {
     guard Permission.accessibility else { return false }
 
-    let mask: CGEventMask =
-        (1 << CGEventType.mouseMoved.rawValue)
-        | (1 << CGEventType.leftMouseDown.rawValue)
-        | (1 << CGEventType.leftMouseUp.rawValue)
-        | (1 << CGEventType.rightMouseDown.rawValue)
-        | (1 << CGEventType.rightMouseUp.rawValue)
-        | (1 << CGEventType.otherMouseDown.rawValue)
-        | (1 << CGEventType.otherMouseUp.rawValue)
-        | (1 << CGEventType.leftMouseDragged.rawValue)
-        | (1 << CGEventType.rightMouseDragged.rawValue)
-        | (1 << CGEventType.otherMouseDragged.rawValue)
-        | (1 << CGEventType.scrollWheel.rawValue)
-        | (1 << CGEventType.keyDown.rawValue)
+    /* Built in a loop rather than as one expression.
+     *
+     * Twelve `1 << rawValue` terms joined by `|` made the compiler give up: "unable to type-check this
+     * expression in reasonable time". Swift's type checker searches over every overload of `<<` and `|` for
+     * every term, and the search is exponential. A list and a loop cost nothing and cannot blow up. */
+    let watched: [CGEventType] = [
+        .mouseMoved,
+        .leftMouseDown, .leftMouseUp,
+        .rightMouseDown, .rightMouseUp,
+        .otherMouseDown, .otherMouseUp,
+        /* Dragging is its own type on macOS, not a move with a button held. Without these three a drag
+         * records as a press, nothing, and a release - a drag that replays as a click. */
+        .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+        .scrollWheel,
+        .keyDown,
+    ]
+    var mask: CGEventMask = 0
+    for type in watched {
+        mask |= CGEventMask(1) << CGEventMask(type.rawValue)
+    }
 
     /* .listenOnly, which is not an optimisation: a tap that can alter events is a tap that can drop them,
      * and a recorder must never change what the person is doing while it watches. */
