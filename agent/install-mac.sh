@@ -100,7 +100,8 @@ NEEDS_TOOLS
   echo "Fetching the agent source from ${origin}"
   # Named main.swift on purpose: top-level code is unambiguous in a file with that name, whatever the
   # toolchain version thinks about a single-file compile.
-  if ! curl -fsSL "${origin}/agent/mouseflow-agent.swift" -o "$source"; then
+  local incoming="${install_dir}/incoming.swift"
+  if ! curl -fsSL "${origin}/agent/mouseflow-agent.swift" -o "$incoming"; then
     echo "Could not download ${origin}/agent/mouseflow-agent.swift" >&2
     return 1
   fi
@@ -113,23 +114,40 @@ NEEDS_TOOLS
     sleep 1
   fi
 
-  echo "Compiling (a few seconds)"
-  # -O because the event tap runs on every mouse move and a debug build spends real time there.
-  if ! swiftc -O -o "$binary" "$source" 2>"${install_dir}/build.log"; then
-    echo "The agent did not compile. The compiler said:" >&2
-    echo >&2
-    sed 's/^/  /' "${install_dir}/build.log" >&2
-    echo >&2
-    echo "That log is at ${install_dir}/build.log" >&2
-    return 1
+  # A rebuild costs the permissions, so it only happens when there is something to rebuild.
+  #
+  # macOS ties a permission grant to the exact binary - the path AND its checksum - so recompiling an
+  # unchanged source produces a different binary and every grant becomes invalid. That matters because
+  # running this command twice is not unusual, it is expected: the event tap is installed at startup, which
+  # is BEFORE anybody has flipped the switch in System Settings, so the agent has to be restarted once after
+  # granting. Rebuilding on that restart would take away the permission it was restarted for.
+  local rebuild="yes"
+  if [ -x "$binary" ] && [ -f "$source" ] && cmp -s "$incoming" "$source"; then
+    rebuild="no"
   fi
-  chmod +x "$binary"
 
-  # Ad-hoc signed, which gives it a stable identifier for the permission entries. It is not a Developer ID
-  # signature and does not pretend to be one.
-  codesign --force --sign - --identifier com.mouseflow.agent "$binary" >/dev/null 2>&1 || true
+  if [ "$rebuild" = "no" ]; then
+    rm -f "$incoming"
+    echo "Unchanged since the last install, so not rebuilt — the permissions you granted stay valid."
+  else
+    mv -f "$incoming" "$source"
+    echo "Compiling (a few seconds)"
+    # -O because the event tap runs on every mouse move and a debug build spends real time there.
+    if ! swiftc -O -o "$binary" "$source" 2>"${install_dir}/build.log"; then
+      echo "The agent did not compile. The compiler said:" >&2
+      echo >&2
+      sed 's/^/  /' "${install_dir}/build.log" >&2
+      echo >&2
+      echo "That log is at ${install_dir}/build.log" >&2
+      return 1
+    fi
+    chmod +x "$binary"
 
-  echo "Installed: ${binary}"
+    # Ad-hoc signed, which gives it a stable identifier for the permission entries. It is not a Developer ID
+    # signature and does not pretend to be one.
+    codesign --force --sign - --identifier com.mouseflow.agent "$binary" >/dev/null 2>&1 || true
+    echo "Built: ${binary}"
+  fi
 
   # ---------------------------------------------------------------- permissions
   cat <<'PERMS'
@@ -139,8 +157,9 @@ Two permissions, both granted by you in System Settings, neither grantable by an
   Accessibility     so it can record clicks, read what you clicked on, and click for you
   Screen Recording  so it can take a screenshot and read other applications' window titles
 
-The agent will ask for both the first time it needs them. If you have already granted them to an OLDER
-build, macOS may ask again: the permission is tied to the exact binary, and this one was just rebuilt.
+The agent asks for both the first time it needs them. The event tap is installed when it starts, which is
+before you have flipped the switch - so after granting Accessibility, RESTART IT ONCE. The banner below says
+whether the tap went in.
 PERMS
 
   if [ "$run" = "no" ]; then
@@ -157,6 +176,11 @@ PERMS
 
 Starting the agent. Leave this window open - closing it is how you stop it, exactly as on Windows.
 It answers ${origin} on 127.0.0.1:${port} and has no outbound network code of its own.
+
+To restart it after granting a permission - Ctrl-C, then this, which starts the binary that is already
+built rather than building another one:
+
+  "${binary}" --port ${port} --allow-origin ${origin}
 
 PERMS2
 

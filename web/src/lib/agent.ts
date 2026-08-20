@@ -267,6 +267,21 @@ export function macInstallCommand(port: number): string {
   return `curl -fsSL ${origin}/agent/install-mac.sh | bash -s -- --origin ${origin}${portArg}`;
 }
 
+/* Starting the binary that is already built, rather than building another one.
+ *
+ * Needed for the step nobody can skip: the event tap goes in when the agent starts, which is before anybody
+ * has flipped the switch in System Settings, so granting Accessibility means restarting it once. Re-running
+ * the installer would rebuild - and macOS ties a permission to the exact binary, checksum included, so the
+ * restart would take away the permission it was made for. */
+export function macRestartCommand(port: number): string {
+  const origin = location.origin;
+  const portArg = port !== 8787 ? ` --port ${port}` : '';
+  return `"$HOME/Library/Application Support/MouseFlow/mouseflow-agent"${portArg} --allow-origin ${origin}`;
+}
+
+/** What to run when the installer says the Swift compiler is missing. Apple's own installer, one dialog. */
+export const MAC_TOOLS_COMMAND = 'xcode-select --install';
+
 export function startCommand(port: number): string {
   const origin = location.origin;
   const portArg = port !== 8787 ? ` -Port ${port}` : '';

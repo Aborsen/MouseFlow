@@ -26,8 +26,8 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
-  AGENT_WANTS, type HostOS, autostartEnable, hostOS, localFileCommand, macInstallCommand, olderThan,
-  startCommand,
+  AGENT_WANTS, type HostOS, MAC_TOOLS_COMMAND, autostartEnable, hostOS, localFileCommand,
+  macInstallCommand, macRestartCommand, olderThan, startCommand,
 } from '@/lib/agent';
 import { refreshAgent, useAgent, useConsole } from '@/lib/store';
 
@@ -37,6 +37,23 @@ interface Step {
   note: string;
   body?: ReactNode;
 }
+
+/* A command, copyable.
+ *
+ * Written once because the macOS path needs four of them - install, the compiler Apple ships, the restart
+ * after a permission, and the uninstall - and a command somebody has to retype from a paragraph is a command
+ * they will get wrong. Every one of these was prose on this screen before, which is what "the instructions
+ * are not enough" meant. */
+const Command = ({ text, onCopy }: { text: string; onCopy: (text: string) => void }) => (
+  <div className="flex items-center gap-2 rounded-md border-stroke border bg-surface-card2 p-1.5">
+    <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-1 font-mono text-[0.78rem] text-ink-primary">
+      {text}
+    </code>
+    <Button variant="ghost" size="sm" leftSlot={<Copy className="size-4" />} onClick={() => onCopy(text)}>
+      Copy
+    </Button>
+  </div>
+);
 
 export const ConnectView = () => {
   const [state, update] = useConsole();
@@ -89,6 +106,19 @@ export const ConnectView = () => {
             Copy
           </Button>
         </div>
+
+        {mac && (
+          /* Named here rather than only in the terminal. The installer prints this command when swiftc is
+            * missing - but somebody reading the screen finds out only after the install has already
+            * failed, which is one wasted attempt for anyone who has never opened Xcode. */
+          <div className="mt-2">
+            <Typography variant="p" className="mb-1.5 max-w-[62ch] text-ink-inactive text-[0.8rem]">
+              If it answers <em>“The Swift compiler is not installed”</em>: run this, accept the dialog, wait
+              for it to finish, then run the install command again.
+            </Typography>
+            <Command text={MAC_TOOLS_COMMAND} onCopy={(t) => void copy(t)} />
+          </div>
+        )}
 
         <button
           type="button"
@@ -149,16 +179,19 @@ export const ConnectView = () => {
     title: `Paste it into ${terminal} and press Enter`,
     done: !!health,
     note: mac
-      ? 'Open Terminal from Spotlight (⌘ Space, then “Terminal”). The first run compiles the agent, which takes a few seconds. Leave the window open afterwards — closing it is how you stop the agent, and there is no other off switch.'
+      ? 'Press ⌘ Space, type “Terminal”, press Enter. In that window press ⌘V to paste, then Enter. It prints a line or two, then sits quietly for ten to thirty seconds while it compiles — that silence is the compiler, not a hang. Leave the window open afterwards: closing it is how you stop the agent, and there is no other off switch.'
       : 'Press Win+X then I for a PowerShell window. Leave it open afterwards — closing it is how you stop the agent, and there is no other off switch.',
     body: !health ? (
-      <div className="flex items-center gap-2 text-[0.85rem] text-ink-secondary">
-        <Loader2 className="size-4 animate-spin" />
-        Watching 127.0.0.1:{state.port} for the agent…
+      <div>
+        <div className="flex flex-wrap items-center gap-2 text-[0.85rem] text-ink-secondary">
+          <Loader2 className="size-4 animate-spin" />
+          Watching 127.0.0.1:{state.port} for the agent…
+        </div>
         {failures > 6 && (
-          <span className="text-ink-inactive">
+          <Typography variant="p" className="mt-1.5 max-w-[66ch] text-ink-inactive text-[0.82rem]">
             Nothing yet. If your browser asked about local network access, choose Allow.
-          </span>
+            {mac && ' If Terminal showed the compiler complaining, paste that output back — it names the line.'}
+          </Typography>
         )}
       </div>
     ) : null,
@@ -171,10 +204,15 @@ export const ConnectView = () => {
    * failures: without Accessibility a recording is empty, and without Screen Recording a screenshot is
    * black and every window title is missing. */
   const permissions = health?.permissions;
+  /* Granted, but the agent started before it was: the tap goes in at startup, so Accessibility flipped
+   * afterwards does not reach the process that is running. Detected rather than assumed - `canKeys` is the
+   * tap, and permission-granted-but-no-tap is exactly this case and nothing else. */
+  const needsRestart = !!permissions?.accessibility && health?.canKeys === false;
+
   const permissionStep: Step = {
-    title: 'Allow it to watch and to see',
-    done: !!permissions && permissions.accessibility && permissions.screenRecording,
-    note: 'Both are granted by you in System Settings, and macOS asks the first time the agent needs each one. If you granted them to an earlier build it may ask again — the permission is tied to the exact binary, and the installer rebuilds it.',
+    title: 'Allow it to watch and to see, then restart it once',
+    done: !!permissions && permissions.accessibility && permissions.screenRecording && !needsRestart,
+    note: 'macOS asks the first time the agent needs each one: a dialog saying it “would like to control this computer using accessibility features”. Click Open System Settings, find mouseflow-agent in the list, and switch it on. The switch only appears after the agent has asked once.',
     body: (
       <ul className="flex flex-col gap-1.5">
         {[
@@ -234,6 +272,30 @@ export const ConnectView = () => {
             </li>
           );
         })}
+
+        {/* The step that was missing entirely, and the one somebody gets stuck on.
+          *
+          * The event tap is installed when the agent starts - before the switch was flipped - so granting
+          * Accessibility does not reach the process that is already running. Without this the screen said
+          * "granted" beside a permission and went on reporting no keyboard, and there was nothing on it to
+          * suggest what to do.
+          *
+          * The BINARY, not the installer: re-running the installer rebuilds, and macOS ties a permission to
+          * the exact build, so that restart would take away the permission it was made for. The installer
+          * skips the rebuild when nothing changed, and this command skips it entirely. */}
+        {needsRestart && (
+          <li className="rounded-lg border-fb-attention/40 border bg-fb-attention/[0.08] px-3 py-2">
+            <Typography variant="span" weight="semibold" className="block text-[0.86rem]">
+              Granted, but the running agent started before you granted it
+            </Typography>
+            <Typography variant="p" className="mt-0.5 mb-2 max-w-[64ch] text-ink-inactive text-[0.8rem]">
+              It installs its event tap when it starts, so this one is still without it. In Terminal press
+              Ctrl-C, then paste this — it starts the agent that is already built rather than building
+              another one, which is what keeps the permission you just granted.
+            </Typography>
+            <Command text={macRestartCommand(state.port)} onCopy={(t) => void copy(t)} />
+          </li>
+        )}
       </ul>
     ),
   };
@@ -404,10 +466,16 @@ export const ConnectView = () => {
               : 'The agent installs a low-level mouse hook while it runs. Events are only stored between Start and Stop, nothing is written to disk, and the origin is pinned to this page’s origin so other sites cannot reach it.'}
           </Typography>
           {mac && (
-            <Typography variant="p" className="mt-2 max-w-[68ch] text-ink-inactive text-xs">
-              To remove it: <code className="font-mono">bash ~/Downloads/install-mac.sh --uninstall</code>, or
-              re-run the install command with <code className="font-mono">--uninstall</code>.
-            </Typography>
+            <div className="mt-2">
+              <Typography variant="p" className="mb-1.5 max-w-[68ch] text-ink-inactive text-xs">
+                To stop it: Ctrl-C in that Terminal window, or close it. To remove it completely — the launch
+                agent and the installed files, leaving only the System Settings entries:
+              </Typography>
+              <Command
+                text={`${macInstallCommand(state.port).split(' | ')[0]} | bash -s -- --uninstall`}
+                onCopy={(t) => void copy(t)}
+              />
+            </div>
           )}
         </details>
 
