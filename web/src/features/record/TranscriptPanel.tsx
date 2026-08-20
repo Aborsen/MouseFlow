@@ -946,15 +946,36 @@ export const TranscriptPanel = ({
                 </Typography>
               </section>
             ) : (
-              segments.map((segment, i) => (
-                <SegmentBlock
-                  // Position in the key as well: `n` is optional, and two segments without one collide.
-                  key={`${i}-${count(segment.n) ?? 'n'}`}
-                  segment={segment}
-                  index={i}
-                  ofSeconds={totalSeconds ?? 0}
-                />
-              ))
+              /* One hood over all of it.
+                *
+                * Eight segment cards stacked down the panel, each with a fold of its own, is the same
+                * problem the caveats had: a lot of structure in front of somebody who came for the
+                * summary. The story above IS the summary; this is the evidence for it, and evidence
+                * belongs behind one door rather than eight. Open the transcript, then open the stretch
+                * you want - two clicks to reach a coordinate, and none to read the recording. */
+              <details className="group rounded-lg border-stroke border bg-surface-card">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 p-3.5">
+                  <ChevronRight className="size-4 shrink-0 text-ink-inactive transition-transform duration-base group-open:rotate-90" />
+                  <Typography variant="span" weight="semibold" className="text-[0.9rem]">
+                    Transcript
+                  </Typography>
+                  <span className="ms-auto shrink-0 text-[0.76rem] text-ink-inactive tabular-nums">
+                    {stepCount} step{stepCount === 1 ? '' : 's'} · {segments.length} place
+                    {segments.length === 1 ? '' : 's'}
+                  </span>
+                </summary>
+                <div className="space-y-2.5 border-stroke border-t p-3">
+                  {segments.map((segment, i) => (
+                    <SegmentBlock
+                      // Position in the key as well: `n` is optional, and two segments without one collide.
+                      key={`${i}-${count(segment.n) ?? 'n'}`}
+                      segment={segment}
+                      index={i}
+                      ofSeconds={totalSeconds ?? 0}
+                    />
+                  ))}
+                </div>
+              </details>
             )}
 
             {/* --------------------------------------------------- ask it something instead

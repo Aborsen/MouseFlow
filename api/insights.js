@@ -252,11 +252,19 @@ async function gather(sql, userId, fromIso) {
    *   an extension recording   events carry a url on every focus, so the origin in force is carried
    *                            forward and each event's own milliseconds go to the page it happened
    *                            on. This is the only genuinely per-moment attribution in the schema.
-   *   a desktop recording      payload.windows is the set of applications touched, in first-touched
-   *                            order, with NO per-event window. So a recording that names exactly
-   *                            one application gets all of its time; one that names several has its
-   *                            time bucketed, because splitting it would be a guess dressed as a
-   *                            measurement.
+   *   a desktop recording      events from an 0.6.0 agent onwards carry the application the click
+   *                            landed in (`context.app`), and a `Focus` event names the new one every
+   *                            time the foreground window changes. So the application in force is
+   *                            carried forward exactly as an origin is, and each event's own
+   *                            milliseconds go to it. This is per-moment, and it is why a desktop
+   *                            recording has time in this table at all: before it, the only datum
+   *                            was payload.windows - a once-a-second sample for the recording as a
+   *                            WHOLE - so the rule was "one named application gets everything,
+   *                            several gets bucketed", and every real recording touches several.
+   *   an older desktop one     no event names anything, so that older rule still applies underneath:
+   *                            exactly one sampled window takes the recording's time, several takes
+   *                            none of it. Splitting a sample across a recording would be a guess
+   *                            dressed as a measurement.
    *   an agent run             each step's `ms` goes to the origin of the page the step ACTED on
    *                            (`url`), not to `wentTo` - wentTo is where a click landed you, which
    *                            is the next step's page and not this one's.
@@ -292,8 +300,17 @@ async function gather(sql, userId, fromIso) {
                ) p
                where jsonb_typeof(p->'dt') = 'number'
              ), 0) as move_ms,
-             case when e.v->>'url' ~ '^https?://'
-               then left(lower(regexp_replace(e.v->>'url', '^(https?://[^/?#]+).*$', '\\1')), 120)
+             /* What this event names, on either half.
+              *
+              * A browser recording names a page on every focus and navigate; a desktop recording names
+              * an APPLICATION on every click and on every Focus marker, from an 0.6.0 agent onwards.
+              * They go in one column because everything downstream carries it forward identically -
+              * the only difference is the word used for it, which `kind` decides further down. */
+             case
+               when e.v->>'url' ~ '^https?://'
+                 then left(lower(regexp_replace(e.v->>'url', '^(https?://[^/?#]+).*$', '\\1')), 120)
+               when nullif(trim(e.v->'context'->>'app'), '') is not null
+                 then left(trim(e.v->'context'->>'app'), 120)
              end as origin
       from flow f,
         /* The payload is client-written JSON and nothing validates its inner shape on the way in, so
@@ -672,9 +689,11 @@ async function gather(sql, userId, fromIso) {
     unattributed: {
       seconds: round(bucketSeconds, 1),
       share: share(bucketSeconds, allSeconds),
-      why: 'Time that happened but cannot be placed: desktop recordings that touched several '
-        + 'applications (windows are recorded per recording, not per event), agent steps with no '
-        + 'page or no timing, and the model thinking between steps.',
+      why: 'Time that happened but cannot be placed: agent steps with no page or no timing, the model '
+        + 'thinking between steps, the part of a recording before anything named where it was, and '
+        + 'desktop recordings made by an agent older than 0.6.0 that touched more than one application '
+        + '- those have only a once-a-second sample of the front window, for the recording as a whole, '
+        + 'and splitting that across it would be a guess dressed as a measurement.',
     },
     repeated,
     slowestSteps,
@@ -723,6 +742,15 @@ function gapsFor(t, idleSeconds) {
       why: 'Nothing here holds how long the same task takes by hand, and there is no field for it in '
         + 'user_run. Agent hours are measured wall clock; "time saved" would be a number this '
         + 'endpoint made up, so it does not report one.',
+    },
+    {
+      question: 'Why is my mail time listed under a browser?',
+      why: 'Because the application a click landed in is a PROCESS name, read from the window manager, '
+        + 'and a web app hosted in a browser is that browser: Outlook as a PWA counts as chrome, and '
+        + 'two different sites in two tabs are one name here. The window TITLE says "Outlook" and the '
+        + 'transcript of the recording shows it per step - but picking a product out of a title to '
+        + 'relabel this table would be a guess dressed as a measurement, which is the thing this '
+        + 'endpoint refuses to do everywhere else.',
     },
     {
       question: 'Where did the rest of my day go?',
