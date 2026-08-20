@@ -17,8 +17,9 @@
 
   API
     GET  /health          -> JSON {ok, version, screen, recording, playing}
-    POST /record/start    -> JSON {ok}
-    GET  /record/status   -> JSON {recording, count, elapsedMs}
+    POST /record/start    -> JSON {ok}   ?moveMs=250 thins the pointer path for a long session
+    GET  /record/status   -> JSON {recording, count, elapsedMs, part, moveMs}
+    POST /record/drain    -> text/plain, what has piled up so far; RECORDING CONTINUES
     POST /record/stop     -> text/plain, one event per line (.mmmacro format)
     POST /replay          -> JSON {ok}   body: see FLOW BODY below
     GET  /replay/status   -> JSON {playing, step, steps, pass, passes, index, total}
@@ -97,6 +98,30 @@
   Hold ESC during replay to abort. Ctrl+C stops the agent.
   The low-level hook stays installed for the agent's lifetime but events are
   only stored between /record/start and /record/stop.
+
+  A SESSION THAT LASTS A WORKING DAY
+
+  Eight hours does not fit, and what it does not fit is not a time limit - there is none - it is BYTES.
+  Measured over the recordings this project actually made: 69 bytes an event, 23-42 events a second, so
+  1.5-2.9 KB/s. The app refuses a payload over 400KB, which arrives around the third minute, and /record/stop
+  used to be the only way events left the agent - so eight hours meant ~830,000 events held in memory and
+  returned in one string.
+
+  Two things answer that, and both are needed:
+
+    /record/drain      takes what has piled up and KEEPS RECORDING. The caller writes each chunk away as its
+                       own recording, so memory never holds more than one chunk. The clock is not reset, so
+                       elapsedMs stays the time of the SESSION - a chunk that says 30 minutes and a session
+                       that says eight hours are both true and both readable.
+
+    ?moveMs=250        pointer movement is 93.75% of the events and 88.6% of the bytes (measured, same
+                       place). At the 10ms default that is up to a hundred samples a second of a path that
+                       nothing reads - not the transcript, not the story, not the analytics; they read
+                       clicks, scrolls, keys and the change of window. At 250ms the "was somebody at this
+                       machine" signal survives and a 30-minute chunk fits in those 400KB.
+
+  Replay of a thinned recording is coarser, and deliberately so: an eight-hour session is recorded to be
+  READ, not replayed. A short recording keeps the 10ms default and replays exactly as before.
 #>
 [CmdletBinding()]
 param(
@@ -365,7 +390,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.7.0";
+        public const string Version = "0.8.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -387,6 +412,16 @@ namespace MouseFlow
         static bool _haveLast;
         static int _throttleMs = 10;
         static int _minPx = 3;
+        /* The throttle this SESSION is using, and the one to go back to.
+         *
+         * A long session thins the pointer path; the next short recording must not inherit that. Two fields
+         * rather than one, because the default arrives from the command line and a session override must not
+         * overwrite it - a recording started with -MoveThrottleMs 25 and then one long session would
+         * otherwise silently become a 250ms recorder for the rest of the run. */
+        static int _sessionMs = 10;
+        /* How many times this session has been drained. Not the number of chunks the caller kept - it cannot
+         * know that - but the number handed out, which is what makes a chunk identifiable in a session. */
+        static int _part;
 
         static bool _playing;
         static bool _abort;
@@ -547,7 +582,7 @@ namespace MouseFlow
                     {
                         int dx = Math.Abs(data.pt.X - _lastX);
                         int dy = Math.Abs(data.pt.Y - _lastY);
-                        if ((now - _lastStamp) < _throttleMs) return;
+                        if ((now - _lastStamp) < _sessionMs) return;
                         if (dx < _minPx && dy < _minPx) return;
                     }
                 }
@@ -818,10 +853,17 @@ namespace MouseFlow
             return string.IsNullOrEmpty(title) ? null : Clip(title, 160);
         }
 
-        public static void RecordStart()
+        /* moveMs = 0 means "the default this agent was started with". Not -1 and not a nullable: the wire
+         * carries a query string, an absent parameter parses to 0, and 0 samples a second is not a thing
+         * anybody can want - so the harmless value is the one that means "unspecified". */
+        public static void RecordStart(int moveMs)
         {
             lock (Gate)
             {
+                /* Clamped, not trusted. A caller asking for 5000 would record four events an hour and call
+                 * it a session; one asking for 1 would fill the buffer faster than the drain empties it. */
+                _sessionMs = moveMs <= 0 ? _throttleMs : Math.Max(5, Math.Min(2000, moveMs));
+                _part = 0;
                 _buffer = new List<Ev>();
                 _haveLast = false;
                 _lastStamp = 0;
@@ -852,6 +894,67 @@ namespace MouseFlow
                 _resolver.SetApartmentState(ApartmentState.MTA);
                 _resolver.Start();
             }
+        }
+
+        /* Take what has piled up and KEEP RECORDING.
+         *
+         * The difference from RecordStop is what is NOT touched, and each omission is load-bearing:
+         *
+         *   _clock       runs on, so elapsedMs stays the time of the session. A chunk knows its own length
+         *                by its events; only the session can say how far in it is.
+         *   _recording   stays true, or the hook stops capturing between two drains - and the gap would be
+         *                invisible afterwards, which is the worst kind.
+         *   _lastStamp   stays, so the move filter keeps its reference point across the boundary instead of
+         *                letting one unthrottled burst through at the start of every chunk.
+         *   _haveLast    stays, same reason.
+         *   _held        stays: a drain can land in the middle of a drag, and zeroing the counter would let
+         *                a Focus marker split the press from its release in the NEXT chunk.
+         *   _lastFront   stays, so a window that did not change is not re-announced every chunk.
+         *
+         * The first event of the new chunk gets DelayMs 0 because the buffer is empty, which is what a chunk
+         * that starts at its own first event should say. The gap across the boundary is not lost - it is in
+         * elapsedMs, where it can be read deliberately rather than hidden inside a delay.
+         */
+        public static string RecordDrain()
+        {
+            List<Ev> taken;
+            long elapsed;
+            int part;
+            lock (Gate)
+            {
+                if (!_recording) return null;
+                taken = _buffer;
+                _buffer = new List<Ev>();
+                elapsed = _clock.ElapsedMilliseconds;
+                _part++;
+                part = _part;
+            }
+
+            /* Same bounded wait as the stop, and for the same reason: the resolver writes the application
+             * and control names ONTO the events just taken, and serializing ahead of it would drop the name
+             * of the last click of every chunk. Shorter than the stop's 1500ms because a drain happens at a
+             * clock boundary rather than at a click - whatever is still in flight is seconds old already -
+             * and because this one has a person's next thirty minutes waiting behind it. */
+            for (int waited = 0; waited < 400; waited += 25)
+            {
+                lock (ResolveGate) { if (_toResolve.Count == 0) break; }
+                Thread.Sleep(25);
+            }
+
+            int dropped;
+            lock (ResolveGate) { dropped = _dropped; }
+
+            /* A `#part` line above the events. Every reader of this format already skips lines starting with
+             * `#` - that is how `#ctx` rides along - so a chunk loads in an older reader exactly as a plain
+             * recording does, and a newer one gets to know which chunk it is holding. */
+            StringBuilder head = new StringBuilder();
+            head.Append("#part\tn=").Append(part.ToString(CultureInfo.InvariantCulture));
+            head.Append("\telapsedMs=").Append(elapsed.ToString(CultureInfo.InvariantCulture));
+            head.Append("\tevents=").Append(taken.Count.ToString(CultureInfo.InvariantCulture));
+            head.Append("\tmoveMs=").Append(_sessionMs.ToString(CultureInfo.InvariantCulture));
+            head.Append("\tdropped=").Append(dropped.ToString(CultureInfo.InvariantCulture));
+            head.Append("\n");
+            return head.ToString() + Serialize(taken);
         }
 
         public static string RecordStop()
@@ -920,6 +1023,8 @@ namespace MouseFlow
 
         public static bool IsRecording { get { lock (Gate) { return _recording; } } }
         public static int RecordCount { get { lock (Gate) { return _buffer.Count; } } }
+        public static int RecordPart { get { lock (Gate) { return _part; } } }
+        public static int RecordMoveMs { get { lock (Gate) { return _sessionMs; } } }
         public static long RecordElapsed { get { lock (Gate) { return _clock.ElapsedMilliseconds; } } }
         public static bool IsPlaying { get { lock (Gate) { return _playing; } } }
 
@@ -1981,8 +2086,19 @@ namespace MouseFlow
                 if (requestLine.Length < 2) return;
                 string method = requestLine[0].ToUpperInvariant();
                 string path = requestLine[1];
+                /* The query travels beside the path, not inside it.
+                 *
+                 * It used to be cut off here and nowhere else looked at the request line again - so `?w=640`
+                 * reached no handler, and /shot answered a caller asking for a small picture with the same
+                 * 200KB one it had just refused. Every route compares `path == "/health"` and so on, which
+                 * only works on a clean path; the answer is a second argument, not twenty rewritten routes. */
+                string query = "";
                 int q = path.IndexOf('?');
-                if (q >= 0) path = path.Substring(0, q);
+                if (q >= 0)
+                {
+                    query = path.Substring(q + 1);
+                    path = path.Substring(0, q);
+                }
 
                 int contentLength = 0;
                 string origin = null;
@@ -2010,7 +2126,7 @@ namespace MouseFlow
                     body = Encoding.UTF8.GetString(buf, 0, read);
                 }
 
-                Route(stream, method, path, body, origin);
+                Route(stream, method, path, query, body, origin);
             }
             catch (Exception ex)
             {
@@ -2030,7 +2146,22 @@ namespace MouseFlow
             public byte[] ToArray() { return _b.ToArray(); }
         }
 
-        static void Route(NetworkStream stream, string method, string path, string body, string origin)
+        /* One number out of a query string. Written once because it was about to exist twice: /shot had its
+         * own copy of exactly this, and two hand-rolled parsers of the same thing drift - the second one gets
+         * the `&` case wrong, or the culture, and only under a query nobody tests. */
+        static int QueryInt(string query, string name, int fallback)
+        {
+            int q = query.IndexOf(name + "=", StringComparison.Ordinal);
+            if (q < 0) return fallback;
+            string tail = query.Substring(q + name.Length + 1);
+            int amp = tail.IndexOf('&');
+            if (amp >= 0) tail = tail.Substring(0, amp);
+            int parsed;
+            if (!int.TryParse(tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)) return fallback;
+            return parsed;
+        }
+
+        static void Route(NetworkStream stream, string method, string path, string query, string body, string origin)
         {
             if (method == "OPTIONS") { Respond(stream, 204, "text/plain", "", origin); return; }
 
@@ -2069,6 +2200,11 @@ namespace MouseFlow
                        can. False, not absent, when the keyboard hook failed to install: the agent runs
                        without it rather than refusing to start. */
                     + ",\"canKeys\":" + (_kbHook != IntPtr.Zero ? "true" : "false")
+                    /* Whether a recording can outlast one response. Without /record/drain the only way
+                       events leave is /record/stop, so a session is bounded by what fits in memory and in
+                       one string - and the app must offer a short recording rather than a day-long one it
+                       cannot actually take delivery of. */
+                    + ",\"canDrain\":true"
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
                 return;
@@ -2077,17 +2213,40 @@ namespace MouseFlow
             if (path == "/record/start" && method == "POST")
             {
                 if (_hook == IntPtr.Zero) { Respond(stream, 500, "application/json", "{\"ok\":false,\"error\":\"hook not installed\"}", origin); return; }
-                RecordStart();
-                Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
+                /* ?moveMs= thins the pointer path for a session meant to last hours. Absent keeps the
+                 * default, so every existing caller records exactly as it did. */
+                RecordStart(QueryInt(query, "moveMs", 0));
+                Respond(stream, 200, "application/json",
+                    "{\"ok\":true,\"moveMs\":" + RecordMoveMs.ToString(CultureInfo.InvariantCulture) + "}", origin);
                 return;
             }
 
             if (path == "/record/status")
             {
+                /* `count` is what is in the buffer NOW, which after a drain is not what the session has
+                 * recorded - the caller adds up the chunks it was handed. `part` is how the two are told
+                 * apart: 0 means nothing has been drained and count is the whole recording. */
                 string json = "{\"recording\":" + (IsRecording ? "true" : "false")
                     + ",\"count\":" + RecordCount.ToString(CultureInfo.InvariantCulture)
+                    + ",\"part\":" + RecordPart.ToString(CultureInfo.InvariantCulture)
+                    + ",\"moveMs\":" + RecordMoveMs.ToString(CultureInfo.InvariantCulture)
                     + ",\"elapsedMs\":" + RecordElapsed.ToString(CultureInfo.InvariantCulture) + "}";
                 Respond(stream, 200, "application/json", json, origin);
+                return;
+            }
+
+            if (path == "/record/drain" && method == "POST")
+            {
+                string chunk = RecordDrain();
+                /* 409, not an empty body: "nothing was recorded in the last half hour" and "the recording is
+                 * not running" are different answers, and a chunker that cannot tell them apart writes an
+                 * empty part every thirty minutes for as long as the tab stays open. */
+                if (chunk == null)
+                {
+                    Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"not recording\"}", origin);
+                    return;
+                }
+                Respond(stream, 200, "text/plain", chunk, origin);
                 return;
             }
 
@@ -2118,23 +2277,11 @@ namespace MouseFlow
                 return;
             }
 
-            if (path.StartsWith("/shot", StringComparison.Ordinal))
+            if (path == "/shot")
             {
                 /* ?w= so a caller that has just been told its request was too large can ask for a
                  * smaller picture instead of giving up. Shot clamps the range itself. */
-                int want = 1280;
-                int q = path.IndexOf("w=", StringComparison.Ordinal);
-                if (q > 0)
-                {
-                    string tail = path.Substring(q + 2);
-                    int amp = tail.IndexOf('&');
-                    if (amp > 0) tail = tail.Substring(0, amp);
-                    int parsed;
-                    if (int.TryParse(tail, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
-                    {
-                        want = parsed;
-                    }
-                }
+                int want = QueryInt(query, "w", 1280);
                 /* Deliberately not while replaying: a picture taken mid-replay shows a screen that is
                    already moving, and a decision made from it acts on something that has gone. */
                 if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
