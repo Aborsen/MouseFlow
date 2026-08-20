@@ -685,6 +685,92 @@ enum Accessibility {
         return nil
     }
 
+    private static func pointAttr(_ element: AXUIElement, _ attribute: String) -> CGPoint? {
+        guard let raw = copyAttr(element, attribute) else { return nil }
+        guard CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero
+        return AXValueGetValue(raw as! AXValue, .cgPoint, &point) ? point : nil
+    }
+
+    private static func sizeAttr(_ element: AXUIElement, _ attribute: String) -> CGSize? {
+        guard let raw = copyAttr(element, attribute) else { return nil }
+        guard CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
+        var size = CGSize.zero
+        return AXValueGetValue(raw as! AXValue, .cgSize, &size) ? size : nil
+    }
+
+    /// The middle of an element, in the same points CGEvent takes.
+    private static func centreOf(_ element: AXUIElement) -> CGPoint? {
+        guard let origin = pointAttr(element, kAXPositionAttribute),
+              let size = sizeAttr(element, kAXSizeAttribute),
+              size.width > 1, size.height > 1 else { return nil }
+        return CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+    }
+
+    private static func nameOf(_ element: AXUIElement) -> String? {
+        stringAttr(element, kAXTitleAttribute)
+            ?? stringAttr(element, kAXDescriptionAttribute)
+            ?? stringAttr(element, kAXValueAttribute)
+    }
+
+    /* Two names for the same thing?
+     *
+     * Exact match after trimming and folding case, plus a prefix rule, because a tab title is truncated by
+     * the tab strip and gets shorter as more tabs open - "Netflix - Watch TV Show..." and "Netflix" are the
+     * same tab. Six characters is the floor: any shorter and a prefix matches half the window. */
+    private static func sameName(_ a: String, _ b: String) -> Bool {
+        let x = a.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let y = b.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if x.isEmpty || y.isEmpty { return false }
+        if x == y { return true }
+        if min(x.count, y.count) < 6 { return false }
+        return x.hasPrefix(y) || y.hasPrefix(x)
+    }
+
+    private static func childrenOf(_ element: AXUIElement) -> [AXUIElement] {
+        guard let raw = copyAttr(element, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
+        return raw
+    }
+
+    /* Where to click, given where it was recorded and WHAT was there.
+     *
+     * Returns nil when the point is already right, or when nothing better can be found - the caller then
+     * uses the coordinate, exactly as before.
+     *
+     * This is the fix for a replay opening the wrong browser tab. Nothing was a pixel out: a tab strip
+     * re-lays-out when the number of tabs changes, so a coordinate recorded at five tabs lands on a
+     * different tab at six. Precision cannot help; the name can, and the recording has it.
+     *
+     * One level up, not a tree walk. The protocol forbids walking on the input path because it costs
+     * seconds, and the same arithmetic applies here - but the siblings of the thing actually hit are where a
+     * re-laid-out row of tabs, buttons or list rows keeps its neighbours, which is the case that fails. */
+    static func aim(at point: CGPoint, expecting name: String, kind: String?) -> CGPoint? {
+        guard Permission.accessibility, !name.isEmpty else { return nil }
+
+        var element: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element) == .success,
+              let hit = element else { return nil }
+
+        // Already on it: say so by returning nothing to change.
+        if let now = nameOf(hit), sameName(now, name) { return nil }
+
+        guard let parent = elementAttr(hit, kAXParentAttribute) else { return nil }
+        let siblings = childrenOf(parent).prefix(60)
+        for sibling in siblings {
+            guard let title = nameOf(sibling), sameName(title, name) else { continue }
+            /* The kind has to agree when the recording knew it: a tab and the page inside it can carry the
+             * same title, and clicking the page instead of the tab does nothing at all. */
+            if let wanted = kind, !wanted.isEmpty,
+               let role = stringAttr(sibling, kAXRoleDescriptionAttribute),
+               !sameName(role, wanted) {
+                continue
+            }
+            guard let centre = centreOf(sibling), Desktop.contains(x: centre.x, y: centre.y) else { continue }
+            return centre
+        }
+        return nil
+    }
+
     /* What is under a point. Runs on the resolver thread, never on the tap. */
     static func describe(_ job: Pending) {
         guard Permission.accessibility else { return }
@@ -1019,7 +1105,11 @@ enum Screen {
         let actual = Double(got.image.width) / Double(got.frame.width)
 
         let b64 = (data as Data).base64EncodedString()
-        var json = "{\"ok\":true,\"format\":\"jpeg\",\"bytes\":\(data.length)"
+        /* A full MIME type, not an extension. The client puts this straight into a model request, where
+         * anything other than image/jpeg, image/png, image/gif or image/webp is a 400 - and "jpeg" on its
+         * own is exactly that 400. The Windows agent has always sent the long form; the protocol document
+         * said the short one, and this followed the document. */
+        var json = "{\"ok\":true,\"format\":\"image/jpeg\",\"bytes\":\(data.length)"
         json += ",\"png\":\"\(b64)\""
         json += ",\"w\":\(got.image.width),\"h\":\(got.image.height)"
         json += ",\"scale\":\(String(format: "%.4f", actual))"
@@ -1221,7 +1311,9 @@ func parseAction(_ body: String) -> [String: String] {
         let name = String(token[token.startIndex..<eq])
         let value = String(token[token.index(after: eq)...])
 
-        if name == "text" || name == "title" {
+        /* Takes the rest of the line, like text and title: a label contains spaces, and splitting it on the
+         * first one would aim at "New" when the button says "New message". */
+        if name == "text" || name == "title" || name == "name" {
             let rest = ([value] + tokens[(i + 1)...]).joined(separator: " ")
             out[name] = rest
             break
@@ -1250,7 +1342,18 @@ func doAction(_ body: String) -> String? {
 
     switch action {
     case "click":
-        Input.click(x: x, y: y, button: fields["button"] ?? "left", double: (fields["double"] ?? "0") == "1")
+        /* `name=` is what the caller believes it is clicking, in the words on screen. A coordinate read off a
+         * downscaled screenshot is a point; a name is the target, and they part company the moment anything
+         * re-lays-out - a tab strip does it every time the number of tabs changes. Same aim as the replay
+         * uses, and it only ever moves the click when the point is on something ELSE by that name's
+         * reckoning. */
+        var at = CGPoint(x: x, y: y)
+        if let label = fields["name"], !label.isEmpty,
+           let better = Accessibility.aim(at: at, expecting: label, kind: nil) {
+            at = better
+        }
+        Input.click(x: at.x, y: at.y, button: fields["button"] ?? "left",
+                    double: (fields["double"] ?? "0") == "1")
         return nil
     case "move":
         Input.move(x: x, y: y)
@@ -1308,11 +1411,21 @@ func doAction(_ body: String) -> String? {
 
 // ================================================================ replay
 
+/* What the recording knew about a click's target, carried into the replay.
+ *
+ * `flowBody` used to send five columns and nothing else, so a replay had coordinates while the recording it
+ * came from knew the name of the thing it clicked. Comment lines were already skipped by every reader of this
+ * format, so the context could always have travelled - it simply was not sent. */
+struct ReplayCtx {
+    var control: String?
+    var type: String?
+}
+
 struct ReplayStep {
     var repeats = 1
     var speed = 1.0
     var delayAfterMs = 0
-    var events: [(x: Int, y: Int, delayMs: Int, action: String)] = []
+    var events: [(x: Int, y: Int, delayMs: Int, action: String, ctx: ReplayCtx?)] = []
 }
 
 final class Replayer {
@@ -1333,8 +1446,17 @@ final class Replayer {
      * nothing in it says which keys - and a replay that quietly pressed nothing for the two minutes somebody
      * spent typing would report a clean run. */
     private var unplayable = 0
+    /* Clicks that were aimed by name instead of by coordinate. Reported rather than silent: a replay that
+     * quietly moved where it clicked is a replay whose report cannot be trusted, and this is the number that
+     * says how much of the run was the coordinates and how much was the names. */
+    private var retargeted = 0
     /// Every button this replay is holding, so every exit path can let go of them.
     private var down: Set<String> = []
+    /* Where the last press actually landed after aiming. The release has to follow it: releasing at the
+     * recorded coordinate after pressing somewhere else turns one click into a drag across the window. */
+    private var aimed: CGPoint?
+
+    private func aimedPoint() -> CGPoint? { gate.lock(); defer { gate.unlock() }; return aimed }
 
     var isPlaying: Bool { gate.lock(); defer { gate.unlock() }; return playing }
 
@@ -1343,7 +1465,8 @@ final class Replayer {
         defer { gate.unlock() }
         return "{\"playing\":\(jsonBool(playing)),\"step\":\(stepIdx),\"steps\":\(stepCount)"
             + ",\"pass\":\(pass),\"passes\":\(passes),\"index\":\(evIdx),\"total\":\(evCount)"
-            + ",\"flowPass\":\(flowPass),\"flowPasses\":\(flowPasses),\"unplayable\":\(unplayable)}"
+            + ",\"flowPass\":\(flowPass),\"flowPasses\":\(flowPasses),\"unplayable\":\(unplayable)"
+            + ",\"retargeted\":\(retargeted)}"
     }
 
     func requestAbort() {
@@ -1386,8 +1509,24 @@ final class Replayer {
         var steps: [ReplayStep] = []
         var current: ReplayStep?
 
+        /* The context of the NEXT event line, from a `#ctx` comment above it - the same way it travels in a
+         * recording. */
+        var pending: ReplayCtx?
+
         for raw in body.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("#ctx") {
+                var ctx = ReplayCtx()
+                for field in line.dropFirst(4).split(separator: "\t") {
+                    let parts = field.split(separator: "=", maxSplits: 1)
+                    guard parts.count == 2 else { continue }
+                    let value = String(parts[1])
+                    if parts[0] == "control" { ctx.control = value }
+                    if parts[0] == "type" { ctx.type = value }
+                }
+                pending = (ctx.control == nil && ctx.type == nil) ? nil : ctx
+                continue
+            }
             if line.isEmpty || line.hasPrefix("#") { continue }
 
             if line.hasPrefix("startDelay=") {
@@ -1424,8 +1563,10 @@ final class Replayer {
                 x: Int(cols[1]) ?? 0,
                 y: Int(cols[2]) ?? 0,
                 delayMs: Int(cols[3]) ?? 0,
-                action: cols[4]
+                action: cols[4],
+                ctx: pending
             ))
+            pending = nil
         }
         if let done = current { steps.append(done) }
         if steps.isEmpty || steps.allSatisfy({ $0.events.isEmpty }) { return "nothing to replay" }
@@ -1434,6 +1575,7 @@ final class Replayer {
         playing = true
         abort = false
         unplayable = 0
+        retargeted = 0
         stepIdx = 0
         stepCount = steps.count
         flowPass = 0
@@ -1498,9 +1640,36 @@ final class Replayer {
     }
 
     /// False means stop - either aborted or refused.
-    private func perform(_ event: (x: Int, y: Int, delayMs: Int, action: String)) -> Bool {
-        let x = Double(event.x)
-        let y = Double(event.y)
+    private func perform(_ event: (x: Int, y: Int, delayMs: Int, action: String, ctx: ReplayCtx?)) -> Bool {
+        var x = Double(event.x)
+        var y = Double(event.y)
+
+        /* Aim by name where the recording knew one, and only on the press: the release belongs at whatever
+         * point the press ended up at, or a click becomes a drag from one place to another.
+         *
+         * Cleared on EVERY press, not only on the ones that carry a name. Setting it without clearing it
+         * leaves the last aimed point behind, and the next release - belonging to a click that was never
+         * re-aimed - would go there instead: a click that presses in one place and releases in another,
+         * which is a drag nobody asked for. */
+        if event.action.hasSuffix("Click Down") {
+            var better: CGPoint?
+            if let name = event.ctx?.control, !name.isEmpty {
+                better = Accessibility.aim(at: CGPoint(x: x, y: y), expecting: name, kind: event.ctx?.type)
+            }
+            if let point = better {
+                x = point.x
+                y = point.y
+            }
+            gate.lock()
+            aimed = better
+            if better != nil { retargeted += 1 }
+            gate.unlock()
+        }
+        /* The release follows the press, wherever the press went. */
+        if event.action.hasSuffix("Click Release"), let at = aimedPoint() {
+            x = at.x
+            y = at.y
+        }
 
         switch event.action {
         case "Mouse Movement":

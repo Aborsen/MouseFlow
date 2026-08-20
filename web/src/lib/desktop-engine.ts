@@ -87,6 +87,15 @@ const TOOLS = [
         y: { type: 'integer', description: 'Pixels from the top of the screenshot' },
         button: { type: 'string', enum: ['left', 'right', 'middle'] },
         double: { type: 'boolean' },
+        /* What it is aiming at, in the words on screen. The agent hit-tests the point and, when something
+         * else is under it, looks for this name among that thing's neighbours - which is what a row of tabs
+         * or toolbar buttons is. A coordinate read off a downscaled screenshot is a point; a name is the
+         * target, and the two disagree the moment anything re-lays-out. */
+        label: {
+          type: 'string',
+          description: 'The visible text of the thing you are clicking, if it has any - a tab title, a '
+            + 'button label. Used to correct the aim if the layout has shifted.',
+        },
       },
       required: ['x', 'y'],
       additionalProperties: false,
@@ -197,6 +206,26 @@ interface ShotFrame {
   originY: number;
 }
 
+/* What the model will accept, out of whatever the agent said.
+ *
+ * The agent's value went straight into the request, and one agent sending "jpeg" instead of "image/jpeg" took
+ * the whole feature down with an HTTP 400 - the API accepts four exact strings and nothing else. A remote
+ * value should not be able to do that: an extension is promoted, and an unrecognised one falls back rather
+ * than being forwarded to be refused. */
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+export function mediaType(said: string | undefined | null): string {
+  const value = String(said ?? '').trim().toLowerCase();
+  if (IMAGE_TYPES.includes(value)) return value;
+  if (value === 'jpg' || value === 'jpeg') return 'image/jpeg';
+  if (value === 'png') return 'image/png';
+  if (value === 'gif') return 'image/gif';
+  if (value === 'webp') return 'image/webp';
+  /* Unknown: JPEG, because that is what both agents encode. Guessing right beats forwarding a value the API
+   * will refuse. */
+  return 'image/jpeg';
+}
+
 /** Every conversion happens here, so no caller can forget the origin - which on a second monitor to the
  *  left is negative, and getting it wrong puts every click on the wrong screen. */
 export function actionBody(name: string, input: Record<string, any>, frame: ShotFrame): string | null {
@@ -207,7 +236,11 @@ export function actionBody(name: string, input: Record<string, any>, frame: Shot
 
   if (name === 'click') {
     const button = input.button === 'right' || input.button === 'middle' ? input.button : 'left';
-    return `action=click x=${x()} y=${y()} button=${button} double=${input.double ? '1' : '0'}`;
+    /* `name=` last, because it takes the rest of the line - a label contains spaces, and the wire format
+     * reads such a field to the end. Same rule as text= and title=. */
+    const label = String(input.label ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+    return `action=click x=${x()} y=${y()} button=${button} double=${input.double ? '1' : '0'}`
+      + (label ? ` name=${label.slice(0, 120)}` : '');
   }
   if (name === 'scroll') {
     return `action=scroll x=${x()} y=${y()} amount=${Number(input.amount) || -3}`;
@@ -521,7 +554,7 @@ async function runWave(o: {
     messages.push({
       role: 'user',
       content: [
-        { type: 'image', source: { type: 'base64', media_type: frame.format ?? 'image/png', data: frame.png } },
+        { type: 'image', source: { type: 'base64', media_type: mediaType(frame.format), data: frame.png } },
         {
           type: 'text',
           text: `The screen now, ${frame.w} by ${frame.h} pixels.` +

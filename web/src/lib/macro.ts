@@ -92,6 +92,21 @@ export function flowBody(
     if (!rec) continue;                       // a step whose recording was deleted is simply skipped
     lines.push(`STEP repeat=${step.repeat} speed=${step.speed} delayAfter=${step.delayAfterMs}`);
     rec.events.forEach((e, i) => {
+      /* The context travels with the replay, not only with the export.
+       *
+       * This used to send five columns and nothing else, which meant a replay had coordinates while the
+       * recording it came from knew the NAME of the thing it clicked. That is the difference between opening
+       * the tab you recorded and opening whichever tab is now at those coordinates - a tab strip re-lays-out
+       * every time the number of tabs changes. Comment lines were always skipped by every reader of this
+       * format, so this could always have travelled; it simply was not sent. */
+      if (e.context) {
+        const fields: string[] = [];
+        if (e.context.app) fields.push(`app=${e.context.app}`);
+        if (e.context.window) fields.push(`window=${e.context.window}`);
+        if (e.context.control) fields.push(`control=${e.context.control}`);
+        if (e.context.type) fields.push(`type=${e.context.type}`);
+        if (fields.length) lines.push(`#ctx	${fields.join('	')}`);
+      }
       lines.push(`${i + 1} | ${e.x} | ${e.y} | ${e.delayMs} | ${e.action}`);
     });
   }

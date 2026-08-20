@@ -129,6 +129,7 @@ Two platform traps worth stating because Windows hit both:
 
 ```
 action=click x=1074 y=159 button=left double=0
+action=click x=1074 y=159 name=Netflix
 action=move x=400 y=300
 action=scroll x=400 y=300 amount=-3
 action=type text=hello there
@@ -140,7 +141,11 @@ action=activate process=outlook
 
 Parsing rules that matter, both of them learned the hard way:
 
-- `text=` and `title=` take **the rest of the line**, unsplit — they contain spaces.
+- `text=`, `title=` and `name=` take **the rest of the line**, unsplit — they contain spaces.
+- `name=` is what the caller believes it is clicking, in the words on screen, and it is a HINT rather than a
+  target: hit-test the point, and only if something else is under it, look for that name nearby. A coordinate
+  read off a downscaled screenshot is a point; a name is the thing. They part company the moment anything
+  re-lays-out, which a tab strip does every time the number of tabs changes.
 - A field marker only counts at the **start of a token**, or `subtitle=` matches `title=` and the parse
   begins four characters into the wrong word.
 - `enc=b64` carries UTF-8 base64 so multi-line text survives. `nl=enter` presses Enter between lines,
@@ -166,8 +171,11 @@ names a person would recognise.
 
 ## `/shot` and `/pulse`
 
-`/shot` returns a base64 picture (`format: 'jpeg'`, quality ~85) sized to a megapixel budget rather than a
-fixed width — a vision payload is priced in pixels. `?w=` is the client asking for less after an upstream
+`/shot` returns a base64 picture sized to a megapixel budget rather than a fixed width — a vision payload
+is priced in pixels. `format` is a **full MIME type** — `image/jpeg`, quality ~85 — and not an extension:
+the client hands it to a model request verbatim, where anything but `image/jpeg`, `image/png`,
+`image/gif` or `image/webp` is a 400. This line used to say `'jpeg'`, the second implementation
+followed it, and generating a flow answered 400 on that machine until somebody tried it. `?w=` is the client asking for less after an upstream
 413.
 
 `/pulse` exists so waiting is cheap: a 64×36 greyscale grid, about 3KB, that the client polls to notice the
@@ -294,6 +302,19 @@ STEP repeat=2 speed=1.0 delayAfter=500
 ```
 
 `repeat` and `flowRepeat` take a count or the word `forever` (`0` means the same).
+
+**`#ctx` travels with a replay too, and aiming by it is the difference between opening the tab you recorded
+and opening whichever tab is now at those coordinates.** The lines above an event are the same ones a
+recording carries, so nothing new has to be parsed - and a replay that has them should hit-test the point
+before pressing, and when the thing under it is not the one named, look for that name among the siblings of
+whatever IS under it. One level, not a tree walk: the protocol forbids walking on the input path because it
+costs seconds, and the same arithmetic applies here - but a re-laid-out row of tabs, buttons or list rows
+keeps its neighbours exactly there, which is the case that fails.
+
+Two rules make it safe. Aim only on the PRESS, and let the release follow wherever the press went - releasing
+at the recorded coordinate after pressing somewhere else turns one click into a drag across the window. And
+count the corrections, reporting them as `retargeted` on `/replay/status`: a replay that quietly moved where
+it clicked is a replay whose report cannot be trusted.
 
 **Abort must be immediate and must release what it holds.** Check the stop flag before every event *and*
 inside every sleep, and release every held button and key on every exit path, including the failure paths —
