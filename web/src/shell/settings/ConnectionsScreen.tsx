@@ -41,7 +41,7 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
       : `Running ${health?.version}, which is older than this app expects (${AGENT_WANTS}). The command below fetches the current one — close the old PowerShell window first.`
     : health
       ? mac
-        ? `Running on this computer and answering, version ${health.version}. It runs detached, so there is no window to close — ${MAC_STOP_COMMAND} stops it.`
+        ? `Running on this computer and answering, version ${health.version}. It is a login item, so it starts on its own and there is no window to close.`
         : `Running on this computer and answering, version ${health.version}. To stop it, close its ${terminal} window.`
       : 'Not running. Nothing on this page can start it for you, which is deliberate — paste the command below.';
 
@@ -114,6 +114,17 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
               {row.ok ? '' : ` — ${row.pane}`}
             </span>
           ))}
+        </div>
+      )}
+
+      {mac && !restart && health && (
+        <div className="mt-3">
+          <Typography variant="p" className="mb-1.5 max-w-[58ch] text-ink-inactive text-[0.82rem]">
+            {/* Сказано здесь, потому что окна нет и убить процесс недостаточно: это login item, launchd
+              * поднимает его снова. */}
+            To stop it — it is a login item, so killing the process is not enough:
+          </Typography>
+          <Command text={MAC_STOP_COMMAND} onCopy={copy} />
         </div>
       )}
 

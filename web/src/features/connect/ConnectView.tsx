@@ -266,8 +266,8 @@ export const ConnectView = () => {
             </Typography>
             <Typography variant="p" className="mt-0.5 mb-2 max-w-[64ch] text-ink-inactive text-[0.8rem]">
               It installs its event tap when it starts, so this one is still without it. Paste this in
-              Terminal — it stops the running one and starts the app that is already built, rather than
-              building another one, which is what keeps the permission you just granted.
+              Terminal — it restarts the agent that is already built rather than building another one, which
+              is what keeps the permission you just granted.
             </Typography>
             <Command text={macRestartCommand(state.port)} onCopy={(t) => void copy(t)} />
           </li>
@@ -290,7 +290,7 @@ export const ConnectView = () => {
     title: 'Keep it running after you log in',
     done: !!health?.autostart,
     note: mac
-      ? 'Adds a launch agent under your own account. Always available here, unlike on Windows: the installer leaves a real file on disk, so there is something for the launcher to point at.'
+      ? 'Already done: the installer makes it a login item, so it starts when you log in and comes back if it ever stops. There is nothing to launch by hand.'
       : health?.canAutostart
         ? 'Drops a launcher in your Startup folder. Only available when the agent was started from a downloaded file with a pinned origin — a piped start leaves nothing for the launcher to point at.'
         : 'Available once the agent has been started from a downloaded file with a pinned origin: a piped start leaves nothing for the launcher to point at.',
@@ -427,7 +427,8 @@ export const ConnectView = () => {
           {mac && (
             <div className="mt-2">
               <Typography variant="p" className="mb-1.5 max-w-[68ch] text-ink-inactive text-xs">
-                To stop it — there is no window to close, it runs detached:
+                To stop it. There is no window to close, and killing the process is not enough — it is a
+                login item, so launchd starts it again:
               </Typography>
               <Command text={MAC_STOP_COMMAND} onCopy={(t) => void copy(t)} />
               <Typography variant="p" className="mt-2 mb-1.5 max-w-[68ch] text-ink-inactive text-xs">

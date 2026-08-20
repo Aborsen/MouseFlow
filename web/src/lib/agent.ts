@@ -267,11 +267,14 @@ export function macInstallCommand(port: number): string {
   return `curl -fsSL ${origin}/agent/install-mac.sh | bash -s -- --origin ${origin}${portArg}`;
 }
 
-/** Where the installer puts it. A bundle, for the reason in MAC_APP's own note below. */
-const MAC_APP = '"$HOME/Library/Application Support/MouseFlow/MouseFlow Agent.app"';
+/* The label the installer registers with launchd. Stopping and starting go through it rather than through
+ * the process, because the installer makes the agent a login item with KeepAlive: `pkill` does not stop it,
+ * it makes launchd start it again a second later - so a "stop" command that killed the process would be a
+ * switch that does nothing. */
+const MAC_LABEL = 'gui/$(id -u)/com.mouseflow.agent';
 
-/** Stopping it. There is no window to close: launched through `open`, it is detached by design. */
-export const MAC_STOP_COMMAND = 'pkill -f mouseflow-agent';
+/** Stopping it. There is no window to close, and killing the process is not enough - see MAC_LABEL. */
+export const MAC_STOP_COMMAND = `launchctl bootout ${MAC_LABEL}`;
 
 /* Restarting what is already built, rather than building it again.
  *
@@ -284,10 +287,12 @@ export const MAC_STOP_COMMAND = 'pkill -f mouseflow-agent';
  * terminal is not its own subject as far as permissions go - macOS blames the responsible process, which is
  * the terminal - so it would get no prompt and no switch of its own. That is the entire reason the installer
  * builds an .app. */
-export function macRestartCommand(port: number): string {
-  const origin = location.origin;
-  const portArg = port !== 8787 ? ` --port ${port}` : '';
-  return `${MAC_STOP_COMMAND}; open ${MAC_APP} --args${portArg} --allow-origin ${origin}`;
+export function macRestartCommand(_port: number): string {
+  /* One command, and it takes its arguments from the login item rather than repeating them: the port and the
+   * origin are already in the plist the installer wrote, and a restart that passed its own would quietly
+   * disagree with what starts at login. `kickstart -k` stops it and starts it again in one go, which also
+   * avoids the second copy that `open` next to a live launchd job would produce. */
+  return `launchctl kickstart -k ${MAC_LABEL}`;
 }
 
 /** What to run when the installer says the Swift compiler is missing. Apple's own installer, one dialog. */
