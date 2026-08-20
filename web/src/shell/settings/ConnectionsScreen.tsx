@@ -15,7 +15,8 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
-  AGENT_WANTS, MAC_TOOLS_COMMAND, localFileCommand, macInstallCommand, macRestartCommand, startCommand,
+  AGENT_WANTS, MAC_STOP_COMMAND, MAC_TOOLS_COMMAND, localFileCommand, macInstallCommand, macRestartCommand,
+  startCommand,
 } from '@/lib/agent';
 import { useAgent, useConsole } from '@/lib/store';
 import {
@@ -39,7 +40,9 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
       ? `Running ${health?.version}, which is older than this app expects (${AGENT_WANTS}). Run the install command again — it stops the old one, rebuilds and starts the new one.`
       : `Running ${health?.version}, which is older than this app expects (${AGENT_WANTS}). The command below fetches the current one — close the old PowerShell window first.`
     : health
-      ? `Running on this computer and answering, version ${health.version}. To stop it, close its ${terminal} window.`
+      ? mac
+        ? `Running on this computer and answering, version ${health.version}. It runs detached, so there is no window to close — ${MAC_STOP_COMMAND} stops it.`
+        : `Running on this computer and answering, version ${health.version}. To stop it, close its ${terminal} window.`
       : 'Not running. Nothing on this page can start it for you, which is deliberate — paste the command below.';
 
   const copy = async (text: string) => {
@@ -77,7 +80,7 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
       <Row
         label="Start command"
         note={mac
-          ? 'It fetches the agent and builds it on your machine — building locally is what keeps Gatekeeper out of the way. Leave the Terminal window open: closing it is how you stop the agent.'
+          ? 'It fetches the agent, builds it on your machine and starts it in the background — building locally is what keeps Gatekeeper out of the way, and running as an app rather than a loose binary is what lets it hold a permission of its own.'
           : 'Nothing is installed: it fetches the agent and runs it in one go. Leave the window open — closing it is how you stop the agent.'}
       >
         {/* The switch sits on the command, which is the thing it changes. Guessed from the browser and
@@ -118,8 +121,8 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
         <div className="mt-3 rounded-lg border-fb-attention/40 border bg-fb-attention/[0.08] p-3">
           <Typography variant="p" className="mb-2 max-w-[60ch] text-ink-inactive text-[0.82rem]">
             <strong className="text-ink-primary">Granted, but this agent started before you granted it.</strong>{' '}
-            It installs its event tap when it starts. Press Ctrl-C in Terminal and paste this — it starts the
-            binary that is already built, which is what keeps the permission.
+            It installs its event tap when it starts. Paste this in Terminal — it stops the running one and
+            starts the app that is already built, which is what keeps the permission.
           </Typography>
           <Command text={macRestartCommand(console_.port)} onCopy={copy} />
         </div>

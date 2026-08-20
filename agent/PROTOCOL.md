@@ -323,6 +323,16 @@ one command if they are missing; the gain is no certificate, no notarisation, no
 Developer ID ever exists, a signed and notarised `.app` is a better answer and the permission grants survive
 updates — which they do not here, see below.
 
+**It has to be an .app, and that is not packaging taste.** On macOS a bare executable is not its own subject
+as far as permissions go: TCC blames the RESPONSIBLE process, which for anything launched from a terminal is
+the terminal. So a loose binary gets no Accessibility prompt of its own, never appears in the System Settings
+list, and the only way to give it anything is to grant Accessibility to the terminal emulator - a far larger
+permission, and one nobody finds. A binary inside a bundle, launched with `open`, is its own responsible
+process: it gets a prompt naming itself and a switch of its own. The installer therefore builds a minimal
+bundle (a plist, `LSUIElement`, ad-hoc signed over the whole thing) and starts it detached. There is no window
+to close; `pkill -f mouseflow-agent` stops it. This was found the way everything in this file was found: it
+compiled, it ran, and it could not be granted anything.
+
 **Permissions are the install story, and there are two.** Accessibility for the event tap, for reading any
 other application's tree, and for posting input; Screen Recording for `/shot`, `/pulse`, and for other
 applications' window TITLES in `/windows`. Both are reported on `/health` under `permissions`, so the

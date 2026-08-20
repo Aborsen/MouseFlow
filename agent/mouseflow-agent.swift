@@ -1099,8 +1099,8 @@ enum Input {
      * occurs. Checked once, here, and reported in the words of the thing the user has to do. */
     static func refusal() -> String? {
         if !Permission.accessibility {
-            return "macOS has not granted Accessibility to this agent, so it cannot click or type - "
-                + "System Settings, Privacy & Security, Accessibility"
+            return "macOS has not granted Accessibility to MouseFlow Agent, so it cannot click or type - "
+                + "switch it on in System Settings, Privacy & Security, Accessibility"
         }
         return nil
     }
@@ -1897,8 +1897,9 @@ func route(method: String, path: String, query: String, body: String) -> Respons
             /* Said as the thing to do, not as a state. Without Accessibility there is no tap, and a
              * recording started here would come back empty with no explanation. */
             return Response(status: 500, body: "{\"ok\":false,\"error\":"
-                + jsonString("macOS has not granted Accessibility to this agent, so nothing can be recorded"
-                    + " - System Settings, Privacy & Security, Accessibility, then start it again") + "}")
+                + jsonString("macOS has not granted Accessibility to MouseFlow Agent, so nothing can be"
+                    + " recorded. Switch it on in System Settings, Privacy & Security, Accessibility - then"
+                    + " restart the agent, because the event tap is installed when it starts") + "}")
         }
         Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
         return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
@@ -2021,9 +2022,18 @@ if listen(listener, 128) < 0 {
     exit(1)
 }
 
+/* Whether this process can hold a permission of its own at all.
+ *
+ * On macOS a bare executable is not its own subject: TCC blames the RESPONSIBLE process, which for something
+ * launched from a terminal is the terminal. Inside an .app bundle, launched with `open`, it is itself - which
+ * is why the installer builds one. Worth printing, because "Accessibility is missing" and "this process can
+ * never be granted Accessibility" look identical from the outside and have different answers. */
+let bundled = Bundle.main.bundleIdentifier != nil
 let axLine = Permission.accessibility
     ? "granted - clicks, typing and control names work"
-    : "MISSING - it cannot record or click until you grant it"
+    : bundled
+        ? "MISSING - switch on MouseFlow Agent in System Settings, then restart it"
+        : "MISSING - and this is running as a loose binary, which cannot be granted it. Re-run the installer"
 let screenLine = Permission.screenRecording
     ? "granted - screenshots and window titles work"
     : "MISSING - screenshots and window titles will be empty"

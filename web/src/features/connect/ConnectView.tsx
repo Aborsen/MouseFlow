@@ -26,7 +26,7 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
-  AGENT_WANTS, MAC_TOOLS_COMMAND, autostartEnable, localFileCommand, macInstallCommand,
+  AGENT_WANTS, MAC_STOP_COMMAND, MAC_TOOLS_COMMAND, autostartEnable, localFileCommand, macInstallCommand,
   macRestartCommand, olderThan, startCommand,
 } from '@/lib/agent';
 import { refreshAgent, useAgent, useConsole } from '@/lib/store';
@@ -158,7 +158,7 @@ export const ConnectView = () => {
     title: `Paste it into ${terminal} and press Enter`,
     done: !!health,
     note: mac
-      ? 'Press ⌘ Space, type “Terminal”, press Enter. In that window press ⌘V to paste, then Enter. It prints a line or two, then sits quietly for ten to thirty seconds while it compiles — that silence is the compiler, not a hang. Leave the window open afterwards: closing it is how you stop the agent, and there is no other off switch.'
+      ? 'Press ⌘ Space, type “Terminal”, press Enter. In that window press ⌘V to paste, then Enter. It prints a line or two, then sits quietly for ten to thirty seconds while it compiles — that silence is the compiler, not a hang. It then starts the agent in the background and tells you whether it answered, so the window can be closed afterwards.'
       : 'Press Win+X then I for a PowerShell window. Leave it open afterwards — closing it is how you stop the agent, and there is no other off switch.',
     body: !health ? (
       <div>
@@ -188,7 +188,7 @@ export const ConnectView = () => {
   const permissionStep: Step = {
     title: 'Allow it to watch and to see, then restart it once',
     done: !!permissions && permissions.accessibility && permissions.screenRecording && !restart,
-    note: 'macOS asks the first time the agent needs each one: a dialog saying it “would like to control this computer using accessibility features”. Click Open System Settings, find mouseflow-agent in the list, and switch it on. The switch only appears after the agent has asked once.',
+    note: 'macOS asks the first time the agent needs each one: a dialog saying “MouseFlow Agent would like to control this computer using accessibility features”. Click Open System Settings and switch on MouseFlow Agent. If the dialog never appeared, the list is under Privacy & Security — and if MouseFlow Agent is not in it at all, the agent is running as a loose binary rather than the installed app: run the install command again.',
     body: (
       <ul className="flex flex-col gap-1.5">
         {[
@@ -265,9 +265,9 @@ export const ConnectView = () => {
               Granted, but the running agent started before you granted it
             </Typography>
             <Typography variant="p" className="mt-0.5 mb-2 max-w-[64ch] text-ink-inactive text-[0.8rem]">
-              It installs its event tap when it starts, so this one is still without it. In Terminal press
-              Ctrl-C, then paste this — it starts the agent that is already built rather than building
-              another one, which is what keeps the permission you just granted.
+              It installs its event tap when it starts, so this one is still without it. Paste this in
+              Terminal — it stops the running one and starts the app that is already built, rather than
+              building another one, which is what keeps the permission you just granted.
             </Typography>
             <Command text={macRestartCommand(state.port)} onCopy={(t) => void copy(t)} />
           </li>
@@ -421,14 +421,18 @@ export const ConnectView = () => {
           </label>
           <Typography variant="p" className="mt-2 max-w-[68ch] text-ink-inactive text-xs">
             {mac
-              ? 'The agent installs a listen-only event tap while it runs — listen-only because a tap that can alter events can drop them, and a recorder must not change what you are doing while it watches. Events are only stored between Start and Stop, nothing is written to disk, and the origin is pinned to this page.'
+              ? 'The agent installs a listen-only event tap while it runs — listen-only because a tap that can alter events can drop them, and a recorder must not change what you are doing while it watches. Events are only stored between Start and Stop, nothing is written to disk, and the origin is pinned to this page. It runs as an app rather than a loose binary because on macOS only an app can hold a permission of its own.'
               : 'The agent installs a low-level mouse hook while it runs. Events are only stored between Start and Stop, nothing is written to disk, and the origin is pinned to this page’s origin so other sites cannot reach it.'}
           </Typography>
           {mac && (
             <div className="mt-2">
               <Typography variant="p" className="mb-1.5 max-w-[68ch] text-ink-inactive text-xs">
-                To stop it: Ctrl-C in that Terminal window, or close it. To remove it completely — the launch
-                agent and the installed files, leaving only the System Settings entries:
+                To stop it — there is no window to close, it runs detached:
+              </Typography>
+              <Command text={MAC_STOP_COMMAND} onCopy={(t) => void copy(t)} />
+              <Typography variant="p" className="mt-2 mb-1.5 max-w-[68ch] text-ink-inactive text-xs">
+                To remove it completely — the launch agent and the installed files, leaving only the System
+                Settings entries:
               </Typography>
               <Command
                 text={`${macInstallCommand(state.port).split(' | ')[0]} | bash -s -- --uninstall`}

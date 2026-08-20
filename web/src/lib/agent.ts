@@ -267,16 +267,27 @@ export function macInstallCommand(port: number): string {
   return `curl -fsSL ${origin}/agent/install-mac.sh | bash -s -- --origin ${origin}${portArg}`;
 }
 
-/* Starting the binary that is already built, rather than building another one.
+/** Where the installer puts it. A bundle, for the reason in MAC_APP's own note below. */
+const MAC_APP = '"$HOME/Library/Application Support/MouseFlow/MouseFlow Agent.app"';
+
+/** Stopping it. There is no window to close: launched through `open`, it is detached by design. */
+export const MAC_STOP_COMMAND = 'pkill -f mouseflow-agent';
+
+/* Restarting what is already built, rather than building it again.
  *
  * Needed for the step nobody can skip: the event tap goes in when the agent starts, which is before anybody
  * has flipped the switch in System Settings, so granting Accessibility means restarting it once. Re-running
- * the installer would rebuild - and macOS ties a permission to the exact binary, checksum included, so the
- * restart would take away the permission it was made for. */
+ * the installer would rebuild, and macOS ties a permission to the exact binary - checksum included - so that
+ * restart would take away the permission it was made for.
+ *
+ * Through `open` and the bundle, never the binary inside it directly: a bare executable launched from a
+ * terminal is not its own subject as far as permissions go - macOS blames the responsible process, which is
+ * the terminal - so it would get no prompt and no switch of its own. That is the entire reason the installer
+ * builds an .app. */
 export function macRestartCommand(port: number): string {
   const origin = location.origin;
   const portArg = port !== 8787 ? ` --port ${port}` : '';
-  return `"$HOME/Library/Application Support/MouseFlow/mouseflow-agent"${portArg} --allow-origin ${origin}`;
+  return `${MAC_STOP_COMMAND}; open ${MAC_APP} --args${portArg} --allow-origin ${origin}`;
 }
 
 /** What to run when the installer says the Swift compiler is missing. Apple's own installer, one dialog. */
