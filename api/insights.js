@@ -166,6 +166,34 @@ async function gather(sql, userId, fromIso) {
    * runs arrived without one; those runs happened, so dropping them would quietly undercount, and
    * synced_at is never null. How many needed the fallback is reported in `gaps`. */
 
+  /* The window immediately before this one, the same length. Computed here rather than in SQL so the two
+   * queries cannot disagree about where the boundary is. */
+  const prevFromIso = new Date(new Date(fromIso).getTime() - (Date.now() - new Date(fromIso).getTime()))
+    .toISOString();
+
+  /* Counts only, over the previous window, so a headline number can be compared with something. Same rules as
+   * the totals below - the same RUN_MAX_SECONDS clamp, the same coalesce on the timestamp - because a delta
+   * between two differently-counted numbers is worse than no delta. */
+  const prevTotalsQ = sql`
+    with raw as (
+      select outcome,
+             case when started_at is not null and finished_at is not null
+               then extract(epoch from (finished_at - started_at))::float8 end as span
+      from user_run
+      where user_id = ${userId}
+        and coalesce(started_at, synced_at) >= ${prevFromIso}
+        and coalesce(started_at, synced_at) < ${fromIso}
+    )
+    select
+      count(*)::int                                   as runs,
+      count(*) filter (where outcome = 'ok')::int      as ok,
+      count(*) filter (where outcome = 'failed')::int  as failed,
+      count(*) filter (where outcome = 'stopped')::int as stopped,
+      coalesce(sum(case when span > 0 and span < ${RUN_MAX_SECONDS} then span end), 0)::float8
+        as agent_seconds
+    from raw
+  `;
+
   const totalsQ = sql`
     with raw as (
       select outcome, flow_id, said, steps, started_at, finished_at,
@@ -455,6 +483,13 @@ async function gather(sql, userId, fromIso) {
     with base as (
       select r.client_id, r.flow_id, r.kind,
              coalesce(r.started_at, r.synced_at) as at,
+             /* The same clamp every duration in this file uses, so a repeat's time is measured the way the
+              * headline agent time is. A run with no usable pair of timestamps contributes nothing rather
+              * than a guess. */
+             case when r.started_at is not null and r.finished_at is not null
+               and extract(epoch from (r.finished_at - r.started_at)) > 0
+               and extract(epoch from (r.finished_at - r.started_at)) < ${RUN_MAX_SECONDS}
+               then extract(epoch from (r.finished_at - r.started_at))::float8 end as secs,
              nullif(trim(r.goal), '')            as goal,
              nullif(trim(f.name), '')            as flow_name,
              case
@@ -474,6 +509,9 @@ async function gather(sql, userId, fromIso) {
     select signature,
            count(*)::int as times,
            max(at)       as last_at,
+           coalesce(sum(secs), 0)::float8 as seconds,
+           -- How many of the repeats had a usable clock, so the page can say when the total is partial.
+           count(secs)::int as timed,
            -- The most recent wording, so the page shows something a person recognises.
            left((array_agg(coalesce(goal, flow_name, flow_id, 'a replay') order by at desc))[1], 160) as label,
            coalesce(array_agg(distinct flow_id) filter (where flow_id is not null), '{}') as flow_ids,
@@ -582,9 +620,9 @@ async function gather(sql, userId, fromIso) {
     limit ${SKILLS_MAX}
   `;
 
-  const [totalsRows, flowRows, dayRows, appRows, repeatedRows, slowRows, failureRows, skillRows] =
+  const [totalsRows, prevRows, flowRows, dayRows, appRows, repeatedRows, slowRows, failureRows, skillRows] =
     await sql.transaction(
-      [totalsQ, flowsQ, byDayQ, appsQ, repeatedQ, slowestQ, failuresQ, skillsQ],
+      [totalsQ, prevTotalsQ, flowsQ, byDayQ, appsQ, repeatedQ, slowestQ, failuresQ, skillsQ],
       { readOnly: true },
     );
 
@@ -600,6 +638,21 @@ async function gather(sql, userId, fromIso) {
     recordings: num(f.recordings),
     createdSkills: num(f.created_skills),
     agentHours: round(num(t.agent_seconds) / 3600, 2),
+  };
+
+  /* The same counts over the window before, and the fact that there WAS one. A caller cannot tell "no runs
+   * last month" from "no previous window measured" out of a zero, and one of those supports a delta while the
+   * other does not - so `had` is stated rather than inferred from the counts. */
+  const p = prevRows[0] || {};
+  const previous = {
+    from: prevFromIso,
+    to: fromIso,
+    had: num(p.runs) > 0,
+    runs: num(p.runs),
+    ok: num(p.ok),
+    failed: num(p.failed),
+    stopped: num(p.stopped),
+    agentHours: round(num(p.agent_seconds) / 3600, 2),
   };
 
   /* Shaped from the same counts the header uses rather than counted again, so the chart and the
@@ -644,6 +697,10 @@ async function gather(sql, userId, fromIso) {
     signature: String(r.signature),
     label: String(r.label || '(no wording kept)'),
     times: num(r.times),
+    /* The agent time these runs took. NOT a saving - see the gaps list - and partial when `timed` is less
+     * than `times`, which the page has to be able to say. */
+    seconds: round(num(r.seconds), 1),
+    timed: num(r.timed),
     lastAt: iso(r.last_at),
     flowIds: Array.isArray(r.flow_ids) ? r.flow_ids.map(String) : [],
   }));
@@ -695,6 +752,7 @@ async function gather(sql, userId, fromIso) {
         + '- those have only a once-a-second sample of the front window, for the recording as a whole, '
         + 'and splitting that across it would be a guess dressed as a measurement.',
     },
+    previous,
     repeated,
     slowestSteps,
     failures,

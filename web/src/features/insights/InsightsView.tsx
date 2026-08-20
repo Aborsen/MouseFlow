@@ -24,6 +24,7 @@ import {
   MessageSquareText,
   RefreshCw,
   Repeat2,
+  ShieldCheck,
   Sparkles,
   Timer,
   TriangleAlert,
@@ -77,6 +78,10 @@ interface RepeatedRow {
   signature: string;
   label: string;
   times: number;
+  /** Agent time these runs took. Not a saving: nothing stored says what the task costs by hand. */
+  seconds: number;
+  /** How many of them had a usable clock, so a partial total can say so. */
+  timed: number;
   lastAt: string | null;
   flowIds: string[];
 }
@@ -147,6 +152,18 @@ interface Insights {
   unattributed?: { seconds: number; share: number; why: string };
   repeated: RepeatedRow[];
   slowestSteps: StepRow[];
+  /** The window immediately before this one, same length. `had` is stated rather than inferred, because "no
+   * runs then" and "no previous window" both come back as nought and only one of them supports a delta. */
+  previous?: {
+    from?: unknown;
+    to?: unknown;
+    had?: unknown;
+    runs?: unknown;
+    ok?: unknown;
+    failed?: unknown;
+    stopped?: unknown;
+    agentHours?: unknown;
+  };
   failures: FailureRow[];
   skills: SkillRow[];
   gaps: GapRow[];
@@ -165,6 +182,14 @@ interface Insights {
 /* Arrays are read through this rather than trusted, because a section that renders as nothing is a far
  * better failure than a whole page replaced by a React crash when one key is absent. */
 const list = <T,>(value: T[] | undefined | null): T[] => (Array.isArray(value) ? value : []);
+
+/* And numbers, for the same reason and one more: null has to survive as null. The endpoint sends it for
+ * "never measured", and coercing that to nought would turn "no runs were timed" into "they took no time",
+ * which is the difference between an absence and a measurement. */
+const num = (value: unknown): number | null => {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+};
 
 async function fetchInsights(days: number, signal: AbortSignal): Promise<Insights> {
   const res = await fetch(`/api/insights?days=${days}`, { credentials: 'same-origin', signal });
@@ -244,26 +269,52 @@ const OUTCOMES: { key: Outcome; label: string; fill: string; text: string }[] = 
   { key: 'running', label: 'still running', fill: 'bg-brand-primary', text: 'text-brand-primary' },
 ];
 
+/* A number, and what it is worth comparing with.
+ *
+ * `delta` is a rendered string rather than a number, because the three kinds are not the same arithmetic and
+ * pretending otherwise is how a percentage-point difference gets printed as a percentage: runs compare as a
+ * PERCENTAGE, a rate compares in POINTS, and a duration compares as a duration. `tone` says which way is
+ * good, which is not always up - more failed runs is not an improvement - so the caller decides rather than
+ * the sign of the number.
+ */
 const Tile = ({
   icon,
   value,
   label,
   note,
+  delta,
+  tone = 'flat',
+  title,
 }: {
   icon: ReactNode;
   value: string;
   label: string;
   note?: string;
+  delta?: string | null;
+  tone?: 'up' | 'down' | 'flat';
+  title?: string;
 }) => (
-  <div className="rounded-lg border-stroke border bg-surface-chips px-3 py-2.5">
+  <div className="rounded-lg border-stroke border bg-surface-chips px-3 py-2.5" title={title}>
     <div className="mb-0.5 flex items-center gap-1.5 text-ink-inactive">
       {icon}
       <span className="text-[0.76rem] uppercase tracking-wide">{label}</span>
     </div>
-    <strong className="block font-semibold text-[1.5rem] text-ink-primary tabular-nums leading-tight tracking-tight">
-      {value}
-    </strong>
-    {note && <span className="text-[0.76rem] text-ink-inactive">{note}</span>}
+    <div className="flex flex-wrap items-baseline gap-x-2">
+      <strong className="font-semibold text-[1.5rem] text-ink-primary tabular-nums leading-tight tracking-tight">
+        {value}
+      </strong>
+      {delta && (
+        <span
+          className={cn(
+            'text-[0.78rem] font-semibold tabular-nums',
+            tone === 'up' ? 'text-fb-green' : tone === 'down' ? 'text-fb-red-text' : 'text-ink-inactive',
+          )}
+        >
+          {delta}
+        </span>
+      )}
+    </div>
+    {note && <span className="block text-[0.76rem] text-ink-inactive">{note}</span>}
   </div>
 );
 
@@ -516,6 +567,76 @@ export const InsightsView = () => {
   const byDay = list(data?.byDay);
   const nothingYet = !!totals && runs === 0 && totals.recordings === 0 && totals.createdSkills === 0;
 
+  /* ------------------------------------------------------------------ comparing with the window before
+   *
+   * Three different arithmetics, kept apart on purpose. Runs compare as a percentage, a rate compares in
+   * POINTS - printing "+8%" for eight points is the classic way a dashboard lies quietly - and a duration
+   * compares as a duration. Every one of them returns null rather than a zero when there is nothing to
+   * compare against, so an empty previous window shows no delta instead of a confident "0%".
+   */
+  const prev = data?.previous;
+  const hadPrev = prev?.had === true;
+
+  const pace = useMemo(() => {
+    const nowRuns = num(data?.totals?.runs) ?? 0;
+    const thenRuns = num(prev?.runs) ?? 0;
+    const nowTime = (num(data?.totals?.agentHours) ?? 0) * 3600;
+    const thenTime = (num(prev?.agentHours) ?? 0) * 3600;
+    const since = hadPrev && prev?.from
+      ? `Compared with ${new Date(String(prev.from)).toLocaleDateString()} to ${new Date(String(prev.to)).toLocaleDateString()}`
+      : 'Nothing ran in the window before this one, so there is nothing to compare with.';
+
+    if (!hadPrev || thenRuns === 0) return { runs: null, runsTone: 'flat' as const, time: null, since };
+
+    const change = Math.round(((nowRuns - thenRuns) / thenRuns) * 100);
+    const timeChange = Math.round(nowTime - thenTime);
+    return {
+      runs: `${change > 0 ? '+' : ''}${change}% vs previous`,
+      /* More runs is not automatically better - it can mean more retries - so this stays neutral. The rate
+       * tile is the one that knows which direction is good. */
+      runsTone: 'flat' as const,
+      time: Math.abs(timeChange) < 30 ? null
+        : `${timeChange > 0 ? '+' : '−'}${fmtSeconds(Math.abs(timeChange))} vs previous`,
+      since,
+    };
+  }, [data?.totals?.runs, data?.totals?.agentHours, prev?.runs, prev?.agentHours, prev?.from, prev?.to, hadPrev]);
+
+  const rate = useMemo(() => {
+    const decided = (t?: { ok?: unknown; failed?: unknown }) => {
+      const ok = num(t?.ok) ?? 0;
+      const failed = num(t?.failed) ?? 0;
+      return ok + failed > 0 ? Math.round((ok / (ok + failed)) * 100) : null;
+    };
+    const now = decided(data?.totals);
+    const then = hadPrev ? decided(prev) : null;
+    const stopped = num(data?.totals?.stopped) ?? 0;
+    const running = num(data?.totals?.running) ?? 0;
+    const aside = [
+      stopped ? `${stopped} stopped` : null,
+      running ? `${running} still going` : null,
+    ].filter(Boolean).join(', ');
+
+    return {
+      now,
+      delta: now != null && then != null
+        ? `${now - then > 0 ? '+' : ''}${now - then} points`
+        : null,
+      /* Up is good here, and it is the only tile where that is true without qualification. */
+      tone: (now != null && then != null
+        ? (now > then ? 'up' : now < then ? 'down' : 'flat')
+        : 'flat') as 'up' | 'down' | 'flat',
+      note: now == null
+        ? 'no run has finished or failed yet'
+        : `of ${(num(data?.totals?.ok) ?? 0) + (num(data?.totals?.failed) ?? 0)} decided${aside ? ` · ${aside}` : ''}`,
+    };
+  }, [data?.totals, prev, hadPrev]);
+
+  /* The agent time already spent on goals that ran more than once. Not a saving - see the tile. */
+  const repeatCost = useMemo(
+    () => list(data?.repeated).reduce((sum, row) => sum + (num(row.seconds) ?? 0), 0),
+    [data?.repeated],
+  );
+
   return (
     /* Two columns, because the questions somebody wants to ask are about the numbers next to them. The
      * dashboard scrolls; the assistant does not move. Below 1280px there is not room for both, so the panel
@@ -623,27 +744,45 @@ export const InsightsView = () => {
                 <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
                   <Tile
                     icon={<Timer className="size-3.5" />}
-                    label="runs"
+                    label="agent runs"
                     value={String(runs)}
+                    delta={pace.runs}
+                    tone={pace.runsTone}
                     note={`${totals?.ok ?? 0} finished, ${totals?.failed ?? 0} failed`}
+                    title={pace.since}
                   />
                   <Tile
                     icon={<Clock className="size-3.5" />}
                     label="agent time"
                     value={fmtSeconds((totals?.agentHours ?? 0) * 3600)}
+                    delta={pace.time}
+                    tone="flat"
                     note="wall clock, start of a run to its finish"
+                    title={pace.since}
                   />
+                  {/* The denominator is the honest part, and it is on screen rather than in a comment: a
+                    * stopped run is a decision and a running one has not happened yet, so counting either
+                    * would let somebody move this number by stopping runs. */}
                   <Tile
-                    icon={<Film className="size-3.5" />}
-                    label="recordings"
-                    value={String(totals?.recordings ?? 0)}
-                    note="tasks captured as you did them"
+                    icon={<ShieldCheck className="size-3.5" />}
+                    label="success rate"
+                    value={rate.now == null ? '—' : `${rate.now}%`}
+                    delta={rate.delta}
+                    tone={rate.tone}
+                    note={rate.note}
+                    title="Finished divided by finished plus failed. Stopped and still-running are left out of both halves."
                   />
+                  {/* Where the reference says "Could save 18m/week". This endpoint has never reported a
+                    * saving, because nothing stored says how long the same task takes by hand - it says so in
+                    * its own gaps list. The measured number is the agent time already spent on the repeats. */}
                   <Tile
                     icon={<Sparkles className="size-3.5" />}
-                    label="skills made"
-                    value={String(totals?.createdSkills ?? 0)}
-                    note="from a recording or a described goal"
+                    label="worth automating"
+                    value={String(list(data.repeated).length)}
+                    note={repeatCost
+                      ? `${fmtSeconds(repeatCost)} of agent time on repeats`
+                      : 'no goal ran more than once'}
+                    title="Goals that ran more than once in this window. The time is what those runs took — not a saving, which nothing here can measure."
                   />
                 </div>
 
