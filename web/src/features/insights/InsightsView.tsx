@@ -18,7 +18,6 @@ import { useNavigate } from '@tanstack/react-router';
 import {
   AppWindow,
   ArrowRight,
-  CircleDashed,
   Clock,
   Film,
   MessageSquareText,
@@ -679,11 +678,14 @@ export const InsightsView = () => {
       <div className="min-w-0 flex-1 overflow-y-auto p-5">
       <header className="mb-4 flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1">
-          <Typography variant="h2" weight="semibold" className="text-[1.05rem]">
-            What happened, and where the time went
+          <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+            Work pulse
           </Typography>
-          <Typography variant="p" className="mt-0.5 max-w-[72ch] text-ink-inactive text-[0.85rem]">
-            Read from your own recordings and runs.{' '}
+          <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.5rem] leading-tight tracking-tight">
+            What happened, and where the leverage is
+          </Typography>
+          <Typography variant="p" className="mt-1 max-w-[76ch] text-ink-inactive text-[0.85rem]">
+            Activity, reliability and repeated work, read from your own recordings and runs.{' '}
             {data
               ? `${new Date(data.window.from).toLocaleDateString()} to ${new Date(data.window.to).toLocaleDateString()}.`
               : 'Nothing here leaves your account.'}
@@ -844,7 +846,19 @@ export const InsightsView = () => {
 
               {/* --------------------------------------------------------------- by day */}
               <Section
-                title="Day by day"
+                title="Activity by day"
+                /* Three colours with nothing naming them is a puzzle every reader solves again. The same
+                 * COUNTS the header's bar uses, so the two can never disagree about what failed. */
+                aside={counts ? (
+                  <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    {counts.filter((row) => row.key !== 'running').map((row) => (
+                      <span key={row.key} className="flex items-center gap-1 text-[0.72rem] text-ink-inactive">
+                        <span className={cn('size-2 rounded-full', row.fill)} />
+                        {row.label}
+                      </span>
+                    ))}
+                  </span>
+                ) : undefined}
                 /* The zone is named because the endpoint cuts its day boundaries in UTC, so a run at one
                  * in the morning in Kyiv lands on the previous column. Labelling the axis "days" without
                  * saying whose days is how someone comes to distrust the whole chart over one run. */
@@ -971,144 +985,150 @@ export const InsightsView = () => {
                 </Section>
               </div>
 
-              {/* ------------------------------------------------------------ where the time went */}
-              <Section
-                title="Where the time went"
-                icon={<AppWindow className="size-4 text-ink-secondary" />}
-                note="By application or site, across recordings and runs together. The bar is the share of the window's time."
-              >
-                {list(data.applications).length === 0 && !(data.unattributed && data.unattributed.seconds > 0) ? (
-                  <Quiet>Nothing in this window said which application it was in.</Quiet>
-                ) : (
-                  <>
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[520px] border-collapse text-[0.85rem]">
-                      <thead>
-                        <tr className="bg-table-header-bg text-ink-secondary">
-                          <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Where</th>
-                          <th className="px-2.5 py-2 text-right font-medium">Recordings</th>
-                          <th className="px-2.5 py-2 text-right font-medium">Runs</th>
-                          <th className="px-2.5 py-2 text-right font-medium">Time</th>
-                          <th className="rounded-r-md px-2.5 py-2 text-left font-medium">Share</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {list(data.applications).map((row) => (
-                          <tr key={`${row.kind}:${row.name}`} className="border-stroke border-b last:border-0">
-                            <td className="px-2.5 py-2">
-                              <span className="text-ink-primary">{row.name}</span>
-                              <span className="ms-2 rounded-full bg-state-hover px-1.5 py-0.5 text-[0.7rem] text-ink-secondary">
-                                {row.kind}
-                              </span>
-                            </td>
-                            <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
-                              {row.recordings}
-                            </td>
-                            <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.runs}</td>
-                            <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
-                              {fmtSeconds(row.seconds)}
-                            </td>
-                            <td className="w-[26%] px-2.5 py-2">
-                              <div className="flex items-center gap-2">
-                                <Meter fraction={asFraction(row.share)} fill="bg-brand-primary" />
-                                <span className="shrink-0 text-[0.78rem] text-ink-inactive tabular-nums">
-                                  {pct(asFraction(row.share))}
-                                </span>
-                              </div>
-                            </td>
+              {/* Two halves of one question, side by side: where the time went, and what was slow while
+                * it went. One under the other puts a screen and a half between them, and comparing them is
+                * the whole point. Each keeps its own horizontal scroller, so a table in half the width
+                * scrolls itself rather than the page. */}
+              <div className="grid gap-4 xl:grid-cols-2">
+                {/* ------------------------------------------------------------ where the time went */}
+                <Section
+                  title="Where the time went"
+                  icon={<AppWindow className="size-4 text-ink-secondary" />}
+                  note="By application or site, across recordings and runs together. The bar is the share of the window's time."
+                >
+                  {list(data.applications).length === 0 && !(data.unattributed && data.unattributed.seconds > 0) ? (
+                    <Quiet>Nothing in this window said which application it was in.</Quiet>
+                  ) : (
+                    <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[520px] border-collapse text-[0.85rem]">
+                        <thead>
+                          <tr className="bg-table-header-bg text-ink-secondary">
+                            <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Where</th>
+                            <th className="px-2.5 py-2 text-right font-medium">Recordings</th>
+                            <th className="px-2.5 py-2 text-right font-medium">Runs</th>
+                            <th className="px-2.5 py-2 text-right font-medium">Time</th>
+                            <th className="rounded-r-md px-2.5 py-2 text-left font-medium">Share</th>
                           </tr>
-                        ))}
+                        </thead>
+                        <tbody>
+                          {list(data.applications).map((row) => (
+                            <tr key={`${row.kind}:${row.name}`} className="border-stroke border-b last:border-0">
+                              <td className="px-2.5 py-2">
+                                <span className="text-ink-primary">{row.name}</span>
+                                <span className="ms-2 rounded-full bg-state-hover px-1.5 py-0.5 text-[0.7rem] text-ink-secondary">
+                                  {row.kind}
+                                </span>
+                              </td>
+                              <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
+                                {row.recordings}
+                              </td>
+                              <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.runs}</td>
+                              <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
+                                {fmtSeconds(row.seconds)}
+                              </td>
+                              <td className="w-[26%] px-2.5 py-2">
+                                <div className="flex items-center gap-2">
+                                  <Meter fraction={asFraction(row.share)} fill="bg-brand-primary" />
+                                  <span className="shrink-0 text-[0.78rem] text-ink-inactive tabular-nums">
+                                    {pct(asFraction(row.share))}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
 
-                        {/* The endpoint's own bucket, printed as a row rather than dropped. Without it
-                          * the Share column adds up to less than everything with no explanation on the
-                          * page for the difference, and a reader's only way to account for it is to
-                          * assume one of the rows above is wrong. */}
-                        {data.unattributed && data.unattributed.seconds > 0 && (
-                          <tr className="border-stroke border-b last:border-0">
-                            <td className="px-2.5 py-2">
-                              <span className="text-ink-secondary">Could not be placed</span>
-                            </td>
-                            <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
-                            <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
-                            <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
-                              {fmtSeconds(data.unattributed.seconds)}
-                            </td>
-                            <td className="w-[26%] px-2.5 py-2">
-                              <div className="flex items-center gap-2">
-                                <Meter fraction={asFraction(data.unattributed.share)} fill="bg-ink-inactive/45" />
-                                <span className="shrink-0 text-[0.78rem] text-ink-inactive tabular-nums">
-                                  {pct(asFraction(data.unattributed.share))}
-                                </span>
-                              </div>
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                  {data.unattributed && data.unattributed.seconds > 0 && (
-                    <Typography variant="p" className="mt-2 max-w-[74ch] text-ink-inactive text-[0.76rem]">
-                      {data.unattributed.why}
-                    </Typography>
+                          {/* The endpoint's own bucket, printed as a row rather than dropped. Without it
+                            * the Share column adds up to less than everything with no explanation on the
+                            * page for the difference, and a reader's only way to account for it is to
+                            * assume one of the rows above is wrong. */}
+                          {data.unattributed && data.unattributed.seconds > 0 && (
+                            <tr className="border-stroke border-b last:border-0">
+                              <td className="px-2.5 py-2">
+                                <span className="text-ink-secondary">Could not be placed</span>
+                              </td>
+                              <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
+                              <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
+                              <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
+                                {fmtSeconds(data.unattributed.seconds)}
+                              </td>
+                              <td className="w-[26%] px-2.5 py-2">
+                                <div className="flex items-center gap-2">
+                                  <Meter fraction={asFraction(data.unattributed.share)} fill="bg-ink-inactive/45" />
+                                  <span className="shrink-0 text-[0.78rem] text-ink-inactive tabular-nums">
+                                    {pct(asFraction(data.unattributed.share))}
+                                  </span>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    {data.unattributed && data.unattributed.seconds > 0 && (
+                      <Typography variant="p" className="mt-2 max-w-[74ch] text-ink-inactive text-[0.76rem]">
+                        {data.unattributed.why}
+                      </Typography>
+                    )}
+                    <CapNote cap={data.caps?.applications} what="applications and sites" />
+                    </>
                   )}
-                  <CapNote cap={data.caps?.applications} what="applications and sites" />
-                  </>
-                )}
-              </Section>
+                </Section>
 
-              {/* ------------------------------------------------------------- slowest steps */}
-              <Section
-                title="The slowest steps"
-                icon={<Clock className="size-4 text-ink-secondary" />}
-                note="Per tool: the typical call and the slow tail. Only runs that recorded per-step timing can appear here — a desktop run's steps carry no clock, so its tools are absent rather than counted as instant."
-              >
-                {list(data.slowestSteps).length === 0 ? (
-                  <Quiet>No run in this window recorded per-step timing.</Quiet>
-                ) : (
-                  (() => {
-                    const worst = Math.max(1, ...list(data.slowestSteps).map((step) => step.p90Ms));
-                    return (
-                      <ul className="space-y-2.5">
-                        {list(data.slowestSteps).map((step) => (
-                          <li key={step.tool}>
-                            <div className="flex items-baseline gap-2">
-                              <span className="min-w-0 flex-1 truncate font-mono text-[0.82rem] text-ink-primary">
-                                {step.tool}
-                              </span>
-                              <span className="text-[0.78rem] text-ink-secondary tabular-nums">
-                                {fmtMs(step.medianMs)} typical
-                              </span>
-                              <span className="text-[0.78rem] text-ink-inactive tabular-nums">
-                                {fmtMs(step.p90Ms)} at worst
-                              </span>
-                              <span className="text-[0.76rem] text-ink-inactive tabular-nums">
-                                {step.calls} call{step.calls === 1 ? '' : 's'}
-                              </span>
-                            </div>
-                            {/* Two marks on one track: the solid part is the typical call, the faint part
-                              * how much further the slow tail reaches. A tool whose tail dwarfs its median
-                              * is unreliable rather than slow, and that reads off the shape. */}
-                            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-state-hover">
-                              <div
-                                className="h-full rounded-full bg-fb-attention/35"
-                                style={{ width: pct(Math.min(1, step.p90Ms / worst)) }}
-                              >
-                                <div
-                                  className="h-full rounded-full bg-brand-primary"
-                                  style={{
-                                    width: step.p90Ms > 0 ? pct(Math.min(1, step.medianMs / step.p90Ms)) : '0%',
-                                  }}
-                                />
+                {/* ------------------------------------------------------------- slowest steps */}
+                <Section
+                  title="The slowest steps"
+                  icon={<Clock className="size-4 text-ink-secondary" />}
+                  note="Per tool: the typical call and the slow tail. Only runs that recorded per-step timing can appear here — a desktop run's steps carry no clock, so its tools are absent rather than counted as instant."
+                >
+                  {list(data.slowestSteps).length === 0 ? (
+                    <Quiet>No run in this window recorded per-step timing.</Quiet>
+                  ) : (
+                    (() => {
+                      const worst = Math.max(1, ...list(data.slowestSteps).map((step) => step.p90Ms));
+                      return (
+                        <ul className="space-y-2.5">
+                          {list(data.slowestSteps).map((step) => (
+                            <li key={step.tool}>
+                              <div className="flex items-baseline gap-2">
+                                <span className="min-w-0 flex-1 truncate font-mono text-[0.82rem] text-ink-primary">
+                                  {step.tool}
+                                </span>
+                                <span className="text-[0.78rem] text-ink-secondary tabular-nums">
+                                  {fmtMs(step.medianMs)} typical
+                                </span>
+                                <span className="text-[0.78rem] text-ink-inactive tabular-nums">
+                                  {fmtMs(step.p90Ms)} at worst
+                                </span>
+                                <span className="text-[0.76rem] text-ink-inactive tabular-nums">
+                                  {step.calls} call{step.calls === 1 ? '' : 's'}
+                                </span>
                               </div>
-                            </div>
-                          </li>
-                        ))}
-                      </ul>
-                    );
-                  })()
-                )}
-                <CapNote cap={data.caps?.slowestSteps} what="tools" />
-              </Section>
+                              {/* Two marks on one track: the solid part is the typical call, the faint part
+                                * how much further the slow tail reaches. A tool whose tail dwarfs its median
+                                * is unreliable rather than slow, and that reads off the shape. */}
+                              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-state-hover">
+                                <div
+                                  className="h-full rounded-full bg-fb-attention/35"
+                                  style={{ width: pct(Math.min(1, step.p90Ms / worst)) }}
+                                >
+                                  <div
+                                    className="h-full rounded-full bg-brand-primary"
+                                    style={{
+                                      width: step.p90Ms > 0 ? pct(Math.min(1, step.medianMs / step.p90Ms)) : '0%',
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      );
+                    })()
+                  )}
+                  <CapNote cap={data.caps?.slowestSteps} what="tools" />
+                </Section>
+              </div>
 
               {/* -------------------------------------------------------------- per skill */}
               <Section
@@ -1178,34 +1198,11 @@ export const InsightsView = () => {
                 <CapNote cap={data.caps?.skills} what="skills" />
               </Section>
 
-              {/* --------------------------------------------------------------- the gaps
-                *
-                * Quiet on purpose. These are not errors and they are not warnings: they are questions the
-                * stored data genuinely cannot answer, printed so that nobody has to wonder whether the
-                * absence of an answer means zero. A guessed number here would be believed. */}
-              {list(data.gaps).length > 0 && (
-                <section className="rounded-xl border-stroke border bg-surface-chips p-4">
-                  <div className="mb-1 flex items-center gap-1.5">
-                    <CircleDashed className="size-4 text-ink-inactive" />
-                    <Typography variant="h3" weight="semibold" className="text-[0.9rem] text-ink-secondary">
-                      What this page cannot tell you yet
-                    </Typography>
-                  </div>
-                  <Typography variant="p" className="mb-3 max-w-[74ch] text-ink-inactive text-[0.8rem]">
-                    Every number above is read from something that was recorded. These questions are not —
-                    answering them would need data nothing has written yet, so they are listed rather than
-                    estimated.
-                  </Typography>
-                  <dl className="space-y-2.5">
-                    {list(data.gaps).map((gap) => (
-                      <div key={gap.question}>
-                        <dt className="text-[0.85rem] text-ink-body">{gap.question}</dt>
-                        <dd className="text-[0.8rem] text-ink-inactive">{gap.why}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                </section>
-              )}
+              {/* The gaps used to be printed here, at the bottom of every dashboard, unasked for - and they
+                * read as a disclaimer rather than as what they are, which is answers. They are still in the
+                * endpoint's response and the assistant reads them, so "why does this not tell me what I
+                * saved" gets those exact words at the moment somebody asks it. That is where an answer
+                * belongs. */}
             </>
           )}
         </div>

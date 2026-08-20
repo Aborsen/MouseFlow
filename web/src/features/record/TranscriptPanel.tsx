@@ -27,7 +27,6 @@ import {
   AppWindow,
   ChevronRight,
   CircleDashed,
-  Clock,
   Globe,
   Sparkles,
   Trash2,
@@ -749,16 +748,70 @@ export const TranscriptPanel = ({
               {created && <span>· recorded {created}</span>}
             </div>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label="Close the transcript"
-            leftSlot={<X className="size-4" />}
-            onClick={onClose}
-          >
-            Close
-          </Button>
+          {/* The three things you can do with an open recording, together: make a skill of it, delete it,
+            * close it. They used to be a strip along the bottom, which is a permanent border and a permanent
+            * padding across the part of the panel where the text is read. */}
+          <div className="flex shrink-0 items-center gap-1.5">
+            <Button
+              size="sm"
+              leftSlot={<Sparkles className="size-4" />}
+              isLoading={making}
+              /* Disabled once it has been made rather than left pressable: a second press would put a
+                * second copy of the same macro on the account under a new id. */
+              disabled={made || removing || !!problem}
+              onClick={() => void create()}
+            >
+              {made ? 'Skill created' : 'Create skill'}
+            </Button>
+
+            {/* The way out of a cocked delete. `armed` has no timer, so without this the only ways back were
+              * pressing the destructive button again or closing the panel. */}
+            {armed && (
+              <Button variant="secondary" size="sm" onClick={() => setArmed(false)}>
+                Cancel
+              </Button>
+            )}
+
+            <Button
+              variant={armed ? 'destructive' : 'destructiveOutline'}
+              size="sm"
+              className={cn(!armed && '!size-8 !p-0')}
+              aria-label={armed ? 'Remove this recording — press again' : 'Remove this recording'}
+              title={armed ? undefined : 'Remove this recording'}
+              leftSlot={armed ? <Trash2 className="size-4" /> : undefined}
+              isLoading={removing}
+              onClick={() => void remove()}
+            >
+              {armed ? 'Remove — press again' : <Trash2 className="size-4" />}
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label="Close the transcript"
+              className="!size-8 !p-0"
+              title="Close"
+              onClick={onClose}
+            >
+              <X className="size-4" />
+            </Button>
+          </div>
         </div>
+
+        {/* Under the actions, where it belongs: at the bottom it pushed up the text somebody was reading at
+          * the exact moment it appeared. Transient, so it may change the header's height - which a header can
+          * afford and a footer over a scrolling body cannot. */}
+        {note && (
+          <Typography
+            variant="p"
+            className={cn(
+              'mt-1.5 break-words text-[0.78rem]',
+              note.kind === 'good' ? 'text-fb-green' : 'text-fb-red-text',
+            )}
+          >
+            {note.text}
+          </Typography>
+        )}
 
         {data && (
           <>
@@ -1011,61 +1064,6 @@ export const TranscriptPanel = ({
         )}
       </div>
 
-      {/* One strip, not a block. The text above it is what the panel is for, and two full-size buttons with
-        * the note on its own line above them took a chunk of that - worst of all right after an action, when
-        * the note appears and pushes everything up. */}
-      <footer className="flex shrink-0 flex-wrap items-center gap-2 border-stroke border-t px-3 py-2">
-        <Button
-          size="sm"
-          leftSlot={<Sparkles className="size-4" />}
-          isLoading={making}
-          /* Disabled once it has been made rather than left pressable: a second press would put a
-            * second copy of the same macro on the account under a new id. */
-          disabled={made || removing || !!problem}
-          onClick={() => void create()}
-        >
-          {made ? 'Skill created' : 'Create skill'}
-        </Button>
-
-        {/* Icon only until it is armed. The word on a destructive button earns its space when it is warning
-          * you - which is the second press, not the first. */}
-        <Button
-          variant={armed ? 'destructive' : 'destructiveOutline'}
-          size="sm"
-          className={cn(!armed && '!size-8 !p-0')}
-          aria-label={armed ? 'Remove this recording — press again' : 'Remove this recording'}
-          title={armed ? undefined : 'Remove this recording'}
-          leftSlot={armed ? <Trash2 className="size-4" /> : undefined}
-          isLoading={removing}
-          onClick={() => void remove()}
-        >
-          {armed ? 'Remove — press again' : <Trash2 className="size-4" />}
-        </Button>
-
-        {/* In the strip rather than above it, and one line: the note can run to a sentence and a half - "on
-          * this and any other browser you sign in from" - and on its own row it doubled the footer at the
-          * exact moment somebody is reading the result. The whole text is in the title. */}
-        {note && (
-          <span
-            title={note.text}
-            className={cn(
-              'min-w-0 flex-1 truncate text-[0.78rem]',
-              note.kind === 'good' ? 'text-fb-green' : 'text-fb-red-text',
-            )}
-          >
-            {note.text}
-          </span>
-        )}
-
-        <span className={cn(
-          'flex shrink-0 items-center gap-1 text-[0.74rem] text-ink-inactive',
-          !note && 'ms-auto',
-        )}
-        >
-          <Clock className="size-3.5" />
-          {fmtSeconds(totalSeconds)}
-        </span>
-      </footer>
     </aside>
   );
 };
