@@ -81,7 +81,9 @@ export const GalleryView = () => {
 
   return (
     <div className="p-5">
-      <div className="mb-4 flex max-w-[900px] items-center gap-3">
+      {/* Full width, like the grid under it. The 900px cap was sized for a two-column page that no
+        * longer exists, and a search field that stops two thirds of the way across reads as unfinished. */}
+      <div className="mb-4 flex items-center gap-3">
         <label className="relative min-w-0 flex-1">
           <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-ink-inactive" />
           <input

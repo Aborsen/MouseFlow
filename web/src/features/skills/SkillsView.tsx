@@ -261,7 +261,10 @@ export const SkillsView = () => {
 
   return (
     <div className="p-5">
-      <section className="mb-4 max-w-[900px] rounded-xl border-stroke border bg-surface-card p-4">
+      {/* Spans the page, like the grid of skills below it. The row inside already puts the text on the
+        * left and the actions on the right, so the width goes to the gap between them - the same shape the
+        * recordings header has. The paragraph keeps its own measure: it is prose. */}
+      <section className="mb-4 rounded-xl border-stroke border bg-surface-card p-4">
         <div className="flex flex-wrap items-center gap-3">
           <div className="min-w-0 flex-1">
             <Typography variant="span" weight="semibold" className="block text-[0.95rem]">

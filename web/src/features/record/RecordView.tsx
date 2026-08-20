@@ -343,41 +343,56 @@ export const RecordView = () => {
      * actions, and squeezing that into a 1fr column beside the recorder is what made it wrap to three lines
      * and push the page sideways. The recorder is small; it goes above. */
     <div className="flex flex-col gap-4 p-5">
-      <section className="max-w-[46rem] rounded-xl border-stroke border bg-surface-card p-4">
+      {/* Full width, like the recordings table under it. Which means the buttons inside can no longer be
+        * `fullWidth` - a 1600px "Start recording" is not a button, it is a banner - so the room is used
+        * rather than stretched into: the control on one side, what it does on the other. */}
+      <section className="rounded-xl border-stroke border bg-surface-card p-4">
         <Typography variant="h2" weight="semibold" className="mb-3 text-[0.95rem] uppercase tracking-wide text-ink-secondary">
           Record
         </Typography>
 
         {recording ? (
-          <div>
-            <div className="mb-3 flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+            <div className="flex items-center gap-2">
               <span className="size-2.5 animate-pulse rounded-full bg-fb-red" />
               <Typography variant="span" weight="semibold">Recording</Typography>
-              <span className="ms-auto font-mono text-ink-secondary text-sm tabular-nums">
+              <span className="ms-2 font-mono text-ink-secondary text-sm tabular-nums">
                 {fmtMs(live?.elapsedMs ?? 0)}
               </span>
             </div>
-            <div className="mb-3 grid grid-cols-2 gap-2 text-center">
+            {/* Beside the timer rather than stacked under it: at this width a two-column grid of counters
+              * stretched each one into a panel, and they are two numbers. */}
+            <div className="flex flex-wrap gap-2">
               {[
                 { value: live?.count ?? 0, label: 'events' },
                 { value: seenWindows.current.length, label: 'windows' },
               ].map(({ value, label }) => (
-                <div key={label} className="rounded-md border-stroke border bg-surface-chips px-2 py-1.5">
+                <div key={label} className="min-w-[5.5rem] rounded-md border-stroke border bg-surface-chips px-2.5 py-1.5 text-center">
                   <strong className="block tabular-nums">{value}</strong>
                   <span className="text-[0.75rem] text-ink-secondary">{label}</span>
                 </div>
               ))}
             </div>
-            <Button variant="destructive" fullWidth leftSlot={<Square className="size-4" />} onClick={end}>
+            <Button
+              variant="destructive"
+              className="w-full sm:ms-auto sm:w-[16rem]"
+              leftSlot={<Square className="size-4" />}
+              onClick={end}
+            >
               Stop and save
             </Button>
           </div>
         ) : (
-          <div>
-            <Button fullWidth leftSlot={<Circle className="size-3.5 fill-current" />} onClick={begin}>
+          <div className="flex flex-wrap items-start gap-x-5 gap-y-3">
+            <Button
+              className="w-full sm:w-[20rem]"
+              leftSlot={<Circle className="size-3.5 fill-current" />}
+              onClick={begin}
+            >
               Start recording
             </Button>
-            <Typography variant="p" className="mt-2 text-ink-inactive text-[0.85rem]">
+            <div className="min-w-0 flex-1">
+            <Typography variant="p" className="max-w-[80ch] text-ink-inactive text-[0.85rem]">
               Everything you click, drag and scroll gets captured until you press Stop.
               {' '}
               {health?.canName
@@ -392,7 +407,7 @@ export const RecordView = () => {
               * without the resolver records perfectly good coordinates and nothing that says what they
               * were aimed at, and nine seconds of work is cheap to redo while nine minutes is not. */}
             {health && health.canName !== true && (
-              <Typography variant="p" className="mt-2 text-fb-attention text-[0.8rem]">
+              <Typography variant="p" className="mt-2 max-w-[80ch] text-fb-attention text-[0.8rem]">
                 This agent does not read what you click on, so this recording will be coordinates only -
                 no application, no window, no control names, and no typing. Restart it with the command
                 behind the agent chip in the header first; it takes a few seconds.
@@ -403,11 +418,12 @@ export const RecordView = () => {
               * keyboard hook. Everything else records; only the typing does not, and a transcript that
               * said "nothing was typed" would then be wrong rather than empty. */}
             {health?.canName === true && health.canKeys === false && (
-              <Typography variant="p" className="mt-2 text-fb-attention text-[0.8rem]">
+              <Typography variant="p" className="mt-2 max-w-[80ch] text-fb-attention text-[0.8rem]">
                 This agent could not install its keyboard hook, so time spent typing will be missing from
                 the transcript - it will look like a pause. Everything else records normally.
               </Typography>
             )}
+            </div>
           </div>
         )}
 
