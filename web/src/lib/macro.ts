@@ -141,5 +141,22 @@ export function summarize(events: RecordedEvent[]): Summary {
   return { count: events.length, clicks, moves, durationMs };
 }
 
-export const fmtMs = (ms: number) =>
-  ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+/* A duration, in the largest unit that still says something.
+ *
+ * Four branches rather than two, because the two it had printed "28800.0s" for eight hours - a number the
+ * reader has to divide twice before it means anything. While the longest recording here was 37 seconds that
+ * never came up; a session that runs a working day puts it on screen as the first thing anybody sees.
+ *
+ * Minutes carry seconds and hours carry minutes, but neither carries three units: "8h 04m 12s" is a
+ * stopwatch reading, and nobody reading "how long was this session" wants the seconds. */
+export const fmtMs = (ms: number) => {
+  if (!Number.isFinite(ms) || ms < 0) return '0ms';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  /* 59_950, not 60_000: at 59.99 seconds the branch is chosen on the raw value and the digits are then
+   * rounded, so the old boundary printed "60.0s" - a minute, said in the unit below a minute. */
+  if (ms < 59_950) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(totalSeconds % 60).padStart(2, '0')}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+};

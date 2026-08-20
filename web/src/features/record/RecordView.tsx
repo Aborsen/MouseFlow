@@ -17,6 +17,7 @@ import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
   doAction,
+  recordDrain,
   recordStart,
   recordStatus,
   recordStop,
@@ -35,6 +36,11 @@ import {
 import { useAccount } from '@/shell/AccountProvider';
 import { hasSkillFor, saveAsSkill } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
+import { SessionStrip } from './SessionStrip';
+import {
+  CHUNK_CHOICES, type ChunkMinutes, LONG_MOVE_MS, PENDING_MAX_EVENTS, type Session,
+  ledgerEntry, partFlow, partHeader, partName, shouldCut,
+} from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
 
 /* One recording, as a row on the account.
@@ -252,6 +258,33 @@ export const RecordView = () => {
   const [playing, setPlaying] = useState<string | null>(null);
   const seenWindows = useRef<{ title: string; process: string }[]>([]);
 
+  /* A long session, while one is running, and the parts that have not reached the account yet.
+   *
+   * The ledger is in the store, because it has to survive a reload - a session is hours long and a browser
+   * that was refreshed halfway must still show what it recorded. The unsent parts are NOT in the store: they
+   * carry events, and events in localStorage is the thing the whole mechanism exists to avoid. So a reload
+   * loses an unsent part, and the ledger says so rather than pretending it arrived. */
+  const [session, setSession] = useState<Session | null>(null);
+  const pending = useRef<{ part: ReturnType<typeof ledgerEntry>; name: string; events: RecordedEvent[]; windows: { title: string; process: string }[] }[]>([]);
+  /** Chosen before the recording starts; it cannot change while one is running. */
+  const [everyMinutes, setEveryMinutes] = useState<ChunkMinutes | null>(null);
+  /** The session clock at the last cut, so "how long since" is asked of the agent rather than of wall time. */
+  const lastCutAt = useRef(0);
+  /** One cut at a time. The poller runs four times a second and a drain is not instant. */
+  const cutting = useRef(false);
+  /* What the poller needs, held where its dependencies cannot reach.
+   *
+   * The effect below is keyed on WHETHER a recording is live and nothing else - there is a paragraph on it
+   * there, because it once depended on the object it was itself rewriting four times a second, rebuilt both
+   * intervals every tick, and the one-second window sampler never lived to its first tick. Adding `session`,
+   * `cut` and `end` to those dependencies would bring the same illness back more slowly: `end` changes
+   * identity with every recording made, `cut` with every account reload. So they travel by ref, like
+   * everything else that effect only writes. It also settles the ordering question - `end` is declared below
+   * the effect and cannot be named from inside it. */
+  const sessionNow = useRef<Session | null>(null);
+  const cutNow = useRef<((why: 'clock' | 'size' | 'stop', current: Session) => Promise<{ session: Session; note: string | null; stop: boolean }>) | null>(null);
+  const endNow = useRef<(() => Promise<void>) | null>(null);
+
   const port = state.port;
 
   const begin = useCallback(async () => {
@@ -262,15 +295,105 @@ export const RecordView = () => {
     }
     if (health.recording) { setNote('Already recording.'); return; }
     try {
-      await recordStart(port);
+      /* A long session thins the pointer path, and that is not a preference - it is what makes the parts fit.
+       * See long-session.ts: movement is 93.75% of the events and 88.6% of the bytes, and at the agent's
+       * 10ms default a half-hour chunk is several times the size the account accepts. */
+      const long = everyMinutes !== null && health.canDrain === true;
+      await recordStart(port, long ? LONG_MOVE_MS : undefined);
       seenWindows.current = [];
+      pending.current = [];
+      lastCutAt.current = 0;
+      setSession(long && everyMinutes
+        ? {
+          id: `ses_${uid()}`,
+          startedAt: new Date().toISOString(),
+          endedAt: null,
+          everyMinutes,
+          moveMs: LONG_MOVE_MS,
+          parts: [],
+        }
+        : null);
       setLive({ count: 0, elapsedMs: 0 });
-      setNote(null);
+      setNote(long
+        ? `Recording as a session — a part is written every ${everyMinutes} minutes, so this can run all day.`
+        : null);
       refreshAgent();
     } catch (err) {
       setNote(err instanceof Error ? err.message : 'could not start recording');
     }
-  }, [health, navigate, port]);
+  }, [everyMinutes, health, navigate, port]);
+
+  /* Cut one part off a running session.
+   *
+   * The order matters and is the opposite of tempting: the events are taken from the agent FIRST and the
+   * account is asked SECOND. Draining is the irreversible half - once the agent has handed them over they
+   * exist nowhere else - so a failed push keeps the part in memory and retries, rather than a failed push
+   * meaning the drain never happened. */
+  const cut = useCallback(async (why: 'clock' | 'size' | 'stop', current: Session) => {
+    const text = why === 'stop' ? await recordStop(port) : await recordDrain(port);
+    const { events } = parseMacro(text);
+    const head = partHeader(text);
+    /* The agent's own part number, and the ledger's length as the fallback: an agent that does not write the
+     * `#part` line still produces countable parts. */
+    const n = head.n ?? current.parts.length + 1;
+    const atMs = head.elapsedMs ?? 0;
+
+    /* The windows seen DURING this part, not since the session began. A part is a slice of time and its
+     * window list should describe that slice - otherwise part sixteen claims every application of the day. */
+    const where = seenWindows.current.slice();
+    seenWindows.current = [];
+    lastCutAt.current = atMs;
+
+    if (!events.length) {
+      /* Half an hour with nothing in it is a real answer - the machine was idle - and writing an empty row
+       * for it would put a recording of nothing on the account every half hour. */
+      return { session: current, note: null as string | null, stop: false };
+    }
+
+    const id = uid();
+    const name = partName({ windows: where, n, startedAt: current.startedAt });
+    const entry = ledgerEntry({ id, n, events, atMs, onAccount: false });
+
+    /* Everything not yet delivered, oldest first, so a part that failed an hour ago is not overtaken by the
+     * one just cut. */
+    pending.current.push({ part: entry, name, events, windows: where });
+
+    let sent: string[] = [];
+    let problem: string | null = null;
+    try {
+      const flows = pending.current.map((p) => partFlow({
+        part: p.part, session: current, name: p.name, events: p.events, windows: p.windows, health,
+      }));
+      const saved = await push({ flows });
+      if (saved.problems.length) problem = saved.problems.join('; ');
+      else sent = pending.current.map((p) => p.part.id);
+      if (sent.length) pending.current = [];
+      await reload();
+    } catch (err) {
+      problem = err instanceof Error ? err.message : 'the account could not be reached';
+    }
+
+    const delivered = new Set(sent);
+    const parts = [...current.parts, entry].map((p) => (
+      delivered.has(p.id) ? { ...p, onAccount: true } : p
+    ));
+    const next = { ...current, parts };
+
+    const waitingEvents = pending.current.reduce((sum, p) => sum + p.events.length, 0);
+    /* Past this the session stops rather than holding a whole shift in memory - which is the thing being
+     * avoided. Said as what it is, with the count, because the parts are still recoverable until the tab
+     * closes. */
+    const tooMuch = waitingEvents > PENDING_MAX_EVENTS;
+
+    return {
+      session: next,
+      note: problem
+        ? `Part ${n} is recorded but has not reached your account (${problem}). It will be retried with the next part.${
+          tooMuch ? ' Stopping the session — too much is waiting to be sent.' : ''}`
+        : `Part ${n} saved — ${events.length} events${where.length ? ` in ${where.length} window${where.length === 1 ? '' : 's'}` : ''}.`,
+      stop: tooMuch,
+    };
+  }, [health, port, reload]);
 
   /* Two pollers while recording, at different cadences on purpose: the counter should feel live, and the
    * window list needs one sample a second at most - an application you passed through for half a second is
@@ -291,6 +414,34 @@ export const RecordView = () => {
         const s = await recordStatus(port);
         setLive({ count: s.count, elapsedMs: s.elapsedMs });
         if (!s.recording) setLive(null);
+
+        /* The cut rides the poller that is already asking. `count` is the agent's buffer - what is in THIS
+         * part - and `elapsedMs` is the session clock, so "how long since the last cut" is a subtraction
+         * rather than a second timer that could drift away from the recording it is timing.
+         *
+         * The guard is a ref, not state: this runs four times a second, a drain takes longer than that, and
+         * two overlapping drains would hand the same events to two parts. */
+        const running = sessionNow.current;
+        if (running && !cutting.current && cutNow.current) {
+          const why = shouldCut({
+            sinceLastCutMs: s.elapsedMs - lastCutAt.current,
+            eventsBuffered: s.count,
+            everyMinutes: running.everyMinutes,
+          });
+          if (why) {
+            cutting.current = true;
+            try {
+              const out = await cutNow.current(why, running);
+              setSession(out.session);
+              if (out.note) setNote(out.note);
+              /* Too much waiting to be sent: stop rather than hold a whole shift in memory. The stop takes
+               * the tail with it, so nothing recorded so far is lost by stopping. */
+              if (out.stop && endNow.current) await endNow.current();
+            } finally {
+              cutting.current = false;
+            }
+          }
+        }
       } catch (_) {
         setLive(null);
       }
@@ -317,6 +468,35 @@ export const RecordView = () => {
   }, [capturing, port]);
 
   const end = useCallback(async () => {
+    /* A session ends by cutting its tail, not by making a recording out of it.
+     *
+     * What /record/stop returns during a session is only what happened since the last cut - everything
+     * before it has already been handed over - so treating it as a whole recording would leave sixteen parts
+     * plus one row that looks like a seventeenth and behaves like something else. */
+    const running = sessionNow.current;
+    if (running) {
+      try {
+        const out = await cut('stop', running);
+        const done = { ...out.session, endedAt: new Date().toISOString() };
+        setSession(null);
+        setLive(null);
+        update((prev) => ({
+          sessions: [...(prev.sessions as Session[]).filter((x) => x.id !== done.id), done],
+        }));
+        const totals = done.parts.reduce((n, p) => n + p.events, 0);
+        const waiting = done.parts.filter((p) => !p.onAccount).length;
+        setNote(done.parts.length
+          ? `Session finished — ${done.parts.length} part${done.parts.length === 1 ? '' : 's'}, ${totals} events.${
+            waiting ? ` ${waiting} could not be sent and is only in this tab.` : ''}`
+          : 'Session finished, and nothing was captured in it.');
+      } catch (err) {
+        setLive(null);
+        setSession(null);
+        setNote(err instanceof Error ? err.message : 'could not stop the session');
+      }
+      return;
+    }
+
     try {
       const text = await recordStop(port);
       setLive(null);
@@ -368,6 +548,52 @@ export const RecordView = () => {
       setNote(err instanceof Error ? err.message : 'could not stop recording');
     }
   }, [port, state.recordings.length, update]);
+
+  /* The refs the poller reads, pointed at this render's functions. In an effect rather than inline, so a
+   * render that is thrown away cannot leave a ref aimed at a closure that never committed. */
+  useEffect(() => {
+    sessionNow.current = session;
+    cutNow.current = cut;
+    endNow.current = end;
+  }, [session, cut, end]);
+
+  /* The ledger, kept in the store on every change rather than at the end.
+   *
+   * A session runs for hours. A browser reloaded in the middle of one must still show the parts it already
+   * wrote - they are on the account, and a receipt that only appears when the session ends would make eight
+   * hours of recording look like nothing until the moment it finished. */
+  useEffect(() => {
+    if (!session) return;
+    update((prev) => ({
+      sessions: [
+        ...(prev.sessions as Session[]).filter((s) => s.id !== session.id),
+        session,
+      ],
+    }));
+  }, [session, update]);
+
+  /* Remove a session: its parts off the account, then the receipt.
+   *
+   * That order, because the reverse loses the only list of what to delete. If the tombstones fail the ledger
+   * stays and the row can be pressed again - which is recoverable - whereas a ledger dropped first would
+   * leave sixteen rows on the account that nothing on this page knows how to name. */
+  const forgetSession = useCallback(async (gone: Session) => {
+    const ids = gone.parts.filter((p) => p.onAccount).map((p) => p.id);
+    try {
+      if (ids.length) {
+        const saved = await push({ deleted: ids });
+        if (saved.problems.length) throw new Error(saved.problems.join('; '));
+        await reload();
+      }
+      update((prev) => ({
+        sessions: (prev.sessions as Session[]).filter((x) => x.id !== gone.id),
+      }));
+      setNote(`Session removed — ${ids.length} part${ids.length === 1 ? '' : 's'} deleted from your account.`);
+    } catch (err) {
+      setNote(`The session is still on your account: ${
+        err instanceof Error ? err.message : 'the account could not be reached'}`);
+    }
+  }, [reload, update]);
 
   /* Which recording's transcript is open. One at a time, and owned here rather than in the table, because the
    * panel is a sibling of the whole page rather than of a row. */
@@ -580,17 +806,69 @@ export const RecordView = () => {
               transcript — it will look like a pause. Everything else records normally.
             </Typography>
           ) : (
-            /* One line at this width. It carried an 86ch measure, which is right for running prose and wrong
-              * for a caption in a status card - the card is 1424px and the sentence was capped at a third of
-              * it, so it wrapped to three lines of small print. The long form of all of this is in the
-              * transcript's own `captured` line, where somebody reading a recording actually meets it. */
-            <Typography variant="p" className="text-ink-inactive text-[0.85rem]">
-              {recording
-                ? 'Capturing every click, drag, scroll and keystroke — press stop when the task is done.'
-                : 'Captures every click, drag and scroll, with the application, window and control each one landed on. Typing is timed, never read.'}
-            </Typography>
+            /* One line at this width, and the session control on the same line.
+              *
+              * The caption carried an 86ch measure, which is right for running prose and wrong for a caption
+              * in a status card - the card is 1424px and the sentence was capped at a third of it, so it
+              * wrapped to three lines of small print. The long form of all of this is in the transcript's own
+              * `captured` line, where somebody reading a recording actually meets it.
+              *
+              * The chooser lives in this slot deliberately: it is the slot that exists so the card cannot
+              * change height, and a control that appears above the caption when idle and vanishes when
+              * recording would undo exactly that. Idle shows the choice; a running session shows its
+              * readout; one slot, one height. */
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              <Typography variant="p" className="min-w-0 flex-1 text-ink-inactive text-[0.85rem]">
+                {recording
+                  ? 'Capturing every click, drag, scroll and keystroke — press stop when the task is done.'
+                  : 'Captures every click, drag and scroll, with the application, window and control each one landed on. Typing is timed, never read.'}
+              </Typography>
+
+              {session ? (
+                <span className="shrink-0 text-[0.8rem] text-ink-secondary tabular-nums">
+                  Session · part {session.parts.length + 1} · {session.parts.length} written · a cut every{' '}
+                  {session.everyMinutes} min
+                </span>
+              ) : recording ? null : health?.canDrain !== true ? (
+                /* Said rather than hidden. An agent older than 0.8.0 has no way to hand over events without
+                  * stopping, so a session cannot be offered at all - and a control that simply is not there
+                  * reads as a feature this product does not have. */
+                <span className="shrink-0 text-[0.8rem] text-ink-inactive">
+                  {health
+                    ? 'Long sessions need agent 0.8.0 — this one stops to hand over what it recorded.'
+                    : ''}
+                </span>
+              ) : (
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <span className="text-[0.8rem] text-ink-inactive">Write a part every</span>
+                  {([null, ...CHUNK_CHOICES] as (ChunkMinutes | null)[]).map((choice) => (
+                    <button
+                      key={String(choice)}
+                      type="button"
+                      onClick={() => setEveryMinutes(choice)}
+                      className={cn(
+                        'rounded-md border px-2 py-1 text-[0.78rem] transition-colors duration-base',
+                        everyMinutes === choice
+                          ? 'border-brand-primary/40 bg-brand-primary/15 font-semibold text-brand-primary'
+                          : 'border-stroke text-ink-secondary hover:bg-state-hover',
+                      )}
+                    >
+                      {choice === null ? 'One recording' : `${choice} min`}
+                    </button>
+                  ))}
+                </span>
+              )}
+            </div>
           )
         }
+      />
+
+      {/* Sessions above the recordings table: a session is the bigger object, and its parts are on the
+        * account rather than in this browser, so they do not appear in the table below at all. */}
+      <SessionStrip
+        sessions={state.sessions as Session[]}
+        onView={(partId) => setViewing((was) => (was === partId ? null : partId))}
+        onForget={(gone) => { void forgetSession(gone); }}
       />
 
       <RecordingsTable

@@ -147,10 +147,27 @@ export const pulse = (port: number) => agentCall<{ ok: true; grid: string }>(por
 export const doAction = (port: number, body: string) =>
   agentCall<{ ok: true }>(port, '/do', { method: 'POST', body, contentType: 'text/plain' });
 
-export const recordStart = (port: number) =>
-  agentCall<{ ok: true }>(port, '/record/start', { method: 'POST' });
+/* `moveMs` thins the pointer path for a session meant to last hours - see features/record/long-session.ts
+ * for the arithmetic. Omitted for an ordinary recording, and then the agent keeps the default it was started
+ * with, so nothing about a short recording changes. */
+export const recordStart = (port: number, moveMs?: number) =>
+  agentCall<{ ok: true; moveMs?: number }>(
+    port,
+    `/record/start${moveMs ? `?moveMs=${Math.round(moveMs)}` : ''}`,
+    { method: 'POST' },
+  );
+/* `count` is what is in the agent's buffer NOW, which after a drain is not what the session has recorded -
+ * the caller adds up the chunks it was handed. `part` tells the two apart: 0 means nothing has been drained
+ * and `count` is the whole recording. Both absent before 0.8.0. */
 export const recordStatus = (port: number) =>
-  agentCall<{ recording: boolean; count: number; elapsedMs: number }>(port, '/record/status');
+  agentCall<{ recording: boolean; count: number; elapsedMs: number; part?: number; moveMs?: number }>(
+    port, '/record/status',
+  );
+/* Takes what has piled up and LEAVES THE RECORDING RUNNING. 409 when it is not running, which is a different
+ * answer from an empty body - "nothing happened in the last half hour" and "there is no recording" have to be
+ * distinguishable, or a chunker writes an empty part every half hour for as long as the tab stays open. */
+export const recordDrain = (port: number) =>
+  agentCall<string>(port, '/record/drain', { method: 'POST', text: true });
 export const recordStop = (port: number) =>
   agentCall<string>(port, '/record/stop', { method: 'POST', text: true });
 

@@ -322,9 +322,14 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         const runs = Array.isArray(body.runs) ? body.runs : [];
         for (const run of runs) pushedRuns.push(run);
 
+        /* The counts where the real endpoint puts them - top level - not under a `saved` key that only ever
+         * existed in the type. A fixture answering the type instead of the server is a fixture that confirms
+         * a mistake. */
         return json(res, 200, {
           ok: true,
-          saved: { flows: flows.length, runs: runs.length },
+          flows: flows.length,
+          runs: runs.length,
+          deleted: Array.isArray(body.deleted) ? body.deleted.length : 0,
           problems: [],
         });
       });

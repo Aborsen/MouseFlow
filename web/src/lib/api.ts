@@ -166,7 +166,10 @@ export const signOut = () =>
 export const pull = () => call<{ ok: true; flows: Flow[]; runs: Run[]; you: Account }>('/api/sync');
 
 export const push = (payload: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] }) =>
-  call<{ ok: true; saved: { flows: number; runs: number }; problems: string[] }>('/api/sync', {
+  /* The shape api/sync.js actually sends. It used to say `saved: { flows, runs }`, which is not on the wire
+   * at all - the counts are top-level - and nothing noticed because the only field anybody reads is
+   * `problems`, which is top-level in both. A test reading `flows` off a real response is what found it. */
+  call<{ ok: true; flows: number; runs: number; deleted: number; problems: string[] }>('/api/sync', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),

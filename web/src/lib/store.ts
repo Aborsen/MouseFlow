@@ -55,9 +55,20 @@ export interface FlowStep {
   delayAfterMs: number;
 }
 
+/* A long session, as this browser remembers it: counts, never events.
+ *
+ * Sixteen half-hour parts is a few megabytes of events, and one origin gets about five for EVERY recording
+ * together - so the events live on the account, which is where the transcript reads every recording from
+ * anyway, and this is the receipt. The shape is defined in features/record/long-session.ts, next to the
+ * arithmetic that explains why it exists; the store only has to persist it.
+ *
+ * `unknown[]` rather than the type: lib/ is below features/ here, and importing upward to name a field would
+ * be the first such edge in this codebase. The one place that reads these casts once, on the way out. */
 export interface Console {
   port: number;
   recordings: Recording[];
+  /** Long recording sessions and their parts. See features/record/long-session.ts for the shape. */
+  sessions: unknown[];
   flow: FlowStep[];
   startDelayMs: number;
   flowRepeat: number;
@@ -67,6 +78,7 @@ export interface Console {
 const EMPTY: Console = {
   port: 8787,
   recordings: [],
+  sessions: [],
   flow: [],
   startDelayMs: 3000,
   flowRepeat: 1,
@@ -83,6 +95,7 @@ function read(): Console {
       ...saved,
       // Trusted only as far as its shape: this is data an older build wrote.
       recordings: Array.isArray(saved.recordings) ? saved.recordings : [],
+      sessions: Array.isArray(saved.sessions) ? saved.sessions : [],
       flow: Array.isArray(saved.flow) ? saved.flow : [],
       port: Number.isFinite(saved.port) ? (saved.port as number) : 8787,
     };
