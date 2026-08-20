@@ -159,6 +159,18 @@ export const RecordView = () => {
               version: 1,
               kind: 'recorded',
               agent: 'desktop',
+              /* What the agent said about ITSELF, now, because later nothing can reconstruct it.
+               *
+               * "Nothing was typed" and "the keyboard was not being watched" produce an identical
+               * recording, and the transcript was asserting the first without being able to tell - a 0.6.0
+               * agent names every click it lands on and hooks no keyboard at all, so the named clicks it
+               * was reasoning from proved nothing. Written from /health at the moment of recording, which
+               * is the only moment the answer exists. */
+              recorder: {
+                version: health?.version ?? null,
+                canName: health?.canName === true,
+                canKeys: health?.canKeys === true,
+              },
               name: made.name.slice(0, 80),
               events: made.events,
               windows: made.windows,

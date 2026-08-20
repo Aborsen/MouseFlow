@@ -22,7 +22,7 @@
  * model quotes back and the numbers an edit resolves must come from one place. Both entry points it
  * offers are PURE functions over a payload:
  *
- *   transcribe(flow)                       -> { flow, summary, segments, gaps }
+ *   transcribe(flow)                       -> { flow, story, summary, segments, gaps }
  *   removeSteps(payload, numbers, source)  -> { payload, removed, remaining }, or it throws
  *
  * It is imported LAZILY. api/chat.js says plainly why it does not statically import api/insights.js:
@@ -839,6 +839,12 @@ export function recordingTools({ sql, userId }) {
               windows: nonEmpty(flow.windows) || undefined,
             },
             edited: editedNote(edits) || undefined,
+            /* The narrative, first. It is the recording told in order - four short paragraphs where the
+             * step list is hundreds of lines - so a model answering "what did I do here" has the answer
+             * before it starts reading coordinates. It goes through the same budget as everything else:
+             * `assemble` measures the whole result, so this competes for room rather than being added on
+             * top of a result already built to fit. */
+            story: nonEmpty(bounded(transcript.story)) || undefined,
             summary: bounded(transcript.summary) || null,
             segments: kept,
             detail: {

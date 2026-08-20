@@ -135,6 +135,28 @@ function isoOf(value) {
  * only reached by a caller that read the column as text - and telling that caller "this recording has
  * no events" would be a wrong story about their data rather than a wrong shape in their code. A string
  * that does not parse is left as one, which lands in the "cannot read this payload" transcript. */
+/* What the agent said about ITSELF when it recorded this.
+ *
+ * Written by the client from /health at the moment of recording, because it is the only way to answer a
+ * question the events cannot: "nothing was typed" and "the keyboard was not being watched" produce an
+ * identical recording, and which one it was decides whether a transcript may say the work involved no
+ * typing. Guessing from the events was wrong in a way worth remembering - an 0.6.0 agent resolves what
+ * every click landed on and hooks no keyboard at all, so named clicks proved nothing about typing.
+ *
+ * Absent on every recording made before this was written, and absent has to stay answerable as "not
+ * known" rather than collapsing into either yes or no. */
+function recorderOf(payload) {
+  const raw = payload && typeof payload.recorder === 'object' && payload.recorder !== null
+    ? payload.recorder : null;
+  if (!raw) return { version: null, canName: null, canKeys: null };
+  const flag = (value) => (value === true ? true : value === false ? false : null);
+  return {
+    version: oneLine(raw.version, 20) || null,
+    canName: flag(raw.canName),
+    canKeys: flag(raw.canKeys),
+  };
+}
+
 function payloadOf(value) {
   if (value && typeof value === 'object') return value;
   if (typeof value === 'string') {
@@ -1550,6 +1572,7 @@ export function transcribe(flow) {
   const source = sourceOf(row, payload, events);
   const seenWindows = windowsOf(payload);
   const windows = seenWindows.windows;
+  const recorder = recorderOf(payload);
 
   const head = {
     id: oneLine(row.client_id != null ? row.client_id
@@ -1646,8 +1669,17 @@ export function transcribe(flow) {
           ? counts.keys + ' keystroke' + (counts.keys === 1 ? '' : 's') + ' over '
             + spanText(counts.typedMs) + ', counted and timed but never read: which key was pressed is '
             + 'not recorded anywhere, so this carries no text. '
-          : 'No typing was captured, which on this agent means none happened rather than that it was '
-            + 'not watched. ')
+          /* Three different sentences, because "no typing" has three different meanings and only the
+           * recorder's own answer separates them. Saying the first one unconditionally was a claim this
+           * file had no way to support. */
+          : recorder.canKeys === true
+            ? 'No typing happened: this agent watches the keyboard - it records that a key was pressed '
+              + 'and when - and no key was pressed. '
+            : recorder.canKeys === false
+              ? 'Typing is MISSING rather than absent: this agent could not install its keyboard hook, so '
+                + 'any time spent typing is in here as a pause. '
+              : 'No typing was captured, and whether that means none happened cannot be told from this '
+                + 'recording: it does not say whether the agent was watching the keyboard. ')
         + 'No screenshots.'
       : 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement, with the '
         + 'windows this recording saw in front but not which step was in which. No element names at '
@@ -1669,6 +1701,7 @@ export function transcribe(flow) {
     windowTotal: seenWindows.total,
     tabs: derived.tabs,
     perStep,
+    recorder,
     empty: events.length === 0,
   });
 
@@ -1787,8 +1820,17 @@ function gapsFor(context) {
               + context.counts.typeRuns + ' run' + (context.counts.typeRuns === 1 ? '' : 's')
               + ', and which field each run went into is above where the accessibility tree could name '
               + 'it. What was written is nowhere.'
-            : 'Nothing was typed during this one - or it was recorded by an agent older than 0.7.0, '
-              + 'which hooked the mouse only. The summary above says which.')
+            /* The same three cases as `captured`, and they have to agree with it: this gap and that
+             * sentence used to say different things about the same recording two inches apart. */
+            : context.recorder.canKeys === true
+              ? 'Nothing was typed during this one, and that is a finding rather than a silence: the '
+                + 'agent reported it was watching the keyboard when this was recorded.'
+              : context.recorder.canKeys === false
+                ? 'The agent could not install its keyboard hook when this was recorded, so time spent '
+                  + 'typing is in here as a pause and no count of it exists.'
+                : 'Nothing was typed during this one - or it was recorded by an agent that hooked the '
+                  + 'mouse only, which is every build before 0.7.0. This recording does not say which, '
+                  + 'because it was made before the agent started reporting what it could do.')
         : 'extension/content.js stopped capturing text because framework-controlled fields and editors '
           + 'inside iframes dropped it silently, and a recording that quietly loses half a message is '
           + 'worse than one that never claimed to carry it. '

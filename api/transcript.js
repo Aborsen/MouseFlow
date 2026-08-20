@@ -1,7 +1,7 @@
 /* One recording, read back as something a person can check - and edited when it is wrong.
  *
  *   GET  /api/transcript?flow=<clientId>
- *        -> { ok, flow, summary, segments, gaps }
+ *        -> { ok, flow, story, summary, segments, gaps }
  *
  *   POST /api/transcript?flow=<clientId>   { remove: [3, 4, 5] }
  *                                         { keep:   [1, 2, 9] }
@@ -311,6 +311,12 @@ function build(flow) {
   if (!t.summary || typeof t.summary !== 'object') missing.push('summary');
   if (!Array.isArray(t.segments)) missing.push('segments');
   if (!Array.isArray(t.gaps)) missing.push('gaps');
+  /* Checked because it was NOT, and that is exactly how it went missing: this route enumerates the keys it
+   * serves rather than passing the builder's result through, so a key the check does not name is a key
+   * that can be built and then quietly dropped here. It was, for one deploy - the page rendered no
+   * narrative at all and looked like the feature had not shipped. Anything added to the contract belongs
+   * in this list on the same commit. */
+  if (!Array.isArray(t.story)) missing.push('story');
   if (missing.length) {
     throw halt(500, 'the transcript builder returned no ' + missing.join(', ')
       + ' for this recording, so there is nothing safe to show');
@@ -372,6 +378,8 @@ async function show(res, sql, userId, flowId) {
   return res.status(200).json({
     ok: true,
     flow: t.flow,
+    // The recording in words, and the reason somebody opened this. Served before the steps it summarises.
+    story: t.story,
     /* `summary.gaps` is a count of the list below it, and this route APPENDS to that list - so the
      * count is recomputed here rather than passed through. Served as the builder wrote it, an edited
      * recording came back saying eight gaps over a list of nine, and the one it was not counting was
