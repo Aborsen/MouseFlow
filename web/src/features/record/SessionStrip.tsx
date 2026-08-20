@@ -113,9 +113,14 @@ export const SessionStrip = ({ sessions, onView, onForget }: {
                       <span className="w-12 shrink-0 font-mono text-[0.74rem] text-ink-inactive tabular-nums">
                         {String(part.n).padStart(2, '0')}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-[0.8rem] text-ink-secondary tabular-nums">
-                        at {fmtMs(part.atMs)} · {part.events} events · {part.clicks} click
-                        {part.clicks === 1 ? '' : 's'} · {fmtMs(part.ms)} of activity
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span className="truncate text-[0.82rem] text-ink-secondary">
+                          {part.name || `part ${part.n}`}
+                        </span>
+                        <span className="truncate text-[0.76rem] text-ink-inactive tabular-nums">
+                          at {fmtMs(part.atMs)} · {part.events} events · {part.clicks} click
+                          {part.clicks === 1 ? '' : 's'} · {fmtMs(part.ms)} of activity
+                        </span>
                       </span>
                       {part.onAccount ? (
                         <span className="inline-flex shrink-0 items-center gap-1 text-[0.74rem] text-ink-inactive">

@@ -39,7 +39,7 @@ import { RecordingsTable, replayOf } from './RecordingsTable';
 import { SessionStrip } from './SessionStrip';
 import {
   CHUNK_CHOICES, type ChunkMinutes, LONG_MOVE_MS, PENDING_MAX_EVENTS, type Session,
-  ledgerEntry, partFlow, partHeader, partName, shouldCut,
+  ledgerEntry, partFlow, partHeader, partName, sessionOf, shouldCut,
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
 
@@ -352,7 +352,7 @@ export const RecordView = () => {
 
     const id = uid();
     const name = partName({ windows: where, n, startedAt: current.startedAt });
-    const entry = ledgerEntry({ id, n, events, atMs, onAccount: false });
+    const entry = ledgerEntry({ id, n, name, events, atMs, onAccount: false });
 
     /* Everything not yet delivered, oldest first, so a part that failed an hour ago is not overtaken by the
      * one just cut. */
@@ -885,6 +885,11 @@ export const RecordView = () => {
           && roleOf(flow) !== SKILL_ROLE
           && !flow.id.startsWith('dr_')
           && !state.recordings.some((rec) => rec.id === flow.id)
+          /* A session part is on the account and not in this browser BY DESIGN - that is the whole mechanism -
+           * so calling it a stray is technically true and substantively wrong. Worse, the strip offers to
+           * "bring them here", which for sixteen parts is exactly the several megabytes of events that made
+           * eight hours impossible in the first place. */
+          && !sessionOf(flow.payload)
         ))}
         onAdopt={(flow) => adoptOrphan(flow)}
         onImport={(files) => { void importFiles(files); }}
@@ -901,14 +906,22 @@ export const RecordView = () => {
         <aside className="fixed inset-y-0 right-0 z-40 flex w-[34rem] max-w-full flex-col border-stroke border-l bg-surface-card2 shadow-dropdown">
           <TranscriptPanel
             flowId={viewing}
-            name={state.recordings.find((rec) => rec.id === viewing)?.name ?? 'Recording'}
+            /* A part is not among the local recordings - deliberately - so its name comes from the session
+              * ledger. Without this every part's transcript was headed "Recording". */
+            name={state.recordings.find((rec) => rec.id === viewing)?.name
+              ?? (state.sessions as Session[])
+                .flatMap((s) => s.parts).find((p) => p.id === viewing)?.name
+              ?? 'Recording'}
             /* Offered only when this browser actually holds the events. Without them there is nothing to put
              * back, and a button that cannot work is worse than the plain 404. */
             onRestore={state.recordings.some((rec) => rec.id === viewing)
               ? () => restore(viewing)
               : undefined}
             onAnalyze={() => {
-              askAbout(viewing, state.recordings.find((rec) => rec.id === viewing)?.name ?? 'Recording');
+              askAbout(viewing, state.recordings.find((rec) => rec.id === viewing)?.name
+                ?? (state.sessions as Session[])
+                  .flatMap((s) => s.parts).find((p) => p.id === viewing)?.name
+                ?? 'Recording');
               void navigate({ to: '/dashboard' });
             }}
             onClose={() => setViewing(null)}

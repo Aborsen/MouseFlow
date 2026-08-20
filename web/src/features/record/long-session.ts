@@ -61,6 +61,13 @@ export interface SessionPart {
   id: string;
   /** 1-based, in the order they were cut. */
   n: number;
+  /* What it is called, kept in the ledger although the events are not.
+   *
+   * The transcript panel takes its heading from the recordings THIS BROWSER holds, and a part is deliberately
+   * not one of them - so opening a part's transcript was headed "Recording". A name is a few dozen bytes
+   * against the several hundred kilobytes of events that stay on the account; the reason for the ledger does
+   * not extend to it. */
+  name: string;
   events: number;
   clicks: number;
   ms: number;
@@ -135,11 +142,12 @@ export const partName = (
 
 /** The ledger entry for a part, from the part itself. Counts, never events - that is the whole point. */
 export const ledgerEntry = (
-  { id, n, events, atMs, onAccount }:
-  { id: string; n: number; events: RecordedEvent[]; atMs: number; onAccount: boolean },
+  { id, n, name, events, atMs, onAccount }:
+  { id: string; n: number; name: string; events: RecordedEvent[]; atMs: number; onAccount: boolean },
 ): SessionPart => ({
   id,
   n,
+  name,
   events: events.length,
   clicks: clicksIn(events),
   ms: msIn(events),
