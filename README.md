@@ -33,14 +33,21 @@ index | X | Y | delayMs | action
 Open the app and follow the six-step panel. It is mostly buttons, and it detects each step
 rather than asking you to confirm it:
 
-1. **Copy the start command** — one line, pre-filled with your origin
-2. **Paste it into PowerShell** — auto-completes the moment the agent connects
-3. **Keep it running after you log in** — one click, or skip
-4. **Record something** — starts the recorder
-5. **Add it to the flow**
-6. **Run it**
+1. **Copy the install command** — one line, pre-filled with your origin
+2. **Paste it into PowerShell (Windows) or Terminal (macOS)** — auto-completes the moment the
+   agent connects
+3. **On macOS, allow Accessibility and Screen Recording** — reported one at a time, live, from
+   the agent's own `/health`
+4. **Keep it running after you log in** — one click, or skip
+5. **Record something** — starts the recorder
+6. **Add it to the flow**, then **run it**
 
-The command in step 1 pipes the agent straight into a scriptblock:
+The screen shows the command for the platform you are on, and both are always reachable — reading
+one out to somebody on the other kind of machine is a real thing that happens.
+
+### Windows
+
+The command pipes the agent straight into a scriptblock:
 
 ```powershell
 & ([scriptblock]::Create((irm https://your-app.vercel.app/agent/mouseflow-agent.ps1))) -AllowOrigin https://your-app.vercel.app
@@ -52,6 +59,27 @@ Nothing is downloaded, unblocked, or exempted from the execution policy — but 
 ```powershell
 & ([scriptblock]::Create((Get-Content "$env:USERPROFILE\Downloads\mouseflow-agent.ps1" -Raw))) -AllowOrigin https://your-app.vercel.app
 ```
+
+### macOS
+
+```bash
+curl -fsSL https://your-app.vercel.app/agent/install-mac.sh | bash -s -- --origin https://your-app.vercel.app
+```
+
+This one **compiles** the agent rather than downloading it, and that is not a preference. There is
+no Apple Developer certificate in this project, so a prebuilt binary arrives quarantined and
+Gatekeeper refuses it — the user would have to strip the quarantine attribute by hand, which is
+worse advice and worse security. A binary compiled on the machine is never quarantined. The cost
+is Xcode Command Line Tools (`xcode-select --install`), which the installer names if they are
+missing; the gain is no certificate, no notarisation and no Gatekeeper dialog.
+
+Two permissions follow, and neither can be granted by an installer: **Accessibility** for the
+event tap, for reading another application's accessibility tree and for posting clicks, and
+**Screen Recording** for screenshots and for other applications' window titles. The agent reports
+both on `/health`, so the Connections screen ticks them individually as you grant them. A rebuild
+invalidates the grant — macOS ties it to the exact binary — so an update may ask again.
+
+`--uninstall` removes the launch agent and the installed files.
 
 **Do not use `-File`.** On any machine whose execution policy comes from Group Policy — most
 corporate estates — the `MachinePolicy` and `UserPolicy` scopes outrank the
@@ -217,7 +245,10 @@ moves that are far enough apart in both time and space carry information.
 index.html   app.css   app.js        the whole UI, no framework, no build
 manifest.webmanifest   sw.js         installable + offline app shell
 icons/                               PWA icons
-agent/mouseflow-agent.ps1            the local agent, single file
+agent/mouseflow-agent.ps1            the Windows agent, single file
+agent/mouseflow-agent.swift          the macOS agent, single file
+agent/install-mac.sh                 fetches and compiles the macOS agent
+agent/PROTOCOL.md                    what any agent must implement, and why each rule exists
 ```
 
 ## On "why not make it fully web-based"

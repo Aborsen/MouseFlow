@@ -1,0 +1,1951 @@
+/*
+ MouseFlow agent for macOS — the second implementation of agent/PROTOCOL.md.
+
+ Same port, same paths, same bodies as the Windows agent. The client (web/src/lib/agent.ts) is shared and
+ knows nothing about which platform answered; the only per-platform difference is the command shown on the
+ Connections screen. Where this file departs from the PowerShell agent it is because the platform forces it,
+ and each of those is commented where it happens.
+
+ WHAT MACOS FORCES, AND WHERE IT SHOWS UP
+
+ 1. Permissions are the install story, not a detail. Posting events and reading another application's
+    accessibility tree need Accessibility; capturing the screen and reading other applications' window
+    titles need Screen Recording. Both are granted by the user, per-binary, in System Settings, and cannot
+    be granted by any code here. So /health reports them honestly rather than claiming a capability the
+    first call will silently fail at: `canSee` follows Screen Recording and `canName` follows Accessibility.
+    On Windows both are unconditionally true; here a false is a real answer and the Connections screen says
+    which switch to flip.
+
+ 2. Points, not pixels. CGEvent works in global display points; a screenshot comes back in backing pixels,
+    which on a Retina display is twice that. This is the same trap the Windows agent hit from the other
+    direction (input in physical pixels, a recording made at one display scale replaying wrong at another),
+    and it is handled the same way: /shot reports `scale` and `originX`/`originY`, the client converts in
+    exactly one place, and everything crossing the wire is in the space CGEvent accepts.
+
+ 3. The event tap has a timeout, like the Windows hook, and the OS disables it rather than telling anybody.
+    Same rule as the protocol states: the tap queues coordinates, a worker resolves them, and .tapDisabledBy*
+    is caught and the tap re-enabled.
+
+ UNVERIFIED, AND SAID SO
+ This was written on Windows, so it has never been compiled or run. install-mac.sh compiles it on the
+ machine that will use it — which is also what keeps it out of Gatekeeper's way, since a binary built
+ locally is never quarantined. The first run is therefore the first compile: if this file has a mistake in
+ it, swiftc says so before anything is installed.
+*/
+
+import AppKit
+import ApplicationServices
+import CoreGraphics
+import Darwin
+import Foundation
+import ImageIO
+
+let VERSION = "0.8.0"
+
+// ---------------------------------------------------------------- arguments
+
+/* Same three the Windows agent takes, same defaults. `--allow-origin` is echoed as a response header and,
+ * as on Windows, is not used to reject anything - see the Authentication section of the protocol, which is
+ * being replaced and which a second implementation must not invent its own answer to. */
+var port: UInt16 = 8787
+var allowOrigin = "*"
+var moveThrottleMsDefault = 10
+var moveMinPx = 3
+
+do {
+    var args = Array(CommandLine.arguments.dropFirst())
+    while let arg = args.first {
+        args.removeFirst()
+        switch arg {
+        case "--port":
+            if let v = args.first, let n = UInt16(v) { port = n; args.removeFirst() }
+        case "--allow-origin":
+            if let v = args.first { allowOrigin = v; args.removeFirst() }
+        case "--move-throttle-ms":
+            if let v = args.first, let n = Int(v) { moveThrottleMsDefault = n; args.removeFirst() }
+        case "--move-min-px":
+            if let v = args.first, let n = Int(v) { moveMinPx = n; args.removeFirst() }
+        case "--help", "-h":
+            print("""
+            mouseflow-agent \(VERSION)
+
+              --port N              listen on 127.0.0.1:N (default 8787)
+              --allow-origin URL    echoed in Access-Control-Allow-Origin
+              --move-throttle-ms N  minimum gap between recorded moves (default 10)
+              --move-min-px N       minimum cursor travel before a move is recorded (default 3)
+            """)
+            exit(0)
+        default:
+            break
+        }
+    }
+}
+
+// ---------------------------------------------------------------- permissions
+
+/* Asked, not assumed, and asked separately for each one.
+ *
+ * The failure this prevents is specific and was already met on Windows in a different form: an agent that
+ * cannot read the accessibility tree still records perfectly good coordinates, so the recording looks fine
+ * and the transcript is a list of numbers. Here the same shape of failure would be a screenshot API that
+ * returns nil and a window list with no titles in it - which reads as "the screen is empty", not as "you
+ * have not granted this". So both are reported on /health and the app says which switch to flip. */
+enum Permission {
+    /// Accessibility: needed to POST input, to tap events, and to read any other application's tree.
+    static var accessibility: Bool { AXIsProcessTrusted() }
+
+    /// Screen Recording: needed for /shot, /pulse, and for other applications' window TITLES in /windows.
+    static var screenRecording: Bool {
+        if #available(macOS 10.15, *) { return CGPreflightScreenCaptureAccess() }
+        return true
+    }
+
+    /* Both prompts are one-shot and only appear if the answer is not already stored, so calling them at
+     * startup costs nothing when the permissions are in place - and when they are not, the dialog is the
+     * clearest possible instruction. */
+    static func ask() {
+        if !accessibility {
+            let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            _ = AXIsProcessTrustedWithOptions([key: kCFBooleanTrue] as CFDictionary)
+        }
+        if #available(macOS 10.15, *), !screenRecording {
+            _ = CGRequestScreenCaptureAccess()
+        }
+    }
+}
+
+// ---------------------------------------------------------------- geometry
+
+/* The desktop as one rectangle, in POINTS, which is the space CGEvent speaks.
+ *
+ * A display placed left of or above the main one gives a negative origin, exactly as on Windows, so the
+ * origin travels with every screenshot rather than being assumed to be zero. */
+struct Desktop {
+    static var rect: CGRect {
+        var union = CGRect.null
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        if count == 0 { return CGRect(x: 0, y: 0, width: 1920, height: 1080) }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &ids, &count)
+        for id in ids.prefix(Int(count)) {
+            union = union.isNull ? CGDisplayBounds(id) : union.union(CGDisplayBounds(id))
+        }
+        return union.isNull ? CGRect(x: 0, y: 0, width: 1920, height: 1080) : union
+    }
+
+    /// Refused rather than clamped. The OS would place an out-of-bounds click somewhere real; the protocol
+    /// says bounds-check and report, because a click that lands "somewhere" is worse than one that did not.
+    static func contains(x: Double, y: Double) -> Bool {
+        let r = rect.insetBy(dx: -1, dy: -1)
+        return x >= r.minX && x <= r.maxX && y >= r.minY && y <= r.maxY
+    }
+}
+
+// ---------------------------------------------------------------- small helpers
+
+func clip(_ text: String, _ max: Int) -> String {
+    if text.count <= max { return text }
+    return String(text.prefix(max - 1)) + "\u{2026}"
+}
+
+func jsonString(_ s: String) -> String {
+    var out = "\""
+    for ch in s.unicodeScalars {
+        switch ch {
+        case "\"": out += "\\\""
+        case "\\": out += "\\\\"
+        case "\n": out += "\\n"
+        case "\r": out += "\\r"
+        case "\t": out += "\\t"
+        default:
+            if ch.value < 0x20 {
+                out += String(format: "\\u%04x", ch.value)
+            } else {
+                out.unicodeScalars.append(ch)
+            }
+        }
+    }
+    return out + "\""
+}
+
+func jsonBool(_ b: Bool) -> String { b ? "true" : "false" }
+
+/// One number out of a query string, written once because /shot and /record/start both want one.
+func queryInt(_ query: String, _ name: String, _ fallback: Int) -> Int {
+    for pair in query.split(separator: "&") {
+        let parts = pair.split(separator: "=", maxSplits: 1)
+        if parts.count == 2, parts[0] == Substring(name), let n = Int(parts[1]) { return n }
+    }
+    return fallback
+}
+
+// ================================================================ recording
+
+/* One recorded event.
+ *
+ * A class, not a struct, and that is load-bearing: the resolver worker writes the application and control
+ * names ONTO an event after it was buffered, so the buffer and the queue have to be looking at the same
+ * object. With value semantics the worker would name a copy and throw it away.
+ */
+final class Ev {
+    var x = 0
+    var y = 0
+    var delayMs = 0
+    var action = ""
+    var app: String?
+    var window: String?
+    var control: String?
+    var controlType: String?
+}
+
+/// A resolution job. `target` is the event to write the names onto once they are known.
+final class Pending {
+    let target: Ev
+    let x: Double
+    let y: Double
+    /// Focused element rather than the point under the pointer - see the protocol on `Key Down`.
+    let focused: Bool
+    init(target: Ev, x: Double = 0, y: Double = 0, focused: Bool = false) {
+        self.target = target
+        self.x = x
+        self.y = y
+        self.focused = focused
+    }
+}
+
+/* Events posted by this agent carry a mark, so a replay is not recorded as a person working.
+ *
+ * The Windows agent reads LLMHF_INJECTED off the hook struct. macOS has no such flag for "somebody
+ * synthesised this", so the agent stamps its own: every event it posts sets eventSourceUserData, and the tap
+ * skips anything carrying it. That covers the case that matters - our own replay - and leaves another
+ * application's synthetic input looking like input, which is the honest answer since it is indistinguishable.
+ */
+let INJECTED_MARK: Int64 = 0x4D4F5553_45464C4F  // "MOUSEFLO"
+
+final class Recorder {
+    static let shared = Recorder()
+
+    private let gate = NSLock()
+    private let resolveGate = NSLock()
+
+    private var buffer: [Ev] = []
+    private var recording = false
+    private var startNanos: UInt64 = 0
+    private var stoppedElapsed: UInt64 = 0
+    private var lastStamp = 0
+    private var lastX = 0
+    private var lastY = 0
+    private var haveLast = false
+    /* How many mouse buttons are down. A Focus marker must never be written between a press and its release
+     * - the transcript pairs a click by looking at the very next event - and "is a gesture in progress"
+     * cannot be read off the last buffered event: the pointer drifts, a Mouse Movement lands in between, and
+     * the guard sees no click. That is not hypothetical, it is what happened on Windows 142ms after a press
+     * on a Teams sharing bar. Counted from the events instead. */
+    private var held = 0
+
+    /* The throttle THIS session is using, and the default to fall back to. Two fields rather than one: a
+     * long session thins the pointer path, and the next short recording must not inherit that. */
+    private var sessionMs = 10
+    private var part = 0
+
+    private var queue: [Pending] = []
+    private var dropped = 0
+    private let queueMax = 400
+    private var resolverStop = false
+    private var resolverRunning = false
+    private var lastFrontPid: pid_t = 0
+
+    // ---------------------------------------------------------------- clock
+
+    private var elapsedMs: Int {
+        if !recording { return Int(stoppedElapsed / 1_000_000) }
+        return Int((DispatchTime.now().uptimeNanoseconds - startNanos) / 1_000_000)
+    }
+
+    // ---------------------------------------------------------------- lifecycle
+
+    /// `moveMs == 0` means "the default this agent was started with" - an absent query parameter parses to
+    /// zero, and zero samples a second is not something anybody can want, so the harmless value is the one
+    /// that means unspecified.
+    func start(moveMs: Int) {
+        gate.lock()
+        sessionMs = moveMs <= 0 ? moveThrottleMsDefault : min(2000, max(5, moveMs))
+        part = 0
+        buffer = []
+        haveLast = false
+        lastStamp = 0
+        startNanos = DispatchTime.now().uptimeNanoseconds
+        stoppedElapsed = 0
+        recording = true
+        gate.unlock()
+
+        resolveGate.lock()
+        queue = []
+        dropped = 0
+        resolverStop = false
+        /* Zeroed, not carried: the first Focus event of a recording should name where the recording STARTED,
+         * and a value left over from the last one would suppress it. */
+        lastFrontPid = 0
+        held = 0
+        resolveGate.unlock()
+
+        startResolverIfNeeded()
+    }
+
+    /* Take what has piled up and KEEP RECORDING.
+     *
+     * What is NOT touched is the load-bearing part, and it is the same list as on Windows: the clock runs on,
+     * so elapsedMs stays the time of the SESSION rather than of the chunk; lastStamp and haveLast stay, or
+     * one unthrottled burst gets through at the start of every chunk; held stays, so a drain landing
+     * mid-drag cannot let a Focus marker split the next chunk's press from its release; lastFrontPid stays,
+     * so an unchanged window is not re-announced every chunk.
+     *
+     * Returns nil when there is no recording, which the route turns into a 409 - "nothing happened in the
+     * last half hour" and "there is no recording" have to be distinguishable, or a chunker writes an empty
+     * part every half hour for as long as the tab is open. */
+    func drain() -> String? {
+        gate.lock()
+        if !recording { gate.unlock(); return nil }
+        let taken = buffer
+        buffer = []
+        let at = elapsedMs
+        part += 1
+        let n = part
+        let ms = sessionMs
+        gate.unlock()
+
+        /* The same bounded wait as the stop, for the same reason: the resolver writes names onto the events
+         * just taken, and serialising ahead of it would drop the name of the last click of every chunk.
+         * Shorter than the stop's wait because a drain lands on a clock boundary rather than on a click -
+         * whatever is still in flight is seconds old - and because a person's next half hour is behind it. */
+        waitForResolver(upToMs: 400)
+
+        resolveGate.lock()
+        let lost = dropped
+        resolveGate.unlock()
+
+        var head = "#part\tn=\(n)\telapsedMs=\(at)\tevents=\(taken.count)"
+        head += "\tmoveMs=\(ms)\tdropped=\(lost)\n"
+        return head + Recorder.serialize(taken)
+    }
+
+    func stop() -> String {
+        gate.lock()
+        let taken = buffer
+        buffer = []
+        stoppedElapsed = recording ? (DispatchTime.now().uptimeNanoseconds - startNanos) : stoppedElapsed
+        recording = false
+        gate.unlock()
+
+        /* Bounded, because a recording that hangs on stop is worse than a transcript missing the last
+         * control name - and whatever is still unresolved simply stays absent, which the format already
+         * means as "not known". */
+        waitForResolver(upToMs: 1500)
+        resolveGate.lock()
+        resolverStop = true
+        resolveGate.unlock()
+
+        return Recorder.serialize(taken)
+    }
+
+    private func waitForResolver(upToMs limit: Int) {
+        var waited = 0
+        while waited < limit {
+            resolveGate.lock()
+            let empty = queue.isEmpty
+            resolveGate.unlock()
+            if empty { return }
+            usleep(25_000)
+            waited += 25
+        }
+    }
+
+    // ---------------------------------------------------------------- status
+
+    var isRecording: Bool { gate.lock(); defer { gate.unlock() }; return recording }
+
+    func status() -> (recording: Bool, count: Int, part: Int, moveMs: Int, elapsedMs: Int) {
+        gate.lock()
+        defer { gate.unlock() }
+        return (recording, buffer.count, part, sessionMs, elapsedMs)
+    }
+
+    // ---------------------------------------------------------------- capture
+
+    /* Called from the tap. Does the minimum and returns: the protocol's rule is that nothing on the input
+     * path may resolve anything, because a tap that overruns its timeout is disabled by the OS without
+     * telling anybody - the same failure the Windows hook has with LowLevelHooksTimeout. */
+    func capture(action: String, x: Int, y: Int) {
+        var toQueue: Ev?
+        gate.lock()
+        if recording {
+            let now = elapsedMs
+
+            if action.hasSuffix("Click Down") {
+                held += 1
+            } else if action.hasSuffix("Click Release") {
+                if held > 0 { held -= 1 }
+            }
+
+            /* The raw tap fires hundreds of moves a second. Keep only the ones that carry information:
+             * far enough apart in time AND space.
+             *
+             * When one is dropped the last position is deliberately NOT updated - the distance is measured
+             * from the last RECORDED point, not from the last seen one. Measuring from the last seen point
+             * would filter a slow deliberate drag out of existence: two pixels at a time never clears a
+             * three-pixel threshold, however far the pointer eventually travels. */
+            var keep = true
+            if action == "Mouse Movement", haveLast {
+                let dx = abs(x - lastX)
+                let dy = abs(y - lastY)
+                if (now - lastStamp) < sessionMs { keep = false }
+                if dx < moveMinPx && dy < moveMinPx { keep = false }
+            }
+
+            if keep {
+                let e = Ev()
+                e.x = x
+                e.y = y
+                e.delayMs = buffer.isEmpty ? 0 : (now - lastStamp)
+                e.action = action
+                buffer.append(e)
+                lastStamp = now
+                lastX = x
+                lastY = y
+                haveLast = true
+                // Clicks only, and only the button-down: a move has no target worth naming and there are
+                // hundreds of them; the release is the same target a moment later.
+                if action.hasSuffix("Click Down") { toQueue = e }
+            }
+        }
+        gate.unlock()
+
+        if let e = toQueue { enqueue(Pending(target: e, x: Double(x), y: Double(y))) }
+    }
+
+    /* A key was pressed, and when. NEVER which key.
+     *
+     * This is the whole design and it is not negotiable: "five of those ten minutes went on typing in
+     * Outlook" needs the timing and nothing else, and a tap that reads key codes has captured a password
+     * whether or not it stores one. The tap callback below is handed a CGEvent it could read the keycode
+     * from; it does not, and this function is not given one. */
+    func captureKey() {
+        var first: Ev?
+        gate.lock()
+        if recording {
+            let now = elapsedMs
+            let e = Ev()
+            /* The pointer has not moved for this event, so the last known position is used. The five-column
+             * format needs a coordinate; typing does not have one, and no reader takes it for a key. */
+            e.x = lastX
+            e.y = lastY
+            e.delayMs = buffer.isEmpty ? 0 : (now - lastStamp)
+            e.action = "Key Down"
+            let continuing = buffer.last?.action == "Key Down"
+            buffer.append(e)
+            lastStamp = now
+            // One resolution per RUN of typing. Sixty keystrokes into one field is one answer.
+            if !continuing { first = e }
+        }
+        gate.unlock()
+
+        if let e = first { enqueue(Pending(target: e, focused: true)) }
+    }
+
+    // ---------------------------------------------------------------- resolver
+
+    private func enqueue(_ job: Pending) {
+        resolveGate.lock()
+        if queue.count >= queueMax {
+            /* If the worker falls behind, drop the CONTEXT, never the event. A recording missing a name is
+             * incomplete; a recording missing a click is wrong. */
+            dropped += 1
+        } else {
+            queue.append(job)
+        }
+        resolveGate.unlock()
+    }
+
+    private func startResolverIfNeeded() {
+        resolveGate.lock()
+        let already = resolverRunning
+        resolverRunning = true
+        resolveGate.unlock()
+        if already { return }
+
+        let thread = Thread {
+            while true {
+                var job: Pending?
+                self.resolveGate.lock()
+                if !self.queue.isEmpty { job = self.queue.removeFirst() }
+                let ending = job == nil && self.resolverStop
+                self.resolveGate.unlock()
+
+                if ending {
+                    self.resolveGate.lock()
+                    self.resolverRunning = false
+                    self.resolveGate.unlock()
+                    return
+                }
+
+                guard let job = job else {
+                    /* Idle, so this is where the frontmost application gets watched. No second observer and
+                     * no second run loop: this thread is already awake, and a poll every 15ms is far finer
+                     * than a person can switch windows. */
+                    self.noteForeground()
+                    usleep(15_000)
+                    continue
+                }
+
+                if job.focused {
+                    Accessibility.describeFocused(job)
+                } else {
+                    Accessibility.describe(job)
+                }
+            }
+        }
+        thread.stackSize = 512 * 1024
+        thread.start()
+    }
+
+    /* The foreground application changed - a marker saying the work moved.
+     *
+     * Not an action. It is the only per-step answer for a scroll, a wait or a run of typing, all of which
+     * hit-test nothing and would otherwise sit in whichever segment a click last opened. */
+    private func noteForeground() {
+        guard let front = NSWorkspace.shared.frontmostApplication else { return }
+        let pid = front.processIdentifier
+
+        // Nothing to do when the front has not moved, and nothing to record when not recording - but the
+        // pid is still remembered, so the first marker of the next recording says where it BEGAN.
+        gate.lock()
+        let same = pid == lastFrontPid
+        let live = recording
+        let gesture = held > 0
+        if !live || same { lastFrontPid = pid; gate.unlock(); return }
+        /* Never during a gesture. A click that gives a window focus fires this watcher while the button is
+         * still down, and a marker inserted there turns one click into an unreleased press and a stray
+         * release. lastFrontPid is deliberately NOT updated, so the change is noticed again next tick once
+         * the button is up. */
+        if gesture { gate.unlock(); return }
+        gate.unlock()
+
+        /* Named BEFORE it is buffered. Writing onto an event already in the buffer races a drain that may be
+         * serialising it - and there is nothing to gain from it here, since both the application and the
+         * window title are known before the marker is made.
+         *
+         * Window only. A foreground change has no control under it, and inventing one from the pointer -
+         * which is wherever it was last left - would be a name for something nobody touched. */
+        let appName = clip(front.localizedName ?? "", 80)
+        let title = Accessibility.frontWindowTitle(pid: pid)
+
+        gate.lock()
+        // Re-checked under the lock: naming took a moment, and a button may have gone down in it.
+        if recording && held == 0 && pid != lastFrontPid {
+            let now = elapsedMs
+            let e = Ev()
+            e.x = lastX
+            e.y = lastY
+            e.delayMs = buffer.isEmpty ? 0 : (now - lastStamp)
+            e.action = "Focus"
+            e.app = appName.isEmpty ? nil : appName
+            e.window = title
+            buffer.append(e)
+            lastStamp = now
+            lastFrontPid = pid
+        }
+        gate.unlock()
+    }
+
+    // ---------------------------------------------------------------- serialise
+
+    /* Context rides on a COMMENT line above its event.
+     *
+     * The .mmmacro line is `index | X | Y | delayMs | action` and anything reading it would choke on a sixth
+     * column. Lines starting with # are already skipped by every reader of this format, so an older reader
+     * loads the recording exactly as before and a newer one gets the context. Deliberately not JSON: a
+     * tab-separated pair list survives a title containing a quote, a brace or a colon without an encoder. */
+    static func serialize(_ list: [Ev]) -> String {
+        var out = ""
+        out.reserveCapacity(list.count * 48)
+        var index = 1
+        for e in list {
+            if e.app != nil || e.window != nil || e.control != nil {
+                out += "#ctx"
+                if let v = e.app { out += "\tapp=" + v }
+                if let v = e.window { out += "\twindow=" + v }
+                if let v = e.control { out += "\tcontrol=" + v }
+                if let v = e.controlType { out += "\ttype=" + v }
+                out += "\n"
+            }
+            out += "\(index) | \(e.x) | \(e.y) | \(e.delayMs) | \(e.action)\n"
+            index += 1
+        }
+        return out
+    }
+}
+
+// ================================================================ accessibility
+
+/* What was under the pointer, and what has focus.
+ *
+ * The macOS half of `#ctx`. The mechanism differs from Windows and the output line does not: UI Automation's
+ * AutomationElement.FromPoint becomes AXUIElementCopyElementAtPosition, and the climb for a name walks
+ * kAXParentAttribute instead of TreeWalker.
+ *
+ * Two rules from the protocol are the whole design here:
+ *   - NEVER walk the tree. Hit-test the point and climb for a name. A full tree walk was measured at 0.6-4.4
+ *     seconds per window on Windows, and AX is not faster.
+ *   - ABSENT MEANS NOT KNOWN, never "nothing there". So every one of these returns nil rather than a
+ *     placeholder, and serialize() omits the field. A transcript has to keep that difference.
+ */
+enum Accessibility {
+    private static let systemWide = AXUIElementCreateSystemWide()
+
+    private static func copyAttr(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+        var value: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        return err == .success ? value : nil
+    }
+
+    private static func stringAttr(_ element: AXUIElement, _ attribute: String) -> String? {
+        guard let raw = copyAttr(element, attribute) as? String else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : clip(trimmed, 120)
+    }
+
+    private static func elementAttr(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        guard let raw = copyAttr(element, attribute) else { return nil }
+        guard CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
+        return (raw as! AXUIElement)
+    }
+
+    /// The name a person would use for the application that owns this element.
+    /// Better than Windows manages, as the protocol notes: "Microsoft Outlook", not a process called outlook.
+    private static func appName(of element: AXUIElement) -> String? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
+        guard let running = NSRunningApplication(processIdentifier: pid) else { return nil }
+        if let name = running.localizedName, !name.isEmpty { return clip(name, 80) }
+        return nil
+    }
+
+    /* A name for the thing itself, then for its parent, and so on - at most five levels.
+     *
+     * The same depth the Windows agent settled on. A button usually names itself; a cell in a table names
+     * nothing and its row does; past five the answer is the window, which is already recorded separately. */
+    private static func nameByClimbing(_ start: AXUIElement) -> (control: String?, type: String?) {
+        var element: AXUIElement? = start
+        var depth = 0
+        while let current = element, depth < 5 {
+            let type = stringAttr(current, kAXRoleDescriptionAttribute)
+            if let name = stringAttr(current, kAXTitleAttribute) { return (name, type) }
+            /* Description and value, in that order, because a great many controls carry no title: an icon
+             * button has kAXDescription, a text field has kAXValue and nothing else. */
+            if let name = stringAttr(current, kAXDescriptionAttribute) { return (name, type) }
+            if depth == 0, let name = stringAttr(current, kAXValueAttribute) { return (name, type) }
+            element = elementAttr(current, kAXParentAttribute)
+            depth += 1
+        }
+        return (nil, nil)
+    }
+
+    /// The window title of the frontmost window of a process.
+    static func frontWindowTitle(pid: pid_t) -> String? {
+        guard Permission.accessibility, pid > 0 else { return nil }
+        let app = AXUIElementCreateApplication(pid)
+        if let window = elementAttr(app, kAXFocusedWindowAttribute),
+           let title = stringAttr(window, kAXTitleAttribute) {
+            return title
+        }
+        if let window = elementAttr(app, kAXMainWindowAttribute) {
+            return stringAttr(window, kAXTitleAttribute)
+        }
+        return nil
+    }
+
+    /* What is under a point. Runs on the resolver thread, never on the tap. */
+    static func describe(_ job: Pending) {
+        guard Permission.accessibility else { return }
+        var element: AXUIElement?
+        let err = AXUIElementCopyElementAtPosition(systemWide, Float(job.x), Float(job.y), &element)
+        guard err == .success, let hit = element else { return }
+
+        let named = nameByClimbing(hit)
+        job.target.app = appName(of: hit)
+        job.target.control = named.control
+        job.target.controlType = named.type
+
+        var pid: pid_t = 0
+        if AXUIElementGetPid(hit, &pid) == .success {
+            job.target.window = frontWindowTitle(pid: pid)
+        }
+    }
+
+    /* What has FOCUS, which is a different question from what is under the pointer.
+     *
+     * Used for a run of typing: the pointer is wherever it was last left, and the field being typed into is
+     * the only honest answer to "where did this go". */
+    static func describeFocused(_ job: Pending) {
+        guard Permission.accessibility else { return }
+        guard let front = NSWorkspace.shared.frontmostApplication else { return }
+        let pid = front.processIdentifier
+        job.target.app = clip(front.localizedName ?? "", 80).isEmpty ? nil : clip(front.localizedName ?? "", 80)
+        job.target.window = frontWindowTitle(pid: pid)
+
+        let app = AXUIElementCreateApplication(pid)
+        guard let focused = elementAttr(app, kAXFocusedUIElementAttribute) else { return }
+        let named = nameByClimbing(focused)
+        job.target.control = named.control
+        job.target.controlType = named.type
+    }
+}
+
+// ================================================================ windows
+
+/* What is open, because a screenshot is not the whole truth.
+ *
+ * An application that is minimised or behind another window is invisible to a picture, and something acting
+ * only on pictures will happily launch a second copy of a program that is already running - which is what
+ * happened on Windows, and is why this endpoint exists.
+ */
+struct WindowInfo {
+    var title: String
+    var process: String
+    var active: Bool
+    var minimized: Bool
+    var x: Int
+    var y: Int
+    var w: Int
+    var h: Int
+    var pid: pid_t
+}
+
+enum Windows {
+    /* Names of the shell's own windows, which are windows in the API's sense and not in a person's. The
+     * Windows agent had the same list under different names (DWM-cloaked Store windows, the desktop shell,
+     * helper windows too small to be real). */
+    private static let shell: Set<String> = [
+        "Window Server", "Dock", "SystemUIServer", "Spotlight", "Notification Center",
+        "Control Center", "WindowManager", "Wallpaper", "コントロールセンター",
+    ]
+
+    static func list() -> [WindowInfo] {
+        /* .optionAll rather than .optionOnScreenOnly, because a minimised window is exactly the case this
+         * endpoint exists for and the on-screen list does not contain one. */
+        let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
+        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+        let frontPid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+        var out: [WindowInfo] = []
+        var seenFrontmost = false
+
+        for entry in raw {
+            let layer = entry[kCGWindowLayer as String] as? Int ?? 0
+            // Layer 0 is a normal application window. Everything else is a menu, a panel or an overlay.
+            if layer != 0 { continue }
+
+            let owner = (entry[kCGWindowOwnerName as String] as? String) ?? ""
+            if owner.isEmpty || shell.contains(owner) { continue }
+
+            let alpha = entry[kCGWindowAlpha as String] as? Double ?? 1
+            if alpha < 0.05 { continue }
+
+            guard let boundsDict = entry[kCGWindowBounds as String] as? [String: Any],
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) else { continue }
+            // Too small to be a real window: helper and shadow windows land here.
+            if bounds.width < 40 || bounds.height < 40 { continue }
+
+            let pid = pid_t(entry[kCGWindowOwnerPID as String] as? Int ?? 0)
+            let onscreen = (entry[kCGWindowIsOnscreen as String] as? Bool) ?? false
+
+            /* The title needs Screen Recording. Without it every window reports an empty name, so the app
+             * falls back to the owner - which is a real answer ("Microsoft Outlook") rather than a blank row
+             * that reads as "nothing is open". */
+            var title = (entry[kCGWindowName as String] as? String) ?? ""
+            if title.trimmingCharacters(in: .whitespaces).isEmpty { title = owner }
+
+            /* Frontmost is the FIRST window of the frontmost process in this list, which is ordered
+             * front-to-back. Marking every window of that process active would tell the model there are
+             * four active windows. */
+            var active = false
+            if pid == frontPid && !seenFrontmost && onscreen {
+                active = true
+                seenFrontmost = true
+            }
+
+            out.append(WindowInfo(
+                title: clip(title, 160),
+                process: clip(owner, 80),
+                active: active,
+                /* macOS cannot separate "minimised" from "on another Space" through this list, and to the
+                 * caller they mean the same thing: it is open, it is not visible, and action=activate is
+                 * what gets to it. Said here rather than guessed at by the reader. */
+                minimized: !onscreen,
+                x: Int(bounds.origin.x),
+                y: Int(bounds.origin.y),
+                w: Int(bounds.width),
+                h: Int(bounds.height),
+                pid: pid
+            ))
+            if out.count >= 60 { break }
+        }
+        return out
+    }
+
+    /// Bring something to the front without opening anything.
+    static func activate(title: String?, process: String?) -> String? {
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+
+        if let wanted = process?.lowercased(), !wanted.isEmpty {
+            for app in apps {
+                let name = (app.localizedName ?? "").lowercased()
+                let exe = (app.executableURL?.lastPathComponent ?? "").lowercased()
+                let bundle = (app.bundleIdentifier ?? "").lowercased()
+                if name.contains(wanted) || exe.contains(wanted) || bundle.contains(wanted) {
+                    return raise(app)
+                }
+            }
+        }
+
+        if let wanted = title?.lowercased(), !wanted.isEmpty {
+            /* By window title, which is what the model has been reading. The window list carries the owning
+             * pid, so the title leads to the application without a second search. */
+            for window in list() where window.title.lowercased().contains(wanted) {
+                if let app = NSRunningApplication(processIdentifier: window.pid) { return raise(app) }
+            }
+            // The title may be the application's own name, which is what the fallback above writes.
+            for app in apps where (app.localizedName ?? "").lowercased().contains(wanted) {
+                return raise(app)
+            }
+        }
+
+        return "nothing open matches that title or process"
+    }
+
+    private static func raise(_ app: NSRunningApplication) -> String? {
+        /* Unminimise first, then activate. Activating a minimised application on macOS raises nothing
+         * visible, so the click that follows would land on whatever is actually in front - the same class of
+         * failure as replaying into a window that has moved on. */
+        if Permission.accessibility {
+            let axApp = AXUIElementCreateApplication(app.processIdentifier)
+            var windows: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windows) == .success,
+               let list = windows as? [AXUIElement] {
+                for window in list.prefix(8) {
+                    var minimized: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized) == .success,
+                       let isMin = minimized as? Bool, isMin {
+                        AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+                    }
+                }
+                if let first = list.first {
+                    AXUIElementPerformAction(first, kAXRaiseAction as CFString)
+                }
+            }
+        }
+        let ok = app.activate(options: [.activateIgnoringOtherApps])
+        return ok ? nil : "macOS refused to bring \(app.localizedName ?? "it") forward"
+    }
+}
+
+// ================================================================ seeing
+
+enum Screen {
+    /* The whole desktop, in backing pixels.
+     *
+     * Returns nil without Screen Recording, which is the detectable failure the permission section is about:
+     * the caller gets "you have not granted this" instead of a black picture. */
+    private static func grab() -> CGImage? {
+        guard Permission.screenRecording else { return nil }
+        return CGWindowListCreateImage(CGRect.infinite, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
+    }
+
+    private static func resize(_ image: CGImage, _ w: Int, _ h: Int, gray: Bool) -> CGContext? {
+        let space = gray ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB()
+        let info: UInt32 = gray
+            ? CGImageAlphaInfo.none.rawValue
+            : CGImageAlphaInfo.premultipliedLast.rawValue
+        guard let ctx = CGContext(
+            data: nil, width: w, height: h, bitsPerComponent: 8,
+            bytesPerRow: gray ? w : w * 4, space: space, bitmapInfo: info
+        ) else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx
+    }
+
+    /* A picture, sized to a pixel budget rather than a fixed width, because a vision payload is priced in
+     * pixels.
+     *
+     * `scale` is picture pixels per screen POINT, and that distinction is the macOS trap: CGEvent works in
+     * points, a capture comes back in backing pixels, and on a Retina display those differ by two. The
+     * client's one conversion is `screen = origin + picture / scale`, so as long as the returned picture is
+     * `points * scale` wide, a point measured on it lands where it was measured. Capturing at full
+     * resolution and then shrinking to that width is what makes it true on both kinds of display. */
+    static func shot(want: Int) -> String {
+        let desktop = Desktop.rect
+        let vw = Double(desktop.width)
+        let vh = Double(desktop.height)
+        if vw < 2 || vh < 2 { return "{\"ok\":false,\"error\":\"no screen\"}" }
+        guard let full = grab() else {
+            return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent - "
+                + "System Settings, Privacy & Security, Screen Recording\"}"
+        }
+
+        /* Two limits, and the tighter wins: the caller's width, and a pixel budget scaled to it so a
+         * three-monitor desktop does not arrive as a novel. */
+        let budget = 1_200_000.0
+        let byWidth = Double(max(160, min(4096, want))) / vw
+        let byArea = (budget / (vw * vh)).squareRoot()
+        let scale = min(1.0, min(byWidth, byArea))
+        let sw = max(1, Int((vw * scale).rounded()))
+        let sh = max(1, Int((vh * scale).rounded()))
+
+        guard let ctx = resize(full, sw, sh, gray: false), let small = ctx.makeImage() else {
+            return "{\"ok\":false,\"error\":\"the screen could not be resized\"}"
+        }
+
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else {
+            return "{\"ok\":false,\"error\":\"no JPEG encoder\"}"
+        }
+        CGImageDestinationAddImage(dest, small, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else {
+            return "{\"ok\":false,\"error\":\"the screen could not be encoded\"}"
+        }
+
+        let b64 = (data as Data).base64EncodedString()
+        var json = "{\"ok\":true,\"format\":\"jpeg\",\"bytes\":\(data.length)"
+        json += ",\"png\":\"\(b64)\""
+        json += ",\"w\":\(sw),\"h\":\(sh)"
+        json += ",\"scale\":\(String(format: "%.4f", scale))"
+        json += ",\"originX\":\(Int(desktop.origin.x)),\"originY\":\(Int(desktop.origin.y))}"
+        return json
+    }
+
+    /* A fingerprint of the screen rather than a picture of it: 64x36 greyscale samples, about 3KB, which is
+     * all "has anything changed" needs. Without it every "is it done yet?" costs a full screenshot and a
+     * model call.
+     *
+     * The same luminance weights as the Windows agent, although the client only ever compares two grids for
+     * difference - matching them costs nothing and means the two agents cannot disagree about what "the
+     * screen changed" means. */
+    static func pulse() -> String {
+        guard let full = grab() else {
+            return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent\"}"
+        }
+        guard let ctx = resize(full, 64, 36, gray: false), let data = ctx.data else {
+            return "{\"ok\":false,\"error\":\"no screen\"}"
+        }
+        let bytes = data.bindMemory(to: UInt8.self, capacity: 64 * 36 * 4)
+        var grey = [UInt8](repeating: 0, count: 64 * 36)
+        for i in 0..<(64 * 36) {
+            let r = Int(bytes[i * 4])
+            let g = Int(bytes[i * 4 + 1])
+            let b = Int(bytes[i * 4 + 2])
+            grey[i] = UInt8((r * 77 + g * 150 + b * 29) >> 8)
+        }
+        return "{\"ok\":true,\"grid\":\"\(Data(grey).base64EncodedString())\"}"
+    }
+}
+
+// ================================================================ acting
+
+/* Named keys, by virtual keycode.
+ *
+ * macOS keycodes are positional rather than alphabetic, so a table is unavoidable for the named keys. Text
+ * does not go through it: `action=type` sets a unicode string on a synthetic event, which types any character
+ * on any keyboard layout without a keymap. */
+let KEY_CODES: [String: CGKeyCode] = [
+    "return": 36, "enter": 36, "tab": 48, "space": 49, "delete": 51, "backspace": 51,
+    "escape": 53, "esc": 53, "forwarddelete": 117, "del": 117,
+    "left": 123, "right": 124, "down": 125, "up": 126,
+    "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
+    "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100,
+    "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+    "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4, "i": 34, "j": 38,
+    "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12, "r": 15, "s": 1,
+    "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
+    "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
+]
+
+enum Input {
+    private static func source() -> CGEventSource? {
+        CGEventSource(stateID: .hidSystemState)
+    }
+
+    /// Every event this agent posts carries the mark, so the tap can tell a replay from a person.
+    private static func send(_ event: CGEvent?) {
+        guard let event else { return }
+        event.setIntegerValueField(.eventSourceUserData, value: INJECTED_MARK)
+        event.post(tap: .cghidEventTap)
+    }
+
+    /* There is no return value to check.
+     *
+     * The Windows agent checks SendInput's, because input that never arrived being reported as success is a
+     * lie the model then builds on. CGEventPost returns nothing at all, so the check has to happen before:
+     * without Accessibility every posted event is silently discarded, and that is the failure that actually
+     * occurs. Checked once, here, and reported in the words of the thing the user has to do. */
+    static func refusal() -> String? {
+        if !Permission.accessibility {
+            return "macOS has not granted Accessibility to this agent, so it cannot click or type - "
+                + "System Settings, Privacy & Security, Accessibility"
+        }
+        return nil
+    }
+
+    static func move(x: Double, y: Double) {
+        send(CGEvent(mouseEventSource: source(), mouseType: .mouseMoved,
+                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left))
+    }
+
+    static func click(x: Double, y: Double, button: String, double: Bool) {
+        let point = CGPoint(x: x, y: y)
+        let (down, up, which): (CGEventType, CGEventType, CGMouseButton) = {
+            switch button.lowercased() {
+            case "right": return (.rightMouseDown, .rightMouseUp, .right)
+            case "middle": return (.otherMouseDown, .otherMouseUp, .center)
+            default: return (.leftMouseDown, .leftMouseUp, .left)
+            }
+        }()
+
+        move(x: x, y: y)
+        usleep(20_000)
+
+        for pass in 1...(double ? 2 : 1) {
+            for type in [down, up] {
+                if let event = CGEvent(mouseEventSource: source(), mouseType: type,
+                                       mouseCursorPosition: point, mouseButton: which) {
+                    /* clickState is what makes two clicks a double click rather than two clicks. Without it
+                     * a "double" opens nothing, which looks like the coordinates being wrong. */
+                    event.setIntegerValueField(.mouseEventClickState, value: Int64(pass))
+                    send(event)
+                }
+            }
+            if double && pass == 1 { usleep(60_000) }
+        }
+    }
+
+    static func scroll(x: Double, y: Double, amount: Int) {
+        move(x: x, y: y)
+        usleep(20_000)
+        /* One event per notch, because a single event with a large delta is treated as a fling by some
+         * applications and scrolls further than asked. */
+        let steps = min(30, abs(amount))
+        let direction: Int32 = amount >= 0 ? 1 : -1
+        for _ in 0..<max(1, steps) {
+            send(CGEvent(scrollWheelEvent2Source: source(), units: .line,
+                         wheelCount: 1, wheel1: direction, wheel2: 0, wheel3: 0))
+            usleep(12_000)
+        }
+    }
+
+    /* Any text, on any layout, without a keymap: a synthetic key event carrying a unicode string. */
+    static func type(_ text: String) {
+        /* In small pieces rather than one event: a synthetic key event carries a bounded unicode string, and
+         * a paragraph handed over in one go arrives truncated. */
+        for chunk in Array(text).chunked(into: 16) {
+            let piece = String(chunk)
+            guard let down = CGEvent(keyboardEventSource: source(), virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source(), virtualKey: 0, keyDown: false) else { continue }
+            var utf16 = Array(piece.utf16)
+            down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+            up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+            send(down)
+            send(up)
+            usleep(8_000)
+        }
+    }
+
+    /* One named key, with modifiers.
+     *
+     * `ctrl=1` becomes COMMAND, and that is a deliberate translation rather than an oversight. The action
+     * grammar was written on Windows, where Ctrl+C is copy; on macOS the same intention is Cmd+C, and a
+     * created skill that says ctrl=1 key=c means "copy". Posting a literal Control+C here would send an
+     * interrupt to a terminal instead. `cmd=` and `meta=` are accepted as themselves for a caller that knows
+     * which platform it is talking to, and `raw-ctrl=` asks for the literal Control key. */
+    static func key(_ name: String, ctrl: Bool, shift: Bool, alt: Bool, cmd: Bool, rawCtrl: Bool) -> String? {
+        guard let code = KEY_CODES[name.lowercased()] else { return "no key called \(name)" }
+        var flags: CGEventFlags = []
+        if shift { flags.insert(.maskShift) }
+        if alt { flags.insert(.maskAlternate) }
+        if rawCtrl { flags.insert(.maskControl) }
+        if ctrl || cmd { flags.insert(.maskCommand) }
+
+        guard let down = CGEvent(keyboardEventSource: source(), virtualKey: code, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source(), virtualKey: code, keyDown: false) else {
+            return "macOS refused to make that key event"
+        }
+        down.flags = flags
+        up.flags = flags
+        send(down)
+        send(up)
+        return nil
+    }
+}
+
+extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
+    }
+}
+
+// ================================================================ the action body
+
+/* `key=value` pairs separated by spaces, with two rules that were learned the hard way on Windows and are
+ * repeated here because they are properties of the FORMAT, not of the platform:
+ *
+ *   - `text=` and `title=` take the REST OF THE LINE, unsplit. They contain spaces.
+ *   - a marker only counts at the START of a token, or `subtitle=` matches `title=` and the parse begins
+ *     four characters into the wrong word.
+ */
+func parseAction(_ body: String) -> [String: String] {
+    let line = body.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+    var out: [String: String] = [:]
+    let tokens = line.split(separator: " ").map(String.init)
+    var i = 0
+    while i < tokens.count {
+        let token = tokens[i]
+        guard let eq = token.firstIndex(of: "=") else { i += 1; continue }
+        let name = String(token[token.startIndex..<eq])
+        let value = String(token[token.index(after: eq)...])
+
+        if name == "text" || name == "title" {
+            let rest = ([value] + tokens[(i + 1)...]).joined(separator: " ")
+            out[name] = rest
+            break
+        }
+        out[name] = value
+        i += 1
+    }
+    return out
+}
+
+func doAction(_ body: String) -> String? {
+    let fields = parseAction(body)
+    let action = (fields["action"] ?? "").lowercased()
+    if let refusal = Input.refusal(), action != "activate" { return refusal }
+
+    let x = Double(fields["x"] ?? "") ?? 0
+    let y = Double(fields["y"] ?? "") ?? 0
+    let needsPoint = ["click", "move", "scroll"].contains(action)
+    if needsPoint && !Desktop.contains(x: x, y: y) {
+        /* Refused rather than clamped: macOS would place the click at the nearest real coordinate, so an
+         * out-of-bounds instruction would land on something and be reported as success. */
+        let r = Desktop.rect
+        return "\(Int(x)),\(Int(y)) is off the desktop "
+            + "(\(Int(r.minX)),\(Int(r.minY)) to \(Int(r.maxX)),\(Int(r.maxY)))"
+    }
+
+    switch action {
+    case "click":
+        Input.click(x: x, y: y, button: fields["button"] ?? "left", double: (fields["double"] ?? "0") == "1")
+        return nil
+    case "move":
+        Input.move(x: x, y: y)
+        return nil
+    case "scroll":
+        Input.scroll(x: x, y: y, amount: Int(fields["amount"] ?? "") ?? -3)
+        return nil
+    case "type":
+        var text = fields["text"] ?? ""
+        if (fields["enc"] ?? "") == "b64" {
+            guard let data = Data(base64Encoded: text), let decoded = String(data: data, encoding: .utf8) else {
+                return "that text is not base64 UTF-8"
+            }
+            text = decoded
+        }
+        if text.isEmpty { return "nothing to type" }
+
+        let newline = (fields["nl"] ?? "").lowercased()
+        if newline.isEmpty || !text.contains("\n") {
+            Input.type(text.replacingOccurrences(of: "\n", with: " "))
+            return nil
+        }
+        /* `nl=enter` presses Return between lines, `nl=shift` presses Shift+Return - which is the difference
+         * between sending an email and typing a paragraph into one. The pause after a line break is not
+         * politeness: typing straight through it loses characters while the application reflows. */
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        for (index, one) in lines.enumerated() {
+            if !one.isEmpty { Input.type(one) }
+            if index < lines.count - 1 {
+                if let bad = Input.key("return", ctrl: false, shift: newline == "shift",
+                                       alt: false, cmd: false, rawCtrl: false) {
+                    return bad
+                }
+                usleep(220_000)
+            }
+        }
+        return nil
+    case "key":
+        let name = fields["key"] ?? ""
+        if name.isEmpty { return "which key?" }
+        return Input.key(
+            name,
+            ctrl: (fields["ctrl"] ?? "0") == "1",
+            shift: (fields["shift"] ?? "0") == "1",
+            alt: (fields["alt"] ?? "0") == "1",
+            cmd: (fields["cmd"] ?? fields["meta"] ?? "0") == "1",
+            rawCtrl: (fields["raw-ctrl"] ?? "0") == "1"
+        )
+    case "activate":
+        return Windows.activate(title: fields["title"], process: fields["process"])
+    default:
+        return "no action called \(action.isEmpty ? "(none given)" : action)"
+    }
+}
+
+// ================================================================ replay
+
+struct ReplayStep {
+    var repeats = 1
+    var speed = 1.0
+    var delayAfterMs = 0
+    var events: [(x: Int, y: Int, delayMs: Int, action: String)] = []
+}
+
+final class Replayer {
+    static let shared = Replayer()
+
+    private let gate = NSLock()
+    private var playing = false
+    private var abort = false
+    private var stepIdx = 0
+    private var stepCount = 0
+    private var pass = 0
+    private var passes = 0
+    private var evIdx = 0
+    private var evCount = 0
+    private var flowPass = 0
+    private var flowPasses = 0
+    /* Events a replay could not perform. A recording with typing in it cannot be replayed faithfully -
+     * nothing in it says which keys - and a replay that quietly pressed nothing for the two minutes somebody
+     * spent typing would report a clean run. */
+    private var unplayable = 0
+    /// Every button this replay is holding, so every exit path can let go of them.
+    private var down: Set<String> = []
+
+    var isPlaying: Bool { gate.lock(); defer { gate.unlock() }; return playing }
+
+    func statusJson() -> String {
+        gate.lock()
+        defer { gate.unlock() }
+        return "{\"playing\":\(jsonBool(playing)),\"step\":\(stepIdx),\"steps\":\(stepCount)"
+            + ",\"pass\":\(pass),\"passes\":\(passes),\"index\":\(evIdx),\"total\":\(evCount)"
+            + ",\"flowPass\":\(flowPass),\"flowPasses\":\(flowPasses),\"unplayable\":\(unplayable)}"
+    }
+
+    func requestAbort() {
+        gate.lock()
+        abort = true
+        gate.unlock()
+    }
+
+    /* Interruptible, and that is the point: the protocol says check the stop flag before every event AND
+     * inside every sleep. A replay that only checks between events is unstoppable during a three-second
+     * pause, which is most of its life. */
+    private func nap(_ ms: Int) -> Bool {
+        var left = ms
+        while left > 0 {
+            gate.lock()
+            let stop = abort
+            gate.unlock()
+            if stop { return false }
+            /* A held ESC as a hardware-level escape hatch, copied from the Windows agent: when a replay is
+             * driving the pointer, reaching the app's Abort button with the mouse is a race. */
+            if CGEventSource.keyState(.combinedSessionState, key: 53) { return false }
+            let slice = min(25, left)
+            usleep(UInt32(slice * 1000))
+            left -= slice
+        }
+        gate.lock()
+        let stop = abort
+        gate.unlock()
+        return !stop
+    }
+
+    func start(body: String) -> String? {
+        gate.lock()
+        if playing { gate.unlock(); return "already replaying" }
+        if let refusal = Input.refusal() { gate.unlock(); return refusal }
+        gate.unlock()
+
+        var startDelay = 0
+        var flowRepeat = 1
+        var steps: [ReplayStep] = []
+        var current: ReplayStep?
+
+        for raw in body.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+
+            if line.hasPrefix("startDelay=") {
+                startDelay = Int(line.dropFirst("startDelay=".count)) ?? 0
+                continue
+            }
+            if line.hasPrefix("flowRepeat=") {
+                let v = String(line.dropFirst("flowRepeat=".count))
+                // `forever` and `0` mean the same thing, as the protocol says.
+                flowRepeat = (v == "forever") ? 0 : (Int(v) ?? 1)
+                continue
+            }
+            if line.hasPrefix("STEP") {
+                if let done = current { steps.append(done) }
+                var step = ReplayStep()
+                for token in line.split(separator: " ").dropFirst() {
+                    let parts = token.split(separator: "=", maxSplits: 1)
+                    guard parts.count == 2 else { continue }
+                    switch parts[0] {
+                    case "repeat": step.repeats = (parts[1] == "forever") ? 0 : (Int(parts[1]) ?? 1)
+                    case "speed": step.speed = Double(parts[1]) ?? 1.0
+                    case "delayAfter": step.delayAfterMs = Int(parts[1]) ?? 0
+                    default: break
+                    }
+                }
+                current = step
+                continue
+            }
+
+            let cols = line.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard cols.count >= 5 else { continue }
+            if current == nil { current = ReplayStep() }
+            current?.events.append((
+                x: Int(cols[1]) ?? 0,
+                y: Int(cols[2]) ?? 0,
+                delayMs: Int(cols[3]) ?? 0,
+                action: cols[4]
+            ))
+        }
+        if let done = current { steps.append(done) }
+        if steps.isEmpty || steps.allSatisfy({ $0.events.isEmpty }) { return "nothing to replay" }
+
+        gate.lock()
+        playing = true
+        abort = false
+        unplayable = 0
+        stepIdx = 0
+        stepCount = steps.count
+        flowPass = 0
+        flowPasses = flowRepeat
+        down = []
+        gate.unlock()
+
+        let thread = Thread { self.run(steps: steps, startDelay: startDelay, flowRepeat: flowRepeat) }
+        thread.stackSize = 512 * 1024
+        thread.start()
+        return nil
+    }
+
+    private func run(steps: [ReplayStep], startDelay: Int, flowRepeat: Int) {
+        /* Released on EVERY exit path, including the failure paths: a replay that dies holding the left
+         * mouse button leaves the machine unusable, and that is not a hypothetical - it is why the protocol
+         * says so twice. */
+        defer {
+            releaseEverything()
+            gate.lock()
+            playing = false
+            gate.unlock()
+        }
+
+        if startDelay > 0, !nap(startDelay) { return }
+
+        var flowLoop = 0
+        while true {
+            flowLoop += 1
+            gate.lock(); flowPass = flowLoop; gate.unlock()
+
+            for (index, step) in steps.enumerated() {
+                gate.lock()
+                stepIdx = index + 1
+                passes = step.repeats
+                evCount = step.events.count
+                gate.unlock()
+
+                var loop = 0
+                while true {
+                    loop += 1
+                    gate.lock(); pass = loop; gate.unlock()
+
+                    for (evIndex, event) in step.events.enumerated() {
+                        gate.lock(); evIdx = evIndex + 1; gate.unlock()
+
+                        let wait = step.speed > 0 ? Int(Double(event.delayMs) / step.speed) : event.delayMs
+                        if !nap(wait) { return }
+                        if !perform(event) { return }
+                    }
+
+                    if step.repeats != 0 && loop >= step.repeats { break }
+                    if !nap(60) { return }
+                }
+
+                if step.delayAfterMs > 0, !nap(step.delayAfterMs) { return }
+            }
+
+            if flowRepeat != 0 && flowLoop >= flowRepeat { break }
+            if !nap(120) { return }
+        }
+    }
+
+    /// False means stop - either aborted or refused.
+    private func perform(_ event: (x: Int, y: Int, delayMs: Int, action: String)) -> Bool {
+        let x = Double(event.x)
+        let y = Double(event.y)
+
+        switch event.action {
+        case "Mouse Movement":
+            Input.move(x: x, y: y)
+        case "Left Click Down":
+            hold("left"); post(.leftMouseDown, x, y, .left)
+        case "Left Click Release":
+            release("left"); post(.leftMouseUp, x, y, .left)
+        case "Right Click Down":
+            hold("right"); post(.rightMouseDown, x, y, .right)
+        case "Right Click Release":
+            release("right"); post(.rightMouseUp, x, y, .right)
+        case "Middle Click Down":
+            hold("middle"); post(.otherMouseDown, x, y, .center)
+        case "Middle Click Release":
+            release("middle"); post(.otherMouseUp, x, y, .center)
+        case "Scroll Up":
+            Input.scroll(x: x, y: y, amount: 3)
+        case "Scroll Down":
+            Input.scroll(x: x, y: y, amount: -3)
+
+        /* Named here rather than dropped through the default, exactly as on Windows.
+         *
+         * A keystroke has no key in it - by design, see the protocol - and a Focus is a note, not an action.
+         * Both are counted and reported as `unplayable`, because a replay that pressed nothing for the two
+         * minutes somebody spent typing must not come back looking like a clean run. The pause before each
+         * one is still waited out, so the replay keeps the shape of the original. */
+        case "Key Down", "Focus":
+            gate.lock(); unplayable += 1; gate.unlock()
+
+        default:
+            gate.lock(); unplayable += 1; gate.unlock()
+        }
+        return true
+    }
+
+    private func post(_ type: CGEventType, _ x: Double, _ y: Double, _ button: CGMouseButton) {
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type,
+                                 mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: button) else { return }
+        event.setIntegerValueField(.eventSourceUserData, value: INJECTED_MARK)
+        event.post(tap: .cghidEventTap)
+    }
+
+    private func hold(_ name: String) { gate.lock(); down.insert(name); gate.unlock() }
+    private func release(_ name: String) { gate.lock(); down.remove(name); gate.unlock() }
+
+    private func releaseEverything() {
+        gate.lock()
+        let holding = down
+        down = []
+        gate.unlock()
+        guard !holding.isEmpty else { return }
+        let at = CGEvent(source: nil)?.location ?? .zero
+        for name in holding {
+            switch name {
+            case "right": post(.rightMouseUp, at.x, at.y, .right)
+            case "middle": post(.otherMouseUp, at.x, at.y, .center)
+            default: post(.leftMouseUp, at.x, at.y, .left)
+            }
+        }
+    }
+}
+
+// ================================================================ the event tap
+
+var eventTap: CFMachPort?
+
+/* The tap callback. Fast, and reads nothing it does not need.
+ *
+ * Two rules live here, both from the protocol:
+ *
+ *   - NOTHING is resolved on this path. The tap has a timeout and macOS disables it rather than telling
+ *     anybody - the same failure as a Windows hook overrunning LowLevelHooksTimeout - so this queues and
+ *     returns, and a worker thread does the accessibility calls.
+ *   - a key event is counted, never read. `.keyboardEventKeycode` is available on the event handed in here
+ *     and is deliberately not touched: a tap that reads key codes has captured a password whether or not it
+ *     stores one.
+ */
+private func tapCallback(
+    proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?
+) -> Unmanaged<CGEvent>? {
+    /* Re-enabled rather than logged. When the OS disables a tap the agent keeps running and records nothing,
+     * which looks exactly like a recording of an idle machine. */
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        return Unmanaged.passUnretained(event)
+    }
+
+    // Our own replay, not a person. See INJECTED_MARK.
+    if event.getIntegerValueField(.eventSourceUserData) == INJECTED_MARK {
+        return Unmanaged.passUnretained(event)
+    }
+
+    let point = event.location
+    let x = Int(point.x.rounded())
+    let y = Int(point.y.rounded())
+
+    switch type {
+    case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+        /* A drag is its own event type on macOS, not a move with a button down. Recording only .mouseMoved
+         * would give a press, no motion and a release - a drag that replays as a click. */
+        Recorder.shared.capture(action: "Mouse Movement", x: x, y: y)
+    case .leftMouseDown:
+        Recorder.shared.capture(action: "Left Click Down", x: x, y: y)
+    case .leftMouseUp:
+        Recorder.shared.capture(action: "Left Click Release", x: x, y: y)
+    case .rightMouseDown:
+        Recorder.shared.capture(action: "Right Click Down", x: x, y: y)
+    case .rightMouseUp:
+        Recorder.shared.capture(action: "Right Click Release", x: x, y: y)
+    case .otherMouseDown:
+        Recorder.shared.capture(action: "Middle Click Down", x: x, y: y)
+    case .otherMouseUp:
+        Recorder.shared.capture(action: "Middle Click Release", x: x, y: y)
+    case .scrollWheel:
+        let delta = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        Recorder.shared.capture(action: delta >= 0 ? "Scroll Up" : "Scroll Down", x: x, y: y)
+    case .keyDown:
+        /* A key was pressed, and when. Never which.
+         *
+         * One difference from Windows worth naming: a bare modifier arrives as .flagsChanged, not .keyDown,
+         * and is not subscribed to here - so holding Shift alone is not counted as typing, where on Windows
+         * it is. Both answers are defensible and the transcript only reads density and duration, so the
+         * cheaper one wins. */
+        Recorder.shared.captureKey()
+    default:
+        break
+    }
+
+    return Unmanaged.passUnretained(event)
+}
+
+/* Installed on its own thread with its own run loop. A tap needs one, and the HTTP accept loop owns the
+ * main thread. */
+func installTap() -> Bool {
+    guard Permission.accessibility else { return false }
+
+    let mask: CGEventMask =
+        (1 << CGEventType.mouseMoved.rawValue)
+        | (1 << CGEventType.leftMouseDown.rawValue)
+        | (1 << CGEventType.leftMouseUp.rawValue)
+        | (1 << CGEventType.rightMouseDown.rawValue)
+        | (1 << CGEventType.rightMouseUp.rawValue)
+        | (1 << CGEventType.otherMouseDown.rawValue)
+        | (1 << CGEventType.otherMouseUp.rawValue)
+        | (1 << CGEventType.leftMouseDragged.rawValue)
+        | (1 << CGEventType.rightMouseDragged.rawValue)
+        | (1 << CGEventType.otherMouseDragged.rawValue)
+        | (1 << CGEventType.scrollWheel.rawValue)
+        | (1 << CGEventType.keyDown.rawValue)
+
+    /* .listenOnly, which is not an optimisation: a tap that can alter events is a tap that can drop them,
+     * and a recorder must never change what the person is doing while it watches. */
+    guard let tap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap,
+        place: .headInsertEventTap,
+        options: .listenOnly,
+        eventsOfInterest: mask,
+        callback: tapCallback,
+        userInfo: nil
+    ) else { return false }
+
+    eventTap = tap
+    let thread = Thread {
+        let loop = CFRunLoopGetCurrent()
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(loop, source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        CFRunLoopRun()
+    }
+    thread.name = "MouseFlowTap"
+    thread.start()
+    return true
+}
+
+// ================================================================ autostart
+
+/* A LaunchAgent, which is the macOS answer to the Startup folder.
+ *
+ * Unlike the Windows agent this is always available: there the piped one-liner leaves no file for a launcher
+ * to point at, and here there is always a binary on disk because there is no way to run this without
+ * compiling it first. */
+enum Autostart {
+    static let label = "com.mouseflow.agent"
+
+    static var plistPath: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/\(label).plist").path
+    }
+
+    static var enabled: Bool { FileManager.default.fileExists(atPath: plistPath) }
+
+    static var binary: String {
+        let raw = CommandLine.arguments.first ?? ""
+        if raw.hasPrefix("/") { return raw }
+        return FileManager.default.currentDirectoryPath + "/" + raw
+    }
+
+    static func enable() -> String? {
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>Label</key><string>\(label)</string>
+          <key>ProgramArguments</key>
+          <array>
+            <string>\(binary)</string>
+            <string>--port</string><string>\(port)</string>
+            <string>--allow-origin</string><string>\(allowOrigin)</string>
+          </array>
+          <key>RunAtLoad</key><true/>
+          <key>KeepAlive</key><false/>
+        </dict>
+        </plist>
+        """
+        do {
+            let dir = (plistPath as NSString).deletingLastPathComponent
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try plist.write(toFile: plistPath, atomically: true, encoding: .utf8)
+        } catch {
+            return "the launch agent could not be written: \(error.localizedDescription)"
+        }
+        /* Loaded now as well as written, so "it will start when you log in" is not the only thing that
+         * became true - the same command run twice is not an error for launchctl. */
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["load", "-w", plistPath]
+        try? task.run()
+        task.waitUntilExit()
+        return nil
+    }
+
+    static func disable() -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["unload", "-w", plistPath]
+        try? task.run()
+        task.waitUntilExit()
+        try? FileManager.default.removeItem(atPath: plistPath)
+        return nil
+    }
+}
+
+// ================================================================ HTTP
+
+struct Response {
+    var status = 200
+    var contentType = "application/json"
+    var body = ""
+}
+
+func respond(_ fd: Int32, _ res: Response) {
+    let reason: String = {
+        switch res.status {
+        case 200: return "OK"
+        case 204: return "No Content"
+        case 400: return "Bad Request"
+        case 404: return "Not Found"
+        case 405: return "Method Not Allowed"
+        case 409: return "Conflict"
+        case 500: return "Internal Server Error"
+        default: return "OK"
+        }
+    }()
+    let bytes = Array(res.body.utf8)
+    var head = "HTTP/1.1 \(res.status) \(reason)\r\n"
+    head += "Content-Type: \(res.contentType); charset=utf-8\r\n"
+    head += "Content-Length: \(bytes.count)\r\n"
+    /* Echoed, never used to reject - the same as the Windows agent, and the same single seam the protocol
+     * says to leave for the authentication design that is being chosen. */
+    head += "Access-Control-Allow-Origin: \(allowOrigin)\r\n"
+    head += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+    head += "Access-Control-Allow-Headers: content-type\r\n"
+    head += "Access-Control-Max-Age: 600\r\n"
+    head += "Cache-Control: no-store\r\n"
+    head += "Connection: close\r\n\r\n"
+
+    var out = Array(head.utf8)
+    out.append(contentsOf: bytes)
+    out.withUnsafeBufferPointer { buffer in
+        var sent = 0
+        while sent < buffer.count {
+            let n = write(fd, buffer.baseAddress! + sent, buffer.count - sent)
+            if n <= 0 { break }
+            sent += n
+        }
+    }
+}
+
+func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, body: String)? {
+    var raw = [UInt8]()
+    var chunk = [UInt8](repeating: 0, count: 4096)
+    var headerEnd: Int?
+
+    // Headers first, then exactly Content-Length bytes of body.
+    while headerEnd == nil {
+        let n = recv(fd, &chunk, chunk.count, 0)
+        if n <= 0 { return nil }
+        raw.append(contentsOf: chunk[0..<n])
+        if let found = find(raw, Array("\r\n\r\n".utf8)) { headerEnd = found + 4 }
+        if raw.count > 1_000_000 { return nil }
+    }
+    guard let start = headerEnd,
+          let head = String(bytes: raw[0..<start], encoding: .utf8) else { return nil }
+
+    let lines = head.split(separator: "\r\n", omittingEmptySubsequences: true).map(String.init)
+    guard let requestLine = lines.first else { return nil }
+    let parts = requestLine.split(separator: " ").map(String.init)
+    guard parts.count >= 2 else { return nil }
+
+    let method = parts[0].uppercased()
+    var path = parts[1]
+    var query = ""
+    /* The query travels beside the path, not inside it: every route compares the path exactly, and cutting
+     * the query off without keeping it is how the Windows agent quietly ignored `?w=` for months. */
+    if let mark = path.firstIndex(of: "?") {
+        query = String(path[path.index(after: mark)...])
+        path = String(path[path.startIndex..<mark])
+    }
+
+    var length = 0
+    for line in lines.dropFirst() {
+        let bits = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+        if bits.count == 2, bits[0].lowercased() == "content-length" { length = Int(bits[1]) ?? 0 }
+    }
+
+    var body = [UInt8](raw[start...])
+    while body.count < length {
+        let n = recv(fd, &chunk, chunk.count, 0)
+        if n <= 0 { break }
+        body.append(contentsOf: chunk[0..<n])
+    }
+    return (method, path, query, String(bytes: body.prefix(length), encoding: .utf8) ?? "")
+}
+
+func find(_ haystack: [UInt8], _ needle: [UInt8]) -> Int? {
+    guard haystack.count >= needle.count else { return nil }
+    for i in 0...(haystack.count - needle.count) {
+        var hit = true
+        for j in 0..<needle.count where haystack[i + j] != needle[j] { hit = false; break }
+        if hit { return i }
+    }
+    return nil
+}
+
+// ================================================================ routes
+
+func route(method: String, path: String, query: String, body: String) -> Response {
+    if method == "OPTIONS" { return Response(status: 204, contentType: "text/plain", body: "") }
+
+    switch path {
+    case "/health":
+        let screen = Desktop.rect
+        let cursor = CGEvent(source: nil)?.location ?? .zero
+        let status = Recorder.shared.status()
+        var json = "{\"ok\":true,\"version\":\(jsonString(VERSION))"
+        json += ",\"platform\":\"macos\""
+        json += ",\"screen\":{\"x\":\(Int(screen.origin.x)),\"y\":\(Int(screen.origin.y))"
+        json += ",\"w\":\(Int(screen.width)),\"h\":\(Int(screen.height))}"
+        json += ",\"cursor\":{\"x\":\(Int(cursor.x)),\"y\":\(Int(cursor.y))}"
+        json += ",\"hook\":\(jsonBool(eventTap != nil))"
+        json += ",\"recording\":\(jsonBool(status.recording))"
+        json += ",\"playing\":\(jsonBool(Replayer.shared.isPlaying))"
+        json += ",\"autostart\":\(jsonBool(Autostart.enabled))"
+        json += ",\"canAutostart\":true"
+        json += ",\"originPinned\":\(jsonBool(allowOrigin != "*"))"
+        /* The capability flags, and on this platform two of them are answers rather than constants. A
+         * version number cannot say whether the user has granted Screen Recording, and an agent that claims
+         * it can see returns a black picture instead of an explanation. */
+        json += ",\"canSee\":\(jsonBool(Permission.screenRecording))"
+        json += ",\"canWindows\":true"
+        json += ",\"canName\":\(jsonBool(Permission.accessibility))"
+        json += ",\"canKeys\":\(jsonBool(eventTap != nil))"
+        json += ",\"canDrain\":true"
+        /* Named separately from the flags, because the two switches are in different panes of System
+         * Settings and "permissions missing" is not an instruction. */
+        json += ",\"permissions\":{\"accessibility\":\(jsonBool(Permission.accessibility))"
+        json += ",\"screenRecording\":\(jsonBool(Permission.screenRecording))}"
+        json += "}"
+        return Response(body: json)
+
+    case "/record/start":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        if eventTap == nil {
+            /* Said as the thing to do, not as a state. Without Accessibility there is no tap, and a
+             * recording started here would come back empty with no explanation. */
+            return Response(status: 500, body: "{\"ok\":false,\"error\":"
+                + jsonString("macOS has not granted Accessibility to this agent, so nothing can be recorded"
+                    + " - System Settings, Privacy & Security, Accessibility, then start it again") + "}")
+        }
+        Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
+        return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
+
+    case "/record/status":
+        let s = Recorder.shared.status()
+        return Response(body: "{\"recording\":\(jsonBool(s.recording)),\"count\":\(s.count)"
+            + ",\"part\":\(s.part),\"moveMs\":\(s.moveMs),\"elapsedMs\":\(s.elapsedMs)}")
+
+    case "/record/drain":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        guard let chunk = Recorder.shared.drain() else {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":\"not recording\"}")
+        }
+        return Response(contentType: "text/plain", body: chunk)
+
+    case "/record/stop":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        return Response(contentType: "text/plain", body: Recorder.shared.stop())
+
+    case "/replay":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        if let bad = Replayer.shared.start(body: body) {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
+        }
+        return Response(body: "{\"ok\":true}")
+
+    case "/replay/status":
+        return Response(body: Replayer.shared.statusJson())
+
+    case "/replay/abort":
+        Replayer.shared.requestAbort()
+        return Response(body: "{\"ok\":true}")
+
+    case "/shot":
+        /* Deliberately not while replaying: a picture taken mid-replay shows a screen that is already
+         * moving, and a decision made from it acts on something that has gone. */
+        if Replayer.shared.isPlaying {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":\"busy replaying\"}")
+        }
+        return Response(body: Screen.shot(want: queryInt(query, "w", 1280)))
+
+    case "/pulse":
+        if Replayer.shared.isPlaying {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":\"busy replaying\"}")
+        }
+        return Response(body: Screen.pulse())
+
+    case "/windows":
+        let items = Windows.list().map { w in
+            "{\"title\":\(jsonString(w.title)),\"process\":\(jsonString(w.process))"
+                + ",\"active\":\(jsonBool(w.active)),\"minimized\":\(jsonBool(w.minimized))"
+                + ",\"x\":\(w.x),\"y\":\(w.y),\"w\":\(w.w),\"h\":\(w.h)}"
+        }
+        return Response(body: "{\"ok\":true,\"windows\":[\(items.joined(separator: ","))]}")
+
+    case "/do":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        if Replayer.shared.isPlaying {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":\"busy replaying\"}")
+        }
+        if let bad = doAction(body) {
+            return Response(status: 400, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
+        }
+        return Response(body: "{\"ok\":true}")
+
+    case "/autostart/enable":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        if let bad = Autostart.enable() {
+            return Response(status: 500, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
+        }
+        return Response(body: "{\"ok\":true}")
+
+    case "/autostart/disable":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        _ = Autostart.disable()
+        return Response(body: "{\"ok\":true}")
+
+    case "/":
+        return Response(contentType: "text/plain", body: "MouseFlow agent \(VERSION) (macOS)\n")
+
+    default:
+        return Response(status: 404, body: "{\"ok\":false,\"error\":\"no such path\"}")
+    }
+}
+
+// ================================================================ main
+
+Permission.ask()
+let tapped = installTap()
+
+let listener = socket(AF_INET, SOCK_STREAM, 0)
+if listener < 0 {
+    FileHandle.standardError.write("cannot open a socket\n".data(using: .utf8)!)
+    exit(1)
+}
+var yes: Int32 = 1
+setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+var address = sockaddr_in()
+address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+address.sin_family = sa_family_t(AF_INET)
+address.sin_port = port.bigEndian
+/* Loopback only, never 0.0.0.0. The protocol says so and it is the difference between a helper for this
+ * machine and a remote control for anyone on the network. */
+address.sin_addr = in_addr(s_addr: in_addr_t(0x7F00_0001).bigEndian)
+
+let bound = withUnsafePointer(to: &address) { pointer in
+    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+        bind(listener, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+    }
+}
+if bound < 0 {
+    FileHandle.standardError.write(
+        "port \(port) is already in use - another agent is probably running\n".data(using: .utf8)!)
+    exit(1)
+}
+if listen(listener, 128) < 0 {
+    FileHandle.standardError.write("cannot listen on \(port)\n".data(using: .utf8)!)
+    exit(1)
+}
+
+let axLine = Permission.accessibility
+    ? "granted - clicks, typing and control names work"
+    : "MISSING - it cannot record or click until you grant it"
+let screenLine = Permission.screenRecording
+    ? "granted - screenshots and window titles work"
+    : "MISSING - screenshots and window titles will be empty"
+let tapLine = tapped ? "installed" : "NOT installed - grant Accessibility, then start it again"
+
+print("""
+
+  MouseFlow agent \(VERSION) (macOS)
+  listening     http://127.0.0.1:\(port)
+  origin        \(allowOrigin)
+  move filter   \(moveThrottleMsDefault) ms / \(moveMinPx) px
+  accessibility \(axLine)
+  screen        \(screenLine)
+  input tap     \(tapLine)
+
+  Recording only happens between Start and Stop. Typed text is never captured - only that a key was
+  pressed, and when. Ctrl+C to stop the agent.
+
+""")
+
+let queue = DispatchQueue(label: "mouseflow.http", attributes: .concurrent)
+while true {
+    let client = accept(listener, nil, nil)
+    if client < 0 { continue }
+    queue.async {
+        defer { close(client) }
+        /* A deadline on the socket, because every endpoint has one on the client side and a half-open
+         * connection holding a thread is worse than a refusal. */
+        var timeout = timeval(tv_sec: 20, tv_usec: 0)
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        guard let request = readRequest(client) else { return }
+        let result = route(
+            method: request.method, path: request.path, query: request.query, body: request.body
+        )
+        respond(client, result)
+    }
+}

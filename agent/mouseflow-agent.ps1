@@ -2205,6 +2205,10 @@ namespace MouseFlow
                        one string - and the app must offer a short recording rather than a day-long one it
                        cannot actually take delivery of. */
                     + ",\"canDrain\":true"
+                    /* Which implementation answered. There are two now, and the Connections screen shows a
+                       different install command for each - guessing that from the browser's user agent gets
+                       it wrong for anybody helping somebody else set up. */
+                    + ",\"platform\":\"windows\""
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
                 return;

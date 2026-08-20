@@ -4,8 +4,10 @@ What any MouseFlow desktop agent must implement, whatever it is written in. Extr
 that already agree on it: `agent/mouseflow-agent.ps1` (the Windows implementation) and
 `web/src/lib/agent.ts` (the only client).
 
-This file exists because there is now going to be a second implementation. Until there was, the contract
-lived in a PowerShell comment block and in a TypeScript file, and neither knew it was a contract.
+This file exists because there are now two implementations: `agent/mouseflow-agent.ps1` (Windows,
+PowerShell) and `agent/mouseflow-agent.swift` (macOS, compiled on the machine by `agent/install-mac.sh`).
+Until there was a second, the contract lived in a PowerShell comment block and in a TypeScript file, and
+neither knew it was a contract.
 
 **If you are writing a new agent: implement this and nothing else.** Do not change `web/src/lib/agent.ts`,
 `web/src/lib/desktop-engine.ts` or the Connections screen — they are shared, and a second session editing
@@ -33,8 +35,9 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 | GET | `/pulse` | 5s | `{ok, grid}` — 64×36 greyscale samples as a short string |
 | GET | `/windows` | 5s | `{ok, windows:[{title, process, active, minimized, x, y, w, h}]}` |
 | POST | `/do` | 20s | `{ok}` — one action, body is `key=value` text (below) |
-| POST | `/record/start` | 5s | `{ok}` |
-| GET | `/record/status` | 2.5s | `{recording, count, elapsedMs}` |
+| POST | `/record/start` | 5s | `{ok, moveMs}` — `?moveMs=250` thins the pointer path for a long session |
+| GET | `/record/status` | 2.5s | `{recording, count, part, moveMs, elapsedMs}` |
+| POST | `/record/drain` | 15s | **text/plain**, what has piled up so far; **the recording continues** |
 | POST | `/record/stop` | 15s | **text/plain**, one event per line (`.mmmacro`) |
 | POST | `/replay` | 5s | `{ok}` — starts a replay, returns immediately |
 | GET | `/replay/status` | 2.5s | `{playing, step, steps, pass, passes, index, total, unplayable}` |
@@ -42,7 +45,46 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 | POST | `/autostart/enable` | 8s | `{ok}` — needs the agent to exist as a file on disk |
 | POST | `/autostart/disable` | — | `{ok}` |
 
-The four `can*` flags exist because a version number could not answer the question that mattered. An
+### `/record/drain` and `?moveMs=` — a session that lasts a working day
+
+Added in 0.8.0, and the reason is arithmetic rather than taste. Measured over the recordings this project has
+actually made: **69 bytes an event, 23-42 events a second**, so 1.5-2.9 KB/s. The app refuses a payload over
+400KB (`api/sync.js`), which arrives around the **third minute** — and `/record/stop` used to be the only way
+events left an agent, so eight hours meant ~830,000 events held in memory and returned in one string.
+
+`/record/drain` takes what has piled up and **keeps recording**. What it must NOT touch is the whole point,
+and every omission is load-bearing:
+
+- **the clock runs on**, so `elapsedMs` stays the time of the SESSION. A chunk knows its own length from its
+  events; only the session can say how far in it is.
+- **the last-event timestamp and position stay**, or one unthrottled burst of movement gets through at the
+  start of every chunk.
+- **the held-button count stays**, or a drain landing mid-drag lets a `Focus` marker split the next chunk's
+  press from its release.
+- **the last foreground window stays**, so an unchanged window is not re-announced every chunk.
+
+Chunk metadata rides on a `#part` line above the events, the same way `#ctx` travels, so every existing
+reader of the format loads a chunk as an ordinary recording:
+
+```
+#part	n=3	elapsedMs=5400123	events=812	moveMs=250	dropped=0
+```
+
+**409 when nothing is recording**, not an empty body: "nothing happened in the last half hour" and "there is
+no recording" have to be distinguishable, or a chunker writes an empty part every half hour for as long as
+the tab stays open.
+
+`?moveMs=` on `/record/start` is the other half of fitting. Pointer movement is **93.75% of the events and
+88.6% of the bytes** (measured, not assumed), and at the 10ms default that is up to a hundred samples a
+second of a path nothing reads — the transcript, the story and the analytics all read clicks, scrolls, keys
+and the change of window. At 250ms the "was somebody at this machine" signal survives and a 30-minute chunk
+fits inside the 400KB cap. **Per session, not global**: a plain `/record/start` afterwards records at the
+default again. Replay of a thinned recording is coarser, deliberately — a day-long session is recorded to be
+READ, not replayed.
+
+### The capability flags
+
+The `can*` flags exist because a version number could not answer the question that mattered. An
 agent started before the click resolver existed and one started after it reported the same `0.5.0`, and the
 difference was the whole transcript — a list of coordinates against a list of named actions. So each
 capability is stated: `canSee` (screenshots), `canWindows` (`/windows`), `canName` (`#ctx` on a click),
@@ -50,8 +92,21 @@ capability is stated: `canSee` (screenshots), `canWindows` (`/windows`), `canNam
 that can be **false** rather than absent: the keyboard hook may fail to install, and the agent runs without
 it rather than refusing to start.
 
+Since 0.8.0 there are three more, and two of them are macOS answering questions Windows cannot be asked:
+
+- `canDrain` — whether a recording can outlast one response (`/record/drain`). Without it a session is
+  bounded by what fits in memory and in one string, and the app must offer a short recording rather than a
+  day-long one it cannot take delivery of.
+- `platform` — `windows` or `macos`. Used for exactly one thing: which install command the Connections
+  screen shows. Never to decide what an agent can do — that is what the `can*` flags are for.
+- `permissions` — `{accessibility, screenRecording}`, macOS only. On Windows both are unconditionally true
+  and there is nothing to report; on macOS the user grants them per-binary in System Settings and no code can
+  grant either, so `canSee` follows Screen Recording and `canName` follows Accessibility, and this field says
+  which switch to flip. Without it the failure is a working agent, a black screenshot and no explanation.
+
 `version` is checked by the client against `AGENT_WANTS` in `web/src/lib/agent.ts`, which currently wants
-**0.7.0** — the build that resolves `#ctx`, times typing and marks focus changes. An older agent is reported to the user as needing an update, with the command to get the current
+**0.8.0** — the build that drains without stopping, thins the pointer path on request, and reports its
+platform and its permissions. An older agent is reported to the user as needing an update, with the command to get the current
 one — so a new implementation should report a version it can actually honour the whole of this table at.
 
 ## Coordinates
@@ -254,9 +309,54 @@ A design is being chosen now. Until it lands, a new agent should implement the t
 and leave a single seam for it — one function every route calls before doing anything. Do not design a scheme
 in parallel; two agents with two schemes is worse than one agent with none.
 
-## macOS notes for whoever picks this up
+## macOS — what the second implementation chose
 
-Not requirements — the things that will dominate the work, so they are not discovered late:
+`agent/mouseflow-agent.swift`, installed by `agent/install-mac.sh`. The notes below were written before it
+existed and each one turned into a decision; the decision is recorded next to the note so the next reader
+does not re-open a settled question.
+
+**Packaging: compiled on the machine, not downloaded.** There is no Apple Developer certificate in this
+project, so a prebuilt binary arrives quarantined and Gatekeeper refuses it — the user would have to strip
+the quarantine attribute by hand, which is worse advice and worse security than the alternative. A binary
+compiled locally is never quarantined. The cost is Xcode Command Line Tools, which the installer names in
+one command if they are missing; the gain is no certificate, no notarisation, no Gatekeeper dialog. If a
+Developer ID ever exists, a signed and notarised `.app` is a better answer and the permission grants survive
+updates — which they do not here, see below.
+
+**Permissions are the install story, and there are two.** Accessibility for the event tap, for reading any
+other application's tree, and for posting input; Screen Recording for `/shot`, `/pulse`, and for other
+applications' window TITLES in `/windows`. Both are reported on `/health` under `permissions`, so the
+Connections screen ticks them individually and live. A rebuild invalidates the grant — TCC keys on the exact
+binary — so the installer says the user may be asked again.
+
+**`ctrl=` in the action body means COMMAND on macOS.** A deliberate translation, not an oversight: the
+grammar was written on Windows where Ctrl+C is copy, and on macOS the same intention is Cmd+C. Posting a
+literal Control+C would send an interrupt to a terminal instead. `cmd=` and `meta=` are accepted as
+themselves, and `raw-ctrl=` asks for the literal Control key.
+
+**Coordinates are points, and a screenshot is pixels.** CGEvent works in global display points; a capture
+comes back in backing pixels, twice that on a Retina display. Same trap as Windows from the other direction,
+same answer: `/shot` reports `scale` as picture-pixels-per-point and the client converts in one place.
+
+**A drag is its own event type.** macOS sends `leftMouseDragged`, not `mouseMoved` with a button down.
+Subscribing only to moves gives a press, no motion and a release — a drag that replays as a click.
+
+**A bare modifier is not a keystroke here.** `keyDown` excludes modifiers on macOS (they arrive as
+`flagsChanged`), so holding Shift alone is not counted as typing, where on Windows it is. Both are
+defensible and the transcript reads only density and duration.
+
+**The tap is listen-only.** Not an optimisation: a tap that can alter events is a tap that can drop them,
+and a recorder must not change what the person is doing while it watches.
+
+**Windows and titles.** `title` and `process` come from `CGWindowListCopyWindowInfo`, with the owning
+application's name as the fallback title when Screen Recording is not granted — a real answer rather than a
+blank row that reads as "nothing is open". macOS cannot distinguish "minimised" from "on another Space"
+through that list, and to the caller they mean the same thing: it is open, it is not visible, and
+`action=activate` is what gets to it.
+
+### The original notes, for context
+
+Not requirements — the things that dominated the work, so they were not discovered late:
 
 - **Permissions are the install story.** Posting synthetic events needs Accessibility; capturing the screen
   needs Screen Recording; reading other applications' window titles needs Screen Recording too. All are

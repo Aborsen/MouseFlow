@@ -34,6 +34,22 @@ export interface AgentHealth {
    * string, and the app has to offer a short recording rather than a day-long one it cannot take delivery
    * of. Absent on every older agent, which is the answer. */
   canDrain?: boolean;
+  /* Which implementation answered. Absent on any agent older than the macOS one, and only ever used to
+   * decide which install command to show - never to decide what the agent can do, which is what the can*
+   * flags are for. */
+  platform?: 'windows' | 'macos';
+  /* macOS only, and the reason the Connections screen can be useful rather than apologetic.
+   *
+   * On Windows both of these are unconditionally true and there is nothing to report. On macOS they are
+   * granted by the user, per-binary, in System Settings, and cannot be granted by any code - so the agent
+   * says which one is missing and the screen turns that into an instruction with a button. Without this the
+   * failure is a working agent, a black screenshot and no explanation. */
+  permissions?: { accessibility: boolean; screenRecording: boolean };
+  /* Whether it is set to start at login, as opposed to whether it COULD be. Both agents have always sent
+   * this and the type never declared it, so the Connections screen could offer "Enable autostart" to
+   * somebody who had already enabled it - the third field this session found declared differently from the
+   * way it is sent. */
+  autostart?: boolean;
   canAutostart?: boolean;
   originPinned?: boolean;
 }
@@ -205,6 +221,32 @@ export function olderThan(running: string | null | undefined, wanted = AGENT_WAN
 }
 
 /** Piped straight into a scriptblock: nothing to download, unblock, or exempt from execution policy. */
+/* Which machine this browser is on.
+ *
+ * Only ever used to pick which install command to show FIRST - both are always reachable, because somebody
+ * on Windows reading this to a colleague on a Mac is a real thing that happens. A running agent's own
+ * `platform` outranks this, since it is a fact rather than a guess about a user agent string. */
+export type HostOS = 'windows' | 'macos' | 'other';
+
+export function hostOS(): HostOS {
+  const ua = `${navigator.userAgent} ${(navigator as { platform?: string }).platform ?? ''}`;
+  if (/Mac|iPhone|iPad/i.test(ua)) return 'macos';
+  if (/Win/i.test(ua)) return 'windows';
+  return 'other';
+}
+
+/* The macOS install, which compiles rather than downloading a binary.
+ *
+ * Not a shorter one-liner because there is no shorter honest one. Windows fetches the agent and runs it in
+ * memory; macOS has no equivalent, and a prebuilt binary without an Apple Developer certificate arrives
+ * quarantined and is refused by Gatekeeper - so the source is fetched and built on the machine, which is
+ * never quarantined. The cost is Xcode Command Line Tools, and the installer says so if they are missing. */
+export function macInstallCommand(port: number): string {
+  const origin = location.origin;
+  const portArg = port !== 8787 ? ` --port ${port}` : '';
+  return `curl -fsSL ${origin}/agent/install-mac.sh | bash -s -- --origin ${origin}${portArg}`;
+}
+
 export function startCommand(port: number): string {
   const origin = location.origin;
   const portArg = port !== 8787 ? ` -Port ${port}` : '';
