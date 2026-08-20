@@ -447,7 +447,7 @@ export const RecordingsTable = ({
                           </select>
                         </label>
 
-                        <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
+                        <label className="flex items-center gap-2 text-[0.78rem] text-ink-secondary">
                           <Checkbox
                             checked={replay.loop}
                             aria-label="Loop"
@@ -455,6 +455,23 @@ export const RecordingsTable = ({
                           />
                           Loop until stopped
                         </label>
+
+                        {/* The point of this panel. The three controls beside it are what a replay obeys, and
+                            the row's play button is an icon at the far end of the actions - so the place the
+                            settings are set gets a Play that says what it will do with them. The icon on the
+                            row stays: it is the one you want when you have not touched anything, and removing
+                            it would turn a one-click replay into a three-click replay. */}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          leftSlot={<Play className="size-4" />}
+                          title={`Replay ${rec.name} ${replay.loop ? 'until you stop it' : `${replay.repeat} time${replay.repeat === 1 ? '' : 's'}`} at ${replay.speed}× speed`}
+                          onClick={() => onPlay(rec)}
+                        >
+                          Play {replay.loop
+                            ? 'on a loop'
+                            : `${replay.repeat}×`} at {replay.speed}×
+                        </Button>
 
                         {/* Behind one deliberate click, and armed in the button rather than a confirm() -
                             the pattern the rest of the app settled on. */}
