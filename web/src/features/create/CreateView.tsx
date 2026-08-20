@@ -35,7 +35,13 @@ import {
 import { AGENT_WANTS, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
 import { push } from '@/lib/api';
-import { MAX_WAVES, type RunEvent, WAVE_TURNS, runOnDesktop } from '@/lib/desktop-engine';
+import {
+  type GateAnswer,
+  MAX_WAVES,
+  type RunEvent,
+  WAVE_TURNS,
+  runOnDesktop,
+} from '@/lib/desktop-engine';
 import { useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Plan, askForPlan } from '@/lib/plan';
@@ -130,6 +136,13 @@ export const CreateView = () => {
   /* Ограничить работу тем окном, что впереди сейчас. Только для desktop: расширение целится в элементы
    * страницы, и «текущий экран» для него ничего не значит. */
   const [pinScreen, setPinScreen] = useState(false);
+  /* Открытый шлюз: цикл стоит и ждёт, пока `answer` не будет вызван. `null`, когда никто не ждёт. */
+  const [gate, setGate] = useState<
+    { n: number; title: string; said: string; answer: (a: GateAnswer) => void } | null
+  >(null);
+  /* Снимок экрана, если на паузе его попросили. Единственный способ проверить заявление о состоянии машины -
+   * увидеть машину. */
+  const [gateShot, setGateShot] = useState<string | null>(null);
 
   const abort = useRef(false);
   const live = useRef<string | null>(null);
@@ -272,6 +285,10 @@ export const CreateView = () => {
       }
     }
 
+    /* План именно этого прогона, до того как состояние очистится. И цикл, и turn берут его отсюда, чтобы
+     * показанное и переданное не могли разойтись. */
+    const planned = plan && plan.for === text ? plan.plan : undefined;
+
     const id = `t${Date.now()}`;
     const startedAt = new Date().toISOString();
     live.current = id;
@@ -284,7 +301,7 @@ export const CreateView = () => {
       state: 'running',
       /* План остаётся в turn'е, над фидом: сверху то, что она собиралась сделать, снизу то, что делала.
        * Сопоставления шагов с чекпоинтами здесь нет - это было бы гарантией на самоотчёте. */
-      plan: plan && plan.for === text ? plan.plan : undefined,
+      plan: planned,
       pinned,
     }]);
     setGoal('');
@@ -296,6 +313,15 @@ export const CreateView = () => {
       setRunning(true);
 
       void runOnDesktop({
+        /* Шлюзы — только когда план действительно спрашивали. Без плана нет границ, и инструмент чекпоинта
+         * даже не предлагается модели. */
+        checkpoints: planned?.checkpoints,
+        onCheckpoint: planned
+          ? (at) => new Promise<GateAnswer>((resolve) => {
+            setGateShot(null);
+            setGate({ ...at, answer: (a) => { setGate(null); setGateShot(null); resolve(a); } });
+          })
+          : undefined,
         /* Ограничение области, а не картинка: снимок цикл делает каждый шаг и без просьбы. Смысл в том, чтобы
          * НЕ уходить с этого окна - и окно названо, чтобы прогон мог отказаться, а не молча взяться за
          * соседнее. */
@@ -359,10 +385,13 @@ export const CreateView = () => {
 
   const stop = useCallback(async () => {
     setStopping(true);
+    /* Если цикл стоит на шлюзе, он ждёт промиса, а не флага - Stop должен разрешить его, иначе прогон
+     * остановится только формально и будет ждать вечно. */
+    gate?.answer('stop');
     if (target === 'desktop') { abort.current = true; return; }
     await askExtension('page/abort');
     void pollExtension();
-  }, [target, pollExtension]);
+  }, [target, pollExtension, gate]);
 
   const engine = target === 'desktop'
     ? health ? `agent ${health.version}${stale ? ' · out of date' : ''}` : 'agent offline'
@@ -522,6 +551,72 @@ export const CreateView = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Цикл стоит и ждёт.
+        *
+        * Это заявление модели, а не факт: она объявила чекпоинт, и подпись говорит именно так. Кнопка «Look
+        * at the screen» здесь потому, что проверить заявление о состоянии машины можно только увидев машину. */}
+      {gate && (
+        <section className="mx-auto mb-3 w-full max-w-[46rem] rounded-xl border-fb-attention/50 border bg-surface-card p-3.5">
+          <div className="mb-1.5 flex flex-wrap items-center gap-2">
+            <span className="size-2 shrink-0 animate-pulse rounded-full bg-fb-attention" />
+            <Typography variant="span" weight="semibold" className="min-w-0 flex-1 text-[0.95rem]">
+              Waiting at checkpoint {gate.n} — {gate.title}
+            </Typography>
+          </div>
+
+          <Typography variant="p" className="mb-2 max-w-[70ch] text-ink-secondary text-[0.85rem]">
+            It says: “{gate.said}”
+          </Typography>
+
+          {gateShot && (
+            <img
+              src={gateShot}
+              alt="The screen as it is at this checkpoint"
+              className="mb-2 max-h-64 w-full rounded-lg border-stroke border object-contain"
+            />
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              leftSlot={<Send className="size-4" />}
+              onClick={() => gate.answer('go')}
+            >
+              Carry on
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              leftSlot={<Square className="size-4" />}
+              onClick={() => gate.answer('stop')}
+            >
+              Stop here
+            </Button>
+            {!gateShot && (
+              <Button
+                variant="ghost"
+                size="sm"
+                leftSlot={<Crosshair className="size-4" />}
+                onClick={async () => {
+                  try {
+                    const picture = await shot(state.port, 900);
+                    setGateShot(`data:image/${picture.format || 'jpeg'};base64,${picture.png}`);
+                  } catch (_) {
+                    /* Отказ снимка не должен закрывать шлюз: решение всё равно за человеком, просто без
+                     * картинки. */
+                  }
+                }}
+              >
+                Look at the screen
+              </Button>
+            )}
+            <span className="ms-auto text-[0.74rem] text-ink-inactive">
+              It is a claim, not a fact — it announced this itself. Nothing moves until you answer.
+            </span>
+          </div>
+        </section>
       )}
 
       {/* Намерение, до того как что-нибудь произойдёт.

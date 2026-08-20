@@ -30,6 +30,9 @@ const SETTLE_POLL_MS = 1500;
 const SETTLE_QUIET_FRAMES = 2;
 const SETTLE_MAX_MS = 120000;
 
+/** Что модель ГОВОРИТ о своём продвижении, и решение человека. Не факт: см. заметку у CHECKPOINT_TOOL. */
+export type GateAnswer = 'go' | 'stop';
+
 export interface RunEvent {
   type: 'turn' | 'tool' | 'text' | 'error' | 'wave' | 'handoff' | 'waiting';
   n?: number;
@@ -146,6 +149,31 @@ const TOOLS = [
         reason: { type: 'string' },
       },
       required: ['ms'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* Объявление, а не действие.
+     *
+     * Модель может объявить чекпоинт, сделав что-то другое: это самоотчёт, и остаётся им, сколько бы кнопок
+     * вокруг ни было. Поэтому инструмент называется «reached», а не «completed», и его `said` показывается
+     * человеку как заявление, а не как факт. Смысл шлюза не в гарантии, а в МОМЕНТЕ: человек смотрит до
+     * следующего шага, а не после. */
+    name: 'reached_checkpoint',
+    description:
+      'Say that you have reached one of the checkpoints you were given, and stop until the user answers. '
+      + 'Do not call this before it is true, and do not call it for a checkpoint you have already announced. '
+      + 'It costs a step like anything else.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        n: { type: 'integer', description: 'Which checkpoint, counting from 1.' },
+        said: {
+          type: 'string',
+          description: 'One or two sentences: what you did to reach it, and what you are about to do next.',
+        },
+      },
+      required: ['n', 'said'],
       additionalProperties: false,
     },
   },
@@ -361,24 +389,50 @@ interface Options {
   port: number;
   onEvent: (event: RunEvent) => void;
   isAborted: () => boolean;
+  /** Чекпоинты, которые модель обещала пройти. Передаются - значит цикл о них знает и объявляет их; не
+   * передаются - инструмента нет и всё работает как раньше. */
+  checkpoints?: { title: string; detail: string }[];
+  /** Шлюз. Резолвится, когда человек решил: продолжать или остановиться. Пока промис не разрешён, цикл стоит -
+   * и это единственное место, где он стоит по чужому решению. */
+  onCheckpoint?: (at: { n: number; title: string; said: string }) => Promise<GateAnswer>;
 }
 
-export async function runOnDesktop({ goal, port, onEvent, isAborted }: Options): Promise<RunResult> {
+export async function runOnDesktop({
+  goal, port, onEvent, isAborted, checkpoints, onCheckpoint,
+}: Options): Promise<RunResult> {
+  /* Шлюз работает только когда есть и план, и кто-то, кто ответит. Одно без другого - это либо инструмент,
+   * объявляющий чекпоинты, которых нет, либо пауза, из которой никто не выпустит. */
+  const gate = checkpoints && checkpoints.length && onCheckpoint ? onCheckpoint : undefined;
+  const plan = gate ? checkpoints : undefined;
   const steps: RunResult['steps'] = [];
   let handoff: string | null = null;
   let stepNo = 0;
 
   for (let wave = 1; wave <= MAX_WAVES; wave++) {
+    /* План уезжает в цикл - этим вариант 3 и отличается от варианта 1, где он существовал только в
+     * интерфейсе. Модель обязана объявлять каждый чекпоинт по достижении, и на объявлении цикл останавливается
+     * до ответа человека. */
+    const planText = plan
+      ? '\n\nYou told the user you would pass through these checkpoints:\n'
+        + plan.map((c, i) => `${i + 1}. ${c.title} — ${c.detail}`).join('\n')
+        + '\n\nCall reached_checkpoint the moment one of them is true, before doing anything that belongs to '
+        + 'the next one. The user is watching and will answer before you continue. If you find you must '
+        + 'depart from the plan, do the right thing and say so in the next reached_checkpoint or in finish - '
+        + 'the plan was your intention, not an instruction you are bound to.'
+      : '';
+
     const messages: unknown[] = [{
       role: 'user',
       content: handoff
-        ? `${goal}\n\nThis is a continuation. Earlier work on this same goal reported:\n${handoff}` +
+        ? `${goal}${planText}\n\nThis is a continuation. Earlier work on this same goal reported:\n${handoff}` +
           '\n\nCarry on from there. Look at the screen before assuming anything about it.'
-        : goal,
+        : `${goal}${planText}`,
     }];
     if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
 
-    const outcome = await runWave({ messages, port, onEvent, isAborted, steps, wave, stepFrom: stepNo });
+    const outcome = await runWave({
+      messages, gate, plan, port, onEvent, isAborted, steps, wave, stepFrom: stepNo,
+    });
     stepNo = outcome.stepNo;
     if (outcome.result) return outcome.result;
     if (isAborted()) return { ok: false, error: 'stopped', steps };
@@ -406,6 +460,8 @@ export async function runOnDesktop({ goal, port, onEvent, isAborted }: Options):
 
 async function runWave(o: {
   messages: unknown[];
+  gate?: Options['onCheckpoint'];
+  plan?: Options['checkpoints'];
   port: number;
   onEvent: (event: RunEvent) => void;
   isAborted: () => boolean;
@@ -489,7 +545,9 @@ async function runWave(o: {
          * which the loop read as "nothing left to do" and called a success. */
         max_tokens: 8000,
         system: SYSTEM,
-        tools: TOOLS,
+        /* Инструмент чекпоинта предлагается только когда есть кому ответить: модель, которой дали
+         * средство остановиться там, где остановка ничем не обрабатывается, встанет навсегда. */
+        tools: o.gate ? TOOLS : TOOLS.filter((t) => t.name !== 'reached_checkpoint'),
         messages,
       }, cutoff.signal));
     } catch (err) {
@@ -571,6 +629,43 @@ async function runWave(o: {
       if (isAborted()) {
         results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: 'the user stopped the run' });
         break;
+      }
+
+      /* Шлюз. Объявление стоит шага - оно и есть turn - поэтому попадает и в steps, и в фид, как всякое
+       * другое действие. Разница одна: цикл после него СТОИТ, пока человек не ответит. */
+      if (use.name === 'reached_checkpoint') {
+        const n = Math.max(1, Math.min(o.plan?.length ?? 99, Number(use.input?.n) || 1));
+        const title = o.plan?.[n - 1]?.title ?? `checkpoint ${n}`;
+        const claimed = String(use.input?.said ?? '').trim() || 'no words with it';
+
+        onEvent({ type: 'tool', name: use.name, input: use.input });
+        steps.push({ tool: 'reached_checkpoint', input: (use.input ?? {}) as Record<string, unknown> });
+
+        /* Здесь цикл стоит. Единственное место, где он ждёт чужого решения - и `isAborted` продолжает
+         * работать, потому что Stop разрешает промис как 'stop'. */
+        const answer = o.gate ? await o.gate({ n, title, said: claimed }) : 'go';
+
+        if (answer === 'stop' || isAborted()) {
+          return {
+            stepNo,
+            result: {
+              ok: false,
+              said: claimed,
+              /* Не «ошибка»: остановка на шлюзе - это решение, а прогон дошёл до названного места. Писать
+               * «stopped» одним словом значило бы выбросить единственное, что здесь стоит знать. */
+              error: `Stopped at checkpoint ${n} — ${title}. It said: ${claimed}`,
+              steps,
+            },
+          };
+        }
+
+        results.push({
+          type: 'tool_result',
+          tool_use_id: use.id,
+          content: 'The user looked and said to carry on. Continue from where you are, and announce the next '
+            + 'checkpoint when it is true.',
+        });
+        continue;
       }
 
       if (use.name === 'finish') {
