@@ -1,30 +1,62 @@
 # Debugging the macOS agent
 
-Written to be read on the Mac, by somebody who does not have the conversation this came out of. Everything a
-session on that machine needs to pick the work up is here or in `agent/PROTOCOL.md`.
+## Start here: get the facts
 
-## Moving the work to the Mac
+```bash
+bash <(curl -fsSL https://mouseflowapp.vercel.app/agent/install-mac.sh) --doctor
+```
 
-A Claude Code session does not travel between machines - the transcript lives on the machine that ran it. The
+One paste, and everything about the install is in it: macOS version, whether the compiler is there, where the
+bundle is and what signature it carries, whether the login item registered, whether anything is listening on
+the port, the whole of `/health` including both permissions, and the tail of the agent's own log.
+
+Run this before reasoning about anything. The failures on this platform are indistinguishable from outside -
+a missing permission, a permission granted to a *previous build*, a login item that never registered, and a
+process that is not the kind that can hold a permission at all **all look like an agent that says no**.
+
+## Where the work stands
+
+Written down because a session on this machine has none of the history.
+
+**Verified, on real machines:** the web app and the Windows agent (94 contract checks, plus suites for the
+transcript, the sessions, the reconciliation and the gallery). The macOS agent compiles and runs - that took
+three rounds of a compiler on a Mac reporting errors this machine could not have found.
+
+**Not verified:** everything the macOS agent does once running. Recording, replay, aiming by name, screenshots
+through ScreenCaptureKit, and the accessibility naming have never been observed working. The last known state
+is that permissions were granted and the agent still reported no access, which is the stale-grant case below -
+but that is a hypothesis until `--doctor` says so.
+
+**The one measurement to compare against:** on Windows 70.8% of recorded clicks carry a control name, and in
+Chrome 146 of 151. If macOS is far below that, the accessibility half is broken rather than limited.
+
+**Do not** change `web/src/lib/agent.ts`, `web/src/lib/desktop-engine.ts` or the Connections screen to make
+the Mac work. They are shared with the Windows agent and with two other surfaces; `agent/PROTOCOL.md` is the
+contract, and if the platform cannot honour something there, change the document in the same commit.
+
+## Moving the work to this machine
+
+A Claude Code session does not travel between machines - the transcript lives on the one that ran it. The
 repository does, and it has been kept deliberately self-describing for exactly this: `agent/PROTOCOL.md` is
 the contract both agents implement, and the commit messages say why each decision is the way it is rather
 than what changed.
 
 ```bash
-git clone git@github.com:Aborsen/Mouse.git
+git clone https://github.com/Aborsen/Mouse.git
 cd Mouse
 npm --prefix web install
 ```
 
-Then start a session in that directory and point it at this file. What is worth saying out loud on arrival:
+Then start a session in that directory and give it this as the first message:
 
-- **The Swift agent has never been compiled on the machine that wrote it.** It was written on Windows, and
-  every fix so far came from a compiler on a Mac reporting an error. That is the loop: build, read the error,
-  fix, build.
-- The web app and the Windows agent are verified; see the test suites below.
-- `agent/PROTOCOL.md` is authoritative for what the agent must answer. If the platform cannot honour
-  something there, change the document in the same commit - two implementations and a stale contract is worse
-  than either.
+> The macOS agent in this repo (`agent/mouseflow-agent.swift`) was written on Windows and has never run
+> there. Read `docs/DEBUG-MAC.md` and `agent/PROTOCOL.md` first, then run
+> `bash agent/install-mac.sh --doctor` and work from what it says. Do not change the shared client to make
+> the Mac work.
+
+That is enough. Everything else it needs is in the two documents and in the commit messages - `git log` on
+this repository reads as an account of why each thing is the way it is, which is the part a transcript would
+otherwise have carried.
 
 ## Installing and running it
 

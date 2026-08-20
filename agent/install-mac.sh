@@ -55,6 +55,7 @@ main() {
       --no-login) at_login="no"; shift ;;
       --foreground) foreground="yes"; shift ;;
       --fix-permissions) action="fix"; shift ;;
+      --doctor) action="doctor"; shift ;;
       --uninstall) action="uninstall"; shift ;;
       --help|-h)
         cat <<'USAGE'
@@ -72,6 +73,10 @@ mouseflow install-mac.sh
                       System Settings shows it switched on and the agent still says
                       it has no access. A rebuild changes the binary's signature and
                       the old grant no longer matches it.
+  --doctor            print everything about the install in one go - version, signature,
+                      login item, port, permissions, log tail. Paste the output when
+                      something does not work; "it does not work" is not a diagnosis
+                      and this is what turns it into one.
   --uninstall         stop it, remove the login item and the installed files
 USAGE
         return 0 ;;
@@ -118,6 +123,12 @@ Settings, Privacy & Security, under Accessibility and Screen Recording.
 FIXED
     wait_for_health "$port"
     return $?
+  fi
+
+  # ---------------------------------------------------------------- doctor
+  if [ "$action" = "doctor" ]; then
+    doctor "$app" "$binary" "$source" "$plist" "$port" "$install_dir"
+    return 0
   fi
 
   # ---------------------------------------------------------------- checks
@@ -317,6 +328,75 @@ PLIST
   launchctl bootout "gui/$(id -u)/${BUNDLE_ID}" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null \
     || { launchctl unload -w "$plist" 2>/dev/null || true; launchctl load -w "$plist" 2>/dev/null || true; }
+}
+
+# Everything about this install, in one paste.
+#
+# Written because every round of "it does not work" was spent establishing things the machine can say for
+# itself in two seconds - and because the failures here are indistinguishable from the outside: a missing
+# permission, a permission granted to a previous build, a login item that never registered and a process that
+# is not the kind that can hold a permission at all all look like an agent that says no.
+doctor() {
+  local app="$1" binary="$2" source="$3" plist="$4" port="$5" install_dir="$6"
+  local uid; uid="$(id -u)"
+
+  echo "=============== mouseflow doctor ==============="
+  echo "macOS         $(sw_vers -productVersion 2>/dev/null || echo '?')  ($(uname -m))"
+  if command -v swiftc >/dev/null 2>&1; then
+    echo "swiftc        $(swiftc --version 2>/dev/null | head -1)"
+  else
+    echo "swiftc        MISSING - run: xcode-select --install"
+  fi
+
+  echo
+  echo "--- what is installed ---"
+  if [ -x "$binary" ]; then
+    echo "binary        $binary"
+    echo "built         $(date -r "$binary" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+    echo "source        $([ -f "$source" ] && date -r "$source" '+%Y-%m-%d %H:%M' || echo 'missing')"
+    # The signature is what a permission is granted TO. A different cdhash is a different app to TCC, which
+    # is why a switch can be on and mean nothing.
+    echo "signature     $(codesign -dv "$app" 2>&1 | grep -E '^Identifier|^CDHash' | tr '\n' ' ' || echo '?')"
+    echo "bundle id     $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app}/Contents/Info.plist" 2>/dev/null || echo 'NO Info.plist - this is a loose binary and cannot hold a permission')"
+  else
+    echo "binary        NOT INSTALLED at ${binary}"
+  fi
+  if [ -f "${install_dir}/build.log" ] && [ -s "${install_dir}/build.log" ]; then
+    echo "last build had output:"
+    sed 's/^/  /' "${install_dir}/build.log" | tail -20
+  fi
+
+  echo
+  echo "--- login item ---"
+  if [ -f "$plist" ]; then
+    echo "plist         $plist"
+    echo "keepalive     $(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$plist" 2>/dev/null || echo '?')"
+    echo "args          $(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$plist" 2>/dev/null | tr '\n' ' ')"
+  else
+    echo "plist         NOT REGISTERED - it will not start at login"
+  fi
+  echo "launchd       $(launchctl print "gui/${uid}/${BUNDLE_ID}" 2>/dev/null | grep -E '^\s*state = |^\s*pid = ' | tr -d ' ' | tr '\n' ' ' || echo 'not loaded')"
+  echo "processes     $(pgrep -fl mouseflow-agent 2>/dev/null | head -3 | tr '\n' ';' || echo 'none running')"
+
+  echo
+  echo "--- is it answering ---"
+  echo "port ${port}    $(lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | tail -1 || echo 'nothing listening')"
+  local health
+  health="$(curl -fsS --max-time 2 "http://127.0.0.1:${port}/health" 2>/dev/null || echo '')"
+  if [ -n "$health" ]; then
+    echo "$health" | python3 -m json.tool 2>/dev/null || echo "$health"
+  else
+    echo "/health       no answer"
+  fi
+
+  echo
+  echo "--- its own log (last 25 lines) ---"
+  if [ -f "${HOME}/Library/Logs/mouseflow-agent.log" ]; then
+    tail -25 "${HOME}/Library/Logs/mouseflow-agent.log"
+  else
+    echo "no log yet at ~/Library/Logs/mouseflow-agent.log"
+  fi
+  echo "==============================================="
 }
 
 # Forget the grants so macOS asks again rather than showing one that no longer applies.
