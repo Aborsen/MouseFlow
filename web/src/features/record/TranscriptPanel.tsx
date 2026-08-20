@@ -31,6 +31,7 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
+  Upload,
   X,
 } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
@@ -498,9 +499,12 @@ interface Props {
   name: string;
   onClose: () => void;
   onRemoved?: () => void;
+  /** Put this recording back on the account, when the browser still holds its events. Absent when it does
+   * not, because a button that cannot work is worse than the plain error. */
+  onRestore?: () => Promise<void>;
 }
 
-export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => {
+export const TranscriptPanel = ({ flowId, name, onClose, onRemoved, onRestore }: Props) => {
   const [data, setData] = useState<Transcript | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
@@ -510,6 +514,7 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => 
 
   const [note, setNote] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
   const [making, setMaking] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [made, setMade] = useState(false);
   const [armed, setArmed] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -799,7 +804,51 @@ export const TranscriptPanel = ({ flowId, name, onClose, onRemoved }: Props) => 
             <Typography variant="p" className="mt-1 break-words text-ink-secondary text-[0.85rem]">
               {problem}
             </Typography>
-            <Button size="sm" className="mt-3" onClick={() => setAttempt((n) => n + 1)}>
+
+            {/* The one failure that has a cure rather than a retry.
+              *
+              * Recordings and skills are the same table, so a recording deleted from Skills - where it looks
+              * like a skill - leaves this page still listing it and this panel answering 404. The events are
+              * in the browser, so it is one push from being right, and api/sync.js upserts over a tombstone
+              * (deleted_at = null), which makes putting it back the ordinary save applied again. */}
+            {onRestore && /no recording with that id/i.test(problem) && (
+              <>
+                <Typography variant="p" className="mt-2 max-w-[60ch] break-words text-ink-inactive text-[0.8rem]">
+                  This browser still has it. A recording and a skill made from it are the same thing on your
+                  account, so deleting it in Skills takes the recording with it — putting it back is the same
+                  save that happens when you stop recording.
+                </Typography>
+                <Button
+                  size="sm"
+                  className="mt-2.5"
+                  isLoading={restoring}
+                  leftSlot={<Upload className="size-4" />}
+                  onClick={async () => {
+                    setRestoring(true);
+                    try {
+                      await onRestore();
+                      setAttempt((n) => n + 1);
+                    } catch (err) {
+                      setNote({
+                        text: err instanceof Error ? err.message : 'it could not be put back',
+                        kind: 'bad',
+                      });
+                    } finally {
+                      setRestoring(false);
+                    }
+                  }}
+                >
+                  Put it back on my account
+                </Button>
+              </>
+            )}
+
+            <Button
+              size="sm"
+              variant={onRestore && /no recording with that id/i.test(problem) ? 'tertiary' : 'primary'}
+              className="mt-3"
+              onClick={() => setAttempt((n) => n + 1)}
+            >
               Try again
             </Button>
           </section>

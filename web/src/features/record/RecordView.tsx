@@ -27,10 +27,56 @@ import {
 } from '@/lib/agent';
 import { push } from '@/lib/api';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
-import { type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
+import { type AgentStatus, type Recording, refreshAgent, uid, useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { TranscriptPanel } from './TranscriptPanel';
+
+/* One recording, as a row on the account.
+ *
+ * Two callers: the push on stop, and the restore when a recording has been deleted from Skills - which is
+ * the same row, since recordings and skills share a table. They must build the identical payload or a
+ * restored recording quietly stops matching the one that was saved, so there is one of these rather than
+ * two literals that look alike.
+ */
+function flowFor(rec: Recording, health: AgentStatus['health']) {
+  const s = summarize(rec.events);
+  const where = rec.windows ?? [];
+  return {
+    id: rec.id,
+    // `desktop`, which decides who can replay it: these are screen coordinates, not page elements.
+    source: 'desktop' as const,
+    kind: 'recorded' as const,
+    name: rec.name.slice(0, 80),
+    description: `${s.count} events · ${s.clicks} click${s.clicks === 1 ? '' : 's'} · ${fmtMs(s.durationMs)}`,
+    origins: where.map((w) => w.title).filter(Boolean).slice(0, 12),
+    created: rec.created,
+    payload: {
+      version: 1,
+      kind: 'recorded',
+      agent: 'desktop',
+      /* What the agent said about ITSELF, now, because later nothing can reconstruct it.
+       *
+       * "Nothing was typed" and "the keyboard was not being watched" produce an identical recording, and the
+       * transcript was asserting the first without being able to tell - a 0.6.0 agent names every click it
+       * lands on and hooks no keyboard at all, so the named clicks it was reasoning from proved nothing.
+       * Read from /health at the moment of recording, which is the only moment the answer exists.
+       *
+       * On a RESTORE this is whatever the agent says now, which may differ from what recorded it. Better
+       * than nothing and honest either way: the flags describe an agent, and the transcript only ever uses
+       * them to decide whether "no typing" means none happened. */
+      recorder: {
+        version: health?.version ?? null,
+        canName: health?.canName === true,
+        canKeys: health?.canKeys === true,
+      },
+      name: rec.name.slice(0, 80),
+      events: rec.events,
+      windows: rec.windows,
+      created: rec.created,
+    },
+  };
+}
 
 export const RecordView = () => {
   const [state, update] = useConsole();
@@ -145,39 +191,7 @@ export const RecordView = () => {
        * Best effort: the recording is safe in the browser either way, and a failed sync is worth a line of
        * text rather than losing what was just captured. */
       try {
-        const saved = await push({
-          flows: [{
-            id: made.id,
-            // `desktop`, which decides who can replay it: these are screen coordinates, not page elements.
-            source: 'desktop',
-            kind: 'recorded',
-            name: made.name.slice(0, 80),
-            description: `${s.count} events · ${s.clicks} click${s.clicks === 1 ? '' : 's'} · ${fmtMs(s.durationMs)}`,
-            origins: where.map((w) => w.title).filter(Boolean).slice(0, 12),
-            created: made.created,
-            payload: {
-              version: 1,
-              kind: 'recorded',
-              agent: 'desktop',
-              /* What the agent said about ITSELF, now, because later nothing can reconstruct it.
-               *
-               * "Nothing was typed" and "the keyboard was not being watched" produce an identical
-               * recording, and the transcript was asserting the first without being able to tell - a 0.6.0
-               * agent names every click it lands on and hooks no keyboard at all, so the named clicks it
-               * was reasoning from proved nothing. Written from /health at the moment of recording, which
-               * is the only moment the answer exists. */
-              recorder: {
-                version: health?.version ?? null,
-                canName: health?.canName === true,
-                canKeys: health?.canKeys === true,
-              },
-              name: made.name.slice(0, 80),
-              events: made.events,
-              windows: made.windows,
-              created: made.created,
-            },
-          }],
-        });
+        const saved = await push({ flows: [flowFor(made, health)] });
         if (saved.problems.length) {
           setNote(`Captured, but the account refused it: ${saved.problems.join('; ')}`);
         }
@@ -336,6 +350,20 @@ export const RecordView = () => {
     setNote(added ? `Imported ${added} recording${added === 1 ? '' : 's'}.` : 'Nothing in those files parsed.');
   }, [update]);
 
+  /* Put a recording back on the account.
+   *
+   * It is the same push that happens on stop - api/sync.js upserts and clears deleted_at - so this is not a
+   * special recovery path, it is the ordinary save applied again. Worth having as a button because the
+   * failure it fixes is invisible otherwise: a recording is deleted in Skills, where it looks like a skill,
+   * and the only sign is that View stops working over here. */
+  const restore = useCallback(async (id: string) => {
+    const rec = state.recordings.find((r) => r.id === id);
+    if (!rec) throw new Error('this browser no longer holds that recording, so there is nothing to put back');
+    const saved = await push({ flows: [flowFor(rec, health)] });
+    if (saved.problems.length) throw new Error(saved.problems.join('; '));
+    await reload();
+  }, [state.recordings, health, reload]);
+
   const recording = live !== null || !!health?.recording;
 
   return (
@@ -451,6 +479,11 @@ export const RecordView = () => {
           <TranscriptPanel
             flowId={viewing}
             name={state.recordings.find((rec) => rec.id === viewing)?.name ?? 'Recording'}
+            /* Offered only when this browser actually holds the events. Without them there is nothing to put
+             * back, and a button that cannot work is worse than the plain 404. */
+            onRestore={state.recordings.some((rec) => rec.id === viewing)
+              ? () => restore(viewing)
+              : undefined}
             onClose={() => setViewing(null)}
             onRemoved={() => {
               /* Removed on the account, so it goes from the browser too - otherwise the row stays, View

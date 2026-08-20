@@ -374,6 +374,12 @@ namespace MouseFlow
         static IntPtr _kbHook = IntPtr.Zero;
 
         static bool _recording;
+        /* How many mouse buttons are down. A Focus marker must never be written while a gesture is in
+         * progress - it splits the press from its release - and "is a gesture in progress" cannot be read
+         * off the last buffered event, which was the first version of this guard: the pointer drifts, a
+         * Mouse Movement lands between the press and the marker, and the guard sees no click. Counted
+         * instead, from the events themselves. */
+        static int _held;
         static List<Ev> _buffer = new List<Ev>();
         static Stopwatch _clock = new Stopwatch();
         static long _lastStamp;
@@ -530,6 +536,9 @@ namespace MouseFlow
             {
                 long now = _clock.ElapsedMilliseconds;
 
+                if (action.EndsWith("Click Down")) _held++;
+                else if (action.EndsWith("Click Release") || action.EndsWith("Click Up")) { if (_held > 0) _held--; }
+
                 if (action == "Mouse Movement")
                 {
                     // The raw hook fires hundreds of moves a second. Keep only the
@@ -665,11 +674,18 @@ namespace MouseFlow
             lock (Gate)
             {
                 if (!_recording) { _lastFront = front; return; }
-                /* Never between a press and its release. deriveDesktop pairs a click by looking at the very
-                 * next event, so an event inserted there turns one click into an unreleased press and a
-                 * stray release - two wrong steps from a marker that was only meant to add context.
-                 * `_lastFront` is deliberately not updated, so the change is noticed again next tick. */
-                if (_buffer.Count > 0 && _buffer[_buffer.Count - 1].Action.EndsWith("Click Down")) return;
+                /* Never during a gesture. A click that gives a window focus fires this watcher while the
+                 * button is still down, and a marker inserted there turns one click into an unreleased press
+                 * and a stray release - two wrong steps out of a note that was only meant to add context.
+                 *
+                 * `_held`, not the last event: the first version of this looked at whether the last buffered
+                 * event was a Click Down, and a pointer that drifted one pixel in the meantime put a Mouse
+                 * Movement in between and walked straight through the guard. That is not hypothetical - it
+                 * is what happened, 142ms after a press on a Teams sharing bar.
+                 *
+                 * `_lastFront` is deliberately not updated, so the change is noticed again next tick, once
+                 * the button is up. */
+                if (_held > 0) return;
 
                 long now = _clock.ElapsedMilliseconds;
                 e = new Ev();
@@ -822,6 +838,8 @@ namespace MouseFlow
                 /* Zeroed, not carried: the first Focus event of a recording should name where the recording
                  * STARTED, and a value left over from a previous one would suppress it. */
                 _lastFront = IntPtr.Zero;
+                // Nothing is held at the start of a recording, whatever was held at the end of the last one.
+                _held = 0;
             }
 
             /* MTA, deliberately. A UIA client on an STA thread marshals every call through that thread's

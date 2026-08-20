@@ -1079,12 +1079,27 @@ function deriveDesktop(events, seen) {
       let moves = 0;
       let release = null;
       let j = i + 1;
-      while (j < parsed.length && parsed[j].readable && parsed[j].kind === 'move') {
+      /* Moves, and focus markers, are both stepped over while looking for the release.
+       *
+       * The marker is the one that matters and it was not always here. A click that gives a window focus
+       * makes the agent's foreground watcher fire while the button is still DOWN, so a `Focus` lands between
+       * the press and the release - and pairing that stopped at the first non-move event read one click as an
+       * unreleased press followed by an orphan release. Two wrong steps, and a story that apologised twice
+       * for them.
+       *
+       * Stepping over it is also the right reading rather than only the convenient one: the click is what
+       * gave that window focus, so the marker is a consequence of this gesture, not something that happened
+       * during it - and where the click landed is already on the click's own context. Its index still joins
+       * the group, so every event stays in exactly one step's `from`. */
+      while (j < parsed.length && parsed[j].readable
+        && (parsed[j].kind === 'move' || parsed[j].kind === 'focus')) {
         own += clampedPause(state, parsed[j].delay);
-        travel += Math.hypot(parsed[j].x - lastX, parsed[j].y - lastY);
-        lastX = parsed[j].x;
-        lastY = parsed[j].y;
-        moves++;
+        if (parsed[j].kind === 'move') {
+          travel += Math.hypot(parsed[j].x - lastX, parsed[j].y - lastY);
+          lastX = parsed[j].x;
+          lastY = parsed[j].y;
+          moves++;
+        }
         group.push(j);
         j++;
       }
@@ -1435,10 +1450,26 @@ function placeStory(segment) {
     } else if (step.action === 'move') {
       dropped++;
     } else {
-      clauses.push('did something this transcript could not read');
+      /* Its own words, not an apology. These are the `other` steps - a press with no release, a release
+       * with no press, an action from an imported file - and every one of them carries a sentence saying
+       * exactly what it is. Replacing that with "did something this transcript could not read" was the
+       * story telling a reader it knew less than the step list two inches below it. */
+      const said = String(step.what || '').trim();
+      clauses.push(said || 'did something this transcript could not read');
     }
   }
   flushNamed();
+
+  /* Two identical clauses in a row become one. "Did X and then did X" is what a run of the same unreadable
+   * thing produced, and it reads as a stutter rather than as a count. */
+  for (let at = clauses.length - 1; at > 0; at--) {
+    if (clauses[at] !== clauses[at - 1]) continue;
+    let same = 1;
+    while (at - same >= 0 && clauses[at - same] === clauses[at]) same++;
+    clauses.splice(at - same + 1, same - 1);
+    clauses[at - same + 1] = clauses[at - same + 1] + ' (' + same + ' times)';
+    at = at - same + 1;
+  }
 
   if (dropped > 0 && clauses.length >= STORY_CLAUSES) {
     clauses.push('and ' + dropped + ' more step' + (dropped === 1 ? '' : 's') + ' the list below has');

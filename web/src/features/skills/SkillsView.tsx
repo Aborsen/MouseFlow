@@ -12,6 +12,7 @@ import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
+import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
 import {
@@ -164,6 +165,10 @@ const Structure = ({ skill, wire, onWire }: {
 
 export const SkillsView = () => {
   const { flows, reload } = useAccount();
+  /* The recordings this browser holds, only to answer one question honestly: is the flow about to be deleted
+   * the same object as a recording on the Record page? They share a table, so usually yes - and that is the
+   * part the old warning left out. */
+  const [local] = useConsole();
   const navigate = useNavigate();
   const [bridge, setBridge] = useState({ present: false, paired: false, version: null as string | null });
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
@@ -409,10 +414,18 @@ export const SkillsView = () => {
                 </Button>
               </div>
 
-              {/* Only when it is cocked, and only what is true: a published copy is a separate thing on a
-                * separate table, and deleting this one does not withdraw it. Withdrawing is in the gallery. */}
+              {/* Only when it is cocked, and only what is true. Three separate facts, and the first one is
+                * the one that cost somebody a transcript: a recording and the skill listed here can be the
+                * same row, so deleting it here deletes the recording. A published copy is a different
+                * thing on a different table and survives; withdrawing is in the gallery. */}
               {armed === flow.id && (
                 <Typography variant="p" className="mt-2 text-fb-attention text-[0.78rem]">
+                  {local.recordings.some((rec) => rec.id === flow.id) ? (
+                    <>
+                      This is the recording “{flow.name}” on the Record page — the same thing, not a copy.
+                      Deleting it here removes it from Record too, and its transcript with it.{' '}
+                    </>
+                  ) : null}
                   This removes it from your account and from every machine that syncs. If you published it,
                   the gallery listing stays until you withdraw it there.
                 </Typography>
