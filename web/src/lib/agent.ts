@@ -29,6 +29,11 @@ export interface AgentHealth {
    * the keyboard hook failed to install, absent before 0.7.0; either way a transcript then cannot tell
    * "typed nothing" from "was not watching", which is why the flag exists rather than being inferred. */
   canKeys?: boolean;
+  /* Whether a recording can outlast one response - /record/drain, from 0.8.0. Without it the only way
+   * events leave the agent is /record/stop, so a session is bounded by what fits in memory and in one
+   * string, and the app has to offer a short recording rather than a day-long one it cannot take delivery
+   * of. Absent on every older agent, which is the answer. */
+  canDrain?: boolean;
   canAutostart?: boolean;
   originPinned?: boolean;
 }
@@ -168,7 +173,7 @@ export const autostartEnable = (port: number) =>
  * key was pressed and when, plus the foreground window changing. An older one records the same coordinates
  * and none of it, so its transcripts read as a list of positions - a real difference in what the product
  * does, not an internal one, and worth telling somebody to close that PowerShell window for. */
-export const AGENT_WANTS = '0.7.0';
+export const AGENT_WANTS = '0.8.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

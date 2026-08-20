@@ -67,6 +67,10 @@ export interface GallerySkill {
   installs: number;
   publishedAt: string;
   withdrawn: boolean;
+  /* How many events a recorded skill holds. null on a created one, which has a goal instead of events -
+   * distinct from 0, which would describe a recorded skill that does nothing. Absent on a listing from an
+   * older deployment. */
+  actions?: number | null;
   payload?: unknown;
 }
 
@@ -241,8 +245,13 @@ export const deleteChat = (thread: string) =>
     method: 'DELETE',
   });
 
+/* `total` counts the matches before the endpoint's own limit, so a page can say "50 of 148" instead of
+ * calling the fifty that arrived the whole library. Optional: a deployment older than that count does not
+ * send it, and the array length is then the only honest number. */
 export const galleryList = (q?: string) =>
-  call<{ ok: true; skills: GallerySkill[] }>(`/api/gallery${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+  call<{ ok: true; skills: GallerySkill[]; total?: number; shown?: number }>(
+    `/api/gallery${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+  );
 
 export const galleryGet = (id: string) =>
   call<{ ok: true; skill: GallerySkill }>(`/api/gallery?id=${encodeURIComponent(id)}`);

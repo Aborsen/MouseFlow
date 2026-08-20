@@ -133,13 +133,52 @@ const RUNS = [
   },
 ];
 
+/* Published flows, in the shape api/gallery.js actually returns.
+ *
+ * The old fixture had `author` as a string and `published` instead of `publishedAt`, so the card read
+ * `skill.author.name`, got undefined, and rendered "by " and "Invalid Date" - working code looking broken.
+ * That is the third mock in this project to answer differently from the server it stands in for, and each of
+ * the three cost more than writing it properly would have.
+ *
+ * Fourteen rather than one, because the page has rows, a collection view and pagination, and the rule those
+ * rest on - a row appears only when it says something the row above did not - cannot be seen or disproved
+ * over a single card. Some carry origins that overlap the recordings in the local fixture, which is what
+ * lets the "In the apps you use" row exist at all; one has no installs, so "Most installed" has something to
+ * leave out. */
+const listing = (
+  id: string, name: string, kind: 'recorded' | 'created', description: string,
+  author: string, installs: number, hours: number, origins: string[],
+  actions: number | null, params: { name: string; type: string }[] = [],
+) => ({
+  id, name, kind, description,
+  author: { name: author, image: null },
+  origins, installs, publishedAt: hoursAgo(hours), withdrawn: false, params, actions,
+  payload: kind === 'recorded'
+    ? {
+      version: 1, kind: 'recorded', agent: 'desktop', origins,
+      events: Array.from({ length: Math.max(1, actions ?? 1) }, (_, i) => ({
+        x: 100 + i * 7, y: 200 + i * 3, delayMs: i === 0 ? 0 : 120,
+        action: i % 5 === 0 ? 'Left Click Down' : 'Mouse Movement',
+      })),
+    }
+    : { version: 1, kind: 'created', agent: 'web', origins, goalTemplate: description, params },
+});
+
 const GALLERY = [
-  {
-    id: 'sk_dev_1', name: 'Weekly Jira export', kind: 'recorded' as const,
-    description: 'Opens the board, filters to last week and exports the CSV.',
-    author: 'Margaryta Kashuba', installs: 4, published: hoursAgo(300),
-    payload: { version: 1, kind: 'recorded', agent: 'desktop', events: [{ x: 10, y: 10, delayMs: 0, action: 'Left Click Down' }] },
-  },
+  listing('sk_dev_1', 'Complete spreadsheet totals', 'created', 'Calculate and fill the Total column for every visible row.', 'Priya S.', 34, 190, ['https://docs.google.com/spreadsheets'], null, [{ name: 'sheet', type: 'text' }, { name: 'column', type: 'text' }]),
+  listing('sk_dev_2', 'Download monthly invoices', 'recorded', 'Collects the current invoices into a named Finance folder.', 'Noah M.', 28, 420, ['Billing - Google Chrome', 'Downloads - File Explorer'], 214),
+  listing('sk_dev_3', 'Triage the morning inbox', 'recorded', 'Labels, prioritises and archives new mail in one pass.', 'Alex R.', 21, 620, ['Inbox - Outlook'], 486),
+  listing('sk_dev_4', 'Reply to approval requests', 'created', 'Finds pending approvals and prepares short confirmations.', 'Nina K.', 19, 90, ['Inbox - Outlook'], null, [{ name: 'recipient', type: 'email' }]),
+  listing('sk_dev_5', 'Compare product pricing', 'recorded', 'Captures price and plan details from three browser tabs.', 'Daniel F.', 15, 300, ['Pricing - Google Chrome'], 152),
+  listing('sk_dev_6', 'Open the dashboard', 'recorded', 'Navigates to analytics and opens the latest activity view.', 'Mara', 12, 700, ['Neon Console - Google Chrome'], 63),
+  listing('sk_dev_7', 'Research a topic with Claude', 'created', 'Researches a topic and assembles the findings in a doc.', 'Vic Gorlenko', 8, 40, ['https://claude.ai'], null, [{ name: 'topic', type: 'quoted' }]),
+  listing('sk_dev_8', 'Update CRM contacts', 'created', 'Enriches a contact and records the latest sales activity.', 'Leo T.', 7, 26, ['https://app.salesforce.com'], null, [{ name: 'contact', type: 'email' }]),
+  listing('sk_dev_9', 'Organize downloads', 'recorded', 'Sorts new downloads into folders by file type.', 'Sofia P.', 6, 500, ['Downloads - File Explorer'], 97),
+  listing('sk_dev_10', 'Send the weekly status email', 'created', 'Assembles completed tasks and prepares a team update.', 'Emma C.', 5, 60, ['Inbox - Outlook'], null, []),
+  listing('sk_dev_11', 'Summarize competitor pages', 'created', 'Reads open product pages and writes a comparison brief.', 'Omar B.', 4, 18, ['https://www.notion.so'], null, [{ name: 'competitor', type: 'text' }]),
+  listing('sk_dev_12', 'Clean customer data', 'recorded', 'Normalises names, removes duplicates, flags gaps.', 'Iris W.', 3, 800, ['book.xlsx - Excel'], 331),
+  listing('sk_dev_13', 'Weekly Jira export', 'recorded', 'Opens the board, filters to last week and exports the CSV.', 'Margaryta Kashuba', 2, 900, ['Backlog - Jira - Google Chrome'], 128),
+  listing('sk_dev_14', 'Archive finished tickets', 'recorded', 'Moves everything marked done into the archive project.', 'Tomas L.', 0, 8, ['Backlog - Jira - Google Chrome'], 74),
 ];
 
 const json = (res: Parameters<Connect.NextHandleFunction>[1], status: number, body: unknown) => {
@@ -312,7 +351,14 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       return skill ? json(res, 200, { ok: true, skill }) : json(res, 404, { error: { message: 'no such skill' } });
     }
     if (req.method === 'POST') return json(res, 201, { ok: true, skill: GALLERY[0] });
-    return json(res, 200, { ok: true, skills: GALLERY });
+    /* Searches, because the field on the page does. A fixture that ignores ?q= makes a working search look
+     * broken - the same class of lie as the sign-out mock that reported success and kept the session. Name
+     * and description only, which is what the real index covers. */
+    const asking = new URL(url, 'http://x').searchParams.get('q');
+    const matched = asking
+      ? GALLERY.filter((s) => (s.name + ' ' + s.description).toLowerCase().includes(asking.toLowerCase()))
+      : GALLERY;
+    return json(res, 200, { ok: true, skills: matched, total: matched.length, shown: matched.length });
   }
 
   if (url.startsWith('/api/account')) {

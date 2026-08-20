@@ -103,6 +103,14 @@ const listed = (row) => ({
   publishedAt: row.published_at,
   withdrawn: !!row.withdrawn_at,
   params: publicParams(row.payload),
+  /* How big it is, as a NUMBER. The payload itself stays out of a listing - fifty of them is megabytes
+   * where kilobytes will do - but "42 recorded actions" is the difference between a card that describes a
+   * flow and one that only names it.
+   *
+   * null for a created skill rather than 0: it has no events because it is a goal, and a zero there would
+   * read as "this one does nothing". What a created skill is measured in is its inputs, which `params`
+   * already carries. */
+  actions: Array.isArray(row.payload && row.payload.events) ? row.payload.events.length : null,
 });
 
 /** Names and types only. An `example` never leaves this file. */
@@ -189,18 +197,24 @@ async function get(req, res, sql) {
   }
 
   const term = String(q || '').trim().slice(0, 80);
+  /* `count(*) over ()` rather than a second query: how many match and which fifty came back are one
+   * question, and asking it twice can produce two answers that disagree - somebody publishes between the
+   * two round trips and the page says "50 of 49". */
   const rows = term
     ? await sql`
-        select * from gallery_skill
+        select *, count(*) over () as total from gallery_skill
         where withdrawn_at is null
           and to_tsvector('english', name || ' ' || description) @@ websearch_to_tsquery('english', ${term})
         order by published_at desc limit ${PAGE_MAX}
       `
     : await sql`
-        select * from gallery_skill where withdrawn_at is null
+        select *, count(*) over () as total from gallery_skill where withdrawn_at is null
         order by published_at desc limit ${PAGE_MAX}
       `;
-  return res.status(200).json({ ok: true, skills: rows.map(listed) });
+  /* Zero rows means zero matches - the window function has no row to report from, so the fallback is the
+   * length, not a guess. */
+  const total = rows.length ? Number(rows[0].total) : 0;
+  return res.status(200).json({ ok: true, skills: rows.map(listed), total, shown: rows.length });
 }
 
 async function publish(req, res, sql) {
