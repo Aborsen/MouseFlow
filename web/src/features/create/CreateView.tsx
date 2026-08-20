@@ -706,15 +706,22 @@ export const CreateView = () => {
               ]}
             />
 
-            {/* Не «дать картинку» - снимок цикл делает каждый шаг и так. Это ограничение области: работать на
-                том окне, что впереди, и никуда не уходить. Только для desktop: расширение целится в элементы
-                страницы, и «текущий экран» для него ничего не значит. */}
+            {/* ОГРАНИЧЕНИЕ, а не контекст - и название теперь это говорит.
+                *
+                * Скриншот и список открытых окон уходят модели каждый шаг без всякой просьбы, так что «дать ей
+                * посмотреть на экран» здесь нечего: это запрет уходить с окна, которое впереди. Поэтому он и
+                * не может быть умолчанием - «открой мою почту и ответь Анне» стало бы невыполнимым, а окно,
+                * которое впереди в момент нажатия, почти всегда наш же интерфейс, потому что задачу печатают
+                * в браузере и кнопку жмут в браузере.
+                *
+                * Только для desktop: расширение целится в элементы страницы, и «это окно» для него не та
+                * единица, в которой оно работает. */}
             {target === 'desktop' && (
               <button
                 type="button"
                 disabled={running}
                 aria-pressed={pinScreen}
-                title="Keep the work on the window that is in front when you press Run — do not launch or switch to anything else"
+                title="Keep the work on whichever window is in front when you press Run — it will not launch or switch to anything else, and will stop and say so if what the task needs is not there. Leave it off when the task involves finding or opening something."
                 onClick={() => setPinScreen((on) => !on)}
                 className={cn(
                   'flex items-center gap-1.5 rounded-md border px-2 py-1 text-[0.76rem] transition-colors duration-base',
@@ -725,7 +732,7 @@ export const CreateView = () => {
                 )}
               >
                 <Crosshair className="size-3.5" />
-                Use current screen
+                Stay on this window
               </button>
             )}
 
