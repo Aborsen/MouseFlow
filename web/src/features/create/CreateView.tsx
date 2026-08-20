@@ -46,6 +46,10 @@ import { useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Plan, askForPlan } from '@/lib/plan';
 import { LiveContext } from './LiveContext';
+/* Сказать о конце прогона тому, кто на эту вкладку не смотрит. Смысл прогона в том, что человек уходит
+ * заниматься другим - вкладка позади других окон НАМЕРЕННО, - и результат, живущий только на экране, никто не
+ * видит до момента, когда сам решит проверить. */
+import { announceFinished, askToNotify } from './finished';
 
 type Target = 'browser' | 'desktop';
 const KEY = 'mouseflow.create.target';
@@ -147,6 +151,18 @@ export const CreateView = () => {
   const abort = useRef(false);
   const live = useRef<string | null>(null);
   const threadEnd = useRef<HTMLDivElement>(null);
+
+  /* Переключать ли окно на браузер, когда прогон кончится. По умолчанию нет: уведомление ничего не отбирает,
+   * а активация окна отбирает фокус - и если человек в это время печатает в другом приложении, это хуже
+   * пропущенного уведомления. Помнится между прогонами, потому что это предпочтение, а не решение про один
+   * прогон. */
+  const [bringForward, setBringForward] = useState(() => {
+    try { return localStorage.getItem('mouseflow.bringForward') === '1'; } catch (_) { return false; }
+  });
+  const wantsForward = useCallback((on: boolean) => {
+    setBringForward(on);
+    try { localStorage.setItem('mouseflow.bringForward', on ? '1' : '0'); } catch (_) { /* private mode */ }
+  }, []);
 
   /** Only ever the turn being run; a finished turn is never rewritten. */
   const updateLive = useCallback((change: (turn: Turn) => Turn) => {
@@ -311,6 +327,9 @@ export const CreateView = () => {
     if (target === 'desktop') {
       abort.current = false;
       setRunning(true);
+      /* Спрошено здесь, одним кликом после «Run it»: у запроса есть контекст, и он показывается, потому что
+       * это всё ещё жест пользователя. Ответ не проверяется - announceFinished сам решает, что ему доступно. */
+      void askToNotify();
 
       void runOnDesktop({
         /* Шлюзы — только когда план действительно спрашивали. Без плана нет границ, и инструмент чекпоинта
@@ -340,6 +359,15 @@ export const CreateView = () => {
             state: result.ok ? 'ok' : 'failed',
             note: result.ok ? result.said ?? 'Done.' : result.error ?? 'It stopped without finishing.',
           }));
+
+          /* Сказать вслух, если вкладка не на виду. До записи прогона на аккаунт: сеть может отвечать
+           * секунды, а человек ждёт ответа, а не журнала. */
+          void announceFinished({
+            outcome: result.ok ? 'ok' : /^stopped$/i.test(result.error ?? '') ? 'stopped' : 'failed',
+            said: result.ok ? result.said ?? null : result.error ?? null,
+            port: state.port,
+            bringForward,
+          });
 
           /* Logged to the account, best effort: the sidebar's hours, the Hours screen and the Insights page
            * are built from runs, so a desktop run that went unrecorded would make them quietly wrong. */
@@ -689,6 +717,24 @@ export const CreateView = () => {
                 <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">Enter</kbd>
                 {' runs it without a plan'}
               </span>
+            )}
+            {/* A run is meant to be left alone - the agent drives the real desktop, so the tab is behind
+              * other windows on purpose. A finish is therefore announced: the tab title changes and, if the
+              * browser was allowed to, a system notification appears; clicking it brings this tab forward.
+              *
+              * This switch is the louder option, and off by default. A notification takes nothing away; an
+              * activated window takes the focus - and doing that while somebody is typing in another
+              * application is worse than a notification they missed. */}
+            {target === 'desktop' && (
+              <label className="inline-flex cursor-pointer items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={bringForward}
+                  onChange={(ev) => wantsForward(ev.target.checked)}
+                  className="size-3.5 accent-brand-primary"
+                />
+                switch to this tab when it finishes
+              </label>
             )}
           </>
         )}
