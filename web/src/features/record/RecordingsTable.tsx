@@ -36,7 +36,8 @@ import {
 } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { exportMacro, fmtMs, summarize } from '@/lib/macro';
-import { type RecordedEvent, type Recording, useConsole } from '@/lib/store';
+import { Signal } from '@/components/Signal';
+import { type Recording, useConsole } from '@/lib/store';
 
 /* How many rows before Load more. Ten is theirs, and it is about the point where a list stops being
  * scannable rather than a number with a reason behind it. */
@@ -52,52 +53,6 @@ const SPEEDS = [0.5, 1, 1.5, 2, 4];
  * so the 1fr name column absorbed a different amount of space in each. A shared template only shares if every
  * track but one is fixed. */
 const COLUMNS = 'grid-cols-[1.25rem_minmax(11rem,1fr)_7rem_6.5rem_7rem_16.5rem]';
-
-/* Bars per recording, derived rather than drawn.
- *
- * The recording's own span, split into sixteen buckets, with each bar's height from the events that fell in
- * it. Which makes the column worth its width: a recording that was one long pause looks like one, a dense
- * one looks dense, and the shape is the same every time it is drawn because it is a function of the data.
- *
- * The floor is 8% rather than 0 so an empty bucket is a visible gap rather than a missing bar - "nothing
- * happened here" and "there is no bar here" should not look the same. */
-const SIGNAL_BARS = 16;
-
-const Signal = ({ events }: { events: RecordedEvent[] }) => {
-  const buckets = useMemo(() => {
-    const out = new Array(SIGNAL_BARS).fill(0);
-    if (!events.length) return out;
-    /* Cumulative delay is the clock: every event carries the gap BEFORE it, so the position of an event in
-     * time is the sum of the delays up to it. The same arithmetic api/_transcript.js does. */
-    let at = 0;
-    const stamps = events.map((e) => {
-      at += Math.max(0, Number(e.delayMs) || 0);
-      return at;
-    });
-    const span = stamps[stamps.length - 1] || 1;
-    for (const stamp of stamps) {
-      const slot = Math.min(SIGNAL_BARS - 1, Math.floor((stamp / span) * SIGNAL_BARS));
-      out[slot] += 1;
-    }
-    return out;
-  }, [events]);
-
-  const peak = Math.max(1, ...buckets);
-  return (
-    <div
-      className="flex h-6 items-end gap-[2px]"
-      title={`When the ${events.length} events happened, across the length of the recording`}
-    >
-      {buckets.map((n, i) => (
-        <span
-          key={i}
-          className={cn('w-[3px] rounded-full', n > 0 ? 'bg-brand-primary/80' : 'bg-stroke')}
-          style={{ height: `${8 + (n / peak) * 92}%` }}
-        />
-      ))}
-    </div>
-  );
-};
 
 export interface RecordingsTableProps {
   /** Whether a skill has been made from this recording. Answered by the caller, which is the half that can

@@ -12,7 +12,7 @@
  */
 import { useNavigate } from '@tanstack/react-router';
 import { Square } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
@@ -128,65 +128,113 @@ const LiveSignal = ({ live, count }: { live: boolean; count: number }) => (
   </div>
 );
 
-/* The record control: a ring, a disc, and three waves that only move while capture is running.
+/* The recorder: one card, one height, three states.
  *
- * `animate-ping` is Tailwind's own keyframe - scale and fade - and three of them at staggered delays read as
- * ripples coming off the button rather than as one pulse. Rendered only while live, so the DOM says what the
- * screen says: a still control is a still recorder.
+ * It used to be three shapes. Idle it carried a paragraph and up to two warnings; recording it carried none
+ * of them; after a stop it grew again by the height of a note. So the card changed size whenever capture
+ * started or stopped, and what moved was the whole list underneath it.
  *
- * prefers-reduced-motion is honoured by motion-reduce:hidden on the waves rather than by dropping the state
- * entirely - the ring stays coloured and the timer still runs, so somebody who has asked for less movement
- * still knows it is recording.
+ * So there is one skeleton and a footer that is ALWAYS present. What varies inside it is words - never
+ * whether a block exists - and the footer reserves its height, so the longest state and the shortest state
+ * are the same card.
+ *
+ * The disc's box is a fixed 128px on every state, which is what lets the button itself grow when capture
+ * starts: 56px idle, 80px live, in a container that does not change. The waves are the state - they render
+ * only while live, so the DOM says what the screen says - and prefers-reduced-motion drops the ripples while
+ * keeping the red ring and the running clock, because somebody who asked for less movement still has to be
+ * able to tell.
  */
-const RecordDisc = ({ live, onClick, busy }: {
+const RecorderCard = ({ live, screen, elapsedMs, events, windows, onToggle, footer }: {
   live: boolean;
-  busy: boolean;
-  onClick: () => void;
+  screen: { w: number; h: number } | null;
+  elapsedMs: number;
+  events: number;
+  windows: number;
+  onToggle: () => void;
+  footer: ReactNode;
 }) => (
-  <div className="relative grid size-[104px] shrink-0 place-items-center">
-    {live && [0, 1, 2].map((i) => (
-      <span
-        key={i}
-        aria-hidden
-        className="absolute size-full animate-ping rounded-full border-fb-red/45 border-2 motion-reduce:hidden"
-        // Staggered, so they read as waves leaving the button rather than one thing breathing.
-        style={{ animationDelay: `${i * 0.6}s`, animationDuration: '1.8s' }}
-      />
-    ))}
-    <span
-      aria-hidden
-      className={cn(
-        'absolute size-full rounded-full border-2 transition-colors duration-base',
-        live ? 'border-fb-red/60' : 'border-stroke',
-      )}
-    />
-    <span
-      aria-hidden
-      className={cn(
-        'absolute size-[76px] rounded-full border transition-colors duration-base',
-        live ? 'border-fb-red/35' : 'border-stroke/60',
-      )}
-    />
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={busy}
-      aria-label={live ? 'Stop and save this recording' : 'Start recording'}
-      className={cn(
-        'relative grid size-14 place-items-center rounded-full transition-all duration-base',
-        'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-primary',
-        'disabled:opacity-disabled',
-        live
-          ? 'bg-fb-red shadow-[0_0_0_6px_rgba(239,68,68,0.14)] hover:bg-fb-red/90'
-          : 'bg-brand-primary hover:bg-brand-primary/90',
-      )}
-    >
-      {live
-        // A square, which is what a stop control is everywhere else a person has ever used one.
-        ? <Square className="size-5 fill-current text-white" />
-        : <span className="size-5 rounded-full bg-white/95" />}
-    </button>
-  </div>
+  <section className="rounded-xl border-stroke border bg-surface-card p-4">
+    <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
+      {/* A fixed box, so the button inside it can change size and the row cannot. */}
+      <div className="relative grid size-32 shrink-0 place-items-center">
+        {live && [0, 1, 2].map((i) => (
+          <span
+            key={i}
+            aria-hidden
+            className="absolute size-full animate-ping rounded-full border-fb-red/45 border-2 motion-reduce:hidden"
+            // Staggered, so they read as waves leaving the button rather than one thing breathing.
+            style={{ animationDelay: `${i * 0.6}s`, animationDuration: '1.8s' }}
+          />
+        ))}
+        <span
+          aria-hidden
+          className={cn(
+            'absolute size-full rounded-full border-2 transition-colors duration-base',
+            live ? 'border-fb-red/60' : 'border-stroke',
+          )}
+        />
+        <span
+          aria-hidden
+          className={cn(
+            'absolute size-24 rounded-full border transition-colors duration-base',
+            live ? 'border-fb-red/35' : 'border-stroke/60',
+          )}
+        />
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={live ? 'Stop and save this recording' : 'Start recording'}
+          className={cn(
+            'relative grid place-items-center rounded-full transition-all duration-base',
+            'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-primary',
+            live
+              ? 'size-20 bg-fb-red shadow-[0_0_0_8px_rgba(239,68,68,0.14)] hover:bg-fb-red/90'
+              : 'size-14 bg-brand-primary hover:bg-brand-primary/90',
+          )}
+        >
+          {live
+            // A square, which is what a stop control is everywhere else a person has ever used one.
+            ? <Square className="size-7 fill-current text-white" />
+            : <span className="size-5 rounded-full bg-white/95" />}
+        </button>
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+          Recorder
+        </Typography>
+        <div className="mt-0.5 flex items-center gap-2">
+          <span
+            className={cn(
+              'size-2 shrink-0 rounded-full',
+              live ? 'animate-pulse bg-fb-red' : 'bg-ink-inactive/60',
+            )}
+          />
+          <Typography variant="span" weight="semibold" className="text-[1.15rem]">
+            {live ? 'Recording' : 'Ready to record'}
+          </Typography>
+        </div>
+        {/* Measured, not decorative. The reference this follows shows "System audio"; there is no audio in
+          * this product, and a status line that names something it does not do is worse than a shorter one. */}
+        <Typography variant="p" className="mt-1 font-mono text-[0.78rem] text-ink-inactive tabular-nums">
+          {clock(elapsedMs)}
+          {screen ? ` · ${screen.w}×${screen.h}` : ''}
+          {live
+            ? ` · ${events} events · ${windows} window${windows === 1 ? '' : 's'}`
+            : ' · mouse and keystroke timing, no text'}
+        </Typography>
+      </div>
+
+      <LiveSignal live={live} count={events} />
+    </div>
+
+    {/* Always here, whatever state the card is in. This is the whole reason the card stops changing height:
+      * what varies is the words inside a block that is not conditional. The minimum height holds two lines,
+      * which is the longest thing that goes in it. */}
+    <div className="mt-3 min-h-[3.25rem] border-stroke/60 border-t pt-3">
+      {footer}
+    </div>
+  </section>
 );
 
 export const RecordView = () => {
@@ -485,85 +533,49 @@ export const RecordView = () => {
      * actions, and squeezing that into a 1fr column beside the recorder is what made it wrap to three lines
      * and push the page sideways. The recorder is small; it goes above. */
     <div className="flex flex-col gap-4 p-5">
-      {/* Full width, like the recordings table under it - and laid out around the control rather than
-        * stretched: the disc on the left, what it is doing beside it, what it has captured on the right. */}
-      <section className="rounded-xl border-stroke border bg-surface-card p-4">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-4">
-          <RecordDisc live={recording} busy={false} onClick={() => { if (recording) void end(); else void begin(); }} />
-
-          <div className="min-w-0 flex-1">
-            <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
-              Recorder
+      {/* One component, one height, three states - see RecorderCard. The footer is what varies, and it is a
+        * slot that always exists rather than three blocks that come and go, which is what made this card
+        * change size every time capture started or stopped. */}
+      <RecorderCard
+        live={recording}
+        screen={health?.screen ?? null}
+        elapsedMs={live?.elapsedMs ?? 0}
+        events={live?.count ?? 0}
+        windows={seenWindows.current.length}
+        onToggle={() => { if (recording) void end(); else void begin(); }}
+        footer={
+          note ? (
+            <Typography variant="p" className="text-ink-secondary text-[0.85rem]">{note}</Typography>
+          ) : health && health.canName !== true ? (
+            /* Said BEFORE the recording rather than discovered in the transcript afterwards. An agent
+              * without the resolver records perfectly good coordinates and nothing that says what they were
+              * aimed at, and nine seconds of work is cheap to redo while nine minutes is not. */
+            <Typography variant="p" className="text-fb-attention text-[0.85rem]">
+              This agent does not read what you click on, so a recording will be coordinates only — no
+              application, window or control names, and no typing. Restart it with the command behind the
+              agent chip above.
             </Typography>
-            <div className="mt-0.5 flex items-center gap-2">
-              <span
-                className={cn(
-                  'size-2 shrink-0 rounded-full',
-                  recording ? 'animate-pulse bg-fb-red' : 'bg-ink-inactive/60',
-                )}
-              />
-              <Typography variant="span" weight="semibold" className="text-[1.05rem]">
-                {recording ? 'Recording' : 'Ready to record'}
-              </Typography>
-            </div>
-            {/* Measured, not decorative. The reference this follows shows "System audio"; there is no audio
-              * in this product, and a status line that names something it does not do is worse than a
-              * shorter one. */}
-            <Typography variant="p" className="mt-1 font-mono text-[0.78rem] text-ink-inactive tabular-nums">
-              {clock(live?.elapsedMs ?? 0)}
-              {health?.screen ? ` · ${health.screen.w}×${health.screen.h}` : ''}
-              {recording ? ` · ${live?.count ?? 0} events · ${seenWindows.current.length} window${seenWindows.current.length === 1 ? '' : 's'}` : ' · mouse and keystroke timing, no text'}
+          ) : health?.canKeys === false ? (
+            /* A narrower case: the agent is current but Windows refused the keyboard hook. Everything else
+              * records; only the typing does not, and a transcript that said "nothing was typed" would then
+              * be wrong rather than empty. */
+            <Typography variant="p" className="text-fb-attention text-[0.85rem]">
+              This agent could not install its keyboard hook, so time spent typing will be missing from the
+              transcript — it will look like a pause. Everything else records normally.
             </Typography>
-          </div>
-
-          {/* The bars. Live, and honestly so - see LiveSignal. */}
-          <LiveSignal live={recording} count={live?.count ?? 0} />
-        </div>
-
-        {/* Only while idle. Mid-recording these describe a decision already made, and the meta line above
-          * is the thing worth reading. */}
-        {!recording && (
-          <div className="mt-3 border-stroke/60 border-t pt-3">
-            <Typography variant="p" className="max-w-[86ch] text-ink-inactive text-[0.85rem]">
-              Everything you click, drag and scroll gets captured until you press stop.
-              {' '}
-              {health?.canName
-                ? 'Each click also records which application and window it landed in, and the name of what '
-                  + 'was under the pointer, so the transcript reads as work rather than as coordinates.'
-                : 'Which applications you work in is noted too, so a recording can name itself.'}
-              {health?.canKeys && ' Typing is timed and counted - that a key was pressed and when, never '
-                + 'which key, so no text is captured and none can be.'}
+          ) : (
+            /* One line at this width. It carried an 86ch measure, which is right for running prose and wrong
+              * for a caption in a status card - the card is 1424px and the sentence was capped at a third of
+              * it, so it wrapped to three lines of small print. The long form of all of this is in the
+              * transcript's own `captured` line, where somebody reading a recording actually meets it. */
+            <Typography variant="p" className="text-ink-inactive text-[0.85rem]">
+              {recording
+                ? 'Capturing every click, drag, scroll and keystroke — press stop when the task is done.'
+                : 'Captures every click, drag and scroll, with the application, window and control each one landed on. Typing is timed, never read.'}
             </Typography>
-
-            {/* Said BEFORE the recording rather than discovered in the transcript afterwards. An agent
-              * without the resolver records perfectly good coordinates and nothing that says what they
-              * were aimed at, and nine seconds of work is cheap to redo while nine minutes is not. */}
-            {health && health.canName !== true && (
-              <Typography variant="p" className="mt-2 max-w-[86ch] text-fb-attention text-[0.8rem]">
-                This agent does not read what you click on, so this recording will be coordinates only -
-                no application, no window, no control names, and no typing. Restart it with the command
-                behind the agent chip in the header first; it takes a few seconds.
-              </Typography>
-            )}
-
-            {/* A separate case, and a much narrower one: the agent is current but Windows refused the
-              * keyboard hook. Everything else records; only the typing does not, and a transcript that
-              * said "nothing was typed" would then be wrong rather than empty. */}
-            {health?.canName === true && health.canKeys === false && (
-              <Typography variant="p" className="mt-2 max-w-[86ch] text-fb-attention text-[0.8rem]">
-                This agent could not install its keyboard hook, so time spent typing will be missing from
-                the transcript - it will look like a pause. Everything else records normally.
-              </Typography>
-            )}
-          </div>
-        )}
-
-        {note && (
-          <Typography variant="p" className="mt-3 text-ink-secondary text-[0.85rem]">
-            {note}
-          </Typography>
-        )}
-      </section>
+          )
+        }
+      />
 
       <RecordingsTable
         viewing={viewing}
