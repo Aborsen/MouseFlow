@@ -228,10 +228,30 @@ export function olderThan(running: string | null | undefined, wanted = AGENT_WAN
  * `platform` outranks this, since it is a fact rather than a guess about a user agent string. */
 export type HostOS = 'windows' | 'macos' | 'other';
 
+/* Client Hints first, then the string, then an honest shrug.
+ *
+ * `navigator.userAgentData.platform` says "macOS" or "Windows" outright, and it is the one answer the browser
+ * promises not to spoil: Chrome froze the User-Agent string, which now reports a fixed Windows version
+ * whatever the machine actually is. The string is the fallback because Safari and Firefox have no
+ * userAgentData at all - and there, `navigator.platform` is still "MacIntel" or "Win32".
+ *
+ * 'other' is a real answer, not a failure to try. Linux has no agent to install, and guessing Windows for
+ * somebody on Linux would hand them a command that cannot work while looking confident about it. */
 export function hostOS(): HostOS {
-  const ua = `${navigator.userAgent} ${(navigator as { platform?: string }).platform ?? ''}`;
-  if (/Mac|iPhone|iPad/i.test(ua)) return 'macos';
-  if (/Win/i.test(ua)) return 'windows';
+  const hinted = (navigator as { userAgentData?: { platform?: string } }).userAgentData?.platform;
+  if (hinted) {
+    if (/mac/i.test(hinted)) return 'macos';
+    if (/win/i.test(hinted)) return 'windows';
+    /* A hint that says something else - "Linux", "Android", "Chrome OS" - is believed. Falling through to
+     * the string here would find "Linux x86_64" and answer 'other' anyway, but by accident. */
+    return 'other';
+  }
+
+  const said = `${navigator.userAgent} ${(navigator as { platform?: string }).platform ?? ''}`;
+  /* Mac before Windows: a Mac user agent contains neither "Win" nor anything Windows-like, but the reverse
+   * is not true of every string, and an iPad in desktop mode reports "MacIntel". */
+  if (/mac|iphone|ipad|ipod/i.test(said)) return 'macos';
+  if (/win/i.test(said)) return 'windows';
   return 'other';
 }
 

@@ -54,6 +54,10 @@ export const ConnectView = () => {
     if (health?.platform) setOs(health.platform);
   }, [health?.platform]);
 
+  /* 'other' means the browser would not say - Linux, or something that reports nothing useful. There is no
+   * agent for that platform, so the Windows steps are shown and the reason is said out loud rather than
+   * leaving both buttons unlit, which reads as the chooser being broken. */
+  const unknown = os === 'other';
   const mac = os === 'macos';
   const stale = olderThan(health?.version);
   const command = mac ? macInstallCommand(state.port) : startCommand(state.port);
@@ -305,7 +309,7 @@ export const ConnectView = () => {
                 onClick={() => { setOs(choice.id); setCopied(false); setShowLocal(false); }}
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.84rem] transition-colors duration-base',
-                  os === choice.id
+                  (mac ? choice.id === 'macos' : choice.id === 'windows')
                     ? 'bg-brand-primary/15 font-semibold text-brand-primary'
                     : 'text-ink-secondary hover:bg-state-hover',
                 )}
@@ -316,6 +320,16 @@ export const ConnectView = () => {
             ))}
           </div>
         </div>
+
+        {unknown && (
+          /* Neither guessed nor hidden. There is no agent for a platform that is not one of these two, and
+           * the honest version of that is a sentence rather than a chooser with nothing lit in it. */
+          <Typography variant="p" className="mt-3 max-w-[70ch] text-fb-attention text-[0.83rem]">
+            This browser does not say which kind of machine it is on, so the Windows steps are showing —
+            pick macOS above if that is where you are. The agent runs on Windows and macOS; there is no
+            Linux build yet.
+          </Typography>
+        )}
 
         {/* Said once, where the difference is decided rather than in every step below it. */}
         {mac && (
