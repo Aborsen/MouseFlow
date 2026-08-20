@@ -528,6 +528,21 @@ function ctxWhere(ctx) {
   };
 }
 
+/* A click on a TAB is a move, not an action in the place you were.
+ *
+ * The window title follows the active tab and updates AFTER the click, so the click that switches tabs is
+ * resolved against the old title - which put "switched to Netflix" inside the stretch called "Neon Console".
+ * The accessibility type says it outright and says it earlier, so that is what is read.
+ *
+ * Only the type is trusted. Nothing here claims to know a browser from any other application with tabs; an
+ * element of kind "tab item" with a name is a place you moved to, and that reading holds either way. */
+const isTabMove = (ctx) => !!ctx && !!ctx.control
+  && typeof ctx.type === 'string' && ctx.type.trim().toLowerCase() === 'tab item';
+
+/* Where that click took you. The tab's own name is the place, and the application is kept as the detail -
+ * the same shape a window gives, so everything downstream treats it identically. */
+const tabPlace = (ctx) => ({ app: ctx.app, window: ctx.control, control: null, type: null });
+
 // ` in OUTLOOK`, or nothing. The application is worth saying even when the control is not known.
 const inApp = (ctx) => (ctx && ctx.app ? ' in ' + ctx.app : '');
 
@@ -1029,13 +1044,31 @@ function deriveDesktop(events, seen) {
    * anything revealed the new place, so it belongs to the segment the reader was already in. That is the
    * same rule openSegment documents for a page change, and it keeps the segment clocks tiling. */
   let place = null;
+  let placeName = null;
   let firstPlace = true;
   const enter = (ctx) => {
     if (!ctx) return;
     if (ctx.app) apps.add(ctx.app);
     const key = placeKey(ctx);
     if (key === place) return;
+
+    /* Одно место, названное дважды.
+     *
+     * Клик по вкладке называет место её именем; через секунду заголовок окна догоняет и становится
+     * «<вкладка> - Google Chrome», и без этой проверки открывался второй отрезок про то же самое. Chrome
+     * собирает заголовок именно так, поэтому признак - совпадение по началу строки, в любую сторону: имя
+     * вкладки короче заголовка, а после переключения бывает и наоборот. Сравнение строк, а не догадка о том,
+     * что это браузер. */
+    const named = ctx.window || ctx.app || '';
+    if (placeName && named && (named.startsWith(placeName) || placeName.startsWith(named))) {
+      /* Место то же, но КЛЮЧ обновляется - иначе следующий настоящий переход обратно на эту вкладку сравнится
+       * с устаревшим ключом и отрезок не откроется. */
+      place = key;
+      if (named.length > placeName.length) placeName = named;
+      return;
+    }
     place = key;
+    placeName = ctx.window || ctx.app || null;
     openSegment(state, ctxWhere(ctx), firstPlace
       ? 'Named by the clicks in it: the application and window under the pointer at the moment of each '
         + 'one, read from the accessibility tree. This is per step, unlike the sampled window list on '
@@ -1163,17 +1196,33 @@ function deriveDesktop(events, seen) {
       if (missing) notes.push(missing);
       if (moves) notes.push('the pointer moved ' + pxText(travel) + ' while the button was down');
       if (own >= WAIT_MIN_MS) notes.push('held for ' + spanText(own));
-      enter(event.ctx);
+
+      /* A tab click opens the segment it took you TO, not the one you were in. See isTabMove: the window
+       * title is stale at this moment, and the accessibility type is not. */
+      const tab = isTabMove(event.ctx);
+      enter(tab ? tabPlace(event.ctx) : event.ctx);
+
       const verb = event.button === 'left' ? 'clicked' : event.button + '-clicked';
       const step = emit(state, {
-        action: 'click',
-        what: actWords(verb, event.ctx, point(event)),
+        action: tab ? 'tab' : 'click',
+        what: tab
+          ? 'switched to the tab "' + event.ctx.control + '"' + inApp(event.ctx)
+          : actWords(verb, event.ctx, point(event)),
         ctx: event.ctx,
         target: point(event),
-        note: notes.join('; '),
+        note: tab
+          ? [
+            'the window title still said "' + (event.ctx.window || 'something else') + '" at this moment - '
+              + 'it follows the active tab and updates after the click, so the tab this landed on is what '
+              + 'names the stretch below',
+            ...notes,
+          ].filter(Boolean).join('; ')
+          : notes.join('; '),
         own,
         events: group,
       });
+      /* Counted as a click, because it was one: the summary's number has to reconcile with the events. What
+       * changes is how it READS, not whether it happened. */
       counts.clicks++;
       if (event.ctx) counts.ctxClicks++;
       if (event.ctx && event.ctx.control) counts.ctxNamed++;
@@ -1189,7 +1238,9 @@ function deriveDesktop(events, seen) {
        * double click. */
       const previous = state.steps[state.steps.length - 2];
       const apart = previous ? previous.own + step.pause : Infinity;
-      if (previous && previous.action === 'click' && previous.segment === step.segment
+      /* A tab move is never half of a double click: two presses on the same tab are two switches, and
+       * folding them would claim a gesture that did not happen. */
+      if (!tab && previous && previous.action === 'click' && previous.segment === step.segment
         && previous.button === event.button && apart < DOUBLE_MS
         && Math.abs(event.x - previous.x) <= DOUBLE_PX
         && Math.abs(event.y - previous.y) <= DOUBLE_PX) {
@@ -1421,6 +1472,15 @@ function placeStory(segment) {
   for (const step of segment.steps) {
     if (clauses.length >= STORY_CLAUSES) { dropped++; continue; }
 
+    /* В рассказе это переход, а не клик: «switched to this tab» рядом с заголовком отрезка, который этой
+     * вкладкой и назван. Отдельной ветвью, потому что через namedRun он слился бы с обычными кликами и
+     * прочитался бы как «clicked "Netflix"» - то самое, из-за чего это и переписывалось. */
+    if (step.action === 'tab') {
+      flushNamed();
+      clauses.push('switched to this tab');
+      continue;
+    }
+
     if (step.action === 'click' || step.action === 'dblclick') {
       const name = step.ctx && step.ctx.control;
       if (name && step.action === 'click') { namedRun.push(name); continue; }
@@ -1489,7 +1549,13 @@ function placeStory(segment) {
       + 'to finish');
   }
 
-  return (clauses.length ? capitalise(joinWords(clauses, 'and then')) + '.' : 'Nothing happened here.')
+  /* «Ничего не произошло» и «двигали мышь, не нажимая» - разные факты. Отрезок попадает сюда потому, что шаги
+   * в нём ЕСТЬ; если все они оказались движением или ожиданием, сказать надо это, а не первое. */
+  const nothing = dropped > 0
+    ? 'Only pointer movement and pauses here — nothing was clicked or typed.'
+    : 'Nothing happened here.';
+
+  return (clauses.length ? capitalise(joinWords(clauses, 'and then')) + '.' : nothing)
     + (shape.length ? ' ' + shape.join('. ') + '.' : '');
 }
 

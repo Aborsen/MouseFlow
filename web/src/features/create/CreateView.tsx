@@ -17,7 +17,7 @@
  * Reloading the page clears the thread and loses nothing that matters.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { CircleDot, Monitor, Send, Sparkles, Square } from 'lucide-react';
+import { CircleDot, Crosshair, Monitor, Send, Sparkles, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
@@ -32,12 +32,13 @@ import {
   Thread,
   UserTurn,
 } from '@/components/chat';
-import { AGENT_WANTS } from '@/lib/agent';
+import { AGENT_WANTS, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
 import { push } from '@/lib/api';
 import { MAX_WAVES, type RunEvent, WAVE_TURNS, runOnDesktop } from '@/lib/desktop-engine';
 import { useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
+import { type Plan, askForPlan } from '@/lib/plan';
 import { LiveContext } from './LiveContext';
 
 type Target = 'browser' | 'desktop';
@@ -63,6 +64,11 @@ interface Turn {
   feed: RunEvent[];
   state: 'running' | 'ok' | 'failed';
   note?: string;
+  /** Намерение, с которым этот прогон начинался, если план спрашивали. Остаётся над фидом, чтобы «сказала»
+   * и «сделала» читались рядом. Цикл его не видел. */
+  plan?: Plan;
+  /** Работа была ограничена окном, которое было впереди — и каким именно. */
+  pinned?: string | null;
 }
 
 /** What a step actually did, not just which verb it used - afterwards is when somebody is working out
@@ -115,6 +121,15 @@ export const CreateView = () => {
   const [running, setRunning] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [extension, setExtension] = useState<{ present: boolean; version: string | null }>({ present: false, version: null });
+
+  /* План для ТЕКУЩЕГО текста в поле. `for` обязателен: план, оставшийся от прежней формулировки, - это
+   * намерение по другой задаче, и запускать по нему хуже, чем не иметь плана вообще. */
+  const [plan, setPlan] = useState<{ for: string; plan: Plan } | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planProblem, setPlanProblem] = useState<string | null>(null);
+  /* Ограничить работу тем окном, что впереди сейчас. Только для desktop: расширение целится в элементы
+   * страницы, и «текущий экран» для него ничего не значит. */
+  const [pinScreen, setPinScreen] = useState(false);
 
   const abort = useRef(false);
   const live = useRef<string | null>(null);
@@ -209,22 +224,86 @@ export const CreateView = () => {
     return () => clearInterval(timer);
   }, [target, running, pollExtension]);
 
+  /* Намерение, до цикла.
+   *
+   * Один вызов, ничего не выполняется. Скриншот прикладывается только если человек попросил ограничить работу
+   * текущим экраном - иначе план строится по формулировке, что и правильно: модель, которой без просьбы дали
+   * картинку, начинает планировать по тому, что на ней открыто, а не по тому, о чём попросили. */
+  const makePlan = useCallback(async () => {
+    const text = goal.trim();
+    if (!text || planning || running) return;
+    setPlanning(true);
+    setPlanProblem(null);
+    try {
+      let screen: { png: string; format: string } | null = null;
+      if (target === 'desktop' && pinScreen) {
+        try {
+          const shotNow = await shot(state.port, 900);
+          screen = { png: shotNow.png, format: shotNow.format || 'jpeg' };
+        } catch (_) {
+          /* Без картинки план всё равно полезен - он про формулировку. Отказ снимка не должен отменять
+           * план, но и молчать о нём нельзя: человек просил учесть экран. */
+          setPlanProblem('The screen could not be read, so this plan is from the wording alone.');
+        }
+      }
+      const asked = await askForPlan(text, target, screen);
+      if (asked.plan) setPlan({ for: text, plan: asked.plan });
+      else setPlanProblem(asked.error ?? 'no plan came back');
+    } finally {
+      setPlanning(false);
+    }
+  }, [goal, planning, running, target, pinScreen, state.port]);
+
   const send = useCallback(async () => {
     const text = goal.trim();
     if (!text || running) return;
 
+    /* Имя окна, закреплённого на время работы. Читается СЕЙЧАС, а не при включении тумблера: между тем и
+     * этим человек кликнул в браузер, чтобы нажать кнопку, и «текущее окно» успело поменяться. Названное
+     * окно даёт прогону возможность отказаться вместо того, чтобы работать не с тем. */
+    let pinned: string | null = null;
+    if (target === 'desktop' && pinScreen) {
+      try {
+        const open = await windows(state.port);
+        const front = open.windows.find((w) => w.active);
+        pinned = front ? (front.title || front.process || null) : null;
+      } catch (_) {
+        pinned = null;
+      }
+    }
+
     const id = `t${Date.now()}`;
     const startedAt = new Date().toISOString();
     live.current = id;
-    setTurns((prev) => [...prev, { id, goal: text, target, at: startedAt, feed: [], state: 'running' }]);
+    setTurns((prev) => [...prev, {
+      id,
+      goal: text,
+      target,
+      at: startedAt,
+      feed: [],
+      state: 'running',
+      /* План остаётся в turn'е, над фидом: сверху то, что она собиралась сделать, снизу то, что делала.
+       * Сопоставления шагов с чекпоинтами здесь нет - это было бы гарантией на самоотчёте. */
+      plan: plan && plan.for === text ? plan.plan : undefined,
+      pinned,
+    }]);
     setGoal('');
+    setPlan(null);
+    setPlanProblem(null);
 
     if (target === 'desktop') {
       abort.current = false;
       setRunning(true);
 
       void runOnDesktop({
-        goal: text,
+        /* Ограничение области, а не картинка: снимок цикл делает каждый шаг и без просьбы. Смысл в том, чтобы
+         * НЕ уходить с этого окна - и окно названо, чтобы прогон мог отказаться, а не молча взяться за
+         * соседнее. */
+        goal: pinned
+          ? `${text}\n\nWork on the window that is in front right now — "${pinned}". Do not launch, `
+            + 'activate or switch to anything else. If what this needs is not on that window, call finish '
+            + 'and say so rather than going to look for it.'
+          : text,
         port: state.port,
         onEvent: (event) => updateLive((t) => ({ ...t, feed: [...t.feed, event] })),
         isAborted: () => abort.current,
@@ -332,6 +411,42 @@ export const CreateView = () => {
                   {turn.goal}
                 </UserTurn>
 
+                {/* Намерение, с которым этот прогон начинался. Над фидом, потому что весь смысл в том, чтобы
+                    «сказала» и «сделала» читались рядом - без сопоставления чекпоинтов со шагами, которое
+                    было бы гарантией на самоотчёте. */}
+                {(turn.plan || turn.pinned) && (
+                  <div className="rounded-lg border-stroke/60 border bg-surface-card2 px-3 py-2.5">
+                    {turn.pinned && (
+                      <Typography variant="p" className="mb-1.5 flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
+                        <Crosshair className="size-3.5 shrink-0 text-brand-primary" />
+                        Kept to the window that was in front: <strong className="font-semibold">{turn.pinned}</strong>
+                      </Typography>
+                    )}
+
+                    {turn.plan && (
+                      <>
+                        <Typography variant="span" className="mb-1 block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+                          What it said it would do
+                        </Typography>
+                        <ol className="space-y-1">
+                          {turn.plan.checkpoints.map((point, i) => (
+                            <li key={`${i}-${point.title}`} className="flex gap-2 text-[0.8rem]">
+                              <span className="shrink-0 font-mono text-[0.7rem] text-ink-inactive tabular-nums">
+                                {String(i + 1).padStart(2, '0')}
+                              </span>
+                              <span className="min-w-0 text-ink-secondary">{point.title}</span>
+                            </li>
+                          ))}
+                        </ol>
+                        <Typography variant="p" className="mt-1.5 text-ink-inactive text-[0.72rem]">
+                          Its intention before it started. It decided each step from the screen as it went and
+                          never saw this — what it did is below.
+                        </Typography>
+                      </>
+                    )}
+                  </div>
+                )}
+
                 <AgentTurn
                   tone={turn.state === 'running' ? 'running' : turn.state}
                   header={
@@ -409,6 +524,57 @@ export const CreateView = () => {
         </div>
       )}
 
+      {/* Намерение, до того как что-нибудь произойдёт.
+        *
+        * Подпись говорит ровно то, что есть: цикл решает каждый шаг заново по экрану и этого плана не видит.
+        * Чекпоинты с номерами, читающиеся как программа, были бы худшим видом полировки - выглядят как
+        * гарантия и ею не являются. */}
+      {plan && plan.for === goal.trim() && (
+        <section className="mx-auto mb-3 w-full max-w-[46rem] rounded-xl border-brand-primary/40 border bg-surface-card p-3.5">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <Sparkles className="size-4 shrink-0 text-brand-primary" />
+            <Typography variant="span" weight="semibold" className="min-w-0 flex-1 text-[0.95rem]">
+              {plan.plan.title}
+            </Typography>
+            <Button variant="ghost" size="sm" onClick={() => setPlan(null)}>
+              Edit the wording
+            </Button>
+            <Button size="sm" leftSlot={<Send className="size-4" />} onClick={() => void send()}>
+              Run it
+            </Button>
+          </div>
+
+          <ol className="mb-2 space-y-1.5">
+            {plan.plan.checkpoints.map((point, i) => (
+              <li key={`${i}-${point.title}`} className="flex gap-2.5">
+                <span className="mt-0.5 shrink-0 font-mono text-[0.72rem] text-ink-inactive tabular-nums">
+                  {String(i + 1).padStart(2, '0')}
+                </span>
+                <span className="min-w-0">
+                  <span className="block font-semibold text-[0.85rem] text-ink-primary">{point.title}</span>
+                  <span className="block text-[0.8rem] text-ink-inactive">{point.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+
+          {/* Единственная строка, которая обязана быть здесь. */}
+          <Typography variant="p" className="text-ink-inactive text-[0.76rem]">
+            What it says it will do. It decides each step from the screen as it goes and never sees this plan,
+            so the run can differ — nothing has happened yet.
+          </Typography>
+        </section>
+      )}
+
+      {planProblem && (
+        <Typography
+          variant="p"
+          className="mx-auto mb-2 w-full max-w-[46rem] text-fb-attention text-[0.8rem]"
+        >
+          {planProblem}
+        </Typography>
+      )}
+
       <Composer
         footer={
           <>
@@ -440,8 +606,31 @@ export const CreateView = () => {
             {!running && (
               <span className="hidden text-[0.74rem] text-ink-inactive sm:inline">
                 <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">Enter</kbd>
-                {' to run'}
+                {' to run without a plan'}
               </span>
+            )}
+
+            {/* Не «дать картинку» - снимок цикл делает каждый шаг и так. Это ограничение области: работать на
+                том окне, что впереди, и никуда не уходить. Только для desktop: расширение целится в элементы
+                страницы, и «текущий экран» для него ничего не значит. */}
+            {target === 'desktop' && (
+              <button
+                type="button"
+                disabled={running}
+                aria-pressed={pinScreen}
+                title="Keep the work on the window that is in front when you press Run — do not launch or switch to anything else"
+                onClick={() => setPinScreen((on) => !on)}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-md border px-2 py-1 text-[0.76rem] transition-colors duration-base',
+                  'disabled:opacity-disabled',
+                  pinScreen
+                    ? 'border-brand-primary/50 bg-brand-primary/12 font-semibold text-brand-primary'
+                    : 'border-stroke text-ink-secondary hover:bg-state-hover',
+                )}
+              >
+                <Crosshair className="size-3.5" />
+                Use current screen
+              </button>
             )}
 
             {running ? (
@@ -454,14 +643,26 @@ export const CreateView = () => {
               >
                 {stopping ? 'Stopping…' : 'Stop'}
               </Button>
-            ) : (
+            ) : plan && plan.for === goal.trim() ? (
               <Button
                 size="sm"
                 leftSlot={<Send className="size-4" />}
-                disabled={!!blocked || !goal.trim()}
+                disabled={!!blocked}
                 onClick={send}
               >
-                Do it
+                Run it
+              </Button>
+            ) : (
+              /* План по умолчанию, а Enter остаётся быстрым путём: одно нажатие - и прогон, без плана.
+                 Стоит один лишний вызов модели, и он ловит непонимание до того, как что-то нажато. */
+              <Button
+                size="sm"
+                leftSlot={<Sparkles className="size-4" />}
+                isLoading={planning}
+                disabled={!!blocked || !goal.trim()}
+                onClick={() => void makePlan()}
+              >
+                Plan it
               </Button>
             )}
           </>
