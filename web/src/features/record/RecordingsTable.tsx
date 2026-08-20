@@ -37,6 +37,8 @@ import {
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { exportMacro, fmtMs, summarize } from '@/lib/macro';
 import { Signal } from '@/components/Signal';
+import { push } from '@/lib/api';
+import { useAccount } from '@/shell/AccountProvider';
 import { type Recording, useConsole } from '@/lib/store';
 
 /* How many rows before Load more. Ten is theirs, and it is about the point where a list stops being
@@ -92,6 +94,7 @@ export const RecordingsTable = ({
   hasSkill,
 }: RecordingsTableProps) => {
   const [state, update] = useConsole();
+  const { reload } = useAccount();
   const [term, setTerm] = useState('');
   const [shown, setShown] = useState(PAGE);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -101,6 +104,9 @@ export const RecordingsTable = ({
   /* Which row has its replay controls open. One at a time: two open panels push the list twice and the
    * second one is never the one being looked at. */
   const [openRow, setOpenRow] = useState<string | null>(null);
+  /* Only ever set when a delete could not reach the account. There is no success message: a delete that
+   * worked is a row that is gone, which is the whole of the feedback. */
+  const [gone, setGone] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const rows = useMemo(() => {
@@ -129,7 +135,20 @@ export const RecordingsTable = ({
     }));
   }, [update]);
 
-  const remove = useCallback((ids: string[]) => {
+  /* Deleting a recording deletes it in both places.
+   *
+   * This used to touch localStorage only, so the account kept the row and everything that reads the account
+   * went on seeing it - the assistant, the dashboard, get_transcript. Which is what somebody hit: they
+   * deleted recordings, the list emptied, and the assistant still listed six. Nothing was wrong with the
+   * assistant; the delete had never left the browser.
+   *
+   * Local first, because that is what was asked for and it must not wait on the network. Then the tombstone,
+   * which is the same push the Skills page uses - a delete has to be able to PROPAGATE rather than have the
+   * recording reappear from the next machine that syncs, which is why the row is stamped rather than erased.
+   *
+   * A failed push is said out loud. Silence here means "the assistant can still see it", and that is exactly
+   * the confusion this is fixing. */
+  const remove = useCallback(async (ids: string[]) => {
     update((prev) => ({
       recordings: prev.recordings.filter((rec) => !ids.includes(rec.id)),
       /* Flows are not being built at the moment, but the store still carries the field and a step pointing at
@@ -143,7 +162,20 @@ export const RecordingsTable = ({
       return next;
     });
     setArmed(null);
-  }, [update]);
+    setGone(null);
+
+    try {
+      const saved = await push({ deleted: ids });
+      if (saved.problems.length) throw new Error(saved.problems.join('; '));
+      await reload();
+    } catch (err) {
+      setGone(`Removed ${ids.length === 1 ? 'it' : `${ids.length} of them`} from this browser, but the `
+        + `account still has ${ids.length === 1 ? 'it' : 'them'}: ${
+          err instanceof Error ? err.message : 'the sync failed'
+        }. The assistant and the dashboard read the account, so they will still count `
+        + `${ids.length === 1 ? 'it' : 'them'}.`);
+    }
+  }, [update, reload]);
 
   const exportOne = useCallback((rec: Recording) => {
     const blob = new Blob([exportMacro(rec)], { type: 'text/plain' });
@@ -192,6 +224,12 @@ export const RecordingsTable = ({
         </Typography>
       ) : (
         <>
+          {gone && (
+            <Typography variant="p" className="mb-2.5 max-w-[80ch] break-words text-fb-attention text-[0.8rem]">
+              {gone}
+            </Typography>
+          )}
+
           <label className="relative mb-2.5 block">
             <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-ink-inactive" />
             <input
@@ -247,7 +285,7 @@ export const RecordingsTable = ({
                   leftSlot={<Trash2 className="size-4" />}
                   onClick={() => {
                     if (armed !== 'selection') { setArmed('selection'); return; }
-                    remove([...live]);
+                    void remove([...live]);
                   }}
                 >
                   {armed === 'selection' ? `Delete ${live.size} — press again` : 'Delete'}
@@ -504,7 +542,7 @@ export const RecordingsTable = ({
                           leftSlot={<Trash2 className="size-4" />}
                           onClick={() => {
                             if (armed !== rec.id) { setArmed(rec.id); return; }
-                            remove([rec.id]);
+                            void remove([rec.id]);
                           }}
                         >
                           {armed === rec.id ? 'Delete — press again' : 'Delete'}
