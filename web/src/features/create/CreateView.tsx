@@ -50,6 +50,7 @@ import { LiveContext } from './LiveContext';
  * заниматься другим - вкладка позади других окон НАМЕРЕННО, - и результат, живущий только на экране, никто не
  * видит до момента, когда сам решит проверить. */
 import { announceFinished, askToNotify } from './finished';
+import { desktopModel } from '@/lib/model-config';
 
 type Target = 'browser' | 'desktop';
 const KEY = 'mouseflow.create.target';
@@ -369,6 +370,10 @@ export const CreateView = () => {
             bringForward,
           });
 
+          /* The model that ACTUALLY drove the run - the same cached answer the engine resolved on its way
+           * in - never a constant. The old hardcoded string meant a model change made every logged run lie,
+           * and the chat assistant then reported the lie back with confidence. */
+          const loggedModel = await desktopModel().catch(() => 'claude-opus-5');
           /* Logged to the account, best effort: the sidebar's hours, the Hours screen and the Insights page
            * are built from runs, so a desktop run that went unrecorded would make them quietly wrong. */
           try {
@@ -377,7 +382,7 @@ export const CreateView = () => {
                 id: `dr_${startedAt.replace(/\D/g, '').slice(-12)}`,
                 kind: 'agent',
                 goal: text,
-                model: 'claude-opus-5',
+                model: loggedModel,
                 outcome: result.ok ? 'ok' : /^stopped$/i.test(result.error ?? '') ? 'stopped' : 'failed',
                 summary: result.said ?? result.error ?? null,
                 error: result.ok ? null : result.error ?? null,

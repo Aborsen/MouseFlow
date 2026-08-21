@@ -15,7 +15,7 @@
  * web app (chrome.runtime.sendMessage(EXTENSION_ID, ...) via externally_connectable).
  */
 
-import { runGoal } from './agent.js';
+import { lastRunModel, runGoal } from './agent.js';
 import {
   skillFromRecording, skillFromRun, importSkills, exportSkill, exportMany, fillGoal, missingParams, flowFor,
   publishLink,
@@ -760,7 +760,7 @@ async function runsToPush() {
       goal: run.goal,
       // Which skill this run WAS, when it was one. The column and its index have existed all along.
       flowId: run.flowId || null,
-      model: 'claude-opus-5',
+      model: lastRunModel,
       outcome: !run.finished ? 'running' : result.ok ? 'ok' : result.error === 'stopped' ? 'stopped' : 'failed',
       summary: result.summary || null,
       error: result.ok ? null : result.error || null,

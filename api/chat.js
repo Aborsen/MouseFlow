@@ -62,6 +62,16 @@ import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { ask, MODELS, DEFAULT_MODEL, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
 import { recordingTools } from './_recording-tools.js';
+import { readSettings } from './admin.js';
+
+/* The assistant's model when the caller named none: the admin's choice first, then the provider default -
+ * OpenAI when this deployment has that key, Anthropic otherwise. One function, because the GET probe and
+ * the POST fallback answered this differently for months and only luck hid it. */
+function configuredDefault(settings) {
+  const chosen = settings['model.chat_default'];
+  if (chosen && providerFor(chosen) && keyFor(providerFor(chosen))) return chosen;
+  return keyFor('openai') ? DEFAULT_MODEL.openai : DEFAULT_MODEL.anthropic;
+}
 
 /* At most six rounds of lookups per question. Six is enough for "find the runs, open the worst one,
  * check what else that day looked like" and small enough that one question cannot quietly become
@@ -1044,7 +1054,7 @@ async function runOneTool(call, ctx, used, cited) {
  * Worth being able to ask before a demo rather than finding out from the first question. Reports only
  * whether a key is PRESENT - never the key, never a prefix, never a length, since any of those narrow
  * a guess. Same rule as the probe in api/claude.js. */
-function probe(res) {
+async function probe(res) {
   const configured = {};
   for (const provider of PROVIDERS) configured[provider] = !!keyFor(provider);
   return res.status(200).json({
@@ -1057,7 +1067,7 @@ function probe(res) {
      *
      * OpenAI first when this deployment has that key, because OPENAI_MODEL is where the owner states which
      * model they want the assistant to be; Anthropic is the fallback for a deployment with only that key. */
-    default: keyFor('openai') ? DEFAULT_MODEL.openai : DEFAULT_MODEL.anthropic,
+    default: configuredDefault(await readSettings(neon(process.env.DATABASE_URL))),
     database: !!process.env.DATABASE_URL,
     rounds: MAX_ROUNDS,
     /* The shared lookups only. The per-recording tools need a caller to bind to and this probe deliberately
@@ -1070,7 +1080,7 @@ function probe(res) {
 export default async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
-  if (req.method === 'GET') return probe(res);
+  if (req.method === 'GET') return await probe(res);
   if (req.method !== 'POST') return fail(res, 405, 'POST a question, or GET to see what this deployment can serve');
 
   if (!process.env.DATABASE_URL) {
@@ -1115,7 +1125,13 @@ export default async function handler(req, res) {
   /* An allowlist, not a passthrough, for the same reason api/claude.js has one: an unbounded model
    * name is an unbounded price. _provider.js owns the list, and it owns the wording for a provider
    * this deployment has no key for, so neither is restated here. */
-  const model = body.model ? String(body.model).slice(0, 80) : DEFAULT_MODEL.anthropic;
+  /* The same configured default the GET advertises. These two used to disagree - GET promised OpenAI when
+   * that key existed while POST fell back to Anthropic - and the only reason nobody hit it is that the web
+   * client always names a model. The embedded dashboard panel takes whatever this says, so this is also
+   * where the admin's chat choice lands. */
+  const model = body.model
+    ? String(body.model).slice(0, 80)
+    : configuredDefault(await readSettings(sql));
   const provider = providerFor(model);
   if (!provider) {
     return fail(res, 400, 'not a model this route will call: ' + model + '. It serves '

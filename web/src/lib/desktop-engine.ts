@@ -20,10 +20,14 @@
  *                 used to report as green.
  */
 import { AgentError, doAction, pulse, shot, windows } from './agent';
+import { desktopModel } from './model-config';
 
 export const WAVE_TURNS = 24;
 export const MAX_WAVES = 10;
+/* The fallback when the deployment cannot say - the CONFIGURED model comes from model-config, resolved
+ * once on the way into a run so every step of that run uses one answer. */
 const MODEL = 'claude-opus-5';
+let runModel = MODEL;
 const MODEL_TIMEOUT_MS = 75000;
 const DEFAULT_SHOT_W = 1280;
 const SETTLE_POLL_MS = 1500;
@@ -435,6 +439,9 @@ export async function runOnDesktop({
 }: Options): Promise<RunResult> {
   /* Шлюз работает только когда есть и план, и кто-то, кто ответит. Одно без другого - это либо инструмент,
    * объявляющий чекпоинты, которых нет, либо пауза, из которой никто не выпустит. */
+  /* Resolved here rather than at each ask: a model change mid-run would hand the task between two models
+   * that never saw each other's reasoning. The next run picks up the new answer. */
+  runModel = await desktopModel();
   const gate = checkpoints && checkpoints.length && onCheckpoint ? onCheckpoint : undefined;
   const plan = gate ? checkpoints : undefined;
   const steps: RunResult['steps'] = [];
@@ -572,7 +579,7 @@ async function runWave(o: {
     let text: string;
     try {
       ({ res, text } = await ask({
-        model: MODEL,
+        model: runModel,
         /* Generous, because this budget is shared with the model's own reasoning: a turn that thought hard
          * about a crowded screen used to run out mid-answer, and a truncated answer has no tool call in it -
          * which the loop read as "nothing left to do" and called a success. */
@@ -774,7 +781,7 @@ async function askForHandoff(messages: unknown[]): Promise<{ note?: string; erro
   let text: string;
   try {
     ({ res, text } = await ask({
-      model: MODEL,
+      model: runModel,
       max_tokens: 700,
       system: 'You are handing an unfinished task to someone who will continue it. Be concrete and brief.',
       tools: TOOLS,

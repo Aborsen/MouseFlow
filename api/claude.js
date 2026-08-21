@@ -29,6 +29,7 @@
 
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+import { readSettings } from './admin.js';
 
 const UPSTREAM = 'https://api.anthropic.com/v1/messages';
 
@@ -102,10 +103,25 @@ export default async function handler(req, res) {
    * length, since any of those narrow a guess.
    */
   if (req.method === 'GET') {
+    /* `model` is what the desktop engine, the plan preview and the extension should use for their next
+     * run - they ask here rather than shipping a constant, so changing it in the admin panel changes the
+     * next run everywhere without a deploy. The admin's choice is validated against ALLOWED_MODELS on
+     * write; the intersection here is belt and braces for a stale row. `planModel` and `extensionModel`
+     * fall back to `model`, so one setting moves everything unless the admin split them on purpose. */
+    const settings = process.env.DATABASE_URL
+      ? await readSettings(neon(process.env.DATABASE_URL))
+      : {};
+    const pick = (key) => {
+      const v = settings[key];
+      return v && ALLOWED_MODELS.has(v) ? v : null;
+    };
+    const engine = pick('model.desktop') ?? [...ALLOWED_MODELS][0];
     res.status(200).json({
       ok: true,
       configured: !!process.env.ANTHROPIC_API_KEY,
-      model: [...ALLOWED_MODELS][0],
+      model: engine,
+      planModel: pick('model.plan') ?? engine,
+      extensionModel: pick('model.extension') ?? engine,
       maxTokens: MAX_TOKENS_CAP,
     });
     return;

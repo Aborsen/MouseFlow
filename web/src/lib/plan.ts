@@ -16,7 +16,9 @@
  * (api/claude.js), а модель, которой велено вызвать инструмент, отдаёт валидный объект по схеме - в отличие
  * от модели, которую попросили «вернуть JSON» и которая обернёт его в три абзаца вежливости.
  */
-const MODEL = 'claude-opus-5';
+import { planModel } from './model-config';
+
+const MODEL = 'claude-opus-5'; // the fallback; the configured choice comes from model-config
 const TIMEOUT_MS = 45_000;
 
 /** Немного. План - это то, что читают за пять секунд перед нажатием, а не документ. */
@@ -111,7 +113,7 @@ export async function askForPlan(
       headers: { 'content-type': 'application/json' },
       signal: cutoff.signal,
       body: JSON.stringify({
-        model: MODEL,
+        model: await planModel().catch(() => MODEL),
         max_tokens: 900,
         system: SYSTEM,
         tools: [OUTLINE_TOOL],

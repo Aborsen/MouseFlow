@@ -17,6 +17,7 @@ import { ConnectView } from '@/features/connect/ConnectView';
 import { SignInView } from '@/features/auth/SignInView';
 import { SignUpView } from '@/features/auth/SignUpView';
 import { ResetPasswordView } from '@/features/auth/ResetPasswordView';
+import { AdminView } from '@/features/admin/AdminView';
 import { InsightsView } from '@/features/insights/InsightsView';
 
 // Before the first paint, so the page does not flash the wrong colour on the way in.
@@ -54,6 +55,9 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: '/sign-in', component: SignInView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/sign-up', component: SignUpView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/reset-password', component: ResetPasswordView }),
+  /* Reached by its address, and deliberately absent from the sidebar: the SERVER decides who is an admin
+   * (ADMIN_EMAILS), and to everyone else both the endpoint and the page answer the same not-found. */
+  createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: AdminView }),
   /* Every link written before this rewrite used a hash - #record, #skills, #gallery. Kept working rather
    * than silently landing people on the fallback. */
   createRoute({

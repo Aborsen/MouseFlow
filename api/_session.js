@@ -54,6 +54,9 @@ async function fromNeonAuth(req) {
   return {
     id: user.id,
     name: String(user.name || user.email || 'Someone').slice(0, 120),
+    /* Carried for the one check that needs it - whether this person is on the admin list. Never sent back
+     * to a client wholesale; every response builds its own shape. */
+    email: user.email ? String(user.email).slice(0, 200) : null,
     image: user.image ? String(user.image).slice(0, 500) : null,
     via: 'session',
   };
@@ -83,6 +86,7 @@ async function fromDeviceToken(req, sql) {
   return {
     id: row.user_id,
     name: String(row.name || row.email || 'Someone').slice(0, 120),
+    email: row.email ? String(row.email).slice(0, 200) : null,
     image: row.image ? String(row.image).slice(0, 500) : null,
     via: 'device',
   };

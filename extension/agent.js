@@ -29,7 +29,24 @@ const SHARED_URL = 'https://mouse-agent.vercel.app/api/claude';
 function fetchWithBody(url, headers, body) {
   return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
 }
+/** What the LAST run actually drove - background.js records it into the run row, so the log never lies
+ *  about which model did the work when the admin changes the setting between runs. */
+export let lastRunModel = 'claude-opus-5';
+
+/* The fallback. The CONFIGURED model is asked of the deployment at the start of each run - the admin
+ * panel writes it, GET on the shared proxy serves it - so changing it there changes the next run without
+ * anyone updating this file. The ask is best effort: an extension that cannot reach the probe still runs. */
 const MODEL = 'claude-opus-5';
+
+async function configuredModel() {
+  try {
+    const res = await fetch(SHARED_URL, { method: 'GET' });
+    const body = await res.json();
+    if (body && typeof body.extensionModel === 'string' && body.extensionModel) return body.extensionModel;
+    if (body && typeof body.model === 'string' && body.model) return body.model;
+  } catch (_) { /* offline, or an old deployment - the fallback is fine */ }
+  return MODEL;
+}
 const MAX_TOKENS = 16000;
 /* WAVES
  *
@@ -208,6 +225,9 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
   const steps = [];
   let handoff = null;
   let stepNo = 0;
+  /* Once per run, so every wave of this run drives the same model - and the run record can say which. */
+  const model = await configuredModel();
+  lastRunModel = model;
 
   for (let wave = 1; wave <= MAX_WAVES; wave++) {
     const messages = [{
@@ -223,12 +243,13 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
     const outcome = await runWave({
       messages, execute, onEvent, isAborted, apiKey, authToken, steps,
       wave, stepFrom: stepNo,
+      model,
     });
     stepNo = outcome.stepNo;
     if (outcome.done) return outcome.result;
     if (isAborted()) return { ok: false, error: 'stopped', steps };
 
-    handoff = await handoffNote({ messages, apiKey, authToken });
+    handoff = await handoffNote({ messages, apiKey, authToken, model });
     if (!handoff) {
       return { ok: false, error: 'It ran out of steps and could not summarise where it had got to, ' +
         'so it stopped rather than starting over blind.', steps };
@@ -252,7 +273,7 @@ const waveDone = (stepNo, result) => ({ done: true, stepNo, result });
 
 /* One wave. Same loop as before; what changed is that running out of turns is a seam rather than the
  * end, and that the step number carries across waves because the user counts steps once. */
-async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToken, steps, wave, stepFrom }) {
+async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToken, steps, wave, stepFrom, model }) {
   let stepNo = stepFrom;
   let turns = 0;
 
@@ -288,7 +309,7 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
     let res;
     try {
       res = await fetchWithBody(direct ? API_URL : SHARED_URL, headers, {
-        model: MODEL,
+        model,
         max_tokens: MAX_TOKENS,
         system: SYSTEM,
         tools: TOOLS,
@@ -450,7 +471,7 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
  * No tools are offered, deliberately: what is wanted here is knowledge, and a model handed a hammer at
  * this point swings it. Written for the next wave rather than for the user.
  */
-async function handoffNote({ messages, apiKey, authToken }) {
+async function handoffNote({ messages, apiKey, authToken, model }) {
   const direct = !!apiKey;
   const headers = { 'content-type': 'application/json' };
   if (!direct && authToken) headers.authorization = 'Bearer ' + authToken;
@@ -473,7 +494,7 @@ async function handoffNote({ messages, apiKey, authToken }) {
   let res;
   try {
     res = await fetchWithBody(direct ? API_URL : SHARED_URL, headers, {
-      model: MODEL,
+      model,
       max_tokens: 700,
       system: 'You are handing an unfinished task to someone who will continue it. Be concrete and brief.',
       /* The tools travel even though none may be used: by the time a wave runs out the conversation is
