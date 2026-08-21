@@ -75,9 +75,10 @@ async function finishSignIn(req, res) {
   /* The outcome has to go in the QUERY, which means taking `back` apart: appending "?auth=ok" to a
    * destination that already has a query or a fragment produced "/?pair=extension#skills?auth=ok",
    * where the parameter lands inside the fragment and nothing ever reads it. */
-  const landing = (outcome) => {
+  const landing = (outcome, why) => {
     const url = new URL(back, 'https://' + host);
     url.searchParams.set('auth', outcome);
+    if (why) url.searchParams.set('why', why);
     return url.pathname + url.search + url.hash;
   };
 
@@ -109,8 +110,25 @@ async function finishSignIn(req, res) {
 
   if (!upstream.ok || !cookies.length) {
     /* No cookie means no session, and redirecting as though it worked would leave the page saying
-     * "signed out" with no explanation. Say which half failed. */
-    res.writeHead(302, { location: landing(upstream.ok ? 'no-session-cookie' : 'rejected') });
+     * "signed out" with no explanation. Say which half failed - and, when the upstream refused, say
+     * what IT said.
+     *
+     * This used to redirect with a bare "rejected" and drop the upstream's own answer on the floor,
+     * which is how a sign-in that works on a desktop and fails on a phone stayed unexplained: the
+     * one machine that knew the reason threw it away. The code is short, safe to put in a query -
+     * it names a failure mode, never a token - and it is the difference between "try again" and
+     * knowing which thing to fix. */
+    let why = '';
+    if (!upstream.ok) {
+      try {
+        const said = await upstream.text();
+        const parsed = said && said.trim().startsWith('{') ? JSON.parse(said) : null;
+        why = String(parsed?.code || parsed?.error?.code || parsed?.message || '')
+          .slice(0, 60).replace(/[^A-Za-z0-9 _.-]/g, '');
+      } catch (_) { /* An upstream that cannot even be read is described by its status alone. */ }
+      why = why ? upstream.status + ' ' + why : String(upstream.status);
+    }
+    res.writeHead(302, { location: landing(upstream.ok ? 'no-session-cookie' : 'rejected', why) });
     res.end();
     return;
   }

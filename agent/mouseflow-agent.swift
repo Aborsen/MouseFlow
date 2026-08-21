@@ -244,6 +244,15 @@ final class Ev {
     var y = 0
     var delayMs = 0
     var action = ""
+    /* The unlocalised half of the context. `type` is kAXRoleDescription, which is the language of the
+     * MACHINE - a Russian Mac says "кнопка папки с закладками" where an English one says "bookmark folder
+     * button" - so anything reading it has to be a translator. These are role tokens, the same words on
+     * every machine, which is what lets a transcript say WHERE a click landed without speaking the user's
+     * language. `inName` is the exception and is content, not vocabulary: quoted, never matched. */
+    var role: String?
+    var subrole: String?
+    var container: String?
+    var containerName: String?
     var app: String?
     var window: String?
     var control: String?
@@ -763,6 +772,12 @@ final class Recorder {
                 if let v = e.window { out += "\twindow=" + v }
                 if let v = e.control { out += "\tcontrol=" + v }
                 if let v = e.controlType { out += "\ttype=" + v }
+                /* Added after the four that were always here, and ignorable: the format says unknown keys
+                 * are skipped rather than being an error, so an older reader loads this exactly as before. */
+                if let v = e.role { out += "\trole=" + v }
+                if let v = e.subrole { out += "\tsubrole=" + v }
+                if let v = e.container { out += "\tin=" + v }
+                if let v = e.containerName { out += "\tinName=" + v }
                 out += "\n"
             }
             out += "\(index) | \(e.x) | \(e.y) | \(e.delayMs) | \(e.action)\n"
@@ -786,6 +801,16 @@ final class Recorder {
  *   - ABSENT MEANS NOT KNOWN, never "nothing there". So every one of these returns nil rather than a
  *     placeholder, and serialize() omits the field. A transcript has to keep that difference.
  */
+/// What a climb found: the name, and the tokens that say what and where it was.
+struct Named {
+    var control: String?
+    var type: String?
+    var role: String?
+    var subrole: String?
+    var container: String?
+    var containerName: String?
+}
+
 enum Accessibility {
     private static let systemWide = AXUIElementCreateSystemWide()
 
@@ -893,36 +918,67 @@ enum Accessibility {
      *
      * The same depth the Windows agent settled on. A button usually names itself; a cell in a table names
      * nothing and its row does; past five the answer is the window, which is already recorded separately. */
-    private static func nameByClimbing(_ start: AXUIElement) -> (control: String?, type: String?) {
+    /* Containers worth naming a click by. Not every ancestor is a place - AXGroup is scaffolding and says
+     * nothing - so only the roles a person would recognise as somewhere: a toolbar, a tab strip, a list, a
+     * table, the page itself. */
+    private static let containerRoles: Set<String> = [
+        "AXToolbar", "AXMenuBar", "AXMenu", "AXTabGroup", "AXList", "AXOutline",
+        "AXTable", "AXWebArea", "AXSheet", "AXDrawer",
+    ]
+
+    private static func nameByClimbing(_ start: AXUIElement) -> Named {
         var element: AXUIElement? = start
         var depth = 0
         var hitType: String?
+        var out = Named()
+        out.role = stringAttr(start, kAXRoleAttribute)
+        out.subrole = stringAttr(start, kAXSubroleAttribute)
+
+        /* The container is looked for on the SAME walk that looks for a name, and a little past it: the
+         * name usually turns up within a level or two and the toolbar holding it is a level or two above
+         * that. Eight is where a browser's page wrapper gives way to the window, which is recorded already. */
+        func look(_ e: AXUIElement) {
+            guard out.container == nil, let role = stringAttr(e, kAXRoleAttribute),
+                  containerRoles.contains(role) else { return }
+            out.container = role
+            out.containerName = stringAttr(e, kAXTitleAttribute) ?? stringAttr(e, kAXDescriptionAttribute)
+        }
+
+        var walker: AXUIElement? = start
+        var up = 0
+        while let w = walker, up < 8, out.container == nil {
+            look(w)
+            walker = elementAttr(w, kAXParentAttribute)
+            up += 1
+        }
+
         while let current = element, depth < 5 {
             let type = stringAttr(current, kAXRoleDescriptionAttribute)
             if depth == 0 { hitType = type }
-            if let name = stringAttr(current, kAXTitleAttribute) { return (name, type) }
+            if let name = stringAttr(current, kAXTitleAttribute) { out.control = name; out.type = type; return out }
             /* The label is its own element for a form field: AXTitleUIElement points at the static text
              * that names it, the way <label for> names an input, and the text of a static text lives in its
              * value. */
             if let label = elementAttr(current, kAXTitleUIElementAttribute),
                let name = stringAttr(label, kAXValueAttribute) ?? stringAttr(label, kAXTitleAttribute) {
-                return (name, type)
+                out.control = name; out.type = type; return out
             }
             /* Description and value, in that order, because a great many controls carry no title: an icon
              * button has kAXDescription - and in Chromium every aria-label lands there - a text field has
              * kAXValue and nothing else. Value only on the element itself, never a parent's: a parent's
              * value is the document. */
-            if let name = stringAttr(current, kAXDescriptionAttribute) { return (name, type) }
-            if depth == 0, let name = stringAttr(current, kAXValueAttribute) { return (name, type) }
+            if let name = stringAttr(current, kAXDescriptionAttribute) { out.control = name; out.type = type; return out }
+            if depth == 0, let name = stringAttr(current, kAXValueAttribute) { out.control = name; out.type = type; return out }
             /* Help is the tooltip. Last, because it describes rather than names - but a toolbar button that
              * names itself nowhere else usually says exactly the right thing here. */
-            if let name = stringAttr(current, kAXHelpAttribute) { return (name, type) }
+            if let name = stringAttr(current, kAXHelpAttribute) { out.control = name; out.type = type; return out }
             element = elementAttr(current, kAXParentAttribute)
             depth += 1
         }
         /* Nothing named itself. The kind of thing that was hit still travels: "clicked a button" beats
          * "clicked", and the Windows agent has always reported type without name. */
-        return (nil, hitType)
+        out.type = hitType
+        return out
     }
 
     /// The window title of the frontmost window of a process.
@@ -1143,6 +1199,10 @@ enum Accessibility {
         job.target.app = appName(of: hit)
         job.target.control = named.control
         job.target.controlType = named.type
+        job.target.role = named.role
+        job.target.subrole = named.subrole
+        job.target.container = named.container
+        job.target.containerName = named.containerName
         if hasPid { job.target.window = frontWindowTitle(pid: pid) }
     }
 
@@ -1165,6 +1225,10 @@ enum Accessibility {
         let named = nameByClimbing(focused)
         job.target.control = named.control
         job.target.controlType = named.type
+        job.target.role = named.role
+        job.target.subrole = named.subrole
+        job.target.container = named.container
+        job.target.containerName = named.containerName
     }
 }
 

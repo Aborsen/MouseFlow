@@ -63,19 +63,28 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     (async () => {
       const outcome = new URLSearchParams(location.search).get('auth');
+      const why = new URLSearchParams(location.search).get('why');
       if (outcome && outcome !== 'ok') {
+        /* `why` is what the auth service itself said, forwarded by /api/auth/finish. Shown rather than
+         * summarised: "the attempt may have expired" was a guess this code was making on the user's
+         * behalf, and it is the wrong guess on a phone, where the usual cause is the sign-in starting in
+         * one browser and returning to another. */
+        const detail = why ? ` (${why})` : '';
         setProblem(
           outcome === 'missing-verifier'
             ? 'Google came back without a verifier, so sign-in could not be completed.'
             : outcome === 'rejected'
-              ? 'The sign-in was rejected - the attempt may have expired. Try again.'
-              : `Sign-in did not complete (${outcome}).`,
+              ? 'The sign-in service rejected this attempt' + detail + '. This usually means the sign-in '
+                + 'started in one browser and came back in another - on a phone, opening the link in the '
+                + 'same browser you started in is what fixes it. Trying again here is safe.'
+              : `Sign-in did not complete (${outcome}${detail}).`,
         );
       }
       if (outcome) {
         // Cleared so a refresh does not repeat the message; anything else in the query is left alone.
         const rest = new URLSearchParams(location.search);
         rest.delete('auth');
+        rest.delete('why');
         const query = rest.toString();
         history.replaceState(null, '', location.pathname + (query ? `?${query}` : '') + location.hash);
       }
