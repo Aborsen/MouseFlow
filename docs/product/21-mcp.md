@@ -233,7 +233,26 @@ Inward, to the machine: **none, and not because of this.** The local agent has n
 this server adds is not new access but a new **decider**, which is the point of it and the reason the tool
 list is bounded rather than open. It is also the strongest argument yet for giving the agent a credential.
 
-## Not babysitting a terminal
+## No worker at all, where the agent is new enough
+
+The worker was the fastest way to prove the chain and the wrong thing to ask a person to install. What claims
+a job needs to be on the machine; it does not need to be a *second* program. The agent already is one — it
+runs at login, it has a menu bar, and it is the thing that would do the work anyway.
+
+So it claims for itself. **Connections → "Let Claude drive this computer"** mints a device token, hands it to
+the agent across loopback and never shows it; the agent's menu gains **Take Work From My Account**, which is
+where it is switched off. Nothing is typed, nothing is copied, and there is no second process.
+
+What the agent has to understand is deliberately small: `#record.start`, `#record.stop`, and a replay **body**
+in the five-column format it already speaks, with an `activate` line for the window. `/api/mcp` builds that
+body with the same `flowBody` the Record page uses, so a replay asked for by a chat and one asked for by the
+button are the same document. Everything that makes a skill a skill — its events, its parameters, its tool
+definition — stays on the deployment.
+
+The exception is a **created** skill, which is a goal and needs a model in the loop. The agent has no model,
+so those still want the worker, and the claim says which kind a job is rather than leaving it to guess.
+
+## The worker, and not babysitting a terminal
 
 The objection to the worker was never the process, it was keeping a window open for it. `mcp/install-worker-mac.sh`
 registers it as a login item with the same `KeepAlive` the agent uses, so it starts when you sign in and comes

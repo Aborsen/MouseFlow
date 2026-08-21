@@ -38,6 +38,12 @@ export interface AgentHealth {
    * decide which install command to show - never to decide what the agent can do, which is what the can*
    * flags are for. */
   platform?: 'windows' | 'macos';
+  /* Whether this machine is attached to an account, and whether it is taking work from it. Two facts, not
+   * one: attached and not taking is the ordinary resting state, and treating them as one would offer to
+   * pair a machine that is already paired. Absent on any agent that cannot do it at all, which is the
+   * answer for those - "cannot" rather than "off". */
+  linked?: boolean;
+  taking?: boolean;
   /* macOS only, and the reason the Connections screen can be useful rather than apologetic.
    *
    * On Windows both of these are unconditionally true and there is nothing to report. On macOS they are
@@ -105,12 +111,13 @@ const DEADLINE: Record<string, number> = {
   '/replay/status': 2500,
   '/replay/abort': 4000,
   '/autostart/enable': 8000,
+  '/account': 5000,
 };
 
 export const agentBase = (port: number) => `http://127.0.0.1:${port}`;
 
 interface CallOptions {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'DELETE';
   body?: string;
   contentType?: string;
   /** Answers that are text rather than JSON - /record/stop returns a .mmmacro. */
@@ -196,6 +203,24 @@ export const replayStatus = (port: number) =>
   }>(port, '/replay/status');
 export const replayAbort = (port: number) =>
   agentCall<{ ok: true }>(port, '/replay/abort', { method: 'POST' });
+/* Attach this machine to the account, so a chat that is not on it can ask it to do something.
+ *
+ * The token goes straight across loopback and is never shown: the app is signed in as the person, mints one,
+ * and hands it over - the same pairing the extension gets across its bridge, for the same reason. A
+ * credential somebody has to carry is a credential somebody mislays.
+ *
+ * `base` is where the agent will ask for work. Sent rather than assumed, so a deployment that is not the
+ * default one still works and nothing here has to guess. */
+export const linkAccount = (port: number, token: string, base: string) =>
+  agentCall<{ ok: true; linked: true; taking: boolean }>(port, '/account', {
+    method: 'POST',
+    contentType: 'text/plain',
+    body: `token=${token} base=${base}`,
+  });
+
+export const unlinkAccount = (port: number) =>
+  agentCall<{ ok: true; linked: false }>(port, '/account', { method: 'DELETE' });
+
 export const autostartEnable = (port: number) =>
   agentCall<{ ok: true }>(port, '/autostart/enable', { method: 'POST' });
 

@@ -40,7 +40,7 @@ import { neon } from '@neondatabase/serverless';
 import { randomUUID } from 'node:crypto';
 import { whoIsCalling } from './_session.js';
 import { structureOf, wireFor } from './_skill-schema.mjs';
-import { parseMacro, summarize } from './_macro.mjs';
+import { flowBody, parseMacro, summarize } from './_macro.mjs';
 import { flowFor } from './_flow-for.mjs';
 
 const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
@@ -711,14 +711,53 @@ async function workerRoute(action, req, res, sql, who) {
           continue;
         }
         const row = flow[0];
+        const payload = row.payload || {};
+        const args = job.args || {};
+
+        /* A replay body, built HERE.
+         *
+         * The claimer used to be a Node process that could import flowBody; now it can be the agent, which
+         * is a small program that speaks the five-column format and knows nothing about skills, payloads or
+         * parameters. Building it here is what lets that be true - and it is the same builder the Record
+         * page uses, so a replay asked for by a chat and one asked for by the button are the same document.
+         *
+         * Only for a RECORDED skill: a created one is a goal, and a goal needs a model in the loop, which is
+         * not something the agent has. The worker still handles those, and says so when it cannot. */
+        let body = null;
+        let activate = null;
+        if (row.kind !== 'created' && Array.isArray(payload.events) && payload.events.length) {
+          const allowed = [0.5, 1, 1.5, 2, 4];
+          const asked = Number(args.speed);
+          body = flowBody(
+            [{
+              recordingId: row.client_id,
+              repeat: Math.min(999, Math.max(1, Math.round(Number(args.repeat) || 1))),
+              speed: allowed.includes(asked) ? asked : 1,
+              delayAfterMs: 0,
+            }],
+            [{ id: row.client_id, name: row.name, events: payload.events, windows: payload.windows || [] }],
+            { startDelayMs: 0, flowRepeat: 1, flowForever: false },
+          );
+          /* The window it was recorded in, as the instruction that raises it - the same thing the Record
+           * page sends before it plays a row, for the same reason: a replay is coordinates and has no idea
+           * what is under them. */
+          const front = Array.isArray(payload.windows) ? payload.windows[0] : null;
+          if (front && (front.title || front.process)) {
+            activate = `action=activate ${front.process ? `process=${front.process} ` : ''}`
+              + `${front.title ? `title=${front.title}` : ''}`.trim();
+          }
+        }
+
         return res.status(200).json({
           ok: true,
           job: {
             id: job.id,
             toolName: job.tool_name,
-            args: job.args || {},
-            /* The skill travels WITH the job, in the shape structureOf expects. A worker that fetched it
-             * separately could get a different version than the one the queue meant. */
+            args,
+            /* Both shapes, because there are two kinds of claimer. The agent reads `body` and `activate` and
+             * needs nothing else; the worker reads `flow`, which it needs for a goal skill. */
+            body,
+            activate: activate ? activate.trim() : null,
             flow: {
               id: row.client_id, source: row.source, kind: row.kind, name: row.name,
               description: row.description, payload: row.payload, origins: row.origins,

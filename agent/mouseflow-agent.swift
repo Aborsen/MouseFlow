@@ -2319,6 +2319,292 @@ func installTap() -> Bool {
 
 // ================================================================ autostart
 
+// ================================================================ the account
+
+/* Taking work from the account: what makes "start recording on my Mac" possible from a chat that is not on
+ * this Mac.
+ *
+ * The thing it solves is a DIRECTION, not a feature. This agent listens on loopback and nothing on the
+ * internet can reach it - deliberately, and that is not going to change. So the machine asks: it holds a
+ * token, long-polls the account for a job, does it, and says how it went. No inbound path to this computer
+ * exists at any point, and an agent that is not taking work makes no outbound call at all.
+ *
+ * OFF UNTIL SOMEBODY SWITCHES IT ON, and visible in the menu bar while it is. Everything else here happens
+ * because something on this machine asked; this is the one thing the agent would do because a service said
+ * so, and that difference belongs where the person can see it and turn it off.
+ *
+ * The token is handed over by the app across loopback - the same pairing the extension gets - so nobody has
+ * to read one, copy one, or keep one anywhere. It is written 0600 beside the held recording, which is the
+ * same exposure as any credential in a home directory and is stated in the docs rather than left to be
+ * discovered.
+ */
+/* Where the courier says things. stdout is what the launchd job records, and the installer's doctor prints
+ * it - the same place the startup banner and the permission watcher already speak. */
+func log(_ words: String) {
+    print("[mouseflow] " + words)
+}
+
+enum Account {
+    struct Link {
+        var token: String
+        var base: String
+        var taking: Bool
+    }
+
+    private static let gate = NSLock()
+    private static var current: Link?
+
+    private static var dir: String {
+        FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Application Support/MouseFlow"
+    }
+    private static var path: String { dir + "/account.json" }
+
+    static var link: Link? {
+        gate.lock(); defer { gate.unlock() }
+        return current
+    }
+
+    /// Read once at startup. A missing or unreadable file means "not linked", which is the safe answer.
+    static func load() {
+        guard let data = FileManager.default.contents(atPath: path),
+              let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let token = raw["token"] as? String, !token.isEmpty else { return }
+        let base = (raw["base"] as? String) ?? "https://mouseflowapp.vercel.app"
+        let taking = (raw["taking"] as? Bool) ?? false
+        gate.lock()
+        current = Link(token: token, base: base, taking: taking)
+        gate.unlock()
+    }
+
+    private static func write(_ link: Link?) {
+        guard let link = link else {
+            try? FileManager.default.removeItem(atPath: path)
+            return
+        }
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let json: [String: Any] = ["token": link.token, "base": link.base, "taking": link.taking]
+        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
+        /* Replaced rather than written over, and 0600: a credential that was briefly world-readable was
+         * world-readable. */
+        try? FileManager.default.removeItem(atPath: path)
+        FileManager.default.createFile(atPath: path, contents: data,
+                                       attributes: [.posixPermissions: NSNumber(value: Int16(0o600))])
+    }
+
+    static func set(token: String, base: String, taking: Bool) {
+        gate.lock()
+        current = Link(token: token, base: base, taking: taking)
+        let copy = current
+        gate.unlock()
+        write(copy)
+    }
+
+    static func setTaking(_ on: Bool) {
+        gate.lock()
+        if current != nil { current!.taking = on }
+        let copy = current
+        gate.unlock()
+        write(copy)
+    }
+
+    static func forget() {
+        gate.lock()
+        current = nil
+        gate.unlock()
+        write(nil)
+    }
+}
+
+/* The one outward-facing loop: ask for work, do it, say how it went.
+ *
+ * Long-polling rather than a fast poll - the endpoint holds the request open for up to half a minute with
+ * nothing to say - so an idle machine costs one request a minute rather than twenty, and an idle wait costs
+ * no CPU at either end. Backs off to a minute on failure, because an agent that hammers a deployment which
+ * is down makes the outage worse.
+ *
+ * One job at a time, and no queue of its own. There is one mouse.
+ */
+enum Courier {
+    private static let claimWaitSeconds = 25
+    private static var backoff: UInt32 = 2
+
+    enum Claimed {
+        case job(Job)
+        case idle
+        case failed(String)
+    }
+
+    struct Job {
+        var id: String
+        var command: String?
+        /// A replay body, built by the deployment for a skill. The agent never has to know what a skill is.
+        var body: String?
+        /// `action=activate ...`, for the window the recording belongs to. Best effort, exactly as the app does it.
+        var activate: String?
+        var moveMs: Int
+    }
+
+    static func begin() {
+        Thread.detachNewThread {
+            Thread.current.name = "mouseflow.courier"
+            loop()
+        }
+    }
+
+    private static func loop() {
+        while true {
+            guard let link = Account.link, link.taking else {
+                sleep(5)
+                continue
+            }
+            switch claim(link) {
+            case .failed(let why):
+                log("could not ask for work: \(why) - waiting \(backoff)s")
+                sleep(backoff)
+                backoff = min(60, backoff * 2)
+            case .idle:
+                backoff = 2
+            case .job(let job):
+                backoff = 2
+                let done = carry(job)
+                report(link, id: job.id, done: done)
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------------ the wire */
+
+    private static func request(_ url: URL, token: String, body: Data?) -> (Int, Data)? {
+        var req = URLRequest(url: url)
+        req.httpMethod = body == nil ? "GET" : "POST"
+        req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        if body != nil { req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        req.httpBody = body
+        /* Longer than the endpoint's own wait, so a long poll that answers at the last moment is an answer
+         * rather than a timeout this end invented. */
+        req.timeoutInterval = 90
+
+        let done = DispatchSemaphore(value: 0)
+        var out: (Int, Data)?
+        URLSession.shared.dataTask(with: req) { data, response, _ in
+            if let http = response as? HTTPURLResponse {
+                out = (http.statusCode, data ?? Data())
+            }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 100)
+        return out
+    }
+
+    private static func claim(_ link: Account.Link) -> Claimed {
+        guard let url = URL(string: link.base + "/api/mcp?worker=claim") else {
+            return .failed("the account address is not a URL")
+        }
+        let ask: [String: Any] = ["worker": Host.current().localizedName ?? "this Mac",
+                                  "wait": claimWaitSeconds]
+        guard let body = try? JSONSerialization.data(withJSONObject: ask),
+              let (status, data) = request(url, token: link.token, body: body) else {
+            return .failed("no answer from the account")
+        }
+        if status == 401 || status == 403 {
+            /* The token was revoked, or the account is gone. Stopping is the honest response: retrying a
+             * refused credential for ever is a log nobody reads and a request nobody wanted. */
+            Account.setTaking(false)
+            log("the account refused this Mac's token - taking work is now off. Pair again from the app.")
+            return .idle
+        }
+        guard status == 200,
+              let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return .failed("HTTP \(status)")
+        }
+        guard let job = raw["job"] as? [String: Any], let id = job["id"] as? String else { return .idle }
+        let args = (job["args"] as? [String: Any]) ?? [:]
+        return .job(Job(id: id,
+                        command: job["command"] as? String,
+                        body: job["body"] as? String,
+                        activate: job["activate"] as? String,
+                        moveMs: (args["moveMs"] as? Int) ?? 0))
+    }
+
+    private static func report(_ link: Account.Link, id: String, done: Done) {
+        guard let url = URL(string: link.base + "/api/mcp?worker=report") else { return }
+        var said: [String: Any] = ["id": id, "ok": done.ok, "said": done.said]
+        if let body = done.body {
+            said["body"] = body
+            /* What this agent is, at the moment of the recording - the only moment the answer exists. The
+             * row the deployment writes stamps it, exactly as the app's own does. */
+            said["health"] = ["version": VERSION,
+                              "canName": Permission.accessibility,
+                              "canKeys": eventTap != nil]
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: said) else { return }
+        if request(url, token: link.token, body: data) == nil {
+            /* The work happened and the answer did not arrive. Said out loud, because the person on the
+             * other end is being told nothing picked it up while something did. */
+            log("the outcome of \(id) could not be reported")
+        }
+    }
+
+    /* ------------------------------------------------------------------ doing it */
+
+    struct Done {
+        var ok: Bool
+        var said: String
+        /// A stopped recording, as the agent hands it over. The deployment turns it into a row.
+        var body: String?
+    }
+
+    private static func carry(_ job: Job) -> Done {
+        if job.command == "#record.start" {
+            if eventTap == nil {
+                return Done(ok: false, said: "This Mac has no input hook, so nothing would be captured - "
+                    + "MouseFlow needs Accessibility in System Settings, Privacy & Security.", body: nil)
+            }
+            if Replayer.shared.isPlaying {
+                return Done(ok: false, said: "It is replaying something right now.", body: nil)
+            }
+            if let refused = Recorder.shared.start(moveMs: job.moveMs) {
+                return Done(ok: false, said: refused, body: nil)
+            }
+            DispatchQueue.global().async { Accessibility.prime() }
+            return Done(ok: true, said: "Recording. It captures clicks, drags, scrolls and pointer "
+                + "movement, and that a key was pressed - never which key.", body: nil)
+        }
+
+        if job.command == "#record.stop" {
+            if !Recorder.shared.isRecording {
+                return Done(ok: false, said: "Nothing was recording.", body: nil)
+            }
+            return Done(ok: true, said: "", body: Recorder.shared.stop())
+        }
+
+        if let body = job.body {
+            /* A skill, as a replay body the deployment built. Everything that makes it a skill - the events,
+             * the parameters, the tool definition - stayed there; what arrives here is the format this agent
+             * has always spoken. */
+            if let raise = job.activate {
+                _ = doAction(raise)
+                Thread.sleep(forTimeInterval: 0.35)
+            }
+            if let refused = Replayer.shared.start(body: body) {
+                return Done(ok: false, said: refused, body: nil)
+            }
+            /* Waited out here rather than reported as started: an answer that arrives before the work has
+             * happened has told the caller nothing. */
+            let until = Date().addingTimeInterval(30 * 60)
+            while Replayer.shared.isPlaying && Date() < until { Thread.sleep(forTimeInterval: 0.4) }
+            if Replayer.shared.isPlaying {
+                return Done(ok: false, said: "It was still replaying after thirty minutes.", body: nil)
+            }
+            return Done(ok: true, said: "Replayed it on this Mac. What the applications did with it is not "
+                + "something MouseFlow can see; the actions were sent.", body: nil)
+        }
+
+        return Done(ok: false, said: "This Mac was asked to do something it does not understand. Its agent "
+            + "may be older than the account expects.", body: nil)
+    }
+}
+
 /* A LaunchAgent, which is the macOS answer to the Startup folder.
  *
  * Unlike the Windows agent this is always available: there the piped one-liner leaves no file for a launcher
@@ -2714,6 +3000,11 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         json += ",\"autostart\":\(jsonBool(Autostart.enabled))"
         json += ",\"canAutostart\":true"
         json += ",\"originPinned\":\(jsonBool(allowOrigin != "*"))"
+        /* Whether this Mac is attached to an account, and whether it is taking work from it. Two facts, not
+         * one: attached and not taking is the normal resting state, and an app that showed them as one
+         * would offer to pair a Mac that is already paired. */
+        json += ",\"linked\":\(jsonBool(Account.link != nil))"
+        json += ",\"taking\":\(jsonBool(Account.link?.taking == true))"
         /* The capability flags, and on this platform two of them are answers rather than constants. A
          * version number cannot say whether the user has granted Screen Recording, and an agent that claims
          * it can see returns a black picture instead of an explanation. */
@@ -2827,6 +3118,29 @@ func route(method: String, path: String, query: String, body: String) -> Respons
             return Response(status: 400, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
         }
         return Response(body: "{\"ok\":true}")
+
+    /* Attaching this Mac to an account, and detaching it.
+     *
+     * Handed over across loopback by the app, which is signed in as the person - so nobody reads a token,
+     * copies one, or keeps one anywhere. The same pairing the extension gets over its bridge, for the same
+     * reason: a credential a person has to carry is a credential a person mislays. */
+    case "/account":
+        if method == "DELETE" {
+            Account.forget()
+            return Response(body: "{\"ok\":true,\"linked\":false}")
+        }
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST or DELETE\"}") }
+        let fields = parseAction(body)
+        guard let token = fields["token"], token.hasPrefix("mf_") else {
+            return Response(status: 400, body: "{\"ok\":false,\"error\":"
+                + jsonString("a MouseFlow device token, which starts with mf_") + "}")
+        }
+        let base = fields["base"] ?? "https://mouseflowapp.vercel.app"
+        /* Taking work is the point of attaching, so it is on unless the caller says otherwise - and the menu
+         * bar says so from the moment it is, which is where somebody would look to turn it off. */
+        let taking = (fields["taking"] ?? "1") != "0"
+        Account.set(token: token, base: base, taking: taking)
+        return Response(body: "{\"ok\":true,\"linked\":true,\"taking\":\(jsonBool(taking))}")
 
     case "/autostart/enable":
         if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
@@ -3006,6 +3320,19 @@ print("""
  * in place. */
 PermissionWatch.start()
 
+/* Whether this Mac is attached to an account, read from disk, and the loop that asks it for work.
+ *
+ * The loop is started unconditionally and does nothing until the switch is on: an agent that had to be
+ * restarted to begin taking work would make the menu item a lie. Nothing leaves this machine while it is
+ * off - not a poll, not a heartbeat. */
+Account.load()
+if let link = Account.link {
+    print(link.taking
+        ? "attached to an account and taking work from it - switch it off in the menu bar"
+        : "attached to an account, not taking work - switch it on in the menu bar")
+}
+Courier.begin()
+
 let queue = DispatchQueue(label: "mouseflow.http", attributes: .concurrent)
 let acceptThread = Thread {
     while true {
@@ -3058,6 +3385,23 @@ final class MenuActions: NSObject, NSMenuDelegate {
             heldNoteItem?.title = "Recording saved here — the app collects it (\(held.events) events)"
         }
         stopSaveSeparator?.isHidden = !recording && !held.held && (startItem?.isHidden ?? true)
+
+        /* Shown only once this Mac is attached to an account: an item that cannot do anything until
+         * something else has happened elsewhere is a question, not a control. */
+        let link = Account.link
+        takingItem?.isHidden = link == nil
+        takingItem?.state = link?.taking == true ? .on : .off
+        takingSeparator?.isHidden = link == nil
+    }
+
+    /* Taking work from the account, switched here because here is where it is visible.
+     *
+     * The one thing this agent does that was not asked for by something on this machine. It is off until
+     * somebody turns it on, it says so while it is on, and this is the switch - not a setting in a web page
+     * on another screen, which is where a person would not think to look for it. */
+    @objc func toggleTaking() {
+        guard let link = Account.link else { return }
+        Account.setTaking(!link.taking)
     }
 
     /* Stop the recording and hold it for the app: the agent has no account, the app's Record page does, and
@@ -3148,6 +3492,20 @@ let stopSaveSep = NSMenuItem.separator()
 stopSaveSep.isHidden = true
 menu.addItem(stopSaveSep)
 stopSaveSeparator = stopSaveSep
+/* Visible only when this Mac is attached to an account - see menuNeedsUpdate. */
+var takingItem: NSMenuItem?
+var takingSeparator: NSMenuItem?
+let taking = NSMenuItem(title: "Take Work From My Account",
+                        action: #selector(MenuActions.toggleTaking), keyEquivalent: "")
+taking.target = menuActions
+taking.isHidden = true
+menu.addItem(taking)
+takingItem = taking
+let takingSep = NSMenuItem.separator()
+takingSep.isHidden = true
+menu.addItem(takingSep)
+takingSeparator = takingSep
+
 let stopItem = NSMenuItem(title: "Stop Until Next Login",
                           action: #selector(MenuActions.stopUntilLogin), keyEquivalent: "")
 stopItem.target = menuActions

@@ -105,6 +105,33 @@ Where the two platforms differ is only in what the icon has to solve. On macOS t
 with no window and no way to stop it; on Windows the console window was the only interface, which could
 neither say that a recording was running nor start one. Same answer, opposite complaints.
 
+### `/account` — the machine asks, nothing reaches in
+
+`POST /account` with `token=mf_… base=https://…` attaches this machine to an account. `DELETE /account`
+detaches it. `/health` then answers two more facts: `linked` (attached at all) and `taking` (attached AND
+switched on). Absent on any agent that cannot do it, and absent means *cannot*, not *off*.
+
+The reason it exists is a direction. The agent listens on loopback and nothing on the internet can reach it —
+deliberately, and that does not change. So an instruction from somewhere else has to be **asked for**: the
+agent long-polls the account for a job, does it, and reports. There is no inbound path to the machine at any
+point, and an agent that is not taking work makes no outbound call at all — not a poll, not a heartbeat.
+
+Three rules that are part of the contract rather than of one implementation:
+
+- **Off until somebody switches it on**, and visible while it is on. Everything else an agent does happens
+  because something on that machine asked. This is the one thing it would do because a service said so, and
+  that difference belongs in front of the person, in the agent's own menu — not in a setting on another
+  screen.
+- **The token is handed over, never typed.** The app is signed in as the person; it mints a device token and
+  posts it across loopback, the same pairing the extension gets over its bridge. A credential somebody has to
+  carry is a credential somebody mislays.
+- **A refused token switches taking off.** Retrying a revoked credential for ever is a log nobody reads.
+
+What the agent has to understand from a claimed job is deliberately small: `#record.start`, `#record.stop`,
+and a replay `body` in the format it already speaks, with an optional `activate` instruction for the window.
+Everything that makes a skill a skill — its events, its parameters, its tool definition — stays on the
+deployment, which is what keeps this a few hundred lines rather than a second client.
+
 ### The capability flags
 
 The `can*` flags exist because a version number could not answer the question that mattered. An

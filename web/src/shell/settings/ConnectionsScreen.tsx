@@ -20,6 +20,8 @@ import {
   startCommand,
 } from '@/lib/agent';
 import { useAgent, useConsole } from '@/lib/store';
+import { linkAccount, unlinkAccount } from '@/lib/agent';
+import { mintDeviceToken } from '@/lib/api';
 import {
   Command, DownloadLink, PlatformPicker, needsRestart, usePlatform,
 } from '@/features/connect/platform';
@@ -30,6 +32,7 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
   const [console_] = useConsole();
   const navigate = useNavigate();
   const [showLocal, setShowLocal] = useState(false);
+  const [linking, setLinking] = useState(false);
   const platform = usePlatform(health ?? null);
   const { mac, terminal } = platform;
 
@@ -197,6 +200,60 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
           Show it again
         </Button>
       </Row>
+
+      {/* Letting a chat that is not on this computer ask it to do something.
+        *
+        * The whole ceremony is one button, and that is the point: the app is signed in as the person, so it
+        * mints a token and hands it to the agent across loopback - the same pairing the extension gets. A
+        * credential nobody sees is a credential nobody mislays, and the agent's own menu bar is where it is
+        * switched off, which is where somebody would look.
+        *
+        * Shown only where the agent can do it: `linked` is absent on a build that has never heard of an
+        * account, and absent means "cannot", not "off". */}
+      {health && health.linked !== undefined && (
+        <Row
+          label="Let Claude drive this computer"
+          note={health.linked
+            ? (health.taking
+              ? 'Attached, and taking work. A connected AI can ask it to start or stop recording, or to run '
+                + 'one of your skills. Switch it off in the agent’s menu bar, or detach it here.'
+              : 'Attached, but not taking work — switch it on in the agent’s menu bar (the cursor icon).')
+            : 'Nothing can reach this computer from outside; it asks. Attaching lets it ask your account for '
+              + 'work, so an AI connected to MouseFlow can start a recording here or run a skill. Off until '
+              + 'you say otherwise, and the agent’s menu bar is where you turn it off again.'}
+        >
+          <Button
+            variant={health.linked ? 'ghost' : 'secondary'}
+            size="sm"
+            isLoading={linking}
+            onClick={async () => {
+              setLinking(true);
+              try {
+                if (health.linked) {
+                  await unlinkAccount(console_.port);
+                  say({ text: 'Detached. It will not ask for work again.', kind: 'good' });
+                } else {
+                  const made = await mintDeviceToken('This computer');
+                  await linkAccount(console_.port, made.token, location.origin);
+                  say({
+                    text: 'Attached. It is taking work now — the agent’s menu bar is where you stop it.',
+                    kind: 'good',
+                  });
+                }
+              } catch (err) {
+                say({
+                  text: err instanceof Error ? err.message : 'that did not work',
+                  kind: 'bad',
+                });
+              } finally {
+                setLinking(false);
+              }
+            }}
+          >
+            {health.linked ? 'Detach' : 'Attach this computer'}
+          </Button>
+        </Row>
+      )}
 
       <Row
         label="First time here?"
