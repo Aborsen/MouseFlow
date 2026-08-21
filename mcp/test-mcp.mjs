@@ -67,8 +67,9 @@ const FLOWS = [
 
 /* ------------------------------------------------------------------------------- the fakes */
 
-const seen = { activate: [], replayBodies: [], runs: [], modelCalls: 0, claims: 0, reports: [] };
+const seen = { activate: [], replayBodies: [], runs: [], modelCalls: 0, claims: 0, reports: [], flows: [], nextJob: null };
 let replaying = false;
+let recording = false;
 let replayStatus = { playing: false, step: 1, steps: 1, pass: 1, passes: 1, index: 4, total: 4, flowPass: 1, flowPasses: 1, unplayable: 0, retargeted: 0 };
 let agentUp = true;
 
@@ -92,12 +93,14 @@ const deployment = createServer(async (req, res) => {
   if (url.pathname === '/api/sync' && req.method === 'POST') {
     const body = JSON.parse(await readBody(req) || '{}');
     (body.runs || []).forEach((r) => seen.runs.push(r));
+    (body.flows || []).forEach((f) => seen.flows.push(f));
     return json(res, 200, { ok: true, flows: 0, runs: (body.runs || []).length, deleted: 0, problems: [] });
   }
   if (url.pathname === '/api/mcp' && url.searchParams.get('worker') === 'claim') {
     await readBody(req);
     seen.claims++;
     /* One job, then nothing - so a worker started with ONCE=1 does exactly one piece of work. */
+    if (seen.nextJob) { const job = seen.nextJob; seen.nextJob = null; return json(res, 200, { ok: true, job }); }
     if (seen.claims > 1) return json(res, 200, { ok: true, job: null });
     return json(res, 200, {
       ok: true,
@@ -130,13 +133,26 @@ const agent = createServer(async (req, res) => {
   if (url.pathname === '/health') {
     return json(res, 200, {
       ok: true, version: '0.8.2', platform: 'macos', screen: { w: 1440, h: 900 },
-      recording: false, playing: replaying,
+      recording, playing: replaying,
       canSee: true, canWindows: true, canName: true, canKeys: true, canDrain: true,
     });
   }
   if (url.pathname === '/windows') return json(res, 200, { ok: true, windows: [{ title: 'Inbox', process: 'OUTLOOK' }] });
   if (url.pathname === '/shot') return json(res, 200, { ok: true, png: PNG, format: 'png', w: 1440, h: 900, scale: 1, originX: 0, originY: 0 });
   if (url.pathname === '/do') { seen.activate.push(await readBody(req)); return json(res, 200, { ok: true }); }
+  if (url.pathname === '/record/start') { recording = true; return json(res, 200, { ok: true }); }
+  if (url.pathname === '/record/stop') {
+    recording = false;
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    /* The exact shape both agents hand back, #ctx lines and all. */
+    res.end('#ctx\tapp=OUTLOOK\twindow=Inbox\tcontrol=New mail\ttype=button\n'
+      + '1 | 100 | 200 | 0 | Left Click Down\n'
+      + '2 | 100 | 200 | 40 | Left Click Up\n'
+      + '#ctx\tapp=EXCEL\twindow=Book1\n'
+      + '3 | 400 | 300 | 500 | Left Click Down\n'
+      + '4 | 400 | 300 | 40 | Left Click Up\n');
+    return undefined;
+  }
   if (url.pathname === '/replay') {
     seen.replayBodies.push(await readBody(req));
     replaying = true;
@@ -198,6 +214,9 @@ const child = spawn(process.execPath, [fileURLToPath(new URL('server.mjs', impor
     MOUSEFLOW_TOKEN: 'mf_test_token',
     MOUSEFLOW_URL: `http://127.0.0.1:${deployPort}`,
     MOUSEFLOW_AGENT_PORT: String(agentPort),
+    /* So a replay that never finishes fails in seconds with something to read, instead of hanging for the
+     * half hour a real one is allowed. */
+    MOUSEFLOW_REPLAY_MAX_MS: '20000',
   },
   stdio: ['pipe', 'pipe', 'pipe'],
 });
@@ -354,6 +373,7 @@ const worker = spawn(process.execPath, [fileURLToPath(new URL('worker.mjs', impo
     MOUSEFLOW_WORKER_NAME: 'test-machine',
     MOUSEFLOW_WORKER_WAIT: '0',
     MOUSEFLOW_WORKER_ONCE: '1',
+    MOUSEFLOW_REPLAY_MAX_MS: '20000',
   },
   stdio: ['ignore', 'ignore', 'pipe'],
 });
@@ -375,6 +395,58 @@ check('and the same sentence a local caller would have got',
   /Replayed "Open the inbox"/.test(report.said || ''), report.said);
 check('the run also reached the account, not only the queue',
   seen.runs.filter((r) => r.kind === 'replay').length >= 3, String(seen.runs.length));
+
+group('the timer: start and stop, through the same queue');
+const runWorker = async (job) => {
+  seen.nextJob = job;
+  const w = spawn(process.execPath, [fileURLToPath(new URL('worker.mjs', import.meta.url))], {
+    env: {
+      ...process.env,
+      MOUSEFLOW_TOKEN: 'mf_test_token',
+      MOUSEFLOW_URL: `http://127.0.0.1:${deployPort}`,
+      MOUSEFLOW_AGENT_PORT: String(agentPort),
+      MOUSEFLOW_WORKER_WAIT: '0',
+      MOUSEFLOW_WORKER_ONCE: '1',
+      MOUSEFLOW_REPLAY_MAX_MS: '20000',
+    },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const said = [];
+  w.stderr.on('data', (c) => said.push(String(c)));
+  /* Bounded, and the worker's own words come back with the failure. A spawned process that never exits is
+   * the one failure a test cannot explain from the outside, and waiting forever for it explains nothing. */
+  const how = await new Promise((done) => {
+    const timer = setTimeout(() => { w.kill(); done('timed out'); }, 30000);
+    w.on('exit', (code) => { clearTimeout(timer); done(code === 0 ? 'ok' : `exit ${code}`); });
+  });
+  /* The report for THIS job, not merely the newest one - a worker that died before reporting would
+   * otherwise be read as having succeeded at whatever ran before it. */
+  const mine = seen.reports.find((r) => r.id === job.id) || {};
+  return { ...mine, how, log: said.join('') };
+};
+
+const started = await runWorker({ id: 'q_start', toolName: 'mouseflow_start_recording', args: {}, command: '#record.start', flow: null });
+check('a start command reaches the agent and is reported ok', started.ok === true,
+  `how=${started.how} log=${started.log}`);
+check('and says what is and is not captured',
+  /never which key/.test(started.said || ''), started.said);
+
+const ended = await runWorker({ id: 'q_stop', toolName: 'mouseflow_stop_recording', args: {}, command: '#record.stop', flow: null });
+check('a stop command saves the recording to the account', ended.ok === true,
+  `how=${ended.how} log=${ended.log}`);
+check('and names what was captured', /4 events, 2 clicks/.test(ended.said || ''), ended.said);
+const savedFlow = seen.flows[seen.flows.length - 1];
+check('the row is built by the app\'s own flowFor, stamped as a recording',
+  savedFlow && savedFlow.payload && savedFlow.payload.role === 'recording' && savedFlow.source === 'desktop',
+  JSON.stringify(savedFlow && { source: savedFlow.source, role: savedFlow.payload?.role }));
+check('the events carry their #ctx, so the transcript can name what was clicked',
+  savedFlow && savedFlow.payload.events[0] && savedFlow.payload.events[0].context
+    && savedFlow.payload.events[0].context.control === 'New mail',
+  JSON.stringify(savedFlow && savedFlow.payload.events[0]));
+check('and the windows are derived from those contexts rather than left empty',
+  savedFlow && savedFlow.payload.windows.length === 2
+    && savedFlow.payload.windows[0].process === 'OUTLOOK',
+  JSON.stringify(savedFlow && savedFlow.payload.windows));
 
 deployment.close();
 agent.close();

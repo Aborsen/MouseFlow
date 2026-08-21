@@ -119,6 +119,123 @@ const RUN_STATUS_TOOL = {
   },
 };
 
+/* ------------------------------------------------------------------------------- reading the account
+ *
+ * These need nothing on anybody's machine. A recording, a run and the time they took are rows, and rows are
+ * here - so the analysis half of this server works the moment a connector is added, with no worker, no
+ * agent, and nothing to keep running. That is worth stating because it is the opposite of the run half,
+ * which cannot happen without a machine, and the two arriving through one connector would otherwise look
+ * like one capability with an intermittent fault.
+ *
+ * Metadata and prose, never a payload. There is no tool here that hands over raw events: the transcript is
+ * the derivation api/_transcript.js already makes for the panel, which is written to be read.
+ */
+
+const RECORDINGS_TOOL = {
+  name: 'mouseflow_recordings',
+  description: 'What is on this MouseFlow account: recordings, and the skills made from them. Names, sizes, '
+    + 'where they happened and when. Start here when the question is "what have I got".',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      kind: {
+        type: 'string',
+        enum: ['all', 'recording', 'skill'],
+        default: 'all',
+        description: 'A recording is what was captured; a skill is a copy of one meant to be handed over.',
+      },
+      limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+const TRANSCRIPT_TOOL = {
+  name: 'mouseflow_transcript',
+  description: 'One recording, step by step, in words: what was clicked, in which application and window, '
+    + 'how long each part took, and what the recording cannot answer. Takes an id from mouseflow_recordings.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      recording: { type: 'string', description: 'The id from mouseflow_recordings.' },
+      steps: { type: 'integer', minimum: 1, maximum: 400, default: 120, description: 'How many steps to return.' },
+    },
+    required: ['recording'],
+    additionalProperties: false,
+  },
+};
+
+const RUNS_TOOL = {
+  name: 'mouseflow_runs',
+  description: 'Runs on this account: what was asked for, which model drove it, how it ended and how long it '
+    + 'took. The record of what has actually been automated, as opposed to what could be.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      days: { type: 'integer', minimum: 1, maximum: 365, default: 30 },
+      outcome: { type: 'string', enum: ['any', 'ok', 'failed', 'stopped'], default: 'any' },
+      limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+const ACTIVITY_TOOL = {
+  name: 'mouseflow_activity',
+  description: 'The account in numbers over a window: how much was recorded and for how long, how many runs '
+    + 'and how they ended, and which applications the work happened in. For "where is my time going".',
+  inputSchema: {
+    type: 'object',
+    properties: { days: { type: 'integer', minimum: 1, maximum: 365, default: 30 } },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+/* ------------------------------------------------------------------------------- the timer
+ *
+ * Recording is the one thing on this list that is not a row: it is the agent watching the machine, so it
+ * goes through the queue exactly as a skill run does, and needs the same thing listening. The two tools are
+ * separate rather than one with a boolean, because "stop" is the one somebody reaches for in a hurry and a
+ * tool that could start a recording when they meant to stop one is a bad trade for one fewer entry. */
+
+const START_TOOL = {
+  name: 'mouseflow_start_recording',
+  description: 'Start recording on the machine this account is paired with — the timer the app shows. It '
+    + 'captures clicks, drags, scrolls and pointer movement, and THAT a key was pressed, never which key. '
+    + 'Nothing is captured until this is called and it stops the moment recording stops.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      moveMs: {
+        type: 'integer', minimum: 0, maximum: 1000, default: 0,
+        description: 'How coarsely to sample pointer movement, in milliseconds. 0 keeps every sample; 40 is '
+          + 'plenty for a long session and keeps it small.',
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
+const STOP_RECORDING_TOOL = {
+  name: 'mouseflow_stop_recording',
+  description: 'Stop the recording running on the paired machine and save it to this account. Answers with '
+    + 'what was captured.',
+  inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+};
+
+/* A queue job that is an instruction to the agent rather than a skill. Marked by the flow id, so the claim
+ * path can tell at a glance that there is no flow to look up. */
+const AGENT_JOBS = {
+  [START_TOOL.name]: '#record.start',
+  [STOP_RECORDING_TOOL.name]: '#record.stop',
+};
+
+const READ_TOOLS = [RECORDINGS_TOOL, TRANSCRIPT_TOOL, RUNS_TOOL, ACTIVITY_TOOL];
+
 /** The caller's skills, stamped ones only, with their derived tool definitions. */
 async function skillsOf(sql, userId) {
   const rows = await sql`
@@ -197,9 +314,158 @@ async function stampWorker(sql, userId) {
 
 /* ------------------------------------------------------------------------------- the tools */
 
+/* ------------------------------------------------------------------------------- the read tools */
+
+const ago = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+const day = (iso) => (iso ? new Date(iso).toISOString().slice(0, 16).replace('T', ' ') : 'unknown');
+
+async function readRecordings(sql, who, args) {
+  const want = ['recording', 'skill'].includes(args.kind) ? args.kind : 'all';
+  const limit = Math.min(200, Math.max(1, Math.round(Number(args.limit) || 50)));
+  const rows = await sql`
+    select client_id, name, description, source, kind, origins, updated_at,
+           payload->>'role' as role,
+           jsonb_array_length(coalesce(payload->'events', '[]'::jsonb)) as events
+    from user_flow
+    where user_id = ${who.id} and deleted_at is null
+    order by updated_at desc limit ${limit}
+  `;
+  const kindOf = (r) => (r.role === 'skill' ? 'skill' : r.role === 'recording' ? 'recording' : 'unmarked');
+  const shown = rows.filter((r) => want === 'all' || kindOf(r) === want);
+  if (!shown.length) return say(want === 'all' ? 'Nothing on this account yet.' : `No ${want}s on this account.`);
+
+  const lines = shown.map((r) => {
+    const where = Array.isArray(r.origins) && r.origins.length ? ` in ${r.origins.slice(0, 3).join(', ')}` : '';
+    return `${r.client_id}  ${r.name || 'untitled'}\n`
+      + `    ${kindOf(r)} · ${r.source || 'unknown'} · ${r.events} events${where} · ${day(r.updated_at)}`
+      + (r.description ? `\n    ${r.description}` : '');
+  });
+  return say(`${shown.length} of ${rows.length} shown, newest first.\n\n${lines.join('\n')}`);
+}
+
+async function readTranscript(sql, who, args) {
+  const id = String(args.recording || '');
+  if (!id) return say('Which recording? Pass an id from mouseflow_recordings.', true);
+  const [row] = await sql`
+    select client_id, name, kind, source, payload, origins
+    from user_flow where user_id = ${who.id} and client_id = ${id} and deleted_at is null
+  `;
+  if (!row) return say(`There is nothing called "${id}" on this account.`, true);
+
+  /* Lazily, for the reason api/chat.js states about the same module: a static import of a file that may not
+   * be on a given deploy takes the importing route down with it, and one missing file must not stop the
+   * tools that have nothing to do with transcripts. */
+  let transcribe;
+  try {
+    ({ transcribe } = await import('./_transcript.js'));
+  } catch (err) {
+    return say(`The transcript engine could not be loaded on this deployment: ${err.message}`, true);
+  }
+
+  const t = transcribe(row);
+  const cap = Math.min(400, Math.max(1, Math.round(Number(args.steps) || 120)));
+  const out = [];
+  out.push(`${t.flow?.name || row.name} — ${t.summary?.events ?? 0} events, `
+    + `${t.summary?.clicks ?? 0} clicks, ${t.summary?.seconds ?? 0}s, `
+    + `${t.summary?.applications ?? 0} applications.`);
+
+  let shown = 0;
+  let dropped = 0;
+  for (const seg of t.segments || []) {
+    const where = seg.where && seg.where.label ? seg.where.label : 'somewhere';
+    out.push(`\n— ${where}`);
+    for (const step of seg.steps || []) {
+      if (shown >= cap) { dropped++; continue; }
+      shown++;
+      out.push(`  ${step.n}. ${step.what}${step.control ? ` [${step.control}]` : ''}`);
+    }
+  }
+  /* Silent truncation reads as "that is all of it". */
+  if (dropped) out.push(`\n${dropped} further steps not shown — ask for more with a bigger \`steps\`.`);
+
+  if ((t.gaps || []).length) {
+    out.push('\nWhat this recording cannot answer:');
+    for (const gap of t.gaps) out.push(`  · ${gap.question} — ${gap.why}`);
+  }
+  return say(out.join('\n'));
+}
+
+async function readRuns(sql, who, args) {
+  const days = Math.min(365, Math.max(1, Math.round(Number(args.days) || 30)));
+  const limit = Math.min(200, Math.max(1, Math.round(Number(args.limit) || 50)));
+  const wanted = ['ok', 'failed', 'stopped'].includes(args.outcome) ? args.outcome : null;
+  const rows = await sql`
+    select client_id, kind, goal, model, flow_id, outcome, summary, error, started_at, finished_at
+    from user_run
+    where user_id = ${who.id} and started_at >= ${ago(days)}
+      and (${wanted}::text is null or outcome = ${wanted})
+    order by started_at desc limit ${limit}
+  `;
+  if (!rows.length) return say(`No runs in the last ${days} days${wanted ? ` that ended "${wanted}"` : ''}.`);
+
+  const lines = rows.map((r) => {
+    const took = r.started_at && r.finished_at
+      ? `${Math.max(0, Math.round((new Date(r.finished_at) - new Date(r.started_at)) / 1000))}s`
+      : 'unknown';
+    return `${day(r.started_at)}  ${r.outcome.padEnd(7)} ${took.padStart(6)}  ${r.kind}`
+      + `${r.model ? ` · ${r.model}` : ''}\n    ${(r.goal || '(no goal recorded)').slice(0, 160)}`
+      + (r.error ? `\n    failed: ${String(r.error).slice(0, 200)}` : '');
+  });
+  return say(`${rows.length} runs in the last ${days} days, newest first.\n\n${lines.join('\n')}`);
+}
+
+async function readActivity(sql, who, args) {
+  const days = Math.min(365, Math.max(1, Math.round(Number(args.days) || 30)));
+  const since = ago(days);
+  const [made] = await sql`
+    select count(*) filter (where payload->>'role' is distinct from 'skill')::int as recordings,
+           count(*) filter (where payload->>'role' = 'skill')::int as skills,
+           coalesce(sum(jsonb_array_length(coalesce(payload->'events', '[]'::jsonb))), 0)::int as events
+    from user_flow where user_id = ${who.id} and deleted_at is null and updated_at >= ${since}
+  `;
+  const outcomes = await sql`
+    select outcome, count(*)::int as n,
+           coalesce(sum(extract(epoch from (finished_at - started_at))), 0)::int as seconds
+    from user_run where user_id = ${who.id} and started_at >= ${since}
+    group by outcome order by n desc
+  `;
+  const apps = await sql`
+    select lower(o) as app, count(*)::int as n
+    from user_flow, unnest(coalesce(origins, array[]::text[])) as o
+    where user_id = ${who.id} and deleted_at is null and updated_at >= ${since}
+    group by lower(o) order by n desc limit 8
+  `;
+
+  const runs = outcomes.reduce((n, r) => n + r.n, 0);
+  const ok = outcomes.find((r) => r.outcome === 'ok');
+  const seconds = outcomes.reduce((n, r) => n + r.seconds, 0);
+  const lines = [
+    `Last ${days} days.`,
+    `Recorded: ${made.recordings} recording${made.recordings === 1 ? '' : 's'} and ${made.skills} `
+      + `skill${made.skills === 1 ? '' : 's'}, ${made.events} events between them.`,
+    runs
+      ? `Runs: ${runs}, of which ${ok ? ok.n : 0} finished ok`
+        + ` (${outcomes.map((r) => `${r.outcome} ${r.n}`).join(', ')}), `
+        + `${Math.round(seconds / 60)} minutes of running time.`
+      : 'Runs: none.',
+    apps.length ? `Where the work was: ${apps.map((a) => `${a.app} (${a.n})`).join(', ')}.` : '',
+    /* Named rather than left to be inferred from a small number: this counts what the account HOLDS, and a
+     * recording deleted last week is not in it. */
+    'Counted from what the account holds now — anything deleted since is not in these numbers.',
+  ].filter(Boolean);
+  return say(lines.join('\n'));
+}
+
+/* ------------------------------------------------------------------------------- the tools */
+
 async function callTool(sql, who, params, req) {
   const asked = params && params.name;
   const args = (params && params.arguments) || {};
+
+  if (asked === RECORDINGS_TOOL.name) return readRecordings(sql, who, args);
+  if (asked === TRANSCRIPT_TOOL.name) return readTranscript(sql, who, args);
+  if (asked === RUNS_TOOL.name) return readRuns(sql, who, args);
+  if (asked === ACTIVITY_TOOL.name) return readActivity(sql, who, args);
 
   if (asked === STATUS_TOOL.name) {
     const { skills, unstamped } = await skillsOf(sql, who.id);
@@ -262,7 +528,12 @@ async function callTool(sql, who, params, req) {
     return say(job.said || (job.ok ? 'Done.' : 'It did not finish.'), !job.ok);
   }
 
-  /* Everything else is a skill. */
+  /* The timer, and skills. Both are the same thing from here: something only a machine can do, so it goes
+   * on the queue and this waits for the answer. */
+  if (AGENT_JOBS[asked]) {
+    return queueAndWait(sql, who, { flowId: AGENT_JOBS[asked], toolName: asked, args });
+  }
+
   const { skills } = await skillsOf(sql, who.id);
   const entry = tableOf(skills).get(asked);
   if (!entry) {
@@ -274,30 +545,37 @@ async function callTool(sql, who, params, req) {
       + 'the half that can replay it. A worker drives the desktop agent, which has no page to aim at. Ask '
       + 'the user to run it from the extension.', true);
   }
+  return queueAndWait(sql, who, { flowId: entry.flow.id, toolName: asked, args });
+}
 
+/* Put it on the queue and wait for the machine.
+ *
+ * One path for a skill and for the timer, because the difference between them is what the worker does with
+ * the row, not how it gets there. Waiting rather than returning an id is the point: a tool that comes back
+ * before the work happened has told the caller nothing, and the answer says plainly when the wait ran out
+ * rather than reporting a success nobody saw. */
+async function queueAndWait(sql, who, { flowId, toolName, args }) {
   const seen = await workerSeen(sql, who.id);
   if (seen === null) {
     return say('No machine has ever asked this account for work, so there is nothing to run this on. The '
-      + 'MouseFlow worker has to be running on the computer the skill belongs to - `node mcp/worker.mjs` in '
-      + 'the repository, with the same device token. Nothing was queued.', true);
+      + 'MouseFlow worker has to be running on the computer this account is paired with. Nothing was '
+      + 'queued.', true);
   }
 
   const already = await sql`
-    select id from run_queue where user_id = ${who.id} and state in ('queued', 'claimed') limit 1
+    select id, tool_name from run_queue where user_id = ${who.id} and state in ('queued', 'claimed') limit 1
   `;
   if (already.length) {
-    return say('MouseFlow is already busy on that machine. One thing at a time - there is one mouse. Wait '
-      + 'for it, or call mouseflow_stop.', true);
+    return say(`MouseFlow is already busy on that machine (${already[0].tool_name || already[0].id}). One `
+      + 'thing at a time - there is one mouse. Wait for it, or call mouseflow_stop.', true);
   }
 
   const id = jobId();
   await sql`
     insert into run_queue (id, user_id, flow_id, tool_name, args)
-    values (${id}, ${who.id}, ${entry.flow.id}, ${asked}, ${JSON.stringify(args)})
+    values (${id}, ${who.id}, ${flowId}, ${toolName}, ${JSON.stringify(args || {})})
   `;
 
-  /* Wait for the machine, because a tool that returns before the work happened has told the caller
-   * nothing - and say so honestly when the wait runs out rather than reporting a success nobody saw. */
   const until = Date.now() + CALL_WAIT_MS;
   while (Date.now() < until) {
     await new Promise((done) => setTimeout(done, CALL_POLL_MS));
@@ -353,6 +631,14 @@ async function workerRoute(action, req, res, sql, who) {
       `;
       if (took.length) {
         const job = took[0];
+        /* An agent job carries an instruction, not a skill, so there is nothing to look up. Marked by the
+         * flow id rather than by a column, because it is the flow id that is absent. */
+        if (String(job.flow_id || '').startsWith('#')) {
+          return res.status(200).json({
+            ok: true,
+            job: { id: job.id, toolName: job.tool_name, args: job.args || {}, command: job.flow_id, flow: null },
+          });
+        }
         const flow = await sql`
           select client_id, source, kind, name, description, payload, origins
           from user_flow where user_id = ${who.id} and client_id = ${job.flow_id} and deleted_at is null
@@ -493,7 +779,11 @@ export default async function handler(req, res) {
 
     if (method === 'tools/list') {
       const { skills } = await skillsOf(sql, who.id);
-      const tools = [STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL];
+      const tools = [
+        ...READ_TOOLS,
+        START_TOOL, STOP_RECORDING_TOOL,
+        STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL,
+      ];
       for (const [name, entry] of tableOf(skills)) {
         tools.push({ ...wireFor('mcp', entry.structure), name });
       }

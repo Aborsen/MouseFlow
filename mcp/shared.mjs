@@ -45,9 +45,31 @@ if (typeof module.registerHooks !== 'function') {
   );
 }
 
+const WEB_SRC = new URL('../web/src/', import.meta.url);
+
+/* Two things Node does not do for a file written for a bundler, and both are why the app's own modules can
+ * be imported here at all rather than copied.
+ *
+ *   `@/lib/store`     the alias the web app uses everywhere. Vite and tsconfig both map it to web/src.
+ *   `./agent`         TypeScript's extensionless relative import.
+ *
+ * Each is resolved only when the file it would name actually exists, so a genuine typo still fails as a
+ * missing module rather than being silently redirected somewhere plausible. */
+const firstThatExists = (base, specifier) => {
+  for (const ext of ['', '.ts', '.tsx', '.mjs', '.js', '/index.ts', '/index.tsx']) {
+    const guess = new URL(specifier + ext, base);
+    if (existsSync(fileURLToPath(guess))) return guess;
+  }
+  return null;
+};
+
 module.registerHooks({
   resolve(specifier, context, next) {
     const from = context.parentURL;
+    if (specifier.startsWith('@/')) {
+      const found = firstThatExists(WEB_SRC, specifier.slice(2));
+      if (found) return { url: found.href, shortCircuit: true };
+    }
     if (from && from.endsWith('.ts') && specifier.startsWith('.') && !/\.[a-z]+$/i.test(specifier)) {
       const guess = new URL(`${specifier}.ts`, from);
       if (existsSync(fileURLToPath(guess))) return { url: guess.href, shortCircuit: true };
@@ -59,16 +81,20 @@ module.registerHooks({
 /** Everything the server borrows, loaded once. */
 export async function load() {
   try {
-    const [schema, macro, agent, engine, skills] = await Promise.all([
+    const [schema, macro, agent, engine, flowFor, skills] = await Promise.all([
       /* Plain JavaScript, and beside the API rather than in the web app, because /api/mcp reads it too -
        * see the note at the top of that file. Nothing to strip here. */
       import(new URL('../api/_skill-schema.mjs', import.meta.url).href),
       import(new URL('macro.ts', LIB).href),
       import(new URL('agent.ts', LIB).href),
       import(new URL('desktop-engine.ts', LIB).href),
+      /* One recording, as a row on the account. Three callers in the app already build this identical
+       * payload through it; the worker is the fourth, and a literal here would be the fifth that looks
+       * alike until the day it does not. */
+      import(new URL('../features/record/flow-for.ts', LIB).href),
       import(pathToFileURL(fileURLToPath(new URL('../extension/skills.js', import.meta.url))).href),
     ]);
-    return { schema, macro, agent, engine, skills };
+    return { schema, macro, agent, engine, flowFor, skills };
   } catch (err) {
     /* Named for what it is. A stripping failure and a missing file read identically otherwise, and the
      * remedies are nothing alike. */

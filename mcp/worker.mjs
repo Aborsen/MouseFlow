@@ -66,7 +66,10 @@ async function main() {
 
   installFetch({ base: CONFIG.base, token: CONFIG.token });
   const parts = await load();
-  const lib = { schema: parts.schema, macro: parts.macro, agent: parts.agent, engine: parts.engine, skills: parts.skills };
+  const lib = {
+    schema: parts.schema, macro: parts.macro, agent: parts.agent,
+    engine: parts.engine, flowFor: parts.flowFor, skills: parts.skills,
+  };
   const runner = makeRunner({ lib, port: CONFIG.port, base: CONFIG.base, token: CONFIG.token, say });
 
   const health = await runner.health();
@@ -110,8 +113,16 @@ async function main() {
 
     let outcome;
     try {
-      const structure = lib.schema.structureOf(job.flow);
-      outcome = await runner.call({ flow: job.flow, structure }, job.args || {}, () => cancelled);
+      /* Two kinds of job, and the difference is whether there is a skill. A command carries an instruction
+       * for the agent - start recording, stop recording - and arrives with `flow: null`, which is why the
+       * endpoint marks it rather than leaving this to infer it from a missing field. */
+      outcome = job.command
+        ? await runner.command(job.command, job.args || {})
+        : await runner.call(
+          { flow: job.flow, structure: lib.schema.structureOf(job.flow) },
+          job.args || {},
+          () => cancelled,
+        );
     } catch (err) {
       outcome = { ok: false, text: `The run threw: ${err.message}` };
     } finally {

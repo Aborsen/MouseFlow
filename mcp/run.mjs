@@ -10,7 +10,11 @@
  */
 
 const REPLAY_POLL_MS = 700;
-const REPLAY_MAX_MS = 30 * 60 * 1000;
+/* Half an hour is right for a real replay - a long recording at half speed is a long time - and hopeless
+ * for a test, where a transient turns into a thirty-minute hang instead of a failure with a message. Same
+ * escape hatch the worker's poll has, and for the same reason: it exists to make the loop testable, not to
+ * be tuned. */
+const REPLAY_MAX_MS = Number(process.env.MOUSEFLOW_REPLAY_MAX_MS || 30 * 60 * 1000);
 const ALLOWED_SPEEDS = [0.5, 1, 1.5, 2, 4];
 
 const nowIso = () => new Date().toISOString();
@@ -227,6 +231,122 @@ export function makeRunner({ lib, port, base, token, say }) {
     return { ok: true, text: `${result.said || 'Done.'} (${took})` };
   }
 
+  /* ------------------------------------------------------------------ the timer
+   *
+   * Recording is the one thing the queue carries that is not a skill: an instruction to the agent. Start is
+   * a single call. Stop is the interesting half - the agent hands back the five-column body and somebody has
+   * to turn it into a row on the account, which is exactly what the app does when you press Stop there.
+   *
+   * flowFor() is that somebody, imported rather than reimplemented. Three callers in the app already build
+   * this payload through it, for a reason its own comment states: a restored or re-synced recording that
+   * stopped matching the saved one was a real bug, fixed by having one builder. A fourth literal here would
+   * be the thing that breaks next.
+   */
+  const recName = () => {
+    const d = new Date();
+    const two = (n) => String(n).padStart(2, '0');
+    return `MouseFlow ${two(d.getDate())}/${two(d.getMonth() + 1)} `
+      + `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+  };
+
+  /* Where it happened, taken from the events themselves rather than from polling the foreground window.
+   *
+   * The app samples /windows once a second while it records, because it is watching anyway. Nothing here is
+   * watching, and a worker restarted mid-recording would lose whatever it had accumulated. The contexts
+   * already carry the application and window under every click and every focus change, in order - so this
+   * is derived from the recording instead of remembered alongside it, which cannot go stale and cannot be
+   * lost. The one thing it misses is an application that was in front and never touched. */
+  const whereFrom = (events) => {
+    const seen = new Map();
+    for (const event of events) {
+      const ctx = event && event.context;
+      if (!ctx || (!ctx.app && !ctx.window)) continue;
+      const key = `${ctx.app || ''}\u0000${ctx.window || ''}`;
+      if (!seen.has(key)) seen.set(key, { title: ctx.window || ctx.app || '', process: ctx.app || '' });
+    }
+    return [...seen.values()].slice(0, 12);
+  };
+
+  async function command(what, args) {
+    const h = await health();
+    if (!h.ok) return { ok: false, text: h.why };
+
+    if (what === '#record.start') {
+      if (h.health.recording) {
+        return { ok: false, text: 'It is already recording. Stop it first, or leave it running.' };
+      }
+      if (h.health.playing) {
+        return { ok: false, text: 'It is replaying something right now, so it will not start recording on '
+          + 'top of that.' };
+      }
+      const moveMs = Math.min(1000, Math.max(0, Math.round(Number(args && args.moveMs) || 0)));
+      try {
+        await lib.agent.recordStart(port, moveMs || undefined);
+      } catch (err) {
+        return { ok: false, text: `The agent would not start recording: ${err.message}` };
+      }
+      return {
+        ok: true,
+        text: 'Recording. It captures clicks, drags, scrolls and pointer movement, and that a key was '
+          + 'pressed - never which key. Call mouseflow_stop_recording to end it and save it.'
+          + (moveMs ? ` Pointer movement is sampled every ${moveMs}ms.` : ''),
+      };
+    }
+
+    if (what === '#record.stop') {
+      if (!h.health.recording) return { ok: false, text: 'Nothing was recording.' };
+
+      let body;
+      try {
+        body = await lib.agent.recordStop(port);
+      } catch (err) {
+        return { ok: false, text: `The agent would not stop: ${err.message}` };
+      }
+
+      const { events, problems } = lib.macro.parseMacro(String(body || ''));
+      if (!events.length) {
+        return { ok: false, text: 'It stopped, and nothing had been captured. Nothing was saved.' };
+      }
+
+      const rec = {
+        id: `r${Math.random().toString(36).slice(2, 10)}`,
+        name: recName(),
+        created: new Date().toISOString(),
+        events,
+        windows: whereFrom(events),
+      };
+
+      const res = await fetch(`${at}/api/sync`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ flows: [lib.flowFor.flowFor(rec, h.health)] }),
+      });
+      const saved = await res.json().catch(() => null);
+      if (!res.ok || !saved || !saved.ok) {
+        /* The recording is gone from the agent and did not reach the account. Said out loud with the count,
+         * because "stopped" reading as "saved" is how somebody loses an hour of work quietly. */
+        return {
+          ok: false,
+          text: `Recording stopped and ${events.length} events were captured, but the account would not `
+            + `take them (HTTP ${res.status}). They are lost - the agent hands a recording over once.`,
+        };
+      }
+
+      const s = lib.macro.summarize(events);
+      const where = rec.windows.map((w) => w.title).filter(Boolean).slice(0, 3);
+      return {
+        ok: true,
+        text: `Saved as "${rec.name}" (${rec.id}): ${s.count} events, ${s.clicks} `
+          + `click${s.clicks === 1 ? '' : 's'}, ${lib.macro.fmtMs(s.durationMs)}`
+          + (where.length ? `, in ${where.join(', ')}` : '') + '.'
+          + (problems.length ? ` ${problems.length} lines could not be read and were skipped.` : '')
+          + ' Nothing about what was typed is in it, by design.',
+      };
+    }
+
+    return { ok: false, text: `The machine was asked to do "${what}", which it does not know how to do.` };
+  }
+
   /** The one entry point: a skill, its arguments, and a way to be told to stop. */
   async function call({ flow, structure }, args, isAborted = () => false) {
     if (structure.runner !== 'agent') {
@@ -245,5 +365,5 @@ export function makeRunner({ lib, port, base, token, say }) {
       : replay(flow, structure, args, isAborted);
   }
 
-  return { health, call, logRun };
+  return { health, call, command, logRun };
 }

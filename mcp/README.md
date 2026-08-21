@@ -53,13 +53,27 @@ claude mcp add --transport http mouseflow https://mouseflowapp.vercel.app/api/mc
 Never put a token in the URL — the MCP authorization spec forbids access tokens in a query string, and this
 server does not read one from there.
 
-Then, on the machine the skills belong to:
+**Reading needs nothing else.** The analysis tools answer from the account, so they work the moment the
+connector is added — no agent, no worker, nothing running.
+
+**Doing** needs a machine, because recording and replaying are things only the agent can do. Register the
+worker as a login item once and forget it:
+
+```bash
+bash mcp/install-worker-mac.sh
+```
+
+It asks for the device token without echoing it, writes a launchd job, and starts it. From then on it comes
+up when you sign in and comes back if it dies — the same KeepAlive the agent uses. `--status` says whether
+it is up and shows its last few lines; `--uninstall` takes it off.
+
+Or run it in a terminal, if you would rather see it:
 
 ```bash
 MOUSEFLOW_TOKEN=mf_your_token_here node mcp/worker.mjs
 ```
 
-It prints what it found and then waits. `mouseflow_status` says whether it is being heard.
+Either way, `mouseflow_status` says whether it is being heard.
 
 **Each person sees their own skills**, whichever credential they used. That is the whole of the isolation:
 the account is resolved from the credential on every request, every query filters on it, and no route takes
@@ -100,7 +114,26 @@ Both `server.mjs` and `worker.mjs` read the same environment:
 
 ## What it offers
 
-`tools/list` returns your skills plus a few of its own:
+`tools/list` returns your skills plus these.
+
+**Reading — works with nothing running:**
+
+| | |
+|---|---|
+| `mouseflow_recordings` | what is on the account: recordings and skills, sizes, where and when |
+| `mouseflow_transcript` | one recording step by step in words, and what it cannot answer |
+| `mouseflow_runs` | what was asked for, which model drove it, how it ended, how long it took |
+| `mouseflow_activity` | the account in numbers over a window, and which applications the work was in |
+
+**Doing — needs the worker and the agent:**
+
+| | |
+|---|---|
+| `mouseflow_start_recording` | start the timer on the paired machine |
+| `mouseflow_stop_recording` | stop it and save what was captured to the account |
+| *your skills* | run one |
+
+And the three that are about the machinery itself:
 
 - **`mouseflow_status`** — over stdio: whether the agent is running and what it can do. Over HTTPS: whether
   a machine is listening for work, and what is queued — it cannot see the agent, which is loopback on

@@ -139,7 +139,40 @@ how a shared module becomes nobody's.
 
 ## The tools
 
-`tools/list` returns the account's skills plus two of the server's own.
+`tools/list` returns the account's skills plus the server's own, and they fall into two groups that fail in
+completely different ways — which is why the split is worth naming rather than leaving to be discovered.
+
+**Reading needs no machine.** A recording, a run and the time they took are rows, so these answer from the
+database the moment a connector is added: no agent, no worker, nothing running.
+
+| | |
+|---|---|
+| `mouseflow_recordings` | what the account holds, with sizes, origins and dates |
+| `mouseflow_transcript` | one recording as prose steps, from the same `transcribe()` the panel uses, plus what it cannot answer |
+| `mouseflow_runs` | what was asked for, which model drove it, how it ended, how long it took |
+| `mouseflow_activity` | the account in numbers over a window, and which applications the work happened in |
+
+Metadata and prose, never a payload. There is no tool that hands over raw events.
+
+**Doing needs a machine**, because recording and replaying are things only the agent can do. These go on the
+queue exactly as a skill run does.
+
+| | |
+|---|---|
+| `mouseflow_start_recording` | start the timer on the paired machine |
+| `mouseflow_stop_recording` | stop it, and save what was captured to the account |
+
+Stop is the interesting half: the agent hands back the five-column body, and turning that into a row is
+`flowFor()` — the app's own builder, imported rather than repeated. Three callers in the app already go
+through it because a restored recording that stopped matching the saved one was a real bug; the worker is
+the fourth. The `windows` a replay needs to raise are derived from the events' own `#ctx` rather than
+remembered alongside them, which is both more faithful than polling and impossible to lose.
+
+The two are separate tools rather than one with a boolean, because *stop* is the one somebody reaches for in
+a hurry, and a tool that could start a recording when they meant to stop one is a bad trade for one fewer
+entry.
+
+And three about the machinery itself.
 
 | | |
 |---|---|
@@ -200,9 +233,22 @@ Inward, to the machine: **none, and not because of this.** The local agent has n
 this server adds is not new access but a new **decider**, which is the point of it and the reason the tool
 list is bounded rather than open. It is also the strongest argument yet for giving the agent a credential.
 
+## Not babysitting a terminal
+
+The objection to the worker was never the process, it was keeping a window open for it. `mcp/install-worker-mac.sh`
+registers it as a login item with the same `KeepAlive` the agent uses, so it starts when you sign in and comes
+back if it dies. The device token goes into the plist, which is chmod 600 in your home directory — the same
+exposure as any credential in a launchd job, said out loud in the script's own header rather than left to be
+discovered.
+
+The alternative, worth writing down because it is the better end state: put the polling in the **agent**,
+which is already a resident service, behind a switch in its menu bar. That removes the extra process entirely.
+It also moves a cloud-triggerable capability into something that starts at login, which is exactly why it
+should be a visible, revocable switch rather than a default — and why it has not simply been done.
+
 ## Tested
 
-`node mcp/test-mcp.mjs` — 75 checks. It stands up a fake deployment answering the exact shape `api/sync.js`
+`node mcp/test-mcp.mjs` — 97 checks. It stands up a fake deployment answering the exact shape `api/sync.js`
 returns and a fake agent answering the exact shape both real agents do, spawns the server, and drives the
 real protocol over stdio: the handshake and its version echo, the tool list against an account holding a
 recording and an unstamped row as well as skills, a replay checked down to its `#ctx` lines, an unplayable
