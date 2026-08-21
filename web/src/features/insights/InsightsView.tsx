@@ -495,7 +495,10 @@ const Meter = ({ fraction, fill }: { fraction: number; fill: string }) => (
 const RANGES = [7, 30, 90];
 
 const PRESET = 'rounded-md px-2.5 py-1 text-[0.82rem] font-medium transition-colors duration-fast';
-const PRESET_ON = 'bg-brand-primary text-content-on-solid';
+/* The selected preset sits ON the accent, which is now lime - a light colour - so its label is the
+ * theme-independent near-black rather than --content-on-solid, which is white by design and right
+ * where it sits over a dark surface. See src/mouseflow-palette.css. */
+const PRESET_ON = 'on-accent bg-brand-primary';
 const PRESET_OFF = 'text-ink-secondary hover:bg-state-hover';
 
 /* Two dates as one short label. The same day says itself once - "21.08", not "21.08 – 21.08", which reads

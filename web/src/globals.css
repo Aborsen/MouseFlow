@@ -33,6 +33,12 @@
 }
 
 @layer components {
+  /* Content over a solid accent. See mouseflow-palette.css for why this cannot be an existing token: the
+   * accent is light in both themes, so the colour on top of it must not flip with the theme. */
+  .on-accent {
+    color: hsl(var(--on-accent));
+  }
+
   /* The drawn cursor a replay follows, and the trail behind it. Injected into other pages by the
    * extension, and used here only for the preview in the setup guide. */
   .mf-cursor {

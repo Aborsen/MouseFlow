@@ -203,7 +203,7 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
           >
             {/* 18px, like every other glyph in this column: at 22 it sat two pixels wide of them expanded
                 and pushed its own label four pixels past the nav's. */}
-            <span className="grid size-[18px] shrink-0 place-items-center rounded-full bg-brand-tertiary font-semibold text-[0.625rem] text-white">
+            <span className="grid size-[18px] shrink-0 place-items-center on-accent rounded-full bg-brand-tertiary font-semibold text-[0.625rem]">
               {initial}
             </span>
             {!tight && (
