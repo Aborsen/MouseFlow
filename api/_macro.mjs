@@ -46,11 +46,22 @@ export function parseMacro(text) {
           if (value)
             found[key] = value;
         }
+        /* Eight keys, not four.
+         *
+         * The agent has been writing `role`, `subrole`, `in` and `inName` since 0.8.0 and this dropped all
+         * four on the floor - so a click that named nothing arrived as bare coordinates even though the
+         * agent had said it was a button, and two clicks that resolved to the same row name arrived
+         * indistinguishable even though one was the row and one was a control inside it. The wire names are
+         * short because the format is; the object spells them out. */
         const context = {
           app: found.app,
           window: found.window,
           control: found.control,
           type: found.type,
+          role: found.role,
+          subrole: found.subrole,
+          container: found.in,
+          containerName: found.inName,
         };
         pending = Object.values(context).some(Boolean) ? context : undefined;
       }
@@ -109,6 +120,17 @@ export function flowBody(flow, recordings, opts) {
           fields.push(`control=${e.context.control}`);
         if (e.context.type)
           fields.push(`type=${e.context.type}`);
+        /* Written back under the wire names the agent uses, so a body this produced and a body the agent
+         * produced are the same document - which is what lets a replay be re-aimed by anything that reads
+         * either. Unknown keys are skipped by every reader of this format, so an older one loses nothing. */
+        if (e.context.role)
+          fields.push(`role=${e.context.role}`);
+        if (e.context.subrole)
+          fields.push(`subrole=${e.context.subrole}`);
+        if (e.context.container)
+          fields.push(`in=${e.context.container}`);
+        if (e.context.containerName)
+          fields.push(`inName=${e.context.containerName}`);
         if (fields.length)
           lines.push(`#ctx	${fields.join('	')}`);
       }

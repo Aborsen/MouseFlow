@@ -510,10 +510,29 @@ function ctxOf(raw) {
   const window = oneLine(src.window, CTX_MAX);
   const control = oneLine(src.control, CTX_MAX);
   const type = oneLine(src.type, 40);
+  /* The four the agent has written since 0.8.0 and nothing read until now. `role` and `subrole` are the
+   * UNLOCALISED kind of the thing that was actually hit, which is what lets an application that names none
+   * of its controls still say which of them are buttons; `container` and `containerName` are what it sits
+   * in, which is what tells two identically-named rows in two lists apart. Read under both spellings: the
+   * wire is short (`in`, `inName`) and the parsed object spells them out, and a payload written by either
+   * has to read the same. */
+  const role = oneLine(src.role, 40);
+  const subrole = oneLine(src.subrole, 40);
+  const container = oneLine(src.container ?? src.in, 40);
+  const containerName = oneLine(src.containerName ?? src.inName, CTX_MAX);
   /* A type on its own is not context: "a button" with no name and no application says nothing a reader
    * could act on, and keeping it would make a step look resolved when it was not. */
   if (!app && !window && !control) return null;
-  return { app: app || null, window: window || null, control: control || null, type: type || null };
+  return {
+    app: app || null,
+    window: window || null,
+    control: control || null,
+    type: type || null,
+    role: role || null,
+    subrole: subrole || null,
+    container: container || null,
+    containerName: containerName || null,
+  };
 }
 
 /* Which place a click was in, for segmenting. Application AND window, because one browser is many tabs
@@ -546,12 +565,72 @@ const tabPlace = (ctx) => ({ app: ctx.app, window: ctx.control, control: null, t
 // ` in OUTLOOK`, or nothing. The application is worth saying even when the control is not known.
 const inApp = (ctx) => (ctx && ctx.app ? ' in ' + ctx.app : '');
 
+/* What the accessibility tree called the thing that was actually hit, in words.
+ *
+ * `type` is kAXRoleDescription and it is LOCALISED - "кнопка" on a Russian system - which is right for a
+ * reader and useless as a key. `role` is the unlocalised AXRole and it is what makes an unnamed click say
+ * something: an application that names nothing still says its buttons are buttons. Only the roles that add
+ * information are here; AXGroup, AXUnknown and a web area say no more than "an element" and are left out on
+ * purpose, because a sentence that ends "clicked a group" is worse than one that says the coordinates. */
+const ROLE_WORDS = {
+  axbutton: 'a button',
+  axpopupbutton: 'a menu button',
+  axmenuitem: 'a menu item',
+  axmenubaritem: 'a menu bar item',
+  axcheckbox: 'a checkbox',
+  axradiobutton: 'a radio button',
+  axslider: 'a slider',
+  axtextfield: 'a text field',
+  axtextarea: 'a text area',
+  axlink: 'a link',
+  aximage: 'an image',
+  axrow: 'a row',
+  axcell: 'a cell',
+  axstatictext: 'a piece of text',
+  axtab: 'a tab',
+  axtabgroup: 'a tab strip',
+  axscrollbar: 'a scroll bar',
+  axdisclosuretriangle: 'a disclosure triangle',
+  axincrementor: 'a stepper',
+  axcolorwell: 'a colour well',
+};
+
+const roleWords = (ctx) => {
+  if (!ctx) return null;
+  /* Subrole first: it is the more specific of the two, and it is the one that separates a close button from
+   * every other button on a window. */
+  const sub = ctx.subrole ? ROLE_WORDS[String(ctx.subrole).toLowerCase()] : null;
+  if (sub) return sub;
+  return ctx.role ? ROLE_WORDS[String(ctx.role).toLowerCase()] ?? null : null;
+};
+
+/* ` in the "Playlist" list`, when the container says something the sentence has not already said.
+ *
+ * Worth having because a name is only an identity if it is unique, and in a list it usually is not: two
+ * rows called "Bad Guy" in two playlists are two different steps and read as one. Suppressed when the
+ * container repeats the window - a browser's web area is named after the page - or the control itself. */
+function inContainer(ctx) {
+  if (!ctx || !ctx.containerName) return '';
+  const name = String(ctx.containerName).trim();
+  if (!name) return '';
+  const said = [ctx.window, ctx.control, ctx.app].map((v) => String(v || '').trim().toLowerCase());
+  if (said.includes(name.toLowerCase())) return '';
+  const kind = ctx.container && !CTX_VAGUE.has(String(ctx.container).toLowerCase())
+    ? ' ' + ctx.container : '';
+  return ' in the "' + name + '"' + kind;
+}
+
 /* `clicked the "Send" button in OUTLOOK`, degrading one clause at a time down to `clicked at 1030,1053`.
  * The coordinates stay in `target` on every branch, so nothing that replays or edits a step loses them. */
 function actWords(verb, ctx, where) {
-  if (!ctx || !ctx.control) return verb + ' at ' + where + inApp(ctx);
+  if (!ctx || !ctx.control) {
+    /* Nothing named it - but the tree still said what KIND of thing it was, and "clicked a button at
+     * 725,104" is a step somebody can place. This used to be the coordinates alone. */
+    const kind = roleWords(ctx);
+    return verb + (kind ? ' ' + kind + ' at ' : ' at ') + where + inApp(ctx);
+  }
   const noun = ctx.type && !CTX_VAGUE.has(ctx.type.toLowerCase()) ? ' ' + ctx.type : '';
-  return verb + (noun ? ' the' : '') + ' "' + ctx.control + '"' + noun + inApp(ctx);
+  return verb + (noun ? ' the' : '') + ' "' + ctx.control + '"' + noun + inContainer(ctx) + inApp(ctx);
 }
 
 /* Said on the step itself, because it is the difference between a recording that could not see and one
@@ -1505,6 +1584,11 @@ function unnamedWhat(ctx) {
 
   const noun = PLACE_NOUNS[type];
   if (noun) return (noun.startsWith('the ') ? 'in ' : 'on ') + noun;
+
+  /* The unlocalised role, where the localised description gave nothing. An application that names none of
+   * its controls still says which of them are buttons, and "on a button" is a step a reader can place. */
+  const kind = roleWords(ctx);
+  if (kind) return 'on ' + kind;
 
   /* An application was under the pointer and named nothing in itself: normal for Electron, a canvas, or a
    * window running as administrator. Different from knowing nothing at all, and worth the distinction. */

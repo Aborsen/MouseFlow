@@ -15,6 +15,13 @@ export interface MacroEvent {
     window?: string;
     control?: string;
     type?: string;
+    /** The accessibility role of what was actually hit, and its subrole. Says "a button" where the
+     *  application named nothing, and tells a row apart from a control inside it. */
+    role?: string;
+    subrole?: string;
+    /** The container the named thing sits in - a list, a toolbar - and its own name, where it has one. */
+    container?: string;
+    containerName?: string;
   };
 }
 

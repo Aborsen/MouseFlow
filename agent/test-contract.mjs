@@ -220,6 +220,21 @@ group('повтор целится в имя, а координата - запа
    * вкладок перекладывается при изменении их числа. Лечит имя, и оно в записи есть - но flowBody его не
    * отправлял, то есть агент повторял координаты, имея запись, которая знала цель. */
   check('flowBody отдаёт #ctx вместе с событиями', /#ctx/.test(macro) && /if \(e\.context\)/.test(macro));
+
+  /* Агент писал восемь ключей, парсер оставлял четыре, и разошлись они молча: клик, которому приложение не
+   * дало имени, приезжал голыми координатами, хотя агент сказал, что это кнопка. Именно этот класс - «одна
+   * сторона пишет, другая не читает» - тест и существует ловить. */
+  const written = [...swift.matchAll(/out \+= "\\t([A-Za-z]+)=" \+ v/g)].map((m) => m[1]);
+  const kept = [...macro.matchAll(/^\s+(\w+): found\.(\w+),$/gm)].map((m) => m[2]);
+  check('каждый ключ #ctx, который агент пишет, парсер читает',
+    written.length >= 8 && written.every((k) => kept.includes(k)),
+    `пишет ${written.join(',')} | читает ${kept.join(',')}`);
+  check('и отдаёт обратно в тело повтора под теми же именами',
+    written.every((k) => new RegExp(`push\\(\`${k}=`).test(macro)),
+    written.filter((k) => !new RegExp(`push\\(\`${k}=`).test(macro)).join(','));
+  const transcript = read('api/_transcript.js');
+  check('и транскрипт их не теряет на своей нормализации',
+    /role: role \|\| null/.test(transcript) && /containerName: containerName \|\| null/.test(transcript));
   check('и агент его разбирает', /line\.hasPrefix\("#ctx"\)/.test(swift));
   check('и целится по нему на КЛИКЕ', /Accessibility\.aim\(at:/.test(swift));
 

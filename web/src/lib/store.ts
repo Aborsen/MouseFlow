@@ -31,6 +31,14 @@ export interface RecordedEvent {
     window?: string;
     control?: string;
     type?: string;
+    /* What was actually hit, as the accessibility tree calls it, and what it sits in. Written by the agent
+     * since 0.8.0 and read since the parser stopped dropping them: `role` is what lets an unnamed click say
+     * "a button" instead of only coordinates, and `container` is what tells two identically-named rows
+     * apart. Absent means not known, as everywhere else here. */
+    role?: string;
+    subrole?: string;
+    container?: string;
+    containerName?: string;
   };
 }
 
