@@ -284,7 +284,7 @@ write_plist_info() {
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
   <key>CFBundleExecutable</key><string>mouseflow-agent</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.8.0</string>
+  <key>CFBundleShortVersionString</key><string>0.8.1</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
 </dict>
@@ -361,6 +361,10 @@ doctor() {
     # is worth it should be done from the fact rather than from memory.
     echo "signature     $(codesign -dvvv "$app" 2>&1 | grep -E '^Identifier=|^Signature=|^Authority=|^CDHash=' | tr '\n' ' ' || echo '?')"
     echo "bundle id     $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app}/Contents/Info.plist" 2>/dev/null || echo 'NO Info.plist - this is a loose binary and cannot hold a permission')"
+    # When the permission store last changed. A grant made while the agent runs is invisible to that run -
+    # the agent restarts itself to pick it up - so "store changed after the agent started" plus "permission
+    # still false" is the watcher not having done its job yet, and worth seeing in one paste.
+    echo "tcc store     $(stat -f '%Sm' '/Library/Application Support/com.apple.TCC/TCC.db' 2>/dev/null || echo '?') (system)  $(stat -f '%Sm' "${HOME}/Library/Application Support/com.apple.TCC/TCC.db" 2>/dev/null || echo '?') (user)"
   else
     echo "binary        NOT INSTALLED at ${binary}"
   fi
@@ -420,17 +424,19 @@ wait_for_health() {
       case "$reply" in
         *'"canName":false'*)
           echo "Accessibility is NOT in effect yet, so nothing can be recorded. Grant it when asked, or"
-          echo "switch on MouseFlow Agent in System Settings — then it will pick it up on its own."
+          echo "switch on MouseFlow Agent in System Settings — the agent notices within a few seconds and"
+          echo "restarts itself to pick it up. Nothing to press."
           ;;
         *'"canSee":false'*)
           echo "Screen Recording is not granted, so screenshots and window titles will be missing."
+          echo "Switch it on in System Settings — the agent picks it up by itself within a few seconds."
           ;;
         *)
           echo "Both permissions are in effect. Go back to the app and press Record."
           ;;
       esac
       echo
-      echo "To stop it:    launchctl bootout gui/$(id -u)/${BUNDLE_ID}"
+      echo "To stop it:    the mouse icon in the menu bar (or: launchctl bootout gui/$(id -u)/${BUNDLE_ID})"
       echo "To start it:   launchctl kickstart -k gui/$(id -u)/${BUNDLE_ID}"
       echo "Its own log:   tail -f ~/Library/Logs/mouseflow-agent.log"
       return 0

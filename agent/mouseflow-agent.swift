@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.8.0"
+let VERSION = "0.8.1"
 
 // ---------------------------------------------------------------- arguments
 
@@ -66,6 +66,15 @@ do {
             if let v = args.first, let n = Int(v) { moveThrottleMsDefault = n; args.removeFirst() }
         case "--move-min-px":
             if let v = args.first, let n = Int(v) { moveMinPx = n; args.removeFirst() }
+        case "--probe":
+            /* A fresh process gets a fresh TCC verdict - the whole reason this flag exists. The verdict is
+             * read once, at process start, and never again (Apple's model: System Settings offers "Quit &
+             * Reopen" when a switch is flipped on a running app), so the agent asks a child of its own
+             * binary what the settings say NOW. Non-prompting reads only, and nothing else is touched: no
+             * socket, no tap, no banner - the parent parses this one line as JSON. */
+            print("{\"accessibility\":\(Permission.accessibility ? "true" : "false")"
+                + ",\"screenRecording\":\(Permission.screenRecording ? "true" : "false")}")
+            exit(0)
         case "--help", "-h":
             print("""
             mouseflow-agent \(VERSION)
@@ -509,6 +518,7 @@ final class Recorder {
         resolveGate.unlock()
     }
 
+
     private func startResolverIfNeeded() {
         resolveGate.lock()
         let already = resolverRunning
@@ -613,7 +623,7 @@ final class Recorder {
         out.reserveCapacity(list.count * 48)
         var index = 1
         for e in list {
-            if e.app != nil || e.window != nil || e.control != nil {
+            if e.app != nil || e.window != nil || e.control != nil || e.controlType != nil {
                 out += "#ctx"
                 if let v = e.app { out += "\tapp=" + v }
                 if let v = e.window { out += "\twindow=" + v }
@@ -663,17 +673,45 @@ enum Accessibility {
      *
      * Lazily and once per process: a full tree costs the application memory and time, and it should only be
      * paid for where there would otherwise be nothing to read. */
-    private static func awaken(pid: pid_t) {
-        guard pid > 0 else { return }
+    /// Returns whether this was the FIRST ask for this pid - the caller that woke an application knows the
+    /// tree it asked for is still being built, and may want to look again after it has had time.
+    @discardableResult
+    private static func awaken(pid: pid_t) -> Bool {
+        guard pid > 0 else { return false }
         awakenGate.lock()
         let already = awakened.contains(pid)
         if !already { awakened.insert(pid) }
         awakenGate.unlock()
-        if already { return }
+        if already { return false }
 
         let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        /* AXManualAccessibility first, and the older flag only where the newer one means nothing. Not
+         * politeness: AXEnhancedUserInterface is VoiceOver's own signal and AppKit changes window-geometry
+         * behaviour under it - the reason window managers toggle it off around every move they make.
+         * Chromium added AXManualAccessibility precisely as the side-effect-free way for a client like this
+         * one to ask, so the fallback only fires where it is not understood (older Electron - and ordinary
+         * applications, which is no worse than what was set before). */
+        let err = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        if err == .cannotComplete {
+            /* The application is busy or still launching - the ask never landed, so it must not count as
+             * asked, or the one chance to wake this process is spent on a message that went nowhere. */
+            awakenGate.lock()
+            awakened.remove(pid)
+            awakenGate.unlock()
+            return true
+        }
+        if err != .success {
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        }
+        return true
+    }
+
+    /// Ask the frontmost application for its tree BEFORE the first click needs it. Chromium answers the
+    /// asking asynchronously, so the tree a recording will read is requested when Record is pressed, not
+    /// when the first click has already come up empty.
+    static func prime() {
+        guard Permission.accessibility else { return }
+        if let front = NSWorkspace.shared.frontmostApplication { awaken(pid: front.processIdentifier) }
     }
 
     private static func copyAttr(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
@@ -682,10 +720,23 @@ enum Accessibility {
         return err == .success ? value : nil
     }
 
+    /* Flattened before it can meet the format: #ctx is a tab-separated line and the event line is
+     * pipe-separated, so an interior tab, newline or pipe in a value would shear the record. Tooltips
+     * (kAXHelp) are the first source where multi-line text is COMMON, but a window title always could have
+     * carried one. Same substitutions as the Windows agent's Clip. */
+    static func ctxClean(_ raw: String, _ max: Int = 120) -> String? {
+        let flat = raw.map { ch -> Character in
+            if ch == "\t" || ch == "\n" || ch == "\r" { return " " }
+            if ch == "|" { return "/" }
+            return ch
+        }
+        let trimmed = String(flat).trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : clip(trimmed, max)
+    }
+
     private static func stringAttr(_ element: AXUIElement, _ attribute: String) -> String? {
         guard let raw = copyAttr(element, attribute) as? String else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : clip(trimmed, 120)
+        return ctxClean(raw)
     }
 
     private static func elementAttr(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
@@ -711,17 +762,33 @@ enum Accessibility {
     private static func nameByClimbing(_ start: AXUIElement) -> (control: String?, type: String?) {
         var element: AXUIElement? = start
         var depth = 0
+        var hitType: String?
         while let current = element, depth < 5 {
             let type = stringAttr(current, kAXRoleDescriptionAttribute)
+            if depth == 0 { hitType = type }
             if let name = stringAttr(current, kAXTitleAttribute) { return (name, type) }
+            /* The label is its own element for a form field: AXTitleUIElement points at the static text
+             * that names it, the way <label for> names an input, and the text of a static text lives in its
+             * value. */
+            if let label = elementAttr(current, kAXTitleUIElementAttribute),
+               let name = stringAttr(label, kAXValueAttribute) ?? stringAttr(label, kAXTitleAttribute) {
+                return (name, type)
+            }
             /* Description and value, in that order, because a great many controls carry no title: an icon
-             * button has kAXDescription, a text field has kAXValue and nothing else. */
+             * button has kAXDescription - and in Chromium every aria-label lands there - a text field has
+             * kAXValue and nothing else. Value only on the element itself, never a parent's: a parent's
+             * value is the document. */
             if let name = stringAttr(current, kAXDescriptionAttribute) { return (name, type) }
             if depth == 0, let name = stringAttr(current, kAXValueAttribute) { return (name, type) }
+            /* Help is the tooltip. Last, because it describes rather than names - but a toolbar button that
+             * names itself nowhere else usually says exactly the right thing here. */
+            if let name = stringAttr(current, kAXHelpAttribute) { return (name, type) }
             element = elementAttr(current, kAXParentAttribute)
             depth += 1
         }
-        return (nil, nil)
+        /* Nothing named itself. The kind of thing that was hit still travels: "clicked a button" beats
+         * "clicked", and the Windows agent has always reported type without name. */
+        return (nil, hitType)
     }
 
     /// The window title of the frontmost window of a process.
@@ -760,10 +827,18 @@ enum Accessibility {
         return CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
     }
 
+    /* The same sources, in the same order, as nameByClimbing reads when RECORDING - a name that was
+     * recorded from a label element or a tooltip must be findable at replay, or aiming by it silently never
+     * fires for exactly the controls the wider fallbacks were added for. */
     private static func nameOf(_ element: AXUIElement) -> String? {
-        stringAttr(element, kAXTitleAttribute)
-            ?? stringAttr(element, kAXDescriptionAttribute)
+        if let name = stringAttr(element, kAXTitleAttribute) { return name }
+        if let label = elementAttr(element, kAXTitleUIElementAttribute),
+           let name = stringAttr(label, kAXValueAttribute) ?? stringAttr(label, kAXTitleAttribute) {
+            return name
+        }
+        return stringAttr(element, kAXDescriptionAttribute)
             ?? stringAttr(element, kAXValueAttribute)
+            ?? stringAttr(element, kAXHelpAttribute)
     }
 
     /* Two names for the same thing?
@@ -783,6 +858,27 @@ enum Accessibility {
     private static func childrenOf(_ element: AXUIElement) -> [AXUIElement] {
         guard let raw = copyAttr(element, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
         return raw
+    }
+
+    /// The child whose frame contains the point - the bounded step DOWN for a hit test that stopped at a
+    /// container. Sixty children at most, the same cap the replay aimer uses on siblings. The SMALLEST
+    /// containing frame wins, not the first listed: kAXChildren order is source order, and an unnamed
+    /// container routinely leads with a full-bleed background child whose frame contains every point -
+    /// the most specific frame is the thing a person actually sees. Hidden children do not count.
+    private static func childAt(_ element: AXUIElement, x: Double, y: Double) -> AXUIElement? {
+        var best: AXUIElement?
+        var bestArea = Double.greatestFiniteMagnitude
+        for child in childrenOf(element).prefix(60) {
+            if let hidden = copyAttr(child, kAXHiddenAttribute) as? Bool, hidden { continue }
+            guard let origin = pointAttr(child, kAXPositionAttribute),
+                  let size = sizeAttr(child, kAXSizeAttribute),
+                  size.width > 1, size.height > 1 else { continue }
+            guard x >= origin.x, x <= origin.x + size.width,
+                  y >= origin.y, y <= origin.y + size.height else { continue }
+            let area = Double(size.width) * Double(size.height)
+            if area < bestArea { bestArea = area; best = child }
+        }
+        return best
     }
 
     /* Where to click, given where it was recorded and WHAT was there.
@@ -829,12 +925,46 @@ enum Accessibility {
         return nil
     }
 
+    /* The window under a point, from the window server - the fallback when the accessibility hit test gives
+     * nothing. Front to back, ordinary windows only (layer 0 - the menu bar, the Dock and overlays live on
+     * other layers), first one whose bounds contain the point. The owner's name never needs a permission;
+     * the title needs Screen Recording and is honestly absent without it. */
+    static func windowAt(x: Double, y: Double) -> (app: String?, title: String?)? {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        for info in list {
+            guard (info[kCGWindowLayer as String] as? Int) == 0 else { continue }
+            guard let bounds = info[kCGWindowBounds as String] as? [String: Double],
+                  let wx = bounds["X"], let wy = bounds["Y"],
+                  let ww = bounds["Width"], let wh = bounds["Height"],
+                  x >= wx, x <= wx + ww, y >= wy, y <= wy + wh else { continue }
+            let app = (info[kCGWindowOwnerName as String] as? String).flatMap { ctxClean($0, 80) }
+            let title = (info[kCGWindowName as String] as? String).flatMap { ctxClean($0, 120) }
+            if app == nil && title == nil { return nil }
+            return (app, title)
+        }
+        return nil
+    }
+
     /* What is under a point. Runs on the resolver thread, never on the tap. */
     static func describe(_ job: Pending) {
         guard Permission.accessibility else { return }
         var element: AXUIElement?
         let err = AXUIElementCopyElementAtPosition(systemWide, Float(job.x), Float(job.y), &element)
-        guard err == .success, let hit = element else { return }
+        guard err == .success, let hit = element else {
+            /* The hit test failed - but "which application, which window" does not need the tree. The
+             * Windows agent answers those from the window manager (the window AT THE POINT, never the
+             * foreground - a right-click into a background window does not activate it), and an Electron
+             * application that names no controls still says "Claude". Same here: the front-to-back window
+             * list, first window under the point. Control stays honestly absent. */
+            if let under = windowAt(x: job.x, y: job.y) {
+                job.target.app = under.app
+                job.target.window = under.title
+            }
+            return
+        }
 
         var pid: pid_t = 0
         let hasPid = AXUIElementGetPid(hit, &pid) == .success
@@ -852,6 +982,27 @@ enum Accessibility {
                let second = again {
                 let retry = nameByClimbing(second)
                 if retry.control != nil { named = retry }
+            }
+            /* And that is the only look back. A later re-read of the same coordinates was tried and
+             * rejected: a click CHANGES the screen, and a name read after the change belongs to whatever
+             * arrived, not to what was pressed. The tree-not-built-yet gap is closed from the other side -
+             * prime() asks the frontmost application for its tree when Record is pressed, before the first
+             * click needs it. */
+        }
+
+        /* The tab strip case, measured on a real machine: in Chromium the hit test for a tab returns an
+         * unnamed GROUP that covers the whole strip, and the tab is that group's CHILD - visible to a
+         * person, one level down, and unreachable by climbing UP. So when every cheaper answer came back
+         * empty: among the hit element's children, the one whose frame contains the point, twice at most.
+         * Not a tree walk - two frame-checked steps, and only after the climb and the awaken retry both
+         * said nothing. */
+        if named.control == nil {
+            var node = hit
+            for _ in 0..<2 {
+                guard let child = childAt(node, x: job.x, y: job.y) else { break }
+                let read = nameByClimbing(child)
+                if read.control != nil { named = read; break }
+                node = child
             }
         }
 
@@ -1194,6 +1345,7 @@ enum Screen {
 
         guard let got = grab(width: sw, height: sh) else {
             return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent - "
+                + "switch it on and it picks the grant up by itself within a few seconds - "
                 + "System Settings, Privacy & Security, Screen Recording\"}"
         }
 
@@ -1912,7 +2064,14 @@ private func tapCallback(
 
 /* Installed on its own thread with its own run loop. A tap needs one, and the HTTP accept loop owns the
  * main thread. */
+let installGate = NSLock()
+
 func installTap() -> Bool {
+    /* Idempotent under a lock, because two callers can want it at once: the /record/start handler on an
+     * HTTP thread and the permission watcher on its own. Two live taps would record every event twice. */
+    installGate.lock()
+    defer { installGate.unlock() }
+    if eventTap != nil { return true }
     guard Permission.accessibility else { return false }
 
     /* Built in a loop rather than as one expression.
@@ -2035,6 +2194,27 @@ enum Autostart {
         return nil
     }
 
+    /* What launchd says about our label: whether the job is loaded at all, and whether THIS process is it.
+     * `open` parents to launchd too, so ppid answers nothing; launchctl naming our pid is the answer. The
+     * pid is matched as a whole line - "pid = 123" must not match "pid = 12345". */
+    static func launchdView() -> (loaded: Bool, ownsThisProcess: Bool) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["print", "gui/\(getuid())/\(label)"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do { try task.run() } catch { return (false, false) }
+        /* Read to EOF before waiting, so a chatty launchctl can never fill the pipe and deadlock the wait. */
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        task.waitUntilExit()
+        guard task.terminationStatus == 0 else { return (false, false) }
+        let owns = out.split(separator: "\n").contains {
+            $0.trimmingCharacters(in: .whitespaces) == "pid = \(getpid())"
+        }
+        return (true, owns)
+    }
+
     static func disable() -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -2043,6 +2223,171 @@ enum Autostart {
         task.waitUntilExit()
         try? FileManager.default.removeItem(atPath: plistPath)
         return nil
+    }
+}
+
+// ================================================================ permission watch
+
+/* Requests in flight, so the permission watcher never exits under one. `recording` alone cannot answer -
+ * Recorder.stop clears it as its FIRST act and then spends up to 1.5 seconds serializing the transcript
+ * into the response; an exit inside that window destroys the recording it is delivering. */
+enum Busy {
+    private static let gate = NSLock()
+    private static var inFlight = 0
+    static var count: Int { gate.lock(); defer { gate.unlock() }; return inFlight }
+    static func enter() { gate.lock(); inFlight += 1; gate.unlock() }
+    static func leave() { gate.lock(); inFlight -= 1; gate.unlock() }
+}
+
+/* A granted permission is not reliably usable until the process restarts, so the agent restarts itself.
+ *
+ * Measured on a real machine, and the two permissions behave differently: Screen Recording's verdict NEVER
+ * refreshed in a running process (ten minutes, twice), while Accessibility's sometimes does - but even then
+ * an event tap that failed to install while untrusted stays uninstalled, because nothing re-asks. macOS
+ * knows all this: System Settings offers applications with windows a "Quit & Reopen" dialog when their
+ * switch is flipped. An agent with no window gets nothing, and the user gets a checked switch that does not
+ * work.
+ *
+ * So while a permission is missing, a fresh child of this binary (--probe) is asked every few seconds what
+ * the settings say NOW - a fresh process reads the live answer. The moment the answer changes, this process
+ * exits cleanly and launchd (KeepAlive) starts it again: granted, tap installed, /health green, and the
+ * Connections screen ticks over without anybody pressing anything. The TCC store's mtime (readable even
+ * though the store itself is not) is the backstop signal in case the probe cannot run. Three refusals keep
+ * it honest: never mid-recording or mid-replay, at most once a minute (remembered on disk, because the
+ * process doing the remembering is the one that exits), and only when this process IS the launchd job - a
+ * --foreground run is told to restart by hand instead of silently dying. */
+enum PermissionWatch {
+    /* Accessibility and Screen Recording both land in the system store on current macOS; older versions
+     * split them. Watching both costs two stats. */
+    private static var tccStores: [String] {
+        [
+            "/Library/Application Support/com.apple.TCC/TCC.db",
+            FileManager.default.homeDirectoryForCurrentUser.path
+                + "/Library/Application Support/com.apple.TCC/TCC.db",
+        ]
+    }
+
+    private static func storeStamps() -> [Date] {
+        tccStores.compactMap {
+            (try? FileManager.default.attributesOfItem(atPath: $0))?[.modificationDate] as? Date
+        }
+    }
+
+    /* Whether launchd's job for our label is THIS process - the one kind of run exit(0) resurrects. */
+    private static func launchdManaged() -> Bool { Autostart.launchdView().ownsThisProcess }
+
+    /* What the settings say now, from a process young enough to know. nil when the probe could not run. */
+    private static func probe() -> (accessibility: Bool, screenRecording: Bool)? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: Autostart.binary)
+        task.arguments = ["--probe"]
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        do { try task.run() } catch { return nil }
+        /* Bounded, so a wedged child cannot wedge the watcher. */
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while task.isRunning && Date() < deadline { usleep(50_000) }
+        if task.isRunning { task.terminate(); return nil }
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard out.contains("\"accessibility\":") else { return nil }
+        return (out.contains("\"accessibility\":true"), out.contains("\"screenRecording\":true"))
+    }
+
+    /* The self-restart throttle, on disk because the process that remembers is the one that exits.
+     *
+     * Two speeds for two kinds of evidence. A probe-CONFIRMED grant can only happen once per permission, so
+     * it restarts after 10 seconds - fast enough that flipping the second switch right after the first
+     * still lands "within a few seconds", and still a brake if a pathological machine hands the fresh
+     * process the stale answer too. The mtime signal fires for ANY application's TCC change, so it waits a
+     * full minute. */
+    private static func stampRestart(confirmed: Bool) -> Bool {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.path
+            + "/Library/Application Support/MouseFlow"
+        let path = dir + "/restart-stamp"
+        let now = Date().timeIntervalSince1970
+        if let text = try? String(contentsOfFile: path, encoding: .utf8),
+           let last = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           now - last < (confirmed ? 10 : 60) {
+            return false
+        }
+        /* The directory exists on any installed machine; a --foreground run from a checkout is the one that
+         * needs it made - and a throttle that silently stops throttling is worse than a mkdir. */
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? "\(now)".write(toFile: path, atomically: true, encoding: .utf8)
+        return true
+    }
+
+    static func start() {
+        if Permission.accessibility && Permission.screenRecording { return }
+        let thread = Thread {
+            let managed = launchdManaged()
+            var lastStamps = storeStamps()
+            var toldToRestart = false
+            print(managed
+                ? "  watching       for the grant - the agent restarts itself to pick it up, nothing to press"
+                : "  watching       for the grant - this run is not under launchd, so restart it by hand once granted")
+            var ticksSinceProbe = 999
+            while true {
+                Thread.sleep(forTimeInterval: 3)
+
+                /* Accessibility's verdict CAN refresh live in a running process (measured - unlike Screen
+                 * Recording's, which never did), so when it has, the tap goes in NOW, not when the user
+                 * happens to press Record. */
+                if Permission.accessibility, eventTap == nil, installTap() {
+                    print("  input tap      installed - Accessibility arrived")
+                }
+                /* Everything arrived AND is in use? Then there is nothing left to watch. The tap check is
+                 * not decoration: granted-but-no-tap must keep the watcher alive, retrying the install. */
+                if Permission.accessibility && Permission.screenRecording && eventTap != nil { return }
+
+                /* The stat is the cheap tick; the probe is a process spawn, so it runs when the store
+                 * CHANGED - the proven signal of a grant landing - and every tenth tick regardless, in case
+                 * a store this build does not know about is the one that moved. A user who deliberately
+                 * declines a permission is not billed a spawn every three seconds for the rest of the day. */
+                let stamps = storeStamps()
+                let storeChanged = stamps != lastStamps
+                lastStamps = stamps
+                ticksSinceProbe += 1
+                var confirmed = false
+                var probeAnswered = false
+                if storeChanged || ticksSinceProbe >= 10 {
+                    ticksSinceProbe = 0
+                    if let fresh = probe() {
+                        probeAnswered = true
+                        confirmed = (fresh.accessibility && !Permission.accessibility)
+                            || (fresh.screenRecording && !Permission.screenRecording)
+                    }
+                }
+                /* The probe's answer is final: it read the live database. The mtime alone only counts when
+                 * the probe could not run - any application's TCC change moves these files, and "someone,
+                 * somewhere, was granted something" is not a reason to restart when a fresh process just
+                 * said our own switches are still off. */
+                let arrived = confirmed || (storeChanged && !probeAnswered)
+                if !arrived { continue }
+
+                if !managed {
+                    if !toldToRestart {
+                        toldToRestart = true
+                        print("  permissions    changed in System Settings - restart the agent to pick them up")
+                    }
+                    continue
+                }
+                if !stampRestart(confirmed: confirmed) { continue }
+                /* Not while anything is happening: a recording, a replay, or a response still being
+                 * written. Recorder.stop clears `recording` FIRST and then spends up to 1.5s serializing -
+                 * an exit inside that window destroys the recording it is delivering - so the in-flight
+                 * request count is the guard that actually covers it. */
+                if Recorder.shared.isRecording || Replayer.shared.isPlaying || Busy.count > 0 { continue }
+                print("  permissions    granted in System Settings - restarting to pick them up"
+                    + " (launchd starts the agent again at once)")
+                usleep(300_000)
+                if Recorder.shared.isRecording || Replayer.shared.isPlaying || Busy.count > 0 { continue }
+                exit(0)
+            }
+        }
+        thread.name = "MouseFlowPermissionWatch"
+        thread.start()
     }
 }
 
@@ -2193,6 +2538,7 @@ func route(method: String, path: String, query: String, body: String) -> Respons
             Permission.askForAccessibility()
             /* The tap may be installable now, if the answer came from a dialog that is already answered. */
             if installTap() {
+                DispatchQueue.global().async { Accessibility.prime() }
                 Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
                 return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
             }
@@ -2201,8 +2547,13 @@ func route(method: String, path: String, query: String, body: String) -> Respons
             return Response(status: 500, body: "{\"ok\":false,\"error\":"
                 + jsonString("macOS is asking for Accessibility now - say yes, and press Record again. If no"
                     + " dialog appeared, switch on MouseFlow Agent in System Settings, Privacy & Security,"
-                    + " Accessibility") + "}")
+                    + " Accessibility - the agent notices the grant within a few seconds and restarts itself,"
+                    + " and Record works from then on") + "}")
         }
+        /* Off this thread: priming makes a synchronous call INTO the frontmost application, and a
+         * beach-balling one would hold the reply past the client's deadline for this route. A head start is
+         * still a head start when it lands a moment after the recording opens. */
+        DispatchQueue.global().async { Accessibility.prime() }
         Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
         return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
 
@@ -2276,6 +2627,31 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         if let bad = Autostart.enable() {
             return Response(status: 500, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
         }
+        /* enable() just loaded a KeepAlive job whose plist names this very port. When THIS process is not
+         * that job - it was opened by hand, or by the "Quit & Reopen" dialog - the job is already being
+         * respawned into "port already in use" against our socket, forever. So once this response is out
+         * the door and nothing is recording, replaying or in flight, the port is handed over: listener
+         * closed, job kicked, exit - and launchd's process, with the installer's arguments, takes it from
+         * here. Waiting for idle is unbounded on purpose: a crash-looping login item is noise, a killed
+         * recording is loss. */
+        if !Autostart.launchdView().ownsThisProcess {
+            let thread = Thread {
+                while Busy.count > 0 || Recorder.shared.isRecording || Replayer.shared.isPlaying {
+                    usleep(250_000)
+                }
+                print("autostart enabled - handing the port to the login item")
+                close(listener)
+                let kick = Process()
+                kick.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+                kick.arguments = ["kickstart", "gui/\(getuid())/\(Autostart.label)"]
+                try? kick.run()
+                kick.waitUntilExit()
+                usleep(200_000)
+                exit(0)
+            }
+            thread.name = "MouseFlowHandover"
+            thread.start()
+        }
         return Response(body: "{\"ok\":true}")
 
     case "/autostart/disable":
@@ -2292,6 +2668,54 @@ func route(method: String, path: String, query: String, body: String) -> Respons
 }
 
 // ================================================================ main
+
+/* A double is handed back to the login item, not raced for the port.
+ *
+ * macOS itself creates the double: the "Quit & Reopen" button next to a permission switch relaunches the
+ * bundle with `open` - NO ARGUMENTS, so no port pin and no origin pin - and that instance wins the port
+ * while launchd's KeepAlive respawns the real job into "port already in use" over and over. Seen on a real
+ * machine within a minute of the dialog. So an ARGUMENT-LESS instance that is not the launchd job, while
+ * the job is loaded, starts the job and gets out of the way - same agent, same port, the arguments the
+ * installer chose. The argument count is the signature of the pathology: every deliberate run - the
+ * installer's --foreground exec, a hand-run --port 9999, the plist itself - passes arguments, and none of
+ * those must be evicted; the Finder and `open` pass none. A --probe child never reaches this line, and a
+ * machine with the login item unloaded (--no-login, or a bootout for debugging) is untouched.
+ *
+ * And never step aside to a corpse: the exit only happens once something is actually answering the port,
+ * or this instance carries on and serves - a plist pointing at a deleted binary must not turn "double-click
+ * the app to recover" into silence. */
+if CommandLine.arguments.count == 1 {
+    let launchdView = Autostart.launchdView()
+    if launchdView.loaded, !launchdView.ownsThisProcess {
+        print("the login item owns this agent - starting it and stepping aside")
+        let handover = Process()
+        handover.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        handover.arguments = ["kickstart", "gui/\(getuid())/\(Autostart.label)"]
+        try? handover.run()
+        handover.waitUntilExit()
+        var served = false
+        for _ in 0..<20 {
+            let probe = socket(AF_INET, SOCK_STREAM, 0)
+            if probe >= 0 {
+                var address = sockaddr_in()
+                address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+                address.sin_family = sa_family_t(AF_INET)
+                address.sin_port = port.bigEndian
+                address.sin_addr = in_addr(s_addr: in_addr_t(0x7F00_0001).bigEndian)
+                let connected = withUnsafePointer(to: &address) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                        connect(probe, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+                close(probe)
+                if connected == 0 { served = true; break }
+            }
+            usleep(100_000)
+        }
+        if served { exit(0) }
+        print("the login item did not come up - carrying on in this process")
+    }
+}
 
 /* Line-buffered, or the log stays empty forever.
  *
@@ -2368,22 +2792,94 @@ print("""
 
 """)
 
-let queue = DispatchQueue(label: "mouseflow.http", attributes: .concurrent)
-while true {
-    let client = accept(listener, nil, nil)
-    if client < 0 { continue }
-    queue.async {
-        defer { close(client) }
-        /* A deadline on the socket, because every endpoint has one on the client side and a half-open
-         * connection holding a thread is worse than a refusal. */
-        var timeout = timeval(tv_sec: 20, tv_usec: 0)
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+/* Started after the banner so its own lines land under it. Does nothing when both permissions are already
+ * in place. */
+PermissionWatch.start()
 
-        guard let request = readRequest(client) else { return }
-        let result = route(
-            method: request.method, path: request.path, query: request.query, body: request.body
-        )
-        respond(client, result)
+let queue = DispatchQueue(label: "mouseflow.http", attributes: .concurrent)
+let acceptThread = Thread {
+    while true {
+        let client = accept(listener, nil, nil)
+        if client < 0 { continue }
+        queue.async {
+            Busy.enter()
+            defer { Busy.leave() }
+            defer { close(client) }
+            /* A deadline on the socket, because every endpoint has one on the client side and a half-open
+             * connection holding a thread is worse than a refusal. */
+            var timeout = timeval(tv_sec: 20, tv_usec: 0)
+            setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+            guard let request = readRequest(client) else { return }
+            let result = route(
+                method: request.method, path: request.path, query: request.query, body: request.body
+            )
+            respond(client, result)
+        }
     }
 }
+acceptThread.name = "MouseFlowHTTP"
+acceptThread.start()
+
+/* The main thread belongs to the menu bar from here on.
+ *
+ * The one thing users could not do was STOP the agent: it is a login item with no window, launchd's
+ * KeepAlive resurrects a pkill, and closing the terminal that installed it never owned it. On Windows the
+ * agent dies with its console window, so this is the macOS answer to the same need - a status item saying
+ * the recorder exists, with the two honest ways out. LSUIElement was already true, which is exactly the
+ * mode a menu-bar-only application runs in; nothing appears in the Dock. */
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+
+final class MenuActions: NSObject {
+    /* Stops the agent until the next login: launchd forgets the job for this session (bootout), so
+     * KeepAlive does not resurrect it, and RunAtLoad brings it back at sign-in. The exit is the fallback
+     * for a run launchd does not manage, where dying IS stopping. */
+    @objc func stopUntilLogin() {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        task.arguments = ["bootout", "gui/\(getuid())/\(Autostart.label)"]
+        try? task.run()
+        task.waitUntilExit()
+        exit(0)
+    }
+
+    /// Stops the agent AND takes it out of login items - off until reinstalled or re-enabled in the app.
+    @objc func quitForGood() {
+        _ = Autostart.disable()
+        exit(0)
+    }
+}
+let menuActions = MenuActions()
+
+let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+if let button = statusItem.button {
+    if let icon = NSImage(systemSymbolName: "cursorarrow.click.2",
+                          accessibilityDescription: "MouseFlow Agent") {
+        icon.isTemplate = true
+        button.image = icon
+    } else {
+        button.title = "MF"
+    }
+}
+let menu = NSMenu()
+let header = NSMenuItem(title: "MouseFlow Agent \(VERSION)", action: nil, keyEquivalent: "")
+header.isEnabled = false
+menu.addItem(header)
+let note = NSMenuItem(title: "Records only between Start and Stop", action: nil, keyEquivalent: "")
+note.isEnabled = false
+menu.addItem(note)
+menu.addItem(.separator())
+let stopItem = NSMenuItem(title: "Stop Until Next Login",
+                          action: #selector(MenuActions.stopUntilLogin), keyEquivalent: "")
+stopItem.target = menuActions
+menu.addItem(stopItem)
+let quitItem = NSMenuItem(title: "Quit and Turn Off Start at Login",
+                          action: #selector(MenuActions.quitForGood), keyEquivalent: "")
+quitItem.target = menuActions
+menu.addItem(quitItem)
+menu.autoenablesItems = false
+statusItem.menu = menu
+
+app.run()

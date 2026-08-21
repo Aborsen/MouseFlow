@@ -19,13 +19,22 @@ process that is not the kind that can hold a permission at all **all look like a
 Written down because a session on this machine has none of the history.
 
 **Verified, on real machines:** the web app and the Windows agent (94 contract checks, plus suites for the
-transcript, the sessions, the reconciliation and the gallery). The macOS agent compiles and runs - that took
-three rounds of a compiler on a Mac reporting errors this machine could not have found.
+transcript, the sessions, the reconciliation and the gallery). And since 2026-08-20, on a real Mac
+(macOS 26.5, arm64): recording with `#ctx` names, `/shot` (correct MIME and scale), `/pulse`, `/windows`,
+and both permissions detected and reported. The "granted but the agent says no" case was reproduced twice
+and root-caused: **a TCC grant made while the agent runs is invisible to that running process** - the
+verdict is read once, at process start (Apple's model; System Settings offers windowed apps "Quit & Reopen"
+for exactly this) - and a restart picks it up instantly. Since 0.8.1 the agent watches for the grant and
+restarts itself; `launchctl kickstart -k gui/$(id -u)/com.mouseflow.agent` is the by-hand equivalent.
 
-**Not verified:** everything the macOS agent does once running. Recording, replay, aiming by name, screenshots
-through ScreenCaptureKit, and the accessibility naming have never been observed working. The last known state
-is that permissions were granted and the agent still reported no access, which is the stale-grant case below -
-but that is a hypothesis until `--doctor` says so.
+**Not verified:** replay and aiming by name on macOS. Naming was measured on 2026-08-21 after the 0.8.1
+fallback work: **81.8% of clicks named overall (22 clicks), 77.8% in Chrome** - above the Windows overall
+baseline, below its Chrome figure. Every remaining nameless click is the Chrome TAB STRIP: the hit test
+returns an unnamed group, climbing up finds nothing, and the bounded child descent (see PROTOCOL.md) was
+measured too - 8 tab clicks, 0 named - so that group exposes no frame-matching children either. The tabs
+must live in a different branch (likely an AXTabGroup under the window); finding it needs an AX-tree
+inspection of a real Chrome, not another guess, because every rebuild costs the user a permission round.
+Everything else names: bookmarks, bookmark folders, menus, the Dock, page content, text fields.
 
 **The one measurement to compare against:** on Windows 70.8% of recorded clicks carry a control name, and in
 Chrome 146 of 151. If macOS is far below that, the accessibility half is broken rather than limited.
@@ -66,7 +75,9 @@ curl -fsSL https://mouseflowapp.vercel.app/agent/install-mac.sh | bash -s -- \
 ```
 
 It fetches the source, compiles it here, wraps it in an `.app`, makes it a login item and starts it. Nothing
-to launch by hand afterwards, ever.
+to launch by hand afterwards, ever. Since 0.8.1 it also puts an icon in the menu bar - that is where a user
+stops it: "Stop Until Next Login" or "Quit and Turn Off Start at Login". `pkill` alone is resurrected by
+launchd's KeepAlive, which is by design.
 
 For a build you are iterating on, point it at a local copy instead of the deployment:
 
@@ -99,11 +110,23 @@ Two errors have already been met and are worth recognising:
 
 ### 2. A permission is granted and does not work
 
-This is the one that wastes the most time, and it is not macOS lying.
+This is the one that wastes the most time, and it is not macOS lying. It has TWO causes that look identical.
 
-TCC stores a grant against the app's **code signature**, and an ad-hoc signature means the binary's cdhash.
-Rebuild, and the hash changes: the entry stays in System Settings, still switched on, and the new binary is
-not the one it was granted to.
+**The grant landed while the agent was running.** The verdict is read once, at process start - flip the
+switch on a live agent and it keeps answering no for as long as it lives (measured: 10+ minutes, both
+permissions, twice). Since 0.8.1 the agent notices by itself within a few seconds and restarts to pick the
+grant up; on older builds, or if the watcher is somehow dead:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.mouseflow.agent
+```
+
+**The grant belongs to a previous build.** TCC stores a grant against the app's **code signature**, and an
+ad-hoc signature means the binary's cdhash. Rebuild, and the hash changes: the entry stays in System
+Settings, still switched on, and the new binary is not the one it was granted to. And the folk remedy does
+not work here - toggling the switch off and on was tried on a real machine and the verdict stayed false:
+the entry keeps the requirement recorded when the app was first added, so only the reset below (which makes
+macOS ask fresh) rebinds it.
 
 ```bash
 bash <(curl -fsSL https://mouseflowapp.vercel.app/agent/install-mac.sh) --fix-permissions

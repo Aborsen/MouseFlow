@@ -279,6 +279,12 @@ Accessibility API: `AXUIElementCopyElementAtPosition` for the hit test, `kAXTitl
 - It needs the **Accessibility** TCC permission, granted per-binary by the user in System Settings. Without
   it every call returns nothing, so the agent must detect that and say which permission is missing rather
   than emitting recordings with no context and no explanation.
+- One bounded amendment to "never walk the tree", measured on macOS: when the climb and one awaken retry
+  both come back nameless, at most **two frame-checked steps DOWN** through the hit element's children are
+  permitted (sixty children per level, hidden ones skipped, smallest containing frame wins). Chromium
+  hit-tests a tab to an unnamed group covering the whole strip, with the tab itself one level below -
+  reachable by a person's eye and by this, never by climbing up. Bounded exactly like the replay aimer's
+  sibling peek, and only after every cheaper answer came back empty.
 - The event tap has its own timeout, so the queue-and-worker rule above applies for the same reason.
 
 Blind spots are similar on both: Electron applications expose almost nothing (on Windows, ChatGPT desktop
@@ -350,15 +356,34 @@ the terminal. So a loose binary gets no Accessibility prompt of its own, never a
 list, and the only way to give it anything is to grant Accessibility to the terminal emulator - a far larger
 permission, and one nobody finds. A binary inside a bundle, launched with `open`, is its own responsible
 process: it gets a prompt naming itself and a switch of its own. The installer therefore builds a minimal
-bundle (a plist, `LSUIElement`, ad-hoc signed over the whole thing) and starts it detached. There is no window
-to close; `pkill -f mouseflow-agent` stops it. This was found the way everything in this file was found: it
-compiled, it ran, and it could not be granted anything.
+bundle (a plist, `LSUIElement`, ad-hoc signed over the whole thing) and starts it detached. This was found
+the way everything in this file was found: it compiled, it ran, and it could not be granted anything.
+
+**A menu bar item, because stopping must not require a terminal.** On Windows the agent dies with the console
+window that runs it; on macOS it is a login item with no window, `pkill` is resurrected by KeepAlive, and
+closing the terminal that installed it never owned it - so a user's only way out was a `launchctl` command
+nobody knows. The status item (`LSUIElement` is exactly the mode for one) says the recorder exists and offers
+the two honest exits: **Stop Until Next Login** (launchd forgets the job for this session, sign-in brings it
+back) and **Quit and Turn Off Start at Login** (the login item is removed too). The HTTP loop moved to its
+own thread to give AppKit the main one; nothing else changed shape.
 
 **Permissions are the install story, and there are two.** Accessibility for the event tap, for reading any
 other application's tree, and for posting input; Screen Recording for `/shot`, `/pulse`, and for other
 applications' window TITLES in `/windows`. Both are reported on `/health` under `permissions`, so the
 Connections screen ticks them individually and live. A rebuild invalidates the grant — TCC keys on the exact
 binary — so the installer says the user may be asked again.
+
+**A grant is not reliably usable until the process restarts, so the agent restarts itself to collect one.**
+Verified on a real machine and consistent with Apple's own model: Screen Recording's verdict never refreshed
+in a running process (ten minutes, twice), and while Accessibility's sometimes does, a tap that failed to
+install while untrusted stays uninstalled —
+System Settings offers windowed apps a "Quit & Reopen" dialog for exactly this reason, and an agent with no
+window gets nothing. So while a permission is missing, the agent asks a fresh child of its own binary
+(`--probe`, one line of JSON from a process young enough to know) every few seconds, plus the TCC store's
+mtime as a backstop signal, and when the answer changes it exits cleanly so launchd's `KeepAlive` starts it
+again — granted, tap installed, `/health` green, nothing pressed. Never mid-recording or mid-replay, at most
+once a minute, and only when the process actually is the launchd job; a `--foreground` run prints an
+instruction instead of silently dying. The client needs nothing for this: it was already polling `/health`.
 
 **`ctrl=` in the action body means COMMAND on macOS.** A deliberate translation, not an oversight: the
 grammar was written on Windows where Ctrl+C is copy, and on macOS the same intention is Cmd+C. Posting a
