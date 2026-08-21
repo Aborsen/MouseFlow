@@ -126,9 +126,12 @@ export const RecordingsTable = ({
   const fileInput = useRef<HTMLInputElement>(null);
 
   const rows = useMemo(() => {
+    /* Newest at the top: the recording someone is looking for is almost always the one they just made, and
+     * the store appends, so raw order buried it at the bottom of the scroll. */
+    const fresh = [...state.recordings].sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
     const needle = term.trim().toLowerCase();
-    if (!needle) return state.recordings;
-    return state.recordings.filter((rec) => {
+    if (!needle) return fresh;
+    return fresh.filter((rec) => {
       const where = rec.windows.map((w) => `${w.title} ${w.process}`).join(' ');
       return `${rec.name} ${where}`.toLowerCase().includes(needle);
     });

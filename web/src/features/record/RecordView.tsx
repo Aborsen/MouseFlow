@@ -504,12 +504,12 @@ export const RecordView = () => {
 
       const where = seenWindows.current.slice();
       const s = summarize(events);
-      /* Named after what you were working in. "Outlook (PWA)" is a thing you can find again in a week;
-       * "Recording 3" is not. */
-      const first = where[0]?.title.split(/\s+[-–—|]\s+/)[0]?.slice(0, 40);
-      const name = first
-        ? `${first} · ${s.clicks} click${s.clicks === 1 ? '' : 's'}`
-        : `Recording ${state.recordings.length + 1}`;
+      /* Named by WHEN: "MouseFlow 21/08 13:07" reads as a moment, sorts like one, and two recordings made
+       * a minute apart stay tellable-apart - which "Recording 3" and a window title both failed at. */
+      const at = new Date();
+      const two = (v: number) => String(v).padStart(2, '0');
+      const name = `MouseFlow ${two(at.getDate())}/${two(at.getMonth() + 1)} ${
+        two(at.getHours())}:${two(at.getMinutes())}`;
 
       const made = { id: uid(), name, created: new Date().toISOString(), events, windows: where };
       update((prev) => ({ recordings: [...prev.recordings, made] }));
