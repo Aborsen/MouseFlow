@@ -1,7 +1,7 @@
 /* The app in MouseFlow's colours, on the design system's own tokens.
  *
  * The vendored design system is teal on charcoal - #07807E over #0F0E14 - and mouseflow.ai is violet on
- * indigo: #a99aff over #090b22. Somebody who clicks "Start for free" on the site and lands here should not
+ * indigo: #9d94d3 over #0f1019. Somebody who clicks "Start for free" on the site and lands here should not
  * feel they arrived somewhere else, so the two now share a palette.
  *
  * THREE RAMPS, NOT A HUNDRED SEMANTIC TOKENS. The system is layered: primitives (--brand-400, --grey-900)
@@ -32,63 +32,60 @@
  */
 
 :root {
-  /* ── The accent, from the site's --mint #a99aff. It sits at 400 so that dark mode - which reads
+  /* ── The accent, from the site's --mint #9d94d3 - a muted periwinkle rather than a saturated violet,
+     because a fully-lit accent over a dark page reads as neon. It sits at 400 so that dark mode - which reads
      --brand-secondary and --brand-hover from 400 - gets the site's exact accent, and light mode's solid
      button (600) gets a violet deep enough to carry white text. ── */
-  --brand-50: 249 100% 97%; /* #f2efff */
-  --brand-100: 250 100% 93%; /* #e2dbff */
-  --brand-200: 250 100% 89%; /* #cfc5ff */
-  --brand-300: 250 100% 84%; /* #bcaeff */
-  --brand-400: 249 100% 80%; /* #a99aff — the site's accent */
-  --brand-500: 251 100% 74%; /* #8f7dff */
-  --brand-600: 250 79% 68%; /* #7c68f0 */
-  --brand-700: 250 62% 58%; /* #6753d8 */
-  --brand-800: 247 45% 37%; /* #3b3487 */
-  --brand-900: 236 47% 17%; /* #171a40 — the site's raised surface */
-  --brand-50-soft: 244 100% 97%; /* #f6f4ff — the site's cream */
-  --brand-900-soft: 237 45% 15%; /* #141636 */
-
+  --brand-50: 249 42% 97%; /* #f5f4fb */
+  --brand-100: 250 42% 93%; /* #e8e6f5 */
+  --brand-200: 250 42% 78.3%; /* #b8b0df */
+  --brand-300: 250 42% 73.9%; /* #aaa0d8 */
+  --brand-400: 249 42% 70.4%; /* #9d94d3 — the site's accent */
+  --brand-500: 251 42% 65.1%; /* #8e81cb */
+  --brand-600: 250 33.2% 59.8%; /* #8276bb */
+  --brand-700: 250 26% 51%; /* #6c62a3 */
+  --brand-800: 247 18.9% 37%; /* #514d70 */
+  --brand-900: 236 19.7% 17%; /* #232434 — the site's raised surface */
+  --brand-50-soft: 244 42% 97%; /* #f5f4fb — the site's cream */
+  --brand-900-soft: 237 18.9% 15%; /* #1f202d */
   /* ── The second accent. One family, one step brighter, so a highlight reads as a highlight rather than as
      a different brand: dark mode's --ink-highlight is tertiary-400 and its --brand-tertiary is 500. ── */
-  --tertiary-50: 250 100% 97%; /* #f4f2ff */
-  --tertiary-100: 250 100% 94%; /* #e6e1ff */
-  --tertiary-200: 251 100% 90%; /* #d5cdff */
-  --tertiary-300: 250 100% 86%; /* #c4b8ff */
-  --tertiary-400: 251 100% 83%; /* #b7a8ff */
-  --tertiary-500: 249 100% 80%; /* #a99aff — the site's accent */
-  --tertiary-600: 251 100% 74%; /* #8f7dff */
-  --tertiary-700: 250 79% 68%; /* #7c68f0 */
-  --tertiary-800: 250 50% 52%; /* #5546c2 */
-  --tertiary-900: 247 45% 37%; /* #3b3487 */
-  --tertiary-950: 247 51% 29%; /* #2a2470 */
-
+  --tertiary-50: 250 42% 97%; /* #f5f4fb */
+  --tertiary-100: 250 42% 94%; /* #ebe9f6 */
+  --tertiary-200: 251 42% 79.2%; /* #bcb4e0 */
+  --tertiary-300: 250 42% 75.7%; /* #b0a7db */
+  --tertiary-400: 251 42% 73%; /* #a89dd7 */
+  --tertiary-500: 249 42% 70.4%; /* #9d94d3 — the site's accent */
+  --tertiary-600: 251 42% 65.1%; /* #8e81cb */
+  --tertiary-700: 250 33.2% 59.8%; /* #8276bb */
+  --tertiary-800: 250 21% 52%; /* #736b9e */
+  --tertiary-900: 247 18.9% 37%; /* #514d70 */
+  --tertiary-950: 247 21.4% 29%; /* #3e3a5a */
   /* ── The dark theme's surfaces and inks. Indigo rather than charcoal, same steps in the same order, so
      the depth relationships upstream designed are unchanged. Light mode never reads this ramp. ── */
-  --grey-50: 244 100% 97%; /* #f6f4ff — ink-primary */
-  --grey-100: 249 61% 94%; /* #e6e5f6 — ink-body */
-  --grey-200: 246 46% 90%; /* #dcdaf0 */
-  --grey-300: 244 44% 86%; /* #cfceea — ink-secondary */
-  --grey-400: 242 15% 66%; /* #9a99b8 */
-  --grey-500: 236 28% 47%; /* #565a9b */
-  --grey-600: 237 39% 28%; /* #2b2d63 — dropzone, switch-off hover */
-  --grey-700: 237 45% 22%; /* #1e2050 — chips, strokes, pressed */
-  --grey-800: 236 47% 17%; /* #171a40 — card2, hover */
-  --grey-900: 236 50% 13%; /* #111433 — card */
-  --grey-950: 235 58% 8%; /* #090b22 — the page, and the site's background */
-
+  --grey-50: 244 42% 97%; /* #f5f4fb — ink-primary */
+  --grey-100: 249 25.6% 94%; /* #edecf4 — ink-body */
+  --grey-200: 246 19.3% 79.2%; /* #c2c0d4 */
+  --grey-300: 244 18.5% 75.7%; /* #b7b6cc — ink-secondary */
+  --grey-400: 242 6.3% 58.1%; /* #8e8d9b */
+  --grey-500: 236 11.8% 47%; /* #6a6c86 */
+  --grey-600: 237 16.4% 28%; /* #3c3d53 — dropzone, switch-off hover */
+  --grey-700: 237 18.9% 22%; /* #2d2f43 — chips, strokes, pressed */
+  --grey-800: 236 19.7% 17%; /* #232434 — card2, hover */
+  --grey-900: 236 21% 13%; /* #1a1b28 — card */
+  --grey-950: 235 24.4% 8%; /* #0f1019 — the page, and the site's background */
   /* ── Dark mode's inactive ink. At #94A3B8 it was the one cool blue-grey left sitting on an indigo
      ground; the light theme does not read this step at all. ── */
-  --slate-400: 240 22% 74%; /* #aeaecb — the site's muted text */
-
+  --slate-400: 240 9.2% 65.1%; /* #9e9eae — the site's muted text */
   /* ── Light mode's neutrals, rotated onto the same hue and nothing else.
      The site has no light theme, so there is nothing to match literally - but a violet accent over
      blue-grey paper reads as two brands, and the fix is a hue rotation rather than a new palette: every
      step keeps its lightness and its saturation, so every contrast ratio light mode was designed around
      is unchanged. Also read twice by the dark theme, for text on a light chip, where it is equally at
      home. ── */
-  --slate-50: 250 40% 98%; /* was 210 40% 98% */
-  --slate-100: 250 40% 96%;
-  --slate-200: 250 32% 91%;
-  --slate-300: 250 27% 84%;
-  --slate-900: 247 47% 11%; /* the light theme's primary ink */
+  --slate-50: 250 16.8% 98%; /* was 210 40% 98% */
+  --slate-100: 250 16.8% 96%;
+  --slate-200: 250 13.4% 91%;
+  --slate-300: 250 11.3% 73.9%;
+  --slate-900: 247 19.7% 11%; /* the light theme's primary ink */
 }

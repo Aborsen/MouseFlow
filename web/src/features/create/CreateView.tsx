@@ -40,6 +40,7 @@ import {
   MAX_WAVES,
   type RunEvent,
   WAVE_TURNS,
+  mediaType,
   runOnDesktop,
 } from '@/lib/desktop-engine';
 import { useAgent, useConsole } from '@/lib/store';
@@ -635,7 +636,8 @@ export const CreateView = () => {
                 onClick={async () => {
                   try {
                     const picture = await shot(state.port, 900);
-                    setGateShot(`data:image/${picture.format || 'jpeg'};base64,${picture.png}`);
+                    // Through mediaType() for the same reason plan.ts does: `format` is already a full MIME type.
+                    setGateShot(`data:${mediaType(picture.format)};base64,${picture.png}`);
                   } catch (_) {
                     /* Отказ снимка не должен закрывать шлюз: решение всё равно за человеком, просто без
                      * картинки. */

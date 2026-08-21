@@ -16,6 +16,7 @@
  * (api/claude.js), а модель, которой велено вызвать инструмент, отдаёт валидный объект по схеме - в отличие
  * от модели, которую попросили «вернуть JSON» и которая обернёт его в три абзаца вежливости.
  */
+import { mediaType } from './desktop-engine';
 import { planModel } from './model-config';
 
 const MODEL = 'claude-opus-5'; // the fallback; the configured choice comes from model-config
@@ -94,7 +95,11 @@ export async function askForPlan(
   if (screen) {
     content.push({
       type: 'image',
-      source: { type: 'base64', media_type: `image/${screen.format || 'jpeg'}`, data: screen.png },
+      /* mediaType(), not `image/${format}`: the agent already answers a full MIME type, so prefixing
+       * produced "image/image/jpeg" and the API answers 400 to anything but its four exact strings.
+       * The helper promotes what it recognises and falls back to JPEG - what both agents encode -
+       * rather than forwarding a remote value to be refused. */
+      source: { type: 'base64', media_type: mediaType(screen.format), data: screen.png },
     });
   }
   content.push({

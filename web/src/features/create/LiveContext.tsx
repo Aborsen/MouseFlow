@@ -26,6 +26,9 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { type AgentWindow, shot, windows } from '@/lib/agent';
+/* `format` from /shot is a full MIME type - "image/jpeg" - so it goes through the helper rather than
+ * being prefixed into "image/image/jpeg". Same helper the decision loop uses. */
+import { mediaType } from '@/lib/desktop-engine';
 import { useAgent } from '@/lib/store';
 
 /* Small on purpose. It is a thumbnail in a 26rem column; asking for the full screen would move a megabyte
@@ -123,7 +126,7 @@ export const LiveContext = ({ port, enabled }: { port: number; enabled: boolean 
       <div className="relative aspect-video w-full overflow-hidden rounded-lg border-stroke border bg-surface-card2">
         {seen ? (
           <img
-            src={`data:image/${seen.format};base64,${seen.png}`}
+            src={`data:${mediaType(seen.format)};base64,${seen.png}`}
             alt="What the agent can see on this machine right now"
             className="size-full object-contain"
           />
