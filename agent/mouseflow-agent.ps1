@@ -898,9 +898,6 @@ namespace MouseFlow
             return string.IsNullOrEmpty(title) ? null : Clip(title, 160);
         }
 
-        /* moveMs = 0 means "the default this agent was started with". Not -1 and not a nullable: the wire
-         * carries a query string, an absent parameter parses to 0, and 0 samples a second is not a thing
-         * anybody can want - so the harmless value is the one that means "unspecified". */
         /* The tray's "Stop and Save Recording". Capture stops NOW; the events are HELD, because the agent
          * has no account to put them on - the app does, and its Record page collects a held recording
          * through the ordinary /record/stop the moment it notices. `recording:false` with `count>0` on
@@ -908,15 +905,39 @@ namespace MouseFlow
          * that state behind. Same contract the macOS agent implements; see PROTOCOL.md. */
         public static void EndFromTray()
         {
+            /* The buffer is taken in the SAME critical section that drops the flag, and that is the whole
+             * correctness of this function. Dropping _recording first and taking the buffer after the
+             * resolver wait leaves up to 1.5 seconds where /record/status answers recording:false with
+             * count>0 - the protocol's "a hold is waiting" signal - while nothing is held yet: the app's
+             * quarter-second poll lands there, calls /record/stop, gets the LIVE path, and this function
+             * then finds an empty buffer and holds nothing. The recording survives by the ordinary door,
+             * but the spill never happens and the tray says nothing was captured. */
             bool was;
+            List<Ev> taken;
+            int part; int moveMs; long elapsed;
             lock (Gate)
             {
                 was = _recording;
                 _recording = false;
                 _clock.Stop();
-                _ending = was;
+                taken = _buffer;
+                _buffer = new List<Ev>();
+                /* Held from this instant: _ending covers the gap until the text exists, and both the status
+                 * route and RecordStop read it, so no caller can see a hold that is not there yet. */
+                _ending = was && taken.Count > 0;
+                _heldEvents = taken.Count;
+                part = _part; moveMs = _sessionMs; elapsed = _clock.ElapsedMilliseconds;
             }
             if (!was) return;
+
+            if (taken.Count == 0)
+            {
+                /* Nothing was captured, so there is nothing to hold - and holding nothing would wedge
+                 * /record/start behind a refusal for a recording that does not exist. */
+                lock (Gate) { _heldEvents = 0; }
+                lock (ResolveGate) { _resolverStop = true; }
+                return;
+            }
 
             /* Same bounded wait as a client stop, so the held events carry their control names. */
             for (int waited = 0; waited < 1500; waited += 50)
@@ -924,44 +945,42 @@ namespace MouseFlow
                 lock (ResolveGate) { if (_toResolve.Count == 0) break; }
                 Thread.Sleep(50);
             }
-            lock (ResolveGate) { _resolverStop = true; }
+            int lost;
+            lock (ResolveGate) { _resolverStop = true; lost = _dropped; }
+
+            /* Serialized and spilled OUTSIDE Gate, because the low-level hook takes that same lock on every
+             * mouse message: a long session is hundreds of thousands of events, and a hook proc blocked
+             * across that plus a multi-megabyte write is a hook Windows silently removes for overrunning
+             * LowLevelHooksTimeout - the hazard this file documents elsewhere and must not create here.
+             * _ending is what makes it safe: a hold is already declared. */
+            StringBuilder head = new StringBuilder();
+            head.Append("#part\tn=").Append((part + 1).ToString(CultureInfo.InvariantCulture));
+            head.Append("\telapsedMs=").Append(elapsed.ToString(CultureInfo.InvariantCulture));
+            head.Append("\tevents=").Append(taken.Count.ToString(CultureInfo.InvariantCulture));
+            head.Append("\tmoveMs=").Append(moveMs.ToString(CultureInfo.InvariantCulture));
+            head.Append("\tdropped=").Append(lost.ToString(CultureInfo.InvariantCulture)).Append("\n");
+            string text = head.ToString() + Serialize(taken);
+            try
+            {
+                string p = HeldPath;
+                Directory.CreateDirectory(Path.GetDirectoryName(p));
+                File.WriteAllText(p, text);
+            }
+            catch { /* Memory still holds it; the app is usually seconds away. */ }
 
             lock (Gate)
             {
-                List<Ev> taken = _buffer;
-                _buffer = new List<Ev>();
-                if (taken.Count == 0)
-                {
-                    /* Nothing was captured, so there is nothing to hold - and holding nothing would wedge
-                     * /record/start behind a refusal for a recording that does not exist. */
-                    _ending = false;
-                    return;
-                }
-                int lost;
-                lock (ResolveGate) { lost = _dropped; }
-                StringBuilder head = new StringBuilder();
-                head.Append("#part\tn=").Append((_part + 1).ToString(CultureInfo.InvariantCulture));
-                head.Append("\telapsedMs=").Append(_clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
-                head.Append("\tevents=").Append(taken.Count.ToString(CultureInfo.InvariantCulture));
-                head.Append("\tmoveMs=").Append(_sessionMs.ToString(CultureInfo.InvariantCulture));
-                head.Append("\tdropped=").Append(lost.ToString(CultureInfo.InvariantCulture)).Append("\n");
-                _heldText = head.ToString() + Serialize(taken);
+                _heldText = text;
                 _heldEvents = taken.Count;
                 _ending = false;
-                /* Written INSIDE the lock: the moment _heldText exists a /record/stop on another thread can
-                 * deliver it and delete the file, and a delete that beat this write would resurrect a
-                 * phantom recording at the next startup. */
-                try
-                {
-                    string p = HeldPath;
-                    Directory.CreateDirectory(Path.GetDirectoryName(p));
-                    File.WriteAllText(p, _heldText);
-                }
-                catch { /* Memory still holds it; the app is usually seconds away. */ }
             }
         }
 
-        /// Returns null when the recording started, or the reason it did not - a hold waiting to be saved.
+        /* Returns null when the recording started, or the reason it did not - a hold waiting to be saved.
+         *
+         * moveMs = 0 means "the default this agent was started with". Not -1 and not a nullable: the wire
+         * carries a query string, an absent parameter parses to 0, and 0 samples a second is not a thing
+         * anybody can want - so the harmless value is the one that means "unspecified". */
         public static string RecordStart(int moveMs)
         {
             lock (Gate)
@@ -1073,6 +1092,13 @@ namespace MouseFlow
 
         public static string RecordStop()
         {
+            /* A hold being written is a hold: wait for it rather than racing past it into the live path,
+             * which is empty by then anyway. Bounded by the same budget the resolver wait uses. */
+            for (int waited = 0; waited < 2000; waited += 50)
+            {
+                lock (Gate) { if (!_ending) break; }
+                Thread.Sleep(50);
+            }
             List<Ev> taken;
             lock (Gate)
             {
@@ -1146,11 +1172,12 @@ namespace MouseFlow
         }
 
         public static bool IsRecording { get { lock (Gate) { return _recording; } } }
-        public static int RecordCount { get { lock (Gate) { return _heldText != null ? _heldEvents : _buffer.Count; } } }
-        /// What the tray shows, and what the permission-free half of the protocol keys on.
+        /* _ending counts as held: between the flag dropping and the text existing the events are already
+         * out of the buffer, and a count of zero there would read as "nothing was recorded". */
+        public static int RecordCount { get { lock (Gate) { return (_heldText != null || _ending) ? _heldEvents : _buffer.Count; } } }
+        /// What the TRAY shows. The wire signal is RecordCount over /record/status, not this.
         public static bool HasHeld { get { lock (Gate) { return _heldText != null; } } }
         public static int HeldEvents { get { lock (Gate) { return _heldEvents; } } }
-        public static bool BusyEnding { get { lock (Gate) { return _ending; } } }
         /// Without the mouse hook nothing can be recorded, so the tray must not offer to start one.
         public static bool HookInstalled { get { return _hook != IntPtr.Zero; } }
         public static int RecordPart { get { lock (Gate) { return _part; } } }

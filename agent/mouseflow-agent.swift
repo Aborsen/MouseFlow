@@ -423,54 +423,68 @@ final class Recorder {
      * ordinary /record/stop the moment it notices. `recording:false` with `count>0` on /record/status is
      * the signal, and it is unambiguous because a client-driven stop never leaves that state behind. */
     func endFromAgent() {
+        /* The buffer is taken in the SAME critical section that drops the flag, and that is the whole
+         * correctness of this function. Dropping `recording` first and taking the buffer after the resolver
+         * wait leaves up to 1.5 seconds where /record/status answers `recording:false` with `count>0` - the
+         * protocol's "a hold is waiting" signal - while nothing is held yet: the app's quarter-second poll
+         * lands there, calls /record/stop, and gets the LIVE path, so the events go out by the ordinary door
+         * and this function then finds an empty buffer and holds nothing. The recording survives, but the
+         * spill never happens and the agent reports that nothing was captured. */
         gate.lock()
         let was = recording
         stoppedElapsed = recording ? (DispatchTime.now().uptimeNanoseconds - startNanos) : stoppedElapsed
         recording = false
-        ending = was
+        let taken = buffer
+        buffer = []
+        /* Held from this instant: `ending` covers the gap until the text exists, and both /record/status
+         * and /record/stop read it, so no caller can see a hold that is not there yet. */
+        ending = was && !taken.isEmpty
+        heldEvents = taken.count
+        let session = (part: part, moveMs: sessionMs, elapsed: stoppedElapsed)
         gate.unlock()
         guard was else { return }
+
+        if taken.isEmpty {
+            /* Nothing was captured, so there is nothing to hold - and holding nothing would wedge
+             * /record/start behind a 409 for a recording that does not exist. The stop still happened;
+             * the app notices `recording:false` and finishes its own bookkeeping. */
+            gate.lock(); heldEvents = 0; gate.unlock()
+            resolveGate.lock(); resolverStop = true; resolveGate.unlock()
+            print("  recording      stopped from the menu bar - nothing was captured")
+            return
+        }
+
         /* Same bounded wait as a client stop, so the held events carry their control names. */
         waitForResolver(upToMs: 1500)
         resolveGate.lock()
         resolverStop = true
         resolveGate.unlock()
-
-        gate.lock()
-        let taken = buffer
-        buffer = []
-        if taken.isEmpty {
-            /* Nothing was captured, so there is nothing to hold - and holding nothing would wedge
-             * /record/start behind a 409 for a recording that does not exist. The stop still happened;
-             * the app notices `recording:false` and finishes its own bookkeeping. */
-            ending = false
-            gate.unlock()
-            print("  recording      stopped from the menu bar - nothing was captured")
-            return
-        }
-        /* The same #part line a drain writes, so the session clock and the part number survive with the
+        /* Serialized and spilled OUTSIDE the gate, because the tap callback takes that same lock on every
+         * mouse event: a long session is hundreds of thousands of events, and a tap held across that plus a
+         * multi-megabyte write is a tap the OS disables for overrunning its timeout. `ending` is what makes
+         * this safe - a hold is already declared, so nothing can start a recording or take delivery of a
+         * half-written one.
+         *
+         * The same #part line a drain writes, so the session clock and the part number survive with the
          * hold - a tail collected after an agent restart would otherwise claim elapsedMs 0 and sort before
          * part one. Every reader of the format already skips # lines. */
         resolveGate.lock()
         let lost = dropped
         resolveGate.unlock()
-        var text = "#part\tn=\(part + 1)\telapsedMs=\(Int(stoppedElapsed / 1_000_000))"
-        text += "\tevents=\(taken.count)\tmoveMs=\(sessionMs)\tdropped=\(lost)\n"
+        var text = "#part\tn=\(session.part + 1)\telapsedMs=\(Int(session.elapsed / 1_000_000))"
+        text += "\tevents=\(taken.count)\tmoveMs=\(session.moveMs)\tdropped=\(lost)\n"
         text += Recorder.serialize(taken)
-        heldText = text
-        heldEvents = taken.count
-        ending = false
-        /* The spill happens INSIDE the gate, deliberately: the moment heldText exists, a /record/stop on
-         * another thread can deliver it and delete the file - and a delete that runs before this write
-         * lands would resurrect a phantom recording at the next startup. A small atomic write under a lock
-         * costs a status poll a few milliseconds, once. */
         try? FileManager.default.createDirectory(
             atPath: (Recorder.heldPath as NSString).deletingLastPathComponent,
             withIntermediateDirectories: true)
         try? text.write(toFile: Recorder.heldPath, atomically: true, encoding: .utf8)
-        let kept = heldEvents
+
+        gate.lock()
+        heldText = text
+        heldEvents = taken.count
+        ending = false
         gate.unlock()
-        print("  recording      stopped from the menu bar - \(kept) events held for the app to save")
+        print("  recording      stopped from the menu bar - \(taken.count) events held for the app to save")
     }
 
     /// The menu reads this to say a hold is waiting; the permission watcher reads `busyEnding` so a
@@ -482,6 +496,15 @@ final class Recorder {
     var busyEnding: Bool { gate.lock(); defer { gate.unlock() }; return ending }
 
     func stop() -> String {
+        /* A hold being written is a hold: wait for it rather than racing past it into the live path, which
+         * is empty by then anyway. Bounded by the same budget the resolver wait uses. */
+        for _ in 0..<40 {
+            gate.lock()
+            let mid = ending
+            gate.unlock()
+            if !mid { break }
+            usleep(50_000)
+        }
         gate.lock()
         if let text = heldText {
             /* Taking delivery of a hold: the text was serialized when the menu stopped the recording, so
@@ -528,7 +551,9 @@ final class Recorder {
     func status() -> (recording: Bool, count: Int, part: Int, moveMs: Int, elapsedMs: Int) {
         gate.lock()
         defer { gate.unlock() }
-        return (recording, heldText != nil ? heldEvents : buffer.count, part, sessionMs, elapsedMs)
+        /* `ending` counts as held: between the flag dropping and the text existing the events are already
+         * out of the buffer, and a count of zero there would read as "nothing was recorded". */
+        return (recording, (heldText != nil || ending) ? heldEvents : buffer.count, part, sessionMs, elapsedMs)
     }
 
     // ---------------------------------------------------------------- capture
