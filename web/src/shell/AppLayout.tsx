@@ -34,7 +34,11 @@ const Shell = () => {
   /* Sign-in, sign-up and reset are whole pages, not screens inside the app: a sidebar to a product you have
    * not entered, and an agent pill above a form, are furniture for somebody who is already here. Read from
    * the router so a navigation between them re-evaluates. */
-  const bare = useRouterState({ select: (s) => isAuthPath(s.location.pathname) });
+  /* The admin has a frame of its own, so the product's must stand aside - otherwise there are two
+   * sidebars and two headers, one of them leading somewhere the admin did not ask to go. */
+  const bare = useRouterState({
+    select: (s) => isAuthPath(s.location.pathname) || s.location.pathname.startsWith('/admin'),
+  });
   if (bare) return <Outlet />;
   return <ShellFrame />;
 };

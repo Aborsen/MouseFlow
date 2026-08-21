@@ -17,13 +17,20 @@ import { ConnectView } from '@/features/connect/ConnectView';
 import { SignInView } from '@/features/auth/SignInView';
 import { SignUpView } from '@/features/auth/SignUpView';
 import { ResetPasswordView } from '@/features/auth/ResetPasswordView';
-import { AdminView } from '@/features/admin/AdminView';
+import { AdminShell } from '@/features/admin/shell';
+import { AdminOverview } from '@/features/admin/AdminOverview';
+import { AdminUsers } from '@/features/admin/AdminUsers';
+import { AdminUser } from '@/features/admin/AdminUser';
+import { AdminModels } from '@/features/admin/AdminModels';
 import { InsightsView } from '@/features/insights/InsightsView';
 
 // Before the first paint, so the page does not flash the wrong colour on the way in.
 bootTheme();
 
 const rootRoute = createRootRoute({ component: AppLayout });
+
+/* Declared before the list so its children can name it as their parent. */
+const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: AdminShell });
 
 const routes = [
   createRoute({
@@ -55,9 +62,18 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: '/sign-in', component: SignInView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/sign-up', component: SignUpView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/reset-password', component: ResetPasswordView }),
-  /* Reached by its address, and deliberately absent from the sidebar: the SERVER decides who is an admin
-   * (ADMIN_EMAILS), and to everyone else both the endpoint and the page answer the same not-found. */
-  createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: AdminView }),
+  /* The back office, with a frame of its own.
+   *
+   * Reached by its address and deliberately absent from the product's sidebar: the SERVER decides who is
+   * an admin (ADMIN_EMAILS), and to everyone else both the endpoint and every screen answer the same
+   * not-found. A layout route rather than one page with tabs, so each section is a real address that can
+   * be linked, bookmarked and gone back from. */
+  adminRoute.addChildren([
+    createRoute({ getParentRoute: () => adminRoute, path: '/', component: AdminOverview }),
+    createRoute({ getParentRoute: () => adminRoute, path: '/users', component: AdminUsers }),
+    createRoute({ getParentRoute: () => adminRoute, path: '/users/$id', component: AdminUser }),
+    createRoute({ getParentRoute: () => adminRoute, path: '/models', component: AdminModels }),
+  ]),
   /* Every link written before this rewrite used a hash - #record, #skills, #gallery. Kept working rather
    * than silently landing people on the fallback. */
   createRoute({
