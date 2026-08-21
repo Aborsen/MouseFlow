@@ -68,6 +68,10 @@ export interface RecordingsTableProps {
   hasSkill?: (rec: Recording) => boolean;
   /** Save as skill lives on the page, because it also has to report what happened. */
   onSaveAsSkill: (rec: Recording) => void;
+  /* The other way to make one: the wizard, which asks for the text a recording is not allowed to hold and
+   * produces a skill with parameters. Offered beside the literal copy rather than instead of it - the two
+   * are different things, and a recording that already has one may still want the other. */
+  onMakeSkill: (rec: Recording) => void;
   /** View opens the transcript panel; the page owns that so only one is open at a time. */
   onView: (rec: Recording) => void;
   /** Play one recording now, with its own repeat/speed/loop. */
@@ -92,6 +96,7 @@ export const replayOf = (rec: Recording): ReplaySettings => ({
 
 export const RecordingsTable = ({
   onSaveAsSkill,
+  onMakeSkill,
   onView,
   onPlay,
   onImport,
@@ -523,8 +528,19 @@ export const RecordingsTable = ({
                         >
                           View
                         </Button>
-                        <Button variant="ghost" size="sm" leftSlot={<Save className="size-4" />} onClick={() => onSaveAsSkill(rec)}>
+                        <Button
+                          variant="ghost" size="sm" leftSlot={<Save className="size-4" />}
+                          title="Copy it as a skill, replayed exactly as recorded"
+                          onClick={() => onSaveAsSkill(rec)}
+                        >
                           Skill
+                        </Button>
+                        <Button
+                          variant="ghost" size="sm" leftSlot={<Sparkles className="size-4" />}
+                          title="Make a skill that can type: it asks what went into each field"
+                          onClick={() => onMakeSkill(rec)}
+                        >
+                          Make
                         </Button>
                         <Button variant="ghost" size="sm" leftSlot={<Download className="size-4" />} onClick={() => exportOne(rec)}>
                           Export

@@ -42,6 +42,7 @@ import {
   ledgerEntry, partFlow, partHeader, partName, sessionOf, shouldCut,
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
+import { SkillWizard } from './SkillWizard';
 import { flowFor } from './flow-for';
 
 /* mm:ss, for the readout beside the disc.
@@ -805,6 +806,10 @@ export const RecordView = () => {
     return () => clearInterval(timer);
   }, [playing, port]);
 
+  /* Which recording the wizard is open over. Separate from keepAsSkill's own busy flag: one is a single
+   * press, the other is a conversation, and the list has to keep working while it happens. */
+  const [wizardFor, setWizardFor] = useState<Recording | null>(null);
+
   const keepAsSkill = useCallback(async (rec: Recording) => {
     const name = prompt('Name this skill', rec.name);
     if (name === null) return;
@@ -1057,6 +1062,7 @@ export const RecordView = () => {
         onAdopt={(flow) => adoptOrphan(flow)}
         onImport={(files) => { void importFiles(files); }}
         onSaveAsSkill={(rec) => { void keepAsSkill(rec); }}
+        onMakeSkill={(rec) => setWizardFor(rec)}
         onView={(rec) => setViewing((open) => (open === rec.id ? null : rec.id))}
         onPlay={(rec) => { void playOne(rec); }}
       />
@@ -1097,6 +1103,19 @@ export const RecordView = () => {
             }}
           />
         </aside>
+      )}
+
+      {wizardFor && (
+        <SkillWizard
+          rec={wizardFor}
+          onClose={() => setWizardFor(null)}
+          onSaved={(made) => {
+            setWizardFor(null);
+            void reload();
+            setNote(`"${made}" is a skill now — it asks for what it needs and types it. `
+              + 'The recording is untouched.');
+          }}
+        />
       )}
     </div>
   );
