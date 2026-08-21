@@ -29,6 +29,12 @@ interface AccountValue {
   leaveProblem: string | null;
 }
 
+/* The pages that are their own front door. Exported because two places need the same list: the wall, which
+ * must not cover them, and the layout, which must not frame them in an app shell nobody is inside yet. */
+export const AUTH_PATHS = ['/sign-in', '/sign-up', '/reset-password'];
+
+export const isAuthPath = (path: string) => AUTH_PATHS.includes(path.replace(/\/+$/, '') || '/');
+
 const AccountContext = createContext<AccountValue | null>(null);
 
 export const useAccount = () => {
@@ -50,6 +56,9 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
       const body = await pull();
       setFlows(body.flows);
       setRuns(body.runs);
+      /* The account's own answer about the person. Kept beside the flows because it arrives with them and
+       * is needed at the same moment - the first render after signing in. */
+      if (body.you) setAccount((was) => (was ? { ...was, prefs: body.you.prefs ?? {} } : was));
       /* Only on success. A failed read leaves `loaded` false, so nothing that compares the two sides runs at
        * all - which is the right answer: an account that could not be read has told us nothing about what it
        * holds. */
@@ -135,6 +144,13 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
 
   // Nothing renders while the answer is unknown: a flash of the app before the wall is worse than a pause.
   if (!checked) return null;
+
+  /* The pages that EXIST to be seen signed out. Showing the wall over the sign-up page would be a door
+   * that only opens from inside, and the reset link from an email lands here with no session by
+   * definition. Matched on the real path rather than through the router, because this sits above it. */
+  if (!account && isAuthPath(location.pathname)) {
+    return <>{children}</>;
+  }
 
   if (!account) {
     return (

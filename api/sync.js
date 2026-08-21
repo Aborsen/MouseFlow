@@ -82,6 +82,7 @@ export default async function handler(req, res) {
       return await revokeToken(req, res, sql, who);
     }
     if (req.method === 'GET') return await pull(res, sql, who);
+    if (req.method === 'PATCH') return await setPref(req, res, sql, who);
     if (req.method === 'POST') return await push(req, res, sql, who);
     return fail(res, 405, 'GET, POST or DELETE');
   } catch (err) {
@@ -108,6 +109,22 @@ async function issueToken(req, res, sql, who) {
     device: { id, label, createdAt: new Date().toISOString() },
     note: 'This is shown once. Paste it into the extension under Skills.',
   });
+}
+
+/* One preference, written by the person it belongs to.
+ *
+ * Deliberately narrow: a key and a short string, both bounded. This is a place for "the tour has been
+ * seen", not a general store somebody can put a megabyte in. */
+async function setPref(req, res, sql, who) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const key = String(body.key || '').slice(0, 60);
+  const value = String(body.value == null ? '' : body.value).slice(0, 200);
+  if (!/^[a-z0-9_.-]+$/i.test(key)) return fail(res, 400, 'which preference?');
+  await sql`
+    insert into user_pref (user_id, key, value) values (${who.id}, ${key}, ${value})
+    on conflict (user_id, key) do update set value = excluded.value, updated_at = now()
+  `;
+  return res.status(200).json({ ok: true });
 }
 
 async function listTokens(res, sql, who) {
@@ -154,9 +171,17 @@ async function pull(res, sql, who) {
     where user_id = ${who.id}
     order by started_at desc nulls last limit ${RUNS_RETURNED}
   `;
+  /* Facts about the PERSON, not their work. Small enough to ride along with every read rather than earn a
+   * request of its own, and the first of them - whether the introduction has been seen - is needed on the
+   * first render of the app, which is exactly when this answer arrives. */
+  const prefs = await sql`select key, value from user_pref where user_id = ${who.id}`;
   return res.status(200).json({
     ok: true,
-    you: { name: who.name, image: who.image },
+    you: {
+      name: who.name,
+      image: who.image,
+      prefs: Object.fromEntries(prefs.map((p) => [p.key, p.value])),
+    },
     /* `source` says which half made it, and therefore which half can run it. Both are returned to
      * both clients on purpose: being told you have eleven flows and shown four is worse than
      * useless. Each client shows them all and offers Run only on its own. */

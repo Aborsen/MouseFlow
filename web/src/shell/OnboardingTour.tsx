@@ -20,11 +20,15 @@
  * click through six panels to reach it.
  */
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { setPref } from '@/lib/api';
+import { useAccount } from '@/shell/AccountProvider';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 
 const SEEN = 'mouseflow.onboarded';
+/** The same fact, kept against the ACCOUNT. See the note on `seen` below for why both exist. */
+const SEEN_PREF = 'onboarded';
 
 /** Whether the tour has already run in this browser. Written only when it finishes or is skipped. */
 export const tourSeen = (): boolean => {
@@ -47,6 +51,9 @@ export const restartTour = () => {
   try {
     localStorage.removeItem(SEEN);
   } catch (_) { /* private mode */ }
+  /* The account remembers too, so asking to see it again has to clear BOTH - otherwise the tour opens
+   * once and never again after a reload, which reads as the button being broken. */
+  void setPref(SEEN_PREF, '');
   window.dispatchEvent(new Event('mouseflow:tour'));
 };
 
@@ -109,7 +116,26 @@ interface Props {
 interface Rect { top: number; left: number; width: number; height: number }
 
 export const OnboardingTour = ({ onOpenConnections }: Props) => {
-  const [open, setOpen] = useState(() => !tourSeen());
+  const { account, flows, loaded } = useAccount();
+
+  /* Whether this person has seen it, asked of the ACCOUNT first and the browser second.
+   *
+   * localStorage alone was a fact about a BROWSER, and the difference is not academic: the same person on
+   * their phone, or after clearing a cache, was shown a first-run tour they had already finished - and on
+   * the day this shipped, so was every existing user, because no browser anywhere had the flag yet.
+   *
+   * Three answers, any one of which means "not new": the account says so; this browser says so; or the
+   * account already holds work, which is the one that covers everybody who was here before the flag
+   * existed. Nothing is shown until the account has actually answered - `loaded` - because "no flows yet"
+   * and "not asked yet" look identical and one of them is a tour over somebody's existing work. */
+  const seenOnAccount = account?.prefs?.[SEEN_PREF] === '1';
+  const hasWork = flows.length > 0;
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!loaded) return;
+    if (seenOnAccount || hasWork || tourSeen()) return;
+    setOpen(true);
+  }, [loaded, seenOnAccount, hasWork]);
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
 
@@ -151,6 +177,9 @@ export const OnboardingTour = ({ onOpenConnections }: Props) => {
 
   const finish = useCallback(() => {
     markSeen();
+    /* Best effort, and deliberately not awaited: a tour that shows twice because one write failed is a far
+     * smaller harm than a close button that hangs. */
+    void setPref(SEEN_PREF, '1');
     setOpen(false);
   }, []);
 
@@ -162,6 +191,7 @@ export const OnboardingTour = ({ onOpenConnections }: Props) => {
    * nothing on top of the command somebody is meant to copy. */
   const openConnections = useCallback(() => {
     markSeen();
+    void setPref(SEEN_PREF, '1');
     setOpen(false);
     onOpenConnections();
   }, [onOpenConnections]);

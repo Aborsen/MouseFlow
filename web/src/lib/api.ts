@@ -42,6 +42,10 @@ export interface Account {
   name?: string;
   email?: string;
   image?: string | null;
+  /* Small facts about the person rather than their work - whether the introduction has been seen, so far.
+   * Absent on the session read (/api/auth/get-session answers about identity); present on /api/sync, which
+   * is what the app reads on its way in. */
+  prefs?: Record<string, string>;
 }
 
 export interface Device {
@@ -164,6 +168,15 @@ export const signOut = () =>
   });
 
 export const pull = () => call<{ ok: true; flows: Flow[]; runs: Run[]; you: Account }>('/api/sync');
+
+/** One preference, remembered against the ACCOUNT rather than the browser. Best effort by design: a tour
+ *  that shows twice because a write failed is a smaller harm than a page that will not load without it. */
+export const setPref = (key: string, value: string) =>
+  call<{ ok: true }>('/api/sync', {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key, value }),
+  }).catch(() => undefined);
 
 export const push = (payload: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] }) =>
   /* The shape api/sync.js actually sends. It used to say `saved: { flows, runs }`, which is not on the wire

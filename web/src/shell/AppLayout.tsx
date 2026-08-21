@@ -10,7 +10,7 @@ import { cn } from '@insightis/ui/cn';
 import { Typography } from '@insightis/ui/Typography';
 import { AGENT_WANTS } from '@/lib/agent';
 import { useAgent } from '@/lib/store';
-import { AccountProvider } from './AccountProvider';
+import { AccountProvider, isAuthPath } from './AccountProvider';
 import { AppSidebar } from './AppSidebar';
 import { SettingsDialog, type SettingsScreen } from './SettingsDialog';
 import { OnboardingTour } from './OnboardingTour';
@@ -31,6 +31,15 @@ const TITLES: Record<string, string> = {
 };
 
 const Shell = () => {
+  /* Sign-in, sign-up and reset are whole pages, not screens inside the app: a sidebar to a product you have
+   * not entered, and an agent pill above a form, are furniture for somebody who is already here. Read from
+   * the router so a navigation between them re-evaluates. */
+  const bare = useRouterState({ select: (s) => isAuthPath(s.location.pathname) });
+  if (bare) return <Outlet />;
+  return <ShellFrame />;
+};
+
+const ShellFrame = () => {
   const [settings, setSettings] = useState<SettingsScreen | null>(null);
   const { health, stale } = useAgent();
   const path = useRouterState({ select: (s) => s.location.pathname });

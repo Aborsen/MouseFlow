@@ -14,6 +14,9 @@ import { CreateView } from '@/features/create/CreateView';
 import { SkillsView } from '@/features/skills/SkillsView';
 import { GalleryView } from '@/features/gallery/GalleryView';
 import { ConnectView } from '@/features/connect/ConnectView';
+import { SignInView } from '@/features/auth/SignInView';
+import { SignUpView } from '@/features/auth/SignUpView';
+import { ResetPasswordView } from '@/features/auth/ResetPasswordView';
 import { InsightsView } from '@/features/insights/InsightsView';
 
 // Before the first paint, so the page does not flash the wrong colour on the way in.
@@ -45,6 +48,12 @@ const routes = [
     beforeLoad: () => { throw redirect({ to: '/dashboard' }); },
   }),
   createRoute({ getParentRoute: () => rootRoute, path: '/connect', component: ConnectView }),
+  /* The three ways in. Reachable while signed OUT, which is the whole point - the account provider lets
+   * these through its wall rather than showing it, because a wall in front of the sign-up page is a door
+   * that only opens from inside. */
+  createRoute({ getParentRoute: () => rootRoute, path: '/sign-in', component: SignInView }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/sign-up', component: SignUpView }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/reset-password', component: ResetPasswordView }),
   /* Every link written before this rewrite used a hash - #record, #skills, #gallery. Kept working rather
    * than silently landing people on the fallback. */
   createRoute({
