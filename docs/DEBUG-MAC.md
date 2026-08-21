@@ -236,6 +236,13 @@ why it checks the things that can be checked without a compiler.
 - **Multiple monitors, on macOS.** ScreenCaptureKit captures one display, so `/shot` takes the one the
   cursor is on and reports that display's bounds. Bounds checking still uses the union of all displays,
   because a click on the second monitor is a legitimate click even when the agent cannot see it.
-- **A notarised app** - yet. A Developer Program membership now exists; the installer already prefers a
-  "Developer ID Application" identity from the keychain (grants then survive rebuilds), and the notarised
-  prebuilt `.app` - no compiler on the user's machine - is the next milestone.
+- **A notarised app** - yet. A Developer ID now exists and the installer prefers it, which was MEASURED on
+  2026-08-21: a rebuild changed the binary's cdhash (7883b789 -> 1a6ddcaa) and both permissions stayed
+  granted, where every ad-hoc rebuild before it had cost a re-grant. The notarised prebuilt `.app` - no
+  compiler on the user's machine at all - is the next milestone.
+
+  The one-off setup, for the record, because the keychain trips people: a Developer ID Application
+  certificate downloaded from Apple is inert until the **Developer ID G2 intermediate CA** is installed
+  alongside it (`https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer`). Without it
+  `security find-identity -v -p codesigning` reports "0 valid identities" with the certificate sitting
+  right there, which reads as a broken certificate and is not one.
