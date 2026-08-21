@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { cn } from '@insightis/ui/cn';
-import { type Device, devices, eraseAccount, revokeDevice, signOut } from '@/lib/api';
+import { type Device, devices, mintDeviceToken, eraseAccount, revokeDevice, signOut } from '@/lib/api';
 import { useAccount } from '../AccountProvider';
 import { Row, type Say } from '../SettingsDialog';
 import { type Theme, useTheme } from '../theme';
@@ -33,6 +33,14 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
    * copied. Two lists rather than one because they are taken back differently and mean different things: a
    * device is a machine you paired, a grant is a client you let act as you. */
   const [grants, setGrants] = useState<Grant[] | null>(null);
+  /* A token that has just been minted, held only long enough to be copied.
+   *
+   * Shown here because this is where somebody looks for it. Until now the only thing that minted one was
+   * "Connect extension" on the Skills page - right for an extension and wrong for everything else that
+   * pairs the same way: an MCP worker, a CLI. Being told to come here and finding only a list to revoke
+   * from is the kind of instruction that reads as a lie. */
+  const [minted, setMinted] = useState<string | null>(null);
+  const [pairing, setPairing] = useState(false);
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -93,10 +101,71 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
         label="Paired devices"
         note={
           paired && paired.length
-            ? 'Signed in as you. Revoking one stops it syncing at once.'
-            : 'Nothing paired yet. Connect an extension from Skills.'
+            ? 'Each one is signed in as you. Revoking one stops it at once.'
+            : 'Nothing paired yet. A device token is how the browser extension, an MCP worker or a CLI '
+              + 'signs in as you.'
         }
-      />
+      >
+        <Button
+          variant="secondary"
+          size="sm"
+          isLoading={pairing}
+          onClick={async () => {
+            setPairing(true);
+            setMinted(null);
+            try {
+              const body = await mintDeviceToken('Device');
+              setMinted(body.token);
+              /* Copied for them, because it is shown once and a token somebody has to retype is a token
+               * somebody mistypes. The clipboard can be refused, and then the field below is the answer. */
+              try {
+                await navigator.clipboard.writeText(body.token);
+                say({ text: 'Copied. It is shown once — only its hash is stored.', kind: 'good' });
+              } catch (_) {
+                say({ text: 'Shown once — only its hash is stored, so copy it now.', kind: 'good' });
+              }
+              void load();
+            } catch (err) {
+              say({ text: err instanceof Error ? err.message : 'a token could not be made', kind: 'bad' });
+            } finally {
+              setPairing(false);
+            }
+          }}
+        >
+          Pair a device
+        </Button>
+      </Row>
+
+      {minted && (
+        <div className="grid gap-1.5 rounded-lg border border-brand-primary/40 bg-brand-primary/10 p-3">
+          <span className="text-[0.8rem] text-ink-body">
+            Shown once. Only a hash of it is stored, so if this is lost, pair again.
+          </span>
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={minted}
+              onFocus={(e) => e.currentTarget.select()}
+              className="h-9 min-w-0 flex-1 rounded-md border border-stroke bg-surface-card2 px-2.5 font-mono text-[0.78rem] text-ink-primary"
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(minted);
+                  say({ text: 'Copied.', kind: 'good' });
+                } catch (_) {
+                  say({ text: 'The clipboard was blocked — select it and copy.', kind: 'bad' });
+                }
+              }}
+            >
+              Copy
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setMinted(null)}>Done</Button>
+          </div>
+        </div>
+      )}
       {/* The one genuinely unbounded thing on this screen, so it is the one thing that scrolls - rather
           than the screen growing past the size every settings screen shares. Two rows are visible and a
           third is half-visible, which is what tells you there is more. */}
