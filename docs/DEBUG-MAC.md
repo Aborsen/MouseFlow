@@ -77,7 +77,10 @@ curl -fsSL https://mouseflowapp.vercel.app/agent/install-mac.sh | bash -s -- \
 It fetches the source, compiles it here, wraps it in an `.app`, makes it a login item and starts it. Nothing
 to launch by hand afterwards, ever. Since 0.8.1 it also puts an icon in the menu bar - that is where a user
 stops it: "Stop Until Next Login" or "Quit and Turn Off Start at Login". `pkill` alone is resurrected by
-launchd's KeepAlive, which is by design.
+launchd's KeepAlive, which is by design. Since 0.8.2 the icon is also the recording light, and while a
+recording runs the menu offers "Stop and Save Recording" - the agent holds the events and the app's Record
+page takes delivery through its ordinary stop path, without the browser ever coming forward (see the
+protocol's "A recording may end at the AGENT").
 
 For a build you are iterating on, point it at a local copy instead of the deployment:
 

@@ -42,8 +42,10 @@ export function flowFor(rec: Recording, health: AgentStatus['health']) {
        * them to decide whether "no typing" means none happened. */
       recorder: {
         version: health?.version ?? null,
-        canName: health?.canName === true,
-        canKeys: health?.canKeys === true,
+        /* Null when no agent answered, never false: "the keyboard was not watched" and "nobody asked" are
+         * different facts, and the transcript asserts the first out loud. Absent stays not-known. */
+        canName: health ? health.canName === true : null,
+        canKeys: health ? health.canKeys === true : null,
       },
       name: rec.name.slice(0, 80),
       events: rec.events,

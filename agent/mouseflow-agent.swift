@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.8.1"
+let VERSION = "0.8.2"
 
 // ---------------------------------------------------------------- arguments
 
@@ -282,6 +282,35 @@ final class Recorder {
 
     private var buffer: [Ev] = []
     private var recording = false
+    /* A recording ended at the AGENT, waiting for the app to take delivery. Serialized text, not events:
+     * the resolver has already finished with it, and text is what /record/stop returns anyway. Spilled to
+     * disk the moment it exists, because every way this process ends - a crash, a logout, the permission
+     * watcher's own self-restart - would otherwise destroy the one thing the menu item promised to save. */
+    private var heldText: String?
+    private var heldEvents = 0
+    /// True for the moment between "capture stopped" and "the hold is safely on disk".
+    private var ending = false
+
+    private static var heldPath: String {
+        FileManager.default.homeDirectoryForCurrentUser.path
+            + "/Library/Application Support/MouseFlow/held-recording.mmmacro"
+    }
+
+    private init() {
+        /* A hold left by an earlier process - the agent restarted before the app collected. Loaded, not
+         * discarded: the person pressed Save. Unless it parses to zero events, in which case it is deleted:
+         * an empty hold cannot be delivered as anything, and holding it would wedge /record/start behind a
+         * 409 for a recording the app can see no reason to collect. */
+        if let text = try? String(contentsOfFile: Recorder.heldPath, encoding: .utf8) {
+            let events = text.split(separator: "\n").filter { !$0.hasPrefix("#") && !$0.isEmpty }.count
+            if events > 0 {
+                heldText = text
+                heldEvents = events
+            } else {
+                try? FileManager.default.removeItem(atPath: Recorder.heldPath)
+            }
+        }
+    }
     private var startNanos: UInt64 = 0
     private var stoppedElapsed: UInt64 = 0
     private var lastStamp = 0
@@ -319,8 +348,15 @@ final class Recorder {
     /// `moveMs == 0` means "the default this agent was started with" - an absent query parameter parses to
     /// zero, and zero samples a second is not something anybody can want, so the harmless value is the one
     /// that means unspecified.
-    func start(moveMs: Int) {
+    func start(moveMs: Int) -> String? {
         gate.lock()
+        if heldText != nil || ending {
+            /* Atomic with the state it protects: a check on the route and an act in here would leave a gap
+             * an endFromAgent could land in, and starting over a hold destroys it. */
+            gate.unlock()
+            return "a recording stopped at the agent is waiting to be saved - the app's Record page"
+                + " collects it as soon as it is open, and then Record works again"
+        }
         sessionMs = moveMs <= 0 ? moveThrottleMsDefault : min(2000, max(5, moveMs))
         part = 0
         buffer = []
@@ -342,6 +378,7 @@ final class Recorder {
         resolveGate.unlock()
 
         startResolverIfNeeded()
+        return nil
     }
 
     /* Take what has piled up and KEEP RECORDING.
@@ -381,8 +418,80 @@ final class Recorder {
         return head + Recorder.serialize(taken)
     }
 
+    /* The menu bar's "Stop and Save Recording". Capture stops NOW; the events stay, because the agent has
+     * no account to put them on - the app does, and its Record page collects a held recording through the
+     * ordinary /record/stop the moment it notices. `recording:false` with `count>0` on /record/status is
+     * the signal, and it is unambiguous because a client-driven stop never leaves that state behind. */
+    func endFromAgent() {
+        gate.lock()
+        let was = recording
+        stoppedElapsed = recording ? (DispatchTime.now().uptimeNanoseconds - startNanos) : stoppedElapsed
+        recording = false
+        ending = was
+        gate.unlock()
+        guard was else { return }
+        /* Same bounded wait as a client stop, so the held events carry their control names. */
+        waitForResolver(upToMs: 1500)
+        resolveGate.lock()
+        resolverStop = true
+        resolveGate.unlock()
+
+        gate.lock()
+        let taken = buffer
+        buffer = []
+        if taken.isEmpty {
+            /* Nothing was captured, so there is nothing to hold - and holding nothing would wedge
+             * /record/start behind a 409 for a recording that does not exist. The stop still happened;
+             * the app notices `recording:false` and finishes its own bookkeeping. */
+            ending = false
+            gate.unlock()
+            print("  recording      stopped from the menu bar - nothing was captured")
+            return
+        }
+        /* The same #part line a drain writes, so the session clock and the part number survive with the
+         * hold - a tail collected after an agent restart would otherwise claim elapsedMs 0 and sort before
+         * part one. Every reader of the format already skips # lines. */
+        resolveGate.lock()
+        let lost = dropped
+        resolveGate.unlock()
+        var text = "#part\tn=\(part + 1)\telapsedMs=\(Int(stoppedElapsed / 1_000_000))"
+        text += "\tevents=\(taken.count)\tmoveMs=\(sessionMs)\tdropped=\(lost)\n"
+        text += Recorder.serialize(taken)
+        heldText = text
+        heldEvents = taken.count
+        ending = false
+        /* The spill happens INSIDE the gate, deliberately: the moment heldText exists, a /record/stop on
+         * another thread can deliver it and delete the file - and a delete that runs before this write
+         * lands would resurrect a phantom recording at the next startup. A small atomic write under a lock
+         * costs a status poll a few milliseconds, once. */
+        try? FileManager.default.createDirectory(
+            atPath: (Recorder.heldPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        try? text.write(toFile: Recorder.heldPath, atomically: true, encoding: .utf8)
+        let kept = heldEvents
+        gate.unlock()
+        print("  recording      stopped from the menu bar - \(kept) events held for the app to save")
+    }
+
+    /// The menu reads this to say a hold is waiting; the permission watcher reads `busyEnding` so a
+    /// self-restart can never land between "capture stopped" and "the hold is safely on disk".
+    var heldStatus: (held: Bool, events: Int) {
+        gate.lock(); defer { gate.unlock() }
+        return (heldText != nil, heldEvents)
+    }
+    var busyEnding: Bool { gate.lock(); defer { gate.unlock() }; return ending }
+
     func stop() -> String {
         gate.lock()
+        if let text = heldText {
+            /* Taking delivery of a hold: the text was serialized when the menu stopped the recording, so
+             * there is nothing to wait for - hand it over and forget it, on disk too. */
+            heldText = nil
+            heldEvents = 0
+            gate.unlock()
+            try? FileManager.default.removeItem(atPath: Recorder.heldPath)
+            return text
+        }
         let taken = buffer
         buffer = []
         stoppedElapsed = recording ? (DispatchTime.now().uptimeNanoseconds - startNanos) : stoppedElapsed
@@ -419,7 +528,7 @@ final class Recorder {
     func status() -> (recording: Bool, count: Int, part: Int, moveMs: Int, elapsedMs: Int) {
         gate.lock()
         defer { gate.unlock() }
-        return (recording, buffer.count, part, sessionMs, elapsedMs)
+        return (recording, heldText != nil ? heldEvents : buffer.count, part, sessionMs, elapsedMs)
     }
 
     // ---------------------------------------------------------------- capture
@@ -2378,11 +2487,13 @@ enum PermissionWatch {
                  * written. Recorder.stop clears `recording` FIRST and then spends up to 1.5s serializing -
                  * an exit inside that window destroys the recording it is delivering - so the in-flight
                  * request count is the guard that actually covers it. */
-                if Recorder.shared.isRecording || Replayer.shared.isPlaying || Busy.count > 0 { continue }
+                if Recorder.shared.isRecording || Recorder.shared.busyEnding
+                    || Replayer.shared.isPlaying || Busy.count > 0 { continue }
                 print("  permissions    granted in System Settings - restarting to pick them up"
                     + " (launchd starts the agent again at once)")
                 usleep(300_000)
-                if Recorder.shared.isRecording || Replayer.shared.isPlaying || Busy.count > 0 { continue }
+                if Recorder.shared.isRecording || Recorder.shared.busyEnding
+                    || Replayer.shared.isPlaying || Busy.count > 0 { continue }
                 exit(0)
             }
         }
@@ -2538,8 +2649,12 @@ func route(method: String, path: String, query: String, body: String) -> Respons
             Permission.askForAccessibility()
             /* The tap may be installable now, if the answer came from a dialog that is already answered. */
             if installTap() {
+                /* A recording ended at the agent is HELD, not gone - starting over it would destroy the one
+                 * thing the menu bar promised to save. The refusal comes from start() itself, atomically. */
+                if let refused = Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0)) {
+                    return Response(status: 409, body: "{\"ok\":false,\"error\":\(jsonString(refused))}")
+                }
                 DispatchQueue.global().async { Accessibility.prime() }
-                Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
                 return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
             }
             /* Said as the thing to do, not as a state. Without Accessibility there is no tap, and a
@@ -2550,11 +2665,13 @@ func route(method: String, path: String, query: String, body: String) -> Respons
                     + " Accessibility - the agent notices the grant within a few seconds and restarts itself,"
                     + " and Record works from then on") + "}")
         }
+        if let refused = Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0)) {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":\(jsonString(refused))}")
+        }
         /* Off this thread: priming makes a synchronous call INTO the frontmost application, and a
          * beach-balling one would hold the reply past the client's deadline for this route. A head start is
          * still a head start when it lands a moment after the recording opens. */
         DispatchQueue.global().async { Accessibility.prime() }
-        Recorder.shared.start(moveMs: queryInt(query, "moveMs", 0))
         return Response(body: "{\"ok\":true,\"moveMs\":\(Recorder.shared.status().moveMs)}")
 
     case "/record/status":
@@ -2727,6 +2844,10 @@ setvbuf(stdout, nil, _IOLBF, 0)
 setvbuf(stderr, nil, _IOLBF, 0)
 
 Permission.ask()
+/* Touched BEFORE the tap exists, so Recorder.init's one disk read (the reloaded hold) happens now, on this
+ * thread - the tap callback dereferences Recorder.shared on the first input event, and that is the one
+ * path the resolver rules keep clear of I/O. */
+_ = Recorder.shared.heldStatus
 let tapped = installTap()
 
 let listener = socket(AF_INET, SOCK_STREAM, 0)
@@ -2832,7 +2953,29 @@ acceptThread.start()
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
-final class MenuActions: NSObject {
+final class MenuActions: NSObject, NSMenuDelegate {
+    /* "Stop and Save Recording" exists only while there is one - shown when the menu opens, which is the
+     * only moment visibility matters. */
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let recording = Recorder.shared.isRecording
+        stopSaveItem?.isHidden = !recording
+        let held = Recorder.shared.heldStatus
+        heldNoteItem?.isHidden = !held.held
+        if held.held {
+            heldNoteItem?.title = "Recording saved here — the app collects it (\(held.events) events)"
+        }
+        stopSaveSeparator?.isHidden = !recording && !held.held
+    }
+
+    /* Stop the recording and hold it for the app: the agent has no account, the app's Record page does, and
+     * it collects a held recording the moment it looks. The user never has to bring the browser forward.
+     * Off the main thread: endFromAgent waits up to 1.5s for the resolver - which is still naming the very
+     * clicks that operated this menu - and the menu bar must not freeze for it. The flag drops in the first
+     * microseconds either way. */
+    @objc func stopAndSave() {
+        DispatchQueue.global().async { Recorder.shared.endFromAgent() }
+    }
+
     /* Stops the agent until the next login: launchd forgets the job for this session (bootout), so
      * KeepAlive does not resurrect it, and RunAtLoad brings it back at sign-in. The exit is the fallback
      * for a run launchd does not manage, where dying IS stopping. */
@@ -2871,6 +3014,27 @@ let note = NSMenuItem(title: "Records only between Start and Stop", action: nil,
 note.isEnabled = false
 menu.addItem(note)
 menu.addItem(.separator())
+/* Visible only while recording - see menuNeedsUpdate. */
+var stopSaveItem: NSMenuItem?
+var stopSaveSeparator: NSMenuItem?
+let stopSave = NSMenuItem(title: "Stop and Save Recording",
+                          action: #selector(MenuActions.stopAndSave), keyEquivalent: "")
+stopSave.target = menuActions
+stopSave.isHidden = true
+menu.addItem(stopSave)
+stopSaveItem = stopSave
+/* Where a stopped recording IS, said in the menu, because "I pressed Save and nothing visible happened"
+ * reads as loss. Disabled: it is a statement, not an action. */
+var heldNoteItem: NSMenuItem?
+let heldNote = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+heldNote.isEnabled = false
+heldNote.isHidden = true
+menu.addItem(heldNote)
+heldNoteItem = heldNote
+let stopSaveSep = NSMenuItem.separator()
+stopSaveSep.isHidden = true
+menu.addItem(stopSaveSep)
+stopSaveSeparator = stopSaveSep
 let stopItem = NSMenuItem(title: "Stop Until Next Login",
                           action: #selector(MenuActions.stopUntilLogin), keyEquivalent: "")
 stopItem.target = menuActions
@@ -2880,6 +3044,22 @@ let quitItem = NSMenuItem(title: "Quit and Turn Off Start at Login",
 quitItem.target = menuActions
 menu.addItem(quitItem)
 menu.autoenablesItems = false
+menu.delegate = menuActions
 statusItem.menu = menu
+
+/* The icon is also the recording light: the plain cursor when idle, a record mark while a recording runs.
+ * Checked once a second on the main run loop - a person cannot flip states faster than they can see. */
+let idleIcon = statusItem.button?.image
+let liveIcon = NSImage(systemSymbolName: "record.circle",
+                       accessibilityDescription: "MouseFlow Agent - recording")
+liveIcon?.isTemplate = true
+var iconShowsLive = false
+Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+    let recording = Recorder.shared.isRecording
+    if recording != iconShowsLive {
+        iconShowsLive = recording
+        if let want = recording ? liveIcon : idleIcon { statusItem.button?.image = want }
+    }
+}
 
 app.run()

@@ -38,7 +38,7 @@ import { hasSkillFor, saveAsSkill } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { SessionStrip } from './SessionStrip';
 import {
-  CHUNK_CHOICES, type ChunkMinutes, LONG_MOVE_MS, PENDING_MAX_EVENTS, type Session,
+  CHUNK_CHOICES, type ChunkMinutes, EVENTS_MAX_PER_PART, LONG_MOVE_MS, PENDING_MAX_EVENTS, type Session,
   ledgerEntry, partFlow, partHeader, partName, sessionOf, shouldCut,
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
@@ -232,6 +232,8 @@ export const RecordView = () => {
   const lastCutAt = useRef(0);
   /** One cut at a time. The poller runs four times a second and a drain is not instant. */
   const cutting = useRef(false);
+  /** Earliest moment collectHeld may try the account again - see the pacing note inside it. */
+  const retryAt = useRef(0);
   /* What the poller needs, held where its dependencies cannot reach.
    *
    * The effect below is keyed on WHETHER a recording is live and nothing else - there is a paragraph on it
@@ -254,6 +256,14 @@ export const RecordView = () => {
       return;
     }
     if (health.recording) { setNote('Already recording.'); return; }
+    /* `pending` can now hold the ONLY copy of a collected recording - a held tail whose agent-side spill
+     * was already taken and whose push has not landed yet. Wiping it below would silently destroy the exact
+     * thing "Stop and Save" promised to keep, so starting waits until the retry gets it onto the account. */
+    if (pending.current.length) {
+      setNote('Parts of the last session are still on their way to the account — retrying. '
+        + 'Wait a moment, then press Record again.');
+      return;
+    }
     try {
       /* A long session thins the pointer path, and that is not a preference - it is what makes the parts fit.
        * See long-session.ts: movement is 93.75% of the events and 88.6% of the bytes, and at the agent's
@@ -372,6 +382,16 @@ export const RecordView = () => {
     const counter = setInterval(async () => {
       try {
         const s = await recordStatus(port);
+        if (!s.recording && (s.count > 0 || sessionNow.current)) {
+          /* The agent ended this recording itself - the macOS menu bar's "Stop and Save" - and HOLDS the
+           * events: recording:false with count>0 is a state a stop from this page never leaves behind.
+           * Collected through the same door as the Stop button, so it lands on the account identically,
+           * without the user ever bringing this tab forward. A running SESSION goes through the same door
+           * even when the count is zero: an empty tail is a real answer, but "the session finished" still
+           * has to be said and its pending parts still have to be flushed. end() carries its own mutex. */
+          if (endNow.current) await endNow.current();
+          return;
+        }
         setLive({ count: s.count, elapsedMs: s.elapsedMs });
         if (!s.recording) setLive(null);
 
@@ -389,16 +409,28 @@ export const RecordView = () => {
             everyMinutes: running.everyMinutes,
           });
           if (why) {
+            let mustStop = false;
+            let after: Session | null = null;
             cutting.current = true;
             try {
               const out = await cutNow.current(why, running);
               setSession(out.session);
               if (out.note) setNote(out.note);
-              /* Too much waiting to be sent: stop rather than hold a whole shift in memory. The stop takes
-               * the tail with it, so nothing recorded so far is lost by stopping. */
-              if (out.stop && endNow.current) await endNow.current();
+              mustStop = out.stop;
+              after = out.session;
             } finally {
               cutting.current = false;
+            }
+            /* Too much waiting to be sent: stop rather than hold a whole shift in memory. The stop takes
+             * the tail with it, so nothing recorded so far is lost by stopping. AFTER the mutex is
+             * released, because end() takes the same one - held across this call, the emergency stop was a
+             * silent no-op and the session it existed to end recorded on. And the ref is flushed BY HAND
+             * first: setSession only reaches sessionNow at the next React commit, which cannot happen
+             * before this same-task call - end() would cut against the pre-cut session and drop the part
+             * just written from the ledger, orphaning its row on the account. */
+            if (mustStop && endNow.current) {
+              if (after) sessionNow.current = after;
+              await endNow.current();
             }
           }
         }
@@ -428,6 +460,13 @@ export const RecordView = () => {
   }, [capturing, port]);
 
   const end = useCallback(async () => {
+    /* One mutex for every door into stopping: the Stop button, the poller's collect of an agent-side stop,
+     * and the mounted held-check below. Two concurrent stops meant two recordStop calls - the loser took an
+     * empty body, said "Nothing was captured." over the winner's note, and in a session could commit a
+     * ledger missing the tail part the winner had just pushed. */
+    if (cutting.current) return;
+    cutting.current = true;
+    try {
     /* A session ends by cutting its tail, not by making a recording out of it.
      *
      * What /record/stop returns during a session is only what happened since the last cut - everything
@@ -517,7 +556,15 @@ export const RecordView = () => {
       setLive(null);
       setNote(err instanceof Error ? err.message : 'could not stop recording');
     }
-  }, [port, state.recordings.length, update]);
+    } finally {
+      cutting.current = false;
+    }
+    /* `health` and `cut` are real dependencies: without them a page that loaded before the agent answered
+     * keeps a stale closure where health is null, and every recording it collects is stamped
+     * canName:false/canKeys:false - the transcript then asserts "the keyboard was not watched" about an
+     * agent that watched it fine. The refs-effect below re-points endNow on every change, so the poller
+     * keeps a stable ref regardless. */
+  }, [port, state.recordings.length, update, cut, health]);
 
   /* The refs the poller reads, pointed at this render's functions. In an effect rather than inline, so a
    * render that is thrown away cannot leave a ref aimed at a closure that never committed. */
@@ -526,6 +573,119 @@ export const RecordView = () => {
     cutNow.current = cut;
     endNow.current = end;
   }, [session, cut, end]);
+
+  /* A recording the agent ended while this page was away - the menu bar's "Stop and Save" with the tab
+   * closed or elsewhere - is still HELD by the agent (spilled to its disk, so even an agent restart keeps
+   * it), and /record/start answers 409 until somebody takes delivery.
+   *
+   * A SESSION's held tail is filed into its session, never as a standalone recording: the ledger row with
+   * endedAt:null is the session it belongs to, the tail is pushed as that session's final parts - sliced
+   * under the payload cap, which is the entire reason sessions exist - and the row is finally stamped
+   * ended. Without the slicing, an overnight tail would be one giant push the account refuses. A dangling
+   * session with nothing held is stamped too: "still running" would otherwise be pinned on this page
+   * forever. Plain recordings go through end(), the same door as the Stop button. */
+  const collectHeld = useCallback(async () => {
+    if (cutting.current) return;
+    /* Paced by a timestamp, not by the effect: a failed push below calls update(), update() remakes
+     * state.sessions, that remakes this callback, and the effect re-runs it AT ONCE - an unpaced hot loop
+     * hammering an account that may be down precisely because it is overloaded. The stamp makes every
+     * retry wait its three seconds no matter how many times the effect fires. */
+    if (Date.now() < retryAt.current) return;
+    let s;
+    try { s = await recordStatus(port); } catch { return; }
+    if (s.recording) return;
+    /* The NEWEST dangling session, not the first: a row orphaned by an old crash must not swallow a tail
+     * that belongs to yesterday evening's session. */
+    const dangling = ((state.sessions as Session[] | undefined) ?? [])
+      .filter((x) => !x.endedAt)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0] ?? null;
+    if (s.count > 0 && !dangling) {
+      if (endNow.current) await endNow.current();
+      return;
+    }
+    if (!dangling) return;
+    cutting.current = true;
+    try {
+      let sess = dangling;
+
+      /* Taking delivery is irreversible - the agent deletes its spill - so the events are staged into
+       * `pending` BEFORE the account is asked, exactly the order cut() documents: a failed push keeps the
+       * part in memory and retries on the next tick, rather than a failed push meaning the delivery never
+       * happened. The ledger rows are written at once (onAccount:false) so retries never duplicate them. */
+      if (s.count > 0) {
+        const text = await recordStop(port);
+        const { events } = parseMacro(text);
+        const head = partHeader(text);
+        if (events.length) {
+          let n = head.n ?? sess.parts.length + 1;
+          const atMs = head.elapsedMs ?? s.elapsedMs
+            ?? sess.parts.reduce((m, p) => Math.max(m, p.atMs), 0);
+          for (let i = 0; i < events.length; i += EVENTS_MAX_PER_PART) {
+            const slice = events.slice(i, i + EVENTS_MAX_PER_PART);
+            const name = partName({ windows: [], n, startedAt: sess.startedAt });
+            const entry = ledgerEntry({ id: uid(), n, name, events: slice, atMs, onAccount: false });
+            pending.current.push({ part: entry, name, events: slice, windows: [] });
+            sess = { ...sess, parts: [...sess.parts, entry] };
+            n += 1;
+          }
+        }
+      }
+
+      /* Everything waiting - the tail just taken AND any parts an earlier cut failed to send - in one push.
+       * The session is stamped finished only when nothing is left waiting; until then it stays honestly
+       * open and this same check retries every few seconds. */
+      let problem: string | null = null;
+      let flipped = false;
+      if (pending.current.length) {
+        try {
+          const flows = pending.current.map((p) => partFlow({
+            part: p.part, session: sess, name: p.name, events: p.events, windows: p.windows, health,
+          }));
+          const saved = await push({ flows });
+          if (saved.problems.length) {
+            problem = saved.problems.join('; ');
+          } else {
+            const sent = new Set(pending.current.map((p) => p.part.id));
+            pending.current = [];
+            sess = { ...sess, parts: sess.parts.map((p) => (sent.has(p.id) ? { ...p, onAccount: true } : p)) };
+            flipped = true;
+          }
+        } catch (err) {
+          problem = err instanceof Error ? err.message : 'the account could not be reached';
+        }
+      }
+      const finished = problem === null;
+      retryAt.current = finished ? 0 : Date.now() + 3000;
+      /* The store is written when something material changed - new ledger entries, a delivery, the stamp.
+       * A retry that failed AGAIN changed nothing, and writing an identical session with a fresh identity
+       * would both churn localStorage and re-arm the effect that calls this. */
+      const staged = sess !== dangling;
+      if (!staged && !flipped && !finished) return;
+      const done = finished ? { ...sess, endedAt: new Date().toISOString() } : sess;
+      update((prev) => ({
+        sessions: [...((prev.sessions as Session[]) ?? []).filter((x) => x.id !== done.id), done],
+      }));
+      setNote(finished
+        ? `A session stopped at the agent was collected — ${done.parts.length} part${
+          done.parts.length === 1 ? '' : 's'} on the account.`
+        : `Collected from the agent, but the account did not take it: ${problem}. Kept here — retrying.`);
+      if (finished) await reload();
+    } finally {
+      cutting.current = false;
+    }
+  }, [port, state.sessions, health, update, reload]);
+
+  /* Checked every few seconds while this page is open and nothing is live here - not only on the agent's
+   * first appearance, because a held recording can arrive at any moment (the poller dies with its own
+   * error handling, the agent restarts, the menu is pressed while this page shows idle). The check is one
+   * status read; collection is guarded by the same mutex as every other stop. */
+  const agentUp = health != null;
+  useEffect(() => {
+    if (!agentUp || capturing) return;
+    void collectHeld();
+    const check = setInterval(() => { void collectHeld(); }, 3000);
+    return () => clearInterval(check);
+  }, [agentUp, capturing, collectHeld]);
 
   /* The ledger, kept in the store on every change rather than at the end.
    *

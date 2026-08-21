@@ -82,6 +82,23 @@ fits inside the 400KB cap. **Per session, not global**: a plain `/record/start` 
 default again. Replay of a thinned recording is coarser, deliberately — a day-long session is recorded to be
 READ, not replayed.
 
+### A recording may end at the AGENT
+
+Since 0.8.2, an agent may end a recording itself - on macOS that is the menu bar's **Stop and Save
+Recording**, for the person who started a flow in the app and does not want to dig the browser back out to
+stop it. The agent stops capturing and **holds the events**: `/record/status` answers `recording:false`
+with `count>0` - a state a client-driven stop never leaves behind, so it is the whole signal - and
+`/record/stop` delivers them exactly as always. `/record/start` answers **409** while a held recording
+waits, because starting over it would destroy the one thing the stop promised to save. The hold is spilled
+to the agent's own disk the moment it exists and reloaded at startup, so no restart - a crash, a logout,
+the permission watcher's own self-restart - can destroy it; the file is deleted on delivery. The menu says
+a hold is waiting, because "I pressed Save and nothing visible happened" reads as loss.
+
+The agent itself never touches the account - it has no credentials, which is a design and not a gap. The
+client's Record page takes delivery through the same path as its own Stop button: while open, its status
+poll notices within a quarter second; on arrival, one status read collects what was held while the page was
+away. An agent that never ends recordings itself (Windows today) is a valid implementation of this section.
+
 ### The capability flags
 
 The `can*` flags exist because a version number could not answer the question that mattered. An

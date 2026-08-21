@@ -190,8 +190,10 @@ export const partFlow = (
     role: RECORDING_ROLE,
     recorder: {
       version: health?.version ?? null,
-      canName: health?.canName === true,
-      canKeys: health?.canKeys === true,
+      /* Null when no agent answered, never false - same rule as flow-for.ts: "the keyboard was not watched"
+       * and "nobody asked" are different facts, and a health flap mid-session must not stamp the first. */
+      canName: health ? health.canName === true : null,
+      canKeys: health ? health.canKeys === true : null,
     },
     /* Which session, and where in it. `atMs` is the session clock at the cut, so the parts can be laid end
      * to end without trusting the order they happened to sync in. */
