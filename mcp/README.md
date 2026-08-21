@@ -1,10 +1,21 @@
 # MouseFlow as tools an AI can call
 
-An MCP server. Every skill on a MouseFlow account becomes a tool; calling one runs it here, on this
-machine, through the local agent.
+Every skill on a MouseFlow account becomes a tool; calling one runs it on the machine the skill belongs to,
+through the local agent.
 
-Two files and no dependencies. `server.mjs` speaks the protocol; `shared.mjs` borrows the app's own
-modules so that nothing in this directory is a second copy of anything.
+**Two ways to connect, and the difference is where the decider sits.**
+
+| | The decider is… | Add it with | Needs |
+|---|---|---|---|
+| **stdio** — `mcp/server.mjs` | on this machine | `claude mcp add … -- node …/server.mjs` | the agent running here |
+| **HTTPS** — `/api/mcp` | anywhere: a phone, a browser, someone else's editor | a URL and a bearer token | the agent **and** `mcp/worker.mjs` running on the machine |
+
+The HTTPS half cannot reach into your computer, and nothing on the internet should be able to. So the
+computer dials out: a call becomes a queued job, `worker.mjs` claims it, runs it, and reports back. A machine
+with no worker running claims nothing, and the caller is told exactly that rather than left waiting.
+
+No dependencies anywhere. `shared.mjs` borrows the app's own modules so that nothing in this directory is a
+second copy of anything, and `run.mjs` is the one way a skill is run, used by both halves.
 
 ## What you need
 
@@ -17,7 +28,36 @@ modules so that nothing in this directory is a second copy of anything.
 3. **Node 22.18 or newer.** This server runs the app's TypeScript modules directly rather than a compiled
    copy of them, which needs a Node that strips types. 24 LTS is the safe answer. `shared.mjs` says why.
 
-## Adding it
+## Adding it — HTTPS
+
+One URL, one header. Nothing to install where the AI runs.
+
+```bash
+claude mcp add --transport http mouseflow https://mouse-agent.vercel.app/api/mcp --header "Authorization: Bearer mf_your_token_here"
+```
+
+In a client that reads a config file, or in Claude's own connector settings, the same two things: the URL
+`https://mouse-agent.vercel.app/api/mcp` and a static `Authorization: Bearer mf_…` header. Never put the
+token in the URL — the MCP authorization spec forbids access tokens in a query string, and this server does
+not read one from there.
+
+Then, on the machine the skills belong to:
+
+```bash
+MOUSEFLOW_TOKEN=mf_your_token_here node mcp/worker.mjs
+```
+
+It prints what it found and then waits. `mouseflow_status` says whether it is being heard.
+
+**Each person uses their own token and sees their own skills.** That is the whole of the isolation: the
+account is resolved from the credential on every request, every query filters on it, and no route takes a
+user id. One caveat worth stating plainly — a connector installed once for a whole organisation with a
+single shared header means everyone on it shares one account. That is not multi-tenancy, it is one tenant
+with many users. Per-person tokens are the answer today; OAuth, so that one installed connector identifies
+the *person*, is what replaces them, and the 401 already advertises where it will live
+(`/.well-known/oauth-protected-resource`, RFC 9728).
+
+## Adding it — stdio
 
 Claude Code:
 
@@ -39,19 +79,25 @@ Anything that reads a config file — Claude Desktop, an editor extension:
 }
 ```
 
+Both `server.mjs` and `worker.mjs` read the same environment:
+
 | Variable | Default | |
 |---|---|---|
 | `MOUSEFLOW_TOKEN` | — | required; the device token |
 | `MOUSEFLOW_URL` | `https://mouse-agent.vercel.app` | the deployment holding the account |
 | `MOUSEFLOW_AGENT_PORT` | `8787` | where the local agent listens |
+| `MOUSEFLOW_WORKER_NAME` | the hostname | what to call this machine in the queue (worker only) |
 
 ## What it offers
 
-`tools/list` returns your skills plus two of its own:
+`tools/list` returns your skills plus a few of its own:
 
-- **`mouseflow_status`** — whether the agent is running, what it can do, how many skills are on the
-  account, and how many rows were *not* offered. Ask this first when something refuses.
+- **`mouseflow_status`** — over stdio: whether the agent is running and what it can do. Over HTTPS: whether
+  a machine is listening for work, and what is queued — it cannot see the agent, which is loopback on
+  somebody else's computer, and it says so rather than guessing. Both report how many rows were *not*
+  offered. Ask this first when something refuses.
 - **`mouseflow_stop`** — stop a replay or a run.
+- **`mouseflow_run_status`** (HTTPS only) — how a run that outlasted the request is getting on.
 
 Each skill's definition is the app's own: `structureOf()` derives it and `wireFor('mcp')` writes it, which
 is the same JSON the **More → structure** panel shows you on the Skills page. So what a model is told about
@@ -97,6 +143,8 @@ and the reason the tool list is bounded rather than open.
 node mcp/test-mcp.mjs
 ```
 
-Stands up a fake deployment and a fake agent, spawns the server, and drives the real protocol over stdio —
-the handshake, the tool list, a replay with its `#ctx` lines, a goal run through the decision loop, and every
-refusal. No account and no agent needed.
+75 checks. Stands up a fake deployment and a fake agent, spawns the stdio server and drives the real
+protocol — the handshake, the tool list, a replay with its `#ctx` lines, a goal run through the decision
+loop, every refusal — then spawns the **worker** and watches it claim a job, run it and report. It also
+asserts the HTTPS route's isolation from its source: that every `user_id` in every query comes from the
+credential and nothing reads one out of a request. No account and no agent needed.

@@ -21,6 +21,7 @@
   ],
   "rewrites": [
     { "source": "/api/auth/(.*)", "destination": "/api/auth?authpath=$1" },
+    { "source": "/.well-known/oauth-protected-resource", "destination": "/api/well-known" },
     { "source": "/((?!api/|agent/|assets/|icons/|sw\\.js|manifest\\.webmanifest).*)", "destination": "/index.html" }
   ]
 }

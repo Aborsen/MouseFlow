@@ -1,0 +1,519 @@
+/* MouseFlow over HTTPS, so the decider can be anywhere and still only ever see one account.
+ *
+ *   POST /api/mcp                    JSON-RPC 2.0. initialize, ping, tools/list, tools/call
+ *   GET  /api/mcp                    a sentence for whoever opened the URL in a browser
+ *   POST /api/mcp?worker=claim       a worker on somebody's machine takes the next job  (long-polls)
+ *   POST /api/mcp?worker=report      ...and says how it went
+ *   GET  /api/mcp?worker=state&id=   ...and asks whether it has been cancelled meanwhile
+ *
+ * WHY THIS EXISTS BESIDE mcp/server.mjs. That one runs on the user's machine over stdio, which is why it can
+ * run anything: the agent listens on loopback and only something on that machine can reach it. It also means
+ * one person, one terminal. This is the same tools reachable from Claude on a phone, in a browser, in
+ * somebody else's editor - and reachable is the whole problem, because a serverless function cannot dial into
+ * anybody's desktop and nothing on the internet should be able to.
+ *
+ * So the desktop dials out. A tools/call becomes a row in run_queue; a worker on the user's own machine
+ * claims it, runs it through the agent it can already reach, and reports back; this waits and answers with
+ * what the worker said. The direction of the connection never reverses. A machine with no worker running
+ * claims nothing, and the caller is told exactly that rather than left waiting.
+ *
+ * IDENTITY IS THE POINT. Every request resolves ONE user through whoIsCalling - a session cookie, or the
+ * device token the extension already pairs with - and every query filters on that id inside the WHERE
+ * clause. There is no route here that takes a user id, and no code path that reads one from the request
+ * body. A model-supplied user id is the whole bug class: one hallucinated uuid and this becomes a way to
+ * list, or run, somebody else's skills. So the id arrives once, from the credential, and the credential is
+ * the only thing that says who anybody is.
+ *
+ * That is also the answer to "each person in an organisation sees only themselves": each person adds this
+ * with their OWN token, and sees their own skills. The one thing to be careful of is a connector installed
+ * once for a whole organisation with a single shared header - everyone on it would share one account, which
+ * is not multi-tenancy, it is one tenant with many users. The fix for that is OAuth, so the connector
+ * identifies the person rather than the installation; the 401 below already advertises where that will live
+ * (RFC 9728), and until it exists this is per-person-token.
+ *
+ * WHAT IT CANNOT SEE. The local agent. Whether it is running, what version, whether a replay is playing -
+ * all of that is loopback and this is not on that machine. `mouseflow_status` reports what the ACCOUNT
+ * knows and says plainly which half it cannot see, rather than guessing.
+ */
+
+import { neon } from '@neondatabase/serverless';
+import { randomUUID } from 'node:crypto';
+import { whoIsCalling } from './_session.js';
+import { structureOf, wireFor } from './_skill-schema.mjs';
+
+const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
+const NEWEST = '2025-06-18';
+const SERVER = { name: 'mouseflow', version: '0.2.0' };
+
+/* How long a tools/call waits for a machine to do the work before it answers "still going". Bounded well
+ * under the function's own limit, because an answer that arrives as a gateway timeout is not an answer. */
+const CALL_WAIT_MS = 110_000;
+const CALL_POLL_MS = 1_500;
+/* And how long a worker's claim request may hold open with nothing to do. One request every half minute
+ * beats one every three seconds, and an idle loop is not billed as CPU. */
+const CLAIM_WAIT_MAX_MS = 25_000;
+const CLAIM_POLL_MS = 1_000;
+/* A job a worker took and never reported. Not returned to the pool - a run that may be half-done must not
+ * be repeated blind - so it is failed with a reason. */
+const CLAIM_STALE_MS = 45 * 60 * 1000;
+
+function cors(req, res) {
+  const origin = req.headers.origin || '';
+  /* An MCP client is not a browser page and sends no Origin; the ones that do are our own app and the
+   * extension. Same rule as every other route here, and no Allow-Credentials, which is what stops a
+   * cross-site page spending somebody's session. */
+  res.setHeader('Access-Control-Allow-Origin',
+    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, mcp-session-id, mcp-protocol-version');
+  res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
+  res.setHeader('Access-Control-Max-Age', '86400');
+}
+
+/** RFC 6750 / RFC 9728: say it is a bearer resource and where the authorisation server will be found. */
+function unauthorized(req, res, why) {
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'mouse-agent.vercel.app';
+  const resource = `https://${host}/api/mcp`;
+  res.setHeader('WWW-Authenticate',
+    `Bearer realm="MouseFlow", resource_metadata="https://${host}/.well-known/oauth-protected-resource"`
+    + (why ? `, error="invalid_token", error_description="${why}"` : ''));
+  res.status(401).json({
+    error: why || 'missing_token',
+    resource,
+    hint: 'Send Authorization: Bearer <device token>. Mint one in the app under Settings → My account. '
+      + 'Each person uses their own, and sees only their own skills.',
+  });
+}
+
+const rpc = (id, result) => ({ jsonrpc: '2.0', id: id ?? null, result });
+const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
+const say = (text, isError = false) => ({ content: [{ type: 'text', text }], isError });
+
+/* ------------------------------------------------------------------------------- the account */
+
+const STATUS_TOOL = {
+  name: 'mouseflow_status',
+  description: 'What this MouseFlow account holds and whether a machine is listening for work: the number '
+    + 'of skills, whether a worker has been seen recently, and anything queued or running. Ask this first '
+    + 'when a skill call says nothing picked it up.',
+  inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+};
+
+const STOP_TOOL = {
+  name: 'mouseflow_stop',
+  description: 'Cancel MouseFlow work that is queued or running on the user\'s machine. Safe to call when '
+    + 'nothing is happening.',
+  inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+};
+
+const RUN_STATUS_TOOL = {
+  name: 'mouseflow_run_status',
+  description: 'How a run that was still going is getting on. Only needed when a skill call came back '
+    + 'saying it had not finished; it names the run id to pass here.',
+  inputSchema: {
+    type: 'object',
+    properties: { run: { type: 'string', description: 'The run id the earlier answer named.' } },
+    required: ['run'],
+    additionalProperties: false,
+  },
+};
+
+/** The caller's skills, stamped ones only, with their derived tool definitions. */
+async function skillsOf(sql, userId) {
+  const rows = await sql`
+    select client_id, source, kind, name, description, payload, origins
+    from user_flow
+    where user_id = ${userId} and deleted_at is null
+    order by updated_at desc
+  `;
+  const skills = [];
+  let unstamped = 0;
+  for (const row of rows) {
+    const role = row.payload && typeof row.payload.role === 'string' ? row.payload.role : null;
+    if (role === 'recording') continue;
+    /* Stamped skills only, and deliberately stricter than the Skills page, which lists an unstamped row AS
+     * a skill so that nothing anybody made before the stamp existed vanishes from their library. That
+     * default is right for a page somebody reads and wrong for a tool list, which is read by something that
+     * will CALL what is in it. The count is reported by mouseflow_status, so what is left out is visible. */
+    if (role !== 'skill') { unstamped++; continue; }
+    skills.push({
+      id: row.client_id,
+      source: row.source,
+      kind: row.kind,
+      name: row.name,
+      description: row.description,
+      payload: row.payload,
+      origins: row.origins,
+    });
+  }
+  return { skills, unstamped };
+}
+
+/** Tool name -> skill. Names are near-unique by construction; a collision is still handled. */
+function tableOf(skills) {
+  const table = new Map();
+  for (const flow of skills) {
+    const structure = structureOf(flow);
+    let name = structure.toolName;
+    if (table.has(name)) {
+      let n = 2;
+      while (table.has(`${name}_${n}`)) n++;
+      name = `${name}_${n}`;
+    }
+    table.set(name, { flow, structure });
+  }
+  return table;
+}
+
+/* ------------------------------------------------------------------------------- the queue */
+
+const jobId = () => `q_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/** Whether a machine has asked for work lately, and when. */
+async function workerSeen(sql, userId) {
+  try {
+    const rows = await sql`
+      select value from user_pref where user_id = ${userId} and key = 'worker.seen'
+    `;
+    if (!rows.length) return null;
+    const at = new Date(rows[0].value);
+    return Number.isFinite(at.getTime()) ? at : null;
+  } catch (_) {
+    /* No table on this deployment yet. Absent is not false: it means nothing is known, and the caller is
+     * told that rather than told there is no worker. */
+    return undefined;
+  }
+}
+
+async function stampWorker(sql, userId) {
+  try {
+    await sql`
+      insert into user_pref (user_id, key, value) values (${userId}, 'worker.seen', ${new Date().toISOString()})
+      on conflict (user_id, key) do update set value = excluded.value, updated_at = now()
+    `;
+  } catch (_) { /* the stamp is a convenience, never a precondition */ }
+}
+
+/* ------------------------------------------------------------------------------- the tools */
+
+async function callTool(sql, who, params, req) {
+  const asked = params && params.name;
+  const args = (params && params.arguments) || {};
+
+  if (asked === STATUS_TOOL.name) {
+    const { skills, unstamped } = await skillsOf(sql, who.id);
+    const seen = await workerSeen(sql, who.id);
+    const busy = await sql`
+      select id, tool_name, state, created_at from run_queue
+      where user_id = ${who.id} and state in ('queued', 'claimed')
+      order by created_at limit 10
+    `;
+    const lines = [];
+    lines.push(`${skills.length} skill${skills.length === 1 ? '' : 's'} on this account, of which `
+      + `${skills.filter((s) => s.source === 'desktop').length} run on a desktop and `
+      + `${skills.filter((s) => s.source !== 'desktop').length} in the browser extension.`);
+    if (seen === undefined) {
+      lines.push('Whether a machine is listening cannot be read on this deployment.');
+    } else if (!seen) {
+      lines.push('No machine has ever asked this account for work. Running a skill needs the MouseFlow '
+        + 'worker going on the computer the skill belongs to: `node mcp/worker.mjs`.');
+    } else {
+      const ago = Math.round((Date.now() - seen.getTime()) / 1000);
+      lines.push(ago < 90
+        ? `A machine is listening for work (last asked ${ago}s ago).`
+        : `No machine has asked for work in ${Math.round(ago / 60)} minutes, so a skill call would sit in `
+          + 'the queue. The worker may not be running.');
+    }
+    if (busy.length) {
+      lines.push(`Queued or running: ${busy.map((b) => `${b.tool_name || b.id} (${b.state})`).join(', ')}.`);
+    }
+    if (unstamped) {
+      lines.push(`${unstamped} row${unstamped === 1 ? '' : 's'} on the account are not marked as either a `
+        + 'recording or a skill, and are not offered as tools. Saving them again in the app stamps them.');
+    }
+    lines.push('What this cannot see: the agent itself. It listens on the machine\'s own loopback, and this '
+      + 'is not on that machine.');
+    return say(lines.join('\n'));
+  }
+
+  if (asked === STOP_TOOL.name) {
+    const killed = await sql`
+      update run_queue set state = 'cancelled', finished_at = now(),
+             ok = false, said = 'cancelled before it finished'
+      where user_id = ${who.id} and state in ('queued', 'claimed')
+      returning id
+    `;
+    return say(killed.length
+      ? `Cancelled ${killed.length} job${killed.length === 1 ? '' : 's'}. A run already under way stops at `
+        + 'the next step the worker checks, which is within a second or two.'
+      : 'Nothing was queued or running.');
+  }
+
+  if (asked === RUN_STATUS_TOOL.name) {
+    const id = String(args.run || '');
+    const rows = await sql`
+      select state, ok, said, finished_at from run_queue where id = ${id} and user_id = ${who.id}
+    `;
+    if (!rows.length) return say(`There is no run "${id}" on this account.`, true);
+    const job = rows[0];
+    if (job.state === 'queued') return say('Still waiting for a machine to pick it up.');
+    if (job.state === 'claimed') return say('A machine has it and is working on it.');
+    return say(job.said || (job.ok ? 'Done.' : 'It did not finish.'), !job.ok);
+  }
+
+  /* Everything else is a skill. */
+  const { skills } = await skillsOf(sql, who.id);
+  const entry = tableOf(skills).get(asked);
+  if (!entry) {
+    return say(`There is no skill called "${asked}" on this account any more. The list of skills has `
+      + 'changed; ask for the tool list again.', true);
+  }
+  if (entry.structure.runner !== 'agent') {
+    return say(`"${entry.flow.name}" aims at elements in a web page, so the MouseFlow browser extension is `
+      + 'the half that can replay it. A worker drives the desktop agent, which has no page to aim at. Ask '
+      + 'the user to run it from the extension.', true);
+  }
+
+  const seen = await workerSeen(sql, who.id);
+  if (seen === null) {
+    return say('No machine has ever asked this account for work, so there is nothing to run this on. The '
+      + 'MouseFlow worker has to be running on the computer the skill belongs to - `node mcp/worker.mjs` in '
+      + 'the repository, with the same device token. Nothing was queued.', true);
+  }
+
+  const already = await sql`
+    select id from run_queue where user_id = ${who.id} and state in ('queued', 'claimed') limit 1
+  `;
+  if (already.length) {
+    return say('MouseFlow is already busy on that machine. One thing at a time - there is one mouse. Wait '
+      + 'for it, or call mouseflow_stop.', true);
+  }
+
+  const id = jobId();
+  await sql`
+    insert into run_queue (id, user_id, flow_id, tool_name, args)
+    values (${id}, ${who.id}, ${entry.flow.id}, ${asked}, ${JSON.stringify(args)})
+  `;
+
+  /* Wait for the machine, because a tool that returns before the work happened has told the caller
+   * nothing - and say so honestly when the wait runs out rather than reporting a success nobody saw. */
+  const until = Date.now() + CALL_WAIT_MS;
+  while (Date.now() < until) {
+    await new Promise((done) => setTimeout(done, CALL_POLL_MS));
+    const rows = await sql`select state, ok, said from run_queue where id = ${id}`;
+    if (!rows.length) break;
+    const job = rows[0];
+    if (job.state === 'done' || job.state === 'failed' || job.state === 'cancelled') {
+      return say(job.said || (job.ok ? 'Done.' : 'It did not finish.'), !job.ok);
+    }
+  }
+
+  const now = await sql`select state from run_queue where id = ${id}`;
+  const state = now.length ? now[0].state : 'gone';
+  return say(state === 'queued'
+    ? `Nothing on the machine picked this up within ${Math.round(CALL_WAIT_MS / 1000)} seconds, and it is `
+      + `still queued as ${id}. The MouseFlow worker is probably not running there. Call `
+      + `mouseflow_run_status with that id, or mouseflow_stop to take it off the queue.`
+    : `It is still running on the machine as ${id}. Call mouseflow_run_status with that id for the outcome.`,
+  state === 'queued');
+}
+
+/* ------------------------------------------------------------------------------- the worker side */
+
+async function workerRoute(action, req, res, sql, who) {
+  if (action === 'claim') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
+    await stampWorker(sql, who.id);
+
+    /* Anything a worker took and never came back from. Failed rather than requeued: a run that may be
+     * half-done must not be repeated blind, and a person can ask for it again knowing what happened. */
+    await sql`
+      update run_queue set state = 'failed', ok = false, finished_at = now(),
+             said = 'the machine took this job and never reported back'
+      where user_id = ${who.id} and state = 'claimed'
+        and claimed_at < now() - ${`${Math.round(CLAIM_STALE_MS / 1000)} seconds`}::interval
+    `;
+
+    const by = String((req.body && req.body.worker) || 'worker').slice(0, 60);
+    const wait = Math.min(CLAIM_WAIT_MAX_MS, Math.max(0, Number((req.body && req.body.wait) || 0) * 1000));
+    const until = Date.now() + wait;
+
+    for (;;) {
+      /* One statement, so two workers on one account cannot take the same job: the row is selected and
+       * claimed in the same update. */
+      const took = await sql`
+        update run_queue set state = 'claimed', claimed_by = ${by}, claimed_at = now()
+        where id = (
+          select id from run_queue
+          where user_id = ${who.id} and state = 'queued'
+          order by created_at limit 1
+        )
+        returning id, flow_id, tool_name, args
+      `;
+      if (took.length) {
+        const job = took[0];
+        const flow = await sql`
+          select client_id, source, kind, name, description, payload, origins
+          from user_flow where user_id = ${who.id} and client_id = ${job.flow_id} and deleted_at is null
+        `;
+        if (!flow.length) {
+          await sql`
+            update run_queue set state = 'failed', ok = false, finished_at = now(),
+                   said = 'the skill was deleted between the ask and the run'
+            where id = ${job.id}
+          `;
+          continue;
+        }
+        const row = flow[0];
+        return res.status(200).json({
+          ok: true,
+          job: {
+            id: job.id,
+            toolName: job.tool_name,
+            args: job.args || {},
+            /* The skill travels WITH the job, in the shape structureOf expects. A worker that fetched it
+             * separately could get a different version than the one the queue meant. */
+            flow: {
+              id: row.client_id, source: row.source, kind: row.kind, name: row.name,
+              description: row.description, payload: row.payload, origins: row.origins,
+            },
+          },
+        });
+      }
+      if (Date.now() >= until) return res.status(200).json({ ok: true, job: null });
+      await new Promise((done) => setTimeout(done, CLAIM_POLL_MS));
+    }
+  }
+
+  if (action === 'report') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
+    const body = req.body || {};
+    const id = String(body.id || '');
+    const ok = body.ok === true;
+    const said = body.said == null ? null : String(body.said).slice(0, 4000);
+    const done = await sql`
+      update run_queue set state = ${ok ? 'done' : 'failed'}, ok = ${ok}, said = ${said},
+             finished_at = now()
+      where id = ${id} and user_id = ${who.id} and state = 'claimed'
+      returning id
+    `;
+    /* A job cancelled while it ran is not 'claimed' any more, so nothing is updated - and that is the right
+     * answer, not an error: the cancellation is what the person asked for and it stands. */
+    return res.status(200).json({ ok: true, recorded: done.length === 1 });
+  }
+
+  if (action === 'state') {
+    const id = String((req.query && req.query.id) || '');
+    const rows = await sql`select state from run_queue where id = ${id} and user_id = ${who.id}`;
+    return res.status(200).json({ ok: true, state: rows.length ? rows[0].state : 'gone' });
+  }
+
+  return res.status(400).json({ error: `no worker action "${action}"` });
+}
+
+/* ------------------------------------------------------------------------------- the route */
+
+export default async function handler(req, res) {
+  cors(req, res);
+  if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+
+  if (req.method === 'GET' && !(req.query && req.query.worker)) {
+    /* Whoever opened this in a browser. Deliberately answerable without a token: it says nothing about
+     * anybody and saves a person guessing why a URL returns 401. */
+    res.status(200).json({
+      name: SERVER.name,
+      version: SERVER.version,
+      protocol: 'MCP over HTTP POST, JSON-RPC 2.0',
+      auth: 'Bearer <device token> — mint one in the app under Settings → My account',
+      note: 'Running a skill needs the MouseFlow worker on the machine the skill belongs to. See '
+        + 'docs/product/21-mcp.md.',
+    });
+    return;
+  }
+
+  if (!process.env.DATABASE_URL) {
+    res.status(503).json({ error: 'This deployment has no database configured.' });
+    return;
+  }
+  const sql = neon(process.env.DATABASE_URL);
+
+  let who;
+  try {
+    who = await whoIsCalling(req, sql);
+  } catch (_) {
+    who = null;
+  }
+  if (!who) return unauthorized(req, res);
+
+  const action = req.query && req.query.worker;
+  if (action) return workerRoute(String(action), req, res, sql, who);
+
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'POST' });
+    return;
+  }
+
+  const body = req.body && typeof req.body === 'object' ? req.body : null;
+  if (!body || body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
+    res.status(400).json(rpcError(body && body.id, -32600, 'not a JSON-RPC 2.0 request'));
+    return;
+  }
+
+  const { id, method, params } = body;
+
+  /* A notification has no id and gets no body - 202 is the documented answer, and replying to one would
+   * put an unmatched response into the client's stream. */
+  if (method.startsWith('notifications/')) {
+    res.status(202).end();
+    return;
+  }
+
+  try {
+    if (method === 'initialize') {
+      const asked = params && params.protocolVersion;
+      res.setHeader('Mcp-Session-Id', randomUUID());
+      res.status(200).json(rpc(id, {
+        protocolVersion: SPOKEN.has(asked) ? asked : NEWEST,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: SERVER,
+        instructions: 'Each tool other than mouseflow_status, mouseflow_stop and mouseflow_run_status is one '
+          + 'skill on this person\'s MouseFlow account, and calling it moves the real mouse and keyboard on '
+          + 'their computer. Two consequences worth holding on to: the actions cannot be undone from here, '
+          + 'and a missing argument should be asked for rather than guessed. Nothing runs unless a worker is '
+          + 'listening on that machine; mouseflow_status says whether one is.',
+      }));
+      return;
+    }
+
+    if (method === 'ping') {
+      res.status(200).json(rpc(id, {}));
+      return;
+    }
+
+    if (method === 'tools/list') {
+      const { skills } = await skillsOf(sql, who.id);
+      const tools = [STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL];
+      for (const [name, entry] of tableOf(skills)) {
+        tools.push({ ...wireFor('mcp', entry.structure), name });
+      }
+      res.status(200).json(rpc(id, { tools }));
+      return;
+    }
+
+    if (method === 'tools/call') {
+      res.status(200).json(rpc(id, await callTool(sql, who, params, req)));
+      return;
+    }
+
+    res.status(200).json(rpcError(id, -32601, `no method "${method}"`));
+  } catch (err) {
+    /* A thrown error is still a tool answer when it happened inside one: the client should see a sentence
+     * it can act on, not a transport failure it cannot. */
+    if (method === 'tools/call') {
+      res.status(200).json(rpc(id, say(`That did not work: ${err.message}`, true)));
+      return;
+    }
+    res.status(200).json(rpcError(id, -32603, err.message));
+  }
+}

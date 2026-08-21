@@ -1,11 +1,69 @@
 # 21 — MCP server
 
-`mcp/`. A fourth client, and the first one that is not a person. Every skill on an account becomes a tool an
-AI can call; calling one runs it on the machine the server is running on, through the local agent.
+`mcp/` and `api/mcp.js`. A fourth client, and the first one that is not a person. Every skill on an account
+becomes a tool an AI can call; calling one runs it on the machine the skill belongs to, through the local
+agent.
 
 Setup, environment variables and the exact client configuration live in [`mcp/README.md`](../../mcp/README.md)
 — the same split as [13 — The Chrome extension](13-extension.md) and `extension/README.md`. This document is
 what it *is* and what it cannot do.
+
+## Two transports, and why both exist
+
+| | The decider is… | The connection |
+|---|---|---|
+| **stdio** — `mcp/server.mjs` | on the same machine | the client spawns it and talks over pipes |
+| **HTTPS** — `POST /api/mcp` | anywhere | the client posts JSON-RPC; a worker on the machine dials out |
+
+stdio came first and is the simpler thing: the process is already on the machine, so it can reach the agent
+on loopback and run anything. Its limit is that it is one person at one terminal.
+
+HTTPS is the same tools reachable from Claude on a phone, in a browser, in someone else's editor — and
+*reachable* is the whole problem, because a serverless function cannot dial into anybody's desktop and
+nothing on the internet should be able to. **So the desktop dials out.** A `tools/call` becomes a row in
+`run_queue`; `mcp/worker.mjs` on the user's own machine claims it, runs it through the agent it can already
+reach, and reports back; the waiting request answers with what the worker said. The direction of the
+connection never reverses, which is the security property rather than a detail: no inbound path to anybody's
+computer exists at all.
+
+A machine with no worker running claims nothing. The endpoint checks that **before** queueing and says so,
+because a call that sits in a queue nobody is reading looks exactly like a call that is working.
+
+## Identity, and one account at a time
+
+Every HTTPS request resolves one user through `whoIsCalling` — a session cookie, or the device token the
+extension already pairs with — and every query filters on that id inside the `WHERE` clause. There is no
+route that takes a user id and no code path that reads one from a body or a query string. A model-supplied
+user id is the whole bug class: one hallucinated uuid and this becomes a way to list, or run, somebody
+else's skills. The test asserts it from the source rather than trusting the reading.
+
+So **each person in an organisation adds this with their own token and sees their own skills.** The one thing
+to be careful of is a connector installed once for a whole organisation with a single shared header:
+everyone on it would share one account, which is not multi-tenancy, it is one tenant with many users. OAuth
+is what fixes that — so the connector identifies the person rather than the installation — and the 401
+already advertises where it will live: `WWW-Authenticate` carries a `resource_metadata` URL, and
+`/.well-known/oauth-protected-resource` answers it today with an empty `authorization_servers`, which states
+that there is no flow to start yet rather than leaving a client to guess.
+
+## The queue
+
+`db/007_run_queue.sql`. Deliberately not `user_run`: that table is the **log** — what happened, for the
+dashboard and the assistant to read — and this is the **queue**, what has been asked for and has not happened
+yet. One table for both would mean every reader of the log filtering out work that may never occur, and the
+first reader to forget would report a request as an action. A queued job that runs writes `user_run` like any
+other run.
+
+`queued → claimed → done | failed | cancelled`, and nothing goes back. A job a worker took and lost is
+**failed with a reason** at 45 minutes rather than returned to the pool: a run that may be half-done must not
+be repeated blind. The claim is a single `update … where id = (select … limit 1)`, so two workers on one
+account cannot take the same job. Cancellation is watched, not pushed — the worker polls the job's state
+while it runs, in the same outward direction as everything else.
+
+## What runs it, in both cases
+
+`mcp/run.mjs`, and only that. Two things ask for a run now — the stdio server, and the worker — and a second
+copy of the replay path would be a second answer to "how is a skill run". The first divergence would be
+invisible: one route raising the recorded window before it clicks and the other not.
 
 ## Why it exists
 
@@ -25,16 +83,20 @@ Two files, no dependencies.
 
 | | |
 |---|---|
-| `mcp/server.mjs` | the protocol, the tool table, the two run paths |
+| `api/mcp.js` | the HTTPS transport, the tool table, the queue, and the worker's three endpoints |
+| `api/well-known.js` | RFC 9728 protected-resource metadata, routed from `/.well-known/…` |
+| `mcp/server.mjs` | the stdio transport |
+| `mcp/worker.mjs` | the machine end: claim, run, report |
+| `mcp/run.mjs` | how a skill is run. One copy, both callers |
 | `mcp/shared.mjs` | the bridge to the app's own modules |
-| `mcp/test-mcp.mjs` | the whole thing against a fake deployment and a fake agent |
+| `mcp/test-mcp.mjs` | all of it against a fake deployment and a fake agent |
 
 **It reimplements nothing.** That is the design rather than a boast, and `shared.mjs` exists to make it
 true:
 
 | Borrowed | From | For |
 |---|---|---|
-| `structureOf`, `wireFor` | `web/src/lib/skill-schema.ts` | a skill as an MCP tool definition |
+| `structureOf`, `wireFor` | `api/_skill-schema.mjs` | a skill as an MCP tool definition |
 | `flowBody` | `web/src/lib/macro.ts` | the five-column body `/replay` eats, `#ctx` lines and all |
 | the agent client | `web/src/lib/agent.ts` | `/health`, `/do`, `/replay`, `/replay/status` |
 | `runOnDesktop` | `web/src/lib/desktop-engine.ts` | the decision loop for a goal skill |
@@ -43,9 +105,16 @@ true:
 
 A second copy of any of those would be a second answer to the same question, and the first time one changed
 the server would describe a product that no longer exists. Two mechanics make the borrowing work, and both
-are why this needs **Node 22.18 or newer**: Node strips the types from a `.ts` file rather than compiling it
-(these modules use only types and interfaces, so there is nothing else to strip), and a resolve hook supplies
-the `.ts` extension that TypeScript's own extensionless imports leave out.
+are why the local half needs **Node 22.18 or newer**: Node strips the types from a `.ts` file rather than
+compiling it (these modules use only types and interfaces, so there is nothing else to strip), and a resolve
+hook supplies the `.ts` extension that TypeScript's own extensionless imports leave out.
+
+The tool derivation is the exception, and it moved for this: `api/_skill-schema.mjs` is plain JavaScript and
+lives beside the API, because a serverless function cannot import out of the web app's source tree with any
+confidence about what the bundler traces. Three readers, one file — the Skills panel through a typed shim at
+`web/src/lib/skill-schema.ts`, the local server as plain JavaScript, and `/api/mcp` as a sibling. What a
+model is told about a skill and what a person reads in the panel are therefore the same sentence, still by
+construction.
 
 The one adaptation is a `fetch` shim. Both engines ask the deployment for the configured model and then for
 each decision, with a **relative** URL and a cookie — exactly right in a browser tab and meaningless here —
@@ -118,12 +187,18 @@ list is bounded rather than open. It is also the strongest argument yet for givi
 
 ## Tested
 
-`node mcp/test-mcp.mjs` — 51 checks. It stands up a fake deployment answering the exact shape `api/sync.js`
+`node mcp/test-mcp.mjs` — 75 checks. It stands up a fake deployment answering the exact shape `api/sync.js`
 returns and a fake agent answering the exact shape both real agents do, spawns the server, and drives the
 real protocol over stdio: the handshake and its version echo, the tool list against an account holding a
 recording and an unstamped row as well as skills, a replay checked down to its `#ctx` lines, an unplayable
 count reported rather than swallowed, a goal run through the decision loop with its parameter filled, every
 refusal, and that nothing but JSON ever reaches stdout.
 
-Not covered: a real replay on real hardware, which needs a machine and a mouse. `mouseflow_status` has been
-run against the real macOS agent 0.8.2.
+It then spawns the **worker** and watches it claim a job, run it through the same path and report the same
+sentence a local caller would have received. The HTTPS route's isolation is asserted from its source: every
+`user_id` in every query comes from the credential, every helper call passes it, and nothing reads one out of
+a request.
+
+Not covered: a real replay on real hardware, which needs a machine and a mouse; and the HTTPS route against a
+real database, which needs an account and a token. `mouseflow_status` over stdio has been run against the real
+macOS agent 0.8.2.

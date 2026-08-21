@@ -27,7 +27,7 @@ commit `17bbcc5` (agents 0.8.2, extension 0.16.2, web app on React 19 / Vite / T
 | [18 — Configuration reference](18-configuration.md) | Every environment variable, flag, query parameter, storage key and tuning constant |
 | [19 — Limits and known gaps](19-limits-and-known-gaps.md) | Inherent limits, unverified areas, and defects found while writing this |
 | [20 — Operations](20-operations.md) | Deploy, migrate, develop, test |
-| [21 — MCP server](21-mcp.md) | Skills as tools an AI can call: the tool table, the two run paths, what it borrows and what it refuses |
+| [21 — MCP server](21-mcp.md) | Skills as tools an AI can call: stdio and HTTPS, the queue and the worker, per-account identity, what it borrows and what it refuses |
 
 ## Two conventions this documentation keeps
 

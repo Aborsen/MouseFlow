@@ -14,6 +14,7 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 let pass = 0;
@@ -66,7 +67,7 @@ const FLOWS = [
 
 /* ------------------------------------------------------------------------------- the fakes */
 
-const seen = { activate: [], replayBodies: [], runs: [], modelCalls: 0 };
+const seen = { activate: [], replayBodies: [], runs: [], modelCalls: 0, claims: 0, reports: [] };
 let replaying = false;
 let replayStatus = { playing: false, step: 1, steps: 1, pass: 1, passes: 1, index: 4, total: 4, flowPass: 1, flowPasses: 1, unplayable: 0, retargeted: 0 };
 let agentUp = true;
@@ -92,6 +93,23 @@ const deployment = createServer(async (req, res) => {
     const body = JSON.parse(await readBody(req) || '{}');
     (body.runs || []).forEach((r) => seen.runs.push(r));
     return json(res, 200, { ok: true, flows: 0, runs: (body.runs || []).length, deleted: 0, problems: [] });
+  }
+  if (url.pathname === '/api/mcp' && url.searchParams.get('worker') === 'claim') {
+    await readBody(req);
+    seen.claims++;
+    /* One job, then nothing - so a worker started with ONCE=1 does exactly one piece of work. */
+    if (seen.claims > 1) return json(res, 200, { ok: true, job: null });
+    return json(res, 200, {
+      ok: true,
+      job: { id: 'q_test1', toolName: 'open_the_inbox_drrec1', args: { repeat: 1 }, flow: FLOWS[0] },
+    });
+  }
+  if (url.pathname === '/api/mcp' && url.searchParams.get('worker') === 'report') {
+    seen.reports.push(JSON.parse(await readBody(req) || '{}'));
+    return json(res, 200, { ok: true, recorded: true });
+  }
+  if (url.pathname === '/api/mcp' && url.searchParams.get('worker') === 'state') {
+    return json(res, 200, { ok: true, state: 'claimed' });
   }
   if (url.pathname === '/api/claude' && req.method === 'GET') {
     return json(res, 200, { model: 'test-model', planModel: 'test-model' });
@@ -324,8 +342,88 @@ check('the diagnostics went to stderr', logs.join('').includes('[mouseflow]'), l
 
 child.stdin.end();
 child.kill();
+
+group('the worker: the machine end of the HTTPS server');
+const before = seen.replayBodies.length;
+const worker = spawn(process.execPath, [fileURLToPath(new URL('worker.mjs', import.meta.url))], {
+  env: {
+    ...process.env,
+    MOUSEFLOW_TOKEN: 'mf_test_token',
+    MOUSEFLOW_URL: `http://127.0.0.1:${deployPort}`,
+    MOUSEFLOW_AGENT_PORT: String(agentPort),
+    MOUSEFLOW_WORKER_NAME: 'test-machine',
+    MOUSEFLOW_WORKER_WAIT: '0',
+    MOUSEFLOW_WORKER_ONCE: '1',
+  },
+  stdio: ['ignore', 'ignore', 'pipe'],
+});
+const workerLog = [];
+worker.stderr.on('data', (c) => workerLog.push(String(c)));
+const workerCode = await new Promise((done) => worker.on('exit', done));
+
+check('it exits cleanly after one job', workerCode === 0, String(workerCode));
+check('it claimed work rather than being pushed any', seen.claims >= 1, String(seen.claims));
+check('it names itself and the agent it found', /listening for work as "test-machine".*agent 0\.8\.2/.test(workerLog.join('')), workerLog.join(''));
+check('it ran the skill through the same path the stdio server uses',
+  seen.replayBodies.length === before + 1, `${before} -> ${seen.replayBodies.length}`);
+check('the window was raised for it too, from the payload that travelled with the job',
+  seen.activate.filter((b) => /process=OUTLOOK/.test(b)).length >= 3, seen.activate.join(' | '));
+const report = seen.reports[0] || {};
+check('it reported the job id it was given', report.id === 'q_test1', JSON.stringify(report));
+check('with ok true', report.ok === true, JSON.stringify(report));
+check('and the same sentence a local caller would have got',
+  /Replayed "Open the inbox"/.test(report.said || ''), report.said);
+check('the run also reached the account, not only the queue',
+  seen.runs.filter((r) => r.kind === 'replay').length >= 3, String(seen.runs.length));
+
 deployment.close();
 agent.close();
+
+group('the HTTPS route: one account, and no way to name another');
+const route = readFileSync(fileURLToPath(new URL('../api/mcp.js', import.meta.url)), 'utf8');
+check('the caller is resolved by credential, once', /whoIsCalling\(req, sql\)/.test(route));
+check('and a missing credential is a 401 that says where auth lives',
+  /WWW-Authenticate/.test(route) && /resource_metadata/.test(route));
+/* The invariant that matters: no query may take a user id from anywhere but `who`. Every interpolation
+ * against user_id is checked rather than trusted, because one that read the body would be the whole bug. */
+const userIdInterps = [...route.matchAll(/user_id = \$\{([^}]+)\}/g)].map((m) => m[1].trim());
+/* Two steps, because the helpers take the id as an argument. Every query reads either `who.id` directly or
+ * the parameter the helpers are handed - and every call site hands them `who.id`. One hallucinated uuid
+ * reaching either place is the whole bug class this is here to keep out. */
+check('every user_id in every query comes from the credential or from the parameter',
+  userIdInterps.length > 0 && userIdInterps.every((v) => v === 'who.id' || v === 'userId'),
+  userIdInterps.join(', '));
+const helperCalls = [...route.matchAll(/(function\s+)?\b(skillsOf|workerSeen|stampWorker)\(sql, ([^),]+)/g)]
+  .filter((m) => !m[1])   // the definitions match the same shape; only the CALLS are the invariant
+  .map((m) => m[3].trim());
+check('and every call that passes one passes who.id',
+  helperCalls.length > 0 && helperCalls.every((v) => v === 'who.id'), helperCalls.join(', '));
+check('and nothing reads a user id out of the request',
+  !/body\.(userId|user_id)|query\.(userId|user_id)/.test(route));
+check('the queue is filtered by owner on the worker side as well',
+  /from run_queue[\s\S]{0,120}user_id = \$\{who\.id\}/.test(route)
+  && /update run_queue[\s\S]{0,200}user_id = \$\{who\.id\}/.test(route));
+check('a notification gets 202 and no body', /startsWith\('notifications\/'\)[\s\S]{0,80}202/.test(route));
+check('tools/list serves the app\'s own derivation rather than a copy',
+  /wireFor\('mcp', entry\.structure\)/.test(route) && /from '\.\/_skill-schema\.mjs'/.test(route));
+check('an unstamped row is not offered as a tool', /if \(role !== 'skill'\) \{ unstamped\+\+; continue; \}/.test(route));
+check('and a call with no worker listening is refused rather than left to hang',
+  /No machine has ever asked this account for work/.test(route));
+check('the metadata document exists and states there is no authorisation server YET',
+  /authorization_servers: \[\]/.test(readFileSync(fileURLToPath(new URL('../api/well-known.js', import.meta.url)), 'utf8')));
+const vercel = JSON.parse(readFileSync(fileURLToPath(new URL('../vercel.json', import.meta.url)), 'utf8'));
+check('and it is routed, so the 401 does not point at the single-page app',
+  vercel.rewrites.some((r) => r.source === '/.well-known/oauth-protected-resource'),
+  JSON.stringify(vercel.rewrites.map((r) => r.source)));
+
+group('one derivation, three readers');
+const shim = readFileSync(fileURLToPath(new URL('../web/src/lib/skill-schema.ts', import.meta.url)), 'utf8');
+check('the web app reads the module beside the API rather than its own copy',
+  /from '\.\.\/\.\.\/\.\.\/api\/_skill-schema\.mjs'/.test(shim));
+check('and the MCP bridge reads the same file',
+  /_skill-schema\.mjs/.test(readFileSync(fileURLToPath(new URL('shared.mjs', import.meta.url)), 'utf8')));
+check('vite is told it may reach outside web/, or dev would refuse to serve it',
+  /fs: \{ allow: \['\.\.'\] \}/.test(readFileSync(fileURLToPath(new URL('../web/vite.config.ts', import.meta.url)), 'utf8')));
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 if (fail) process.exitCode = 1;

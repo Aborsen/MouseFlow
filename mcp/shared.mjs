@@ -6,7 +6,7 @@
  * would be a second answer to the same question, and the first time one changed the server would quietly
  * describe a product that no longer exists. So they are imported:
  *
- *   web/src/lib/skill-schema.ts    structureOf, wireFor  - a skill as a tool definition, in MCP's shape
+ *   api/_skill-schema.mjs          structureOf, wireFor  - a skill as a tool definition, in MCP's shape
  *   web/src/lib/macro.ts           flowBody              - the five-column body /replay eats
  *   web/src/lib/agent.ts           the local agent client
  *   web/src/lib/desktop-engine.ts  runOnDesktop          - the decision loop for a goal
@@ -60,7 +60,9 @@ module.registerHooks({
 export async function load() {
   try {
     const [schema, macro, agent, engine, skills] = await Promise.all([
-      import(new URL('skill-schema.ts', LIB).href),
+      /* Plain JavaScript, and beside the API rather than in the web app, because /api/mcp reads it too -
+       * see the note at the top of that file. Nothing to strip here. */
+      import(new URL('../api/_skill-schema.mjs', import.meta.url).href),
       import(new URL('macro.ts', LIB).href),
       import(new URL('agent.ts', LIB).href),
       import(new URL('desktop-engine.ts', LIB).href),

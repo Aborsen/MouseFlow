@@ -51,6 +51,11 @@ export default defineConfig({
   },
   server: {
     port: 4400,
+    /* One file lives outside this directory on purpose: `api/_skill-schema.mjs`, the single derivation of a
+     * skill's tool definition, read by this app, by the local MCP server and by /api/mcp. Vite's default
+     * root is `web/`, so in DEV a module above it is served through /@fs and refused unless it is allowed;
+     * the production build inlines it and never asks. See web/src/lib/skill-schema.ts. */
+    fs: { allow: ['..'] },
     /* Either the deployment's API or the local mock, never both: Vite installs the proxy before plugin
      * middleware, so a mock behind a live proxy is a mock that never answers. */
     proxy: process.env.MOCK_API === '1'
