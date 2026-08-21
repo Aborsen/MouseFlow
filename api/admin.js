@@ -133,10 +133,15 @@ async function listUsers(sql) {
     name: r.who.name ?? null,
     email: r.who.email ?? null,
     image: r.who.image ?? null,
-    /* Better Auth's conventional columns, taken when present rather than assumed: the table is the auth
-     * service's own and may gain or lose fields without telling this repo. */
+    /* Read by both spellings, because the table is the auth service's own: it is camelCase today
+     * (emailVerified, createdAt) and neither this repo's migration nor its documentation owns that. */
     created: r.who.created_at ?? r.who.createdAt ?? null,
     verified: r.who.email_verified ?? r.who.emailVerified ?? null,
+    /* Better Auth's admin plugin keeps these here. Reported because a banned account that still shows as
+     * an ordinary row is the one thing an admin list must not do. */
+    role: r.who.role ?? null,
+    banned: r.who.banned ?? null,
+    banReason: r.who.ban_reason ?? r.who.banReason ?? null,
     recordings: r.recordings,
     skills: r.skills,
     runs: r.runs,
@@ -180,6 +185,9 @@ async function userDetail(sql, id) {
       id: who.u.id, name: who.u.name ?? null, email: who.u.email ?? null, image: who.u.image ?? null,
       created: who.u.created_at ?? who.u.createdAt ?? null,
       verified: who.u.email_verified ?? who.u.emailVerified ?? null,
+      role: who.u.role ?? null,
+      banned: who.u.banned ?? null,
+      banReason: who.u.ban_reason ?? who.u.banReason ?? null,
     },
     flows, runs, chats, devices, prefs,
   };

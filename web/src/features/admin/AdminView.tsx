@@ -28,6 +28,7 @@ interface Summary { users: number; flows: { n: number; recordings: number; skill
 interface UserRow {
   id: string; name: string | null; email: string | null; image: string | null;
   created: string | null; verified: boolean | null;
+  role: string | null; banned: boolean | null; banReason: string | null;
   recordings: number; skills: number; runs: number; chats: number; published: number; devices: number;
   lastRun: string | null;
 }
@@ -103,6 +104,12 @@ const UserPanel = ({ id, onBack }: { id: string; onBack: () => void }) => {
         <span className="text-ink-inactive text-[0.82rem]">{who.email}</span>
         {who.verified === false && (
           <span className="rounded bg-toast-bg-error px-1.5 py-0.5 text-[0.7rem] text-fb-red-text">unverified</span>
+        )}
+        {who.banned && (
+          <span className="rounded bg-toast-bg-error px-1.5 py-0.5 text-[0.7rem] text-fb-red-text" title={who.banReason ?? ''}>banned</span>
+        )}
+        {who.role && who.role !== 'user' && (
+          <span className="rounded bg-state-pressed px-1.5 py-0.5 text-[0.7rem] text-ink-body">{who.role}</span>
         )}
         <span className="ms-auto text-ink-inactive text-[0.78rem]">joined {when(who.created)}</span>
       </div>
@@ -294,7 +301,7 @@ export const AdminView = () => {
           <table className="w-full">
             <thead>
               <tr>
-                {['User', 'Email', 'Joined', 'Recordings', 'Skills', 'Runs', 'Chats', 'Published', 'Devices', 'Last run', ''].map((h) => (
+                {['User', 'Email', 'Role', 'Joined', 'Recordings', 'Skills', 'Runs', 'Chats', 'Published', 'Devices', 'Last run', ''].map((h) => (
                   <th key={h} className={TH}>{h}</th>
                 ))}
               </tr>
@@ -309,6 +316,11 @@ export const AdminView = () => {
                     )}
                   </td>
                   <td className={cn(TD, 'text-ink-inactive')}>{u.email ?? '—'}</td>
+                  <td className={TD}>
+                    {u.banned
+                      ? <span className="rounded bg-toast-bg-error px-1.5 py-0.5 text-[0.7rem] text-fb-red-text" title={u.banReason ?? ''}>banned</span>
+                      : <span className="text-ink-inactive">{u.role ?? 'user'}</span>}
+                  </td>
                   <td className={cn(TD, 'text-ink-inactive')}>{when(u.created)}</td>
                   <td className={TD}>{u.recordings}</td>
                   <td className={TD}>{u.skills}</td>
@@ -323,7 +335,7 @@ export const AdminView = () => {
                 </tr>
               ))}
               {users && !users.length && (
-                <tr><td className={TD} colSpan={11}>Nobody yet.</td></tr>
+                <tr><td className={TD} colSpan={12}>Nobody yet.</td></tr>
               )}
             </tbody>
           </table>
