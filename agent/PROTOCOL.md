@@ -359,13 +359,15 @@ in parallel; two agents with two schemes is worse than one agent with none.
 existed and each one turned into a decision; the decision is recorded next to the note so the next reader
 does not re-open a settled question.
 
-**Packaging: compiled on the machine, not downloaded.** There is no Apple Developer certificate in this
-project, so a prebuilt binary arrives quarantined and Gatekeeper refuses it — the user would have to strip
-the quarantine attribute by hand, which is worse advice and worse security than the alternative. A binary
-compiled locally is never quarantined. The cost is Xcode Command Line Tools, which the installer names in
-one command if they are missing; the gain is no certificate, no notarisation, no Gatekeeper dialog. If a
-Developer ID ever exists, a signed and notarised `.app` is a better answer and the permission grants survive
-updates — which they do not here, see below.
+**Packaging: compiled on the machine, not downloaded.** A prebuilt binary arrives quarantined and
+Gatekeeper refuses an unnotarised one — the user would have to strip the quarantine attribute by hand,
+which is worse advice and worse security than the alternative. A binary compiled locally is never
+quarantined. The cost is Xcode Command Line Tools, which the installer names in one command if they are
+missing. Since 0.8.2 the installer signs with a **Developer ID Application** identity when the machine has
+one in its keychain (ad-hoc otherwise, exactly as before) — and then the permission grants survive
+rebuilds, because TCC keys the grant to the certificate's stable identity rather than to one build's hash.
+A signed AND notarised prebuilt `.app` — no compiler on the user's machine at all — is the next step now
+that a certificate exists, and it is a distribution project, not an installer flag.
 
 **It has to be an .app, and that is not packaging taste.** On macOS a bare executable is not its own subject
 as far as permissions go: TCC blames the RESPONSIBLE process, which for anything launched from a terminal is

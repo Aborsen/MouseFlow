@@ -202,19 +202,46 @@ NEEDS_TOOLS
     fi
     chmod +x "$binary"
     write_plist_info "$app"
-    # Ad-hoc, over the whole bundle. Not a Developer ID signature and does not pretend to be one.
-    codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app" >/dev/null 2>&1 || true
+    # A Developer ID when this machine has one, ad-hoc otherwise. The difference is not cosmetic: TCC keys a
+    # grant to the signature, and a certificate gives every build the SAME identity - so a rebuild stops
+    # costing the permissions, which is the single most painful thing about updating this agent. The
+    # hardened runtime rides along so a future notarised build is the same signature shape.
+    local identity
+    identity="$(security find-identity -v -p codesigning 2>/dev/null \
+      | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
+    if [ -n "$identity" ] \
+      && codesign --force --deep --options runtime --sign "$identity" --identifier "$BUNDLE_ID" "$app" >/dev/null 2>&1; then
+      echo "Signed as: ${identity}"
+    else
+      # Ad-hoc, over the whole bundle. Not a Developer ID signature and does not pretend to be one.
+      codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app" >/dev/null 2>&1 || true
+    fi
     rebuilt="yes"
     echo "Built: ${app}"
   fi
 
   # ---------------------------------------------------------------- the stale-grant problem
   if [ "$rebuilt" = "yes" ]; then
-    # The binary changed, so any existing grant was made to a different signature. Clearing it means macOS
-    # asks again instead of showing a switch that is on and does nothing.
-    forget_permissions
-    echo "The agent was rebuilt, so macOS will ask for permission again — the entry it had belonged to the"
-    echo "previous build. This is why a checked switch could stop working."
+    # Whether the grants survive depends on whether the IDENTITY survived, not on the rebuild itself: the
+    # same Developer ID over a new binary is the same subject to TCC, and the grants stay valid. Ad-hoc has
+    # no identity beyond the build's own hash ("TeamIdentifier=not set"), and switching identities - the
+    # first certificate-signed build after ad-hoc ones - is a new subject too. The marker remembers what the
+    # last build was signed as.
+    local signed_now signed_before marker
+    signed_now="$(codesign -dvvv "$app" 2>&1 | grep '^TeamIdentifier=' | head -1)"
+    marker="${install_dir}/signed-with"
+    signed_before=""
+    [ -f "$marker" ] && signed_before="$(cat "$marker")"
+    printf '%s' "$signed_now" > "$marker"
+    if [ "$signed_now" = "TeamIdentifier=not set" ] || [ -z "$signed_now" ] || [ "$signed_now" != "$signed_before" ]; then
+      # The binary changed subjects, so any existing grant was made to a different signature. Clearing it
+      # means macOS asks again instead of showing a switch that is on and does nothing.
+      forget_permissions
+      echo "The agent was rebuilt, so macOS will ask for permission again — the entry it had belonged to the"
+      echo "previous build. This is why a checked switch could stop working."
+    else
+      echo "Rebuilt under the same Developer ID — the permissions you granted stay valid."
+    fi
   fi
 
   # ---------------------------------------------------------------- login item

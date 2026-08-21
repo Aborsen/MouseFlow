@@ -236,5 +236,6 @@ why it checks the things that can be checked without a compiler.
 - **Multiple monitors, on macOS.** ScreenCaptureKit captures one display, so `/shot` takes the one the
   cursor is on and reports that display's bounds. Bounds checking still uses the union of all displays,
   because a click on the second monitor is a legitimate click even when the agent cannot see it.
-- **A notarised app.** There is no Apple Developer certificate in this project. When there is one, a signed
-  `.app` is the better answer and the permission grants survive updates - which they do not here.
+- **A notarised app** - yet. A Developer Program membership now exists; the installer already prefers a
+  "Developer ID Application" identity from the keychain (grants then survive rebuilds), and the notarised
+  prebuilt `.app` - no compiler on the user's machine - is the next milestone.

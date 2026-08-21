@@ -2960,11 +2960,15 @@ final class MenuActions: NSObject, NSMenuDelegate {
         let recording = Recorder.shared.isRecording
         stopSaveItem?.isHidden = !recording
         let held = Recorder.shared.heldStatus
+        /* Start shows when it would work: idle, nothing held, and Accessibility either granted already or
+         * grantable by the tap install the action attempts. Not while a hold waits - starting would be
+         * refused anyway, and the note right below says why. */
+        startItem?.isHidden = recording || held.held || !Permission.accessibility
         heldNoteItem?.isHidden = !held.held
         if held.held {
             heldNoteItem?.title = "Recording saved here — the app collects it (\(held.events) events)"
         }
-        stopSaveSeparator?.isHidden = !recording && !held.held
+        stopSaveSeparator?.isHidden = !recording && !held.held && (startItem?.isHidden ?? true)
     }
 
     /* Stop the recording and hold it for the app: the agent has no account, the app's Record page does, and
@@ -2974,6 +2978,19 @@ final class MenuActions: NSObject, NSMenuDelegate {
      * microseconds either way. */
     @objc func stopAndSave() {
         DispatchQueue.global().async { Recorder.shared.endFromAgent() }
+    }
+
+    /* Start a recording without the app, the mirror of stopping without it. The same start the route runs:
+     * the tap goes in if it can, the held guard inside Recorder.start refuses atomically (the item is
+     * hidden while a hold waits, but hidden is not a lock), and the frontmost application - the one the
+     * person is about to work in - is asked for its tree with the same head start Record gets. Stopping
+     * from the app OR from this menu both work afterwards; the app's page collects either way. */
+    @objc func startRecording() {
+        DispatchQueue.global().async {
+            if eventTap == nil, !installTap() { return }
+            if Recorder.shared.start(moveMs: 0) != nil { return }
+            Accessibility.prime()
+        }
     }
 
     /* Stops the agent until the next login: launchd forgets the job for this session (bootout), so
@@ -3017,6 +3034,13 @@ menu.addItem(.separator())
 /* Visible only while recording - see menuNeedsUpdate. */
 var stopSaveItem: NSMenuItem?
 var stopSaveSeparator: NSMenuItem?
+var startItem: NSMenuItem?
+let startRec = NSMenuItem(title: "Start Recording",
+                          action: #selector(MenuActions.startRecording), keyEquivalent: "")
+startRec.target = menuActions
+startRec.isHidden = true
+menu.addItem(startRec)
+startItem = startRec
 let stopSave = NSMenuItem(title: "Stop and Save Recording",
                           action: #selector(MenuActions.stopAndSave), keyEquivalent: "")
 stopSave.target = menuActions
