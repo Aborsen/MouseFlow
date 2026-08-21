@@ -128,7 +128,19 @@ everything the client *requires* — but a 0.8.0 agent reads as "current" while 
 and the ability to end a recording itself. Nothing breaks (the client only ever reacts to the held state and
 never requires it), so this is a judgement call to make deliberately rather than a defect.
 
-### 6. Stale sections in the older documents
+### 6. The macOS agent's four new `#ctx` keys are emitted and never read
+
+`role`, `subrole`, `in` and `inName` are written above every click the macOS agent resolves. `parseMacro`
+([`web/src/lib/macro.ts`](../../web/src/lib/macro.ts)) and `ctxOf`
+([`api/_transcript.js`](../../api/_transcript.js)) both keep only `app`, `window`, `control` and `type`, so
+the new keys are dropped before a recording reaches the account.
+
+Harmless — the format's unknown-key rule is exactly what makes it so — but it is half a feature until the
+consuming side lands, and the half that landed is the one that costs a rebuild to change. The point of the
+role tokens is that `type` is localised (`kAXRoleDescription` says *"кнопка папки с закладками"* on a Russian
+Mac), so the transcript is the half that needs them most.
+
+### 7. Stale sections in the older documents
 
 - [`README.md`](../../README.md) still describes the pre-React app (*"index.html app.css app.js — the whole
   UI, no framework, no build"*), lists *"Windows only"* under known limits, and carries an agent API table

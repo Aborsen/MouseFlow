@@ -210,6 +210,25 @@ Tab-separated `key=value`, on the line **above** its event, attaching to exactly
 pointer), `type` (its control type). Unknown keys are ignored rather than being an error; an empty value is
 the same as absent.
 
+**Four more keys, macOS only and newer than the four above:** `role`, `subrole`, `in` (the role of the
+container the click was in) and `inName` (that container's name). They exist because of a problem `type`
+has: `type` is `kAXRoleDescription`, which is **the language of the machine** — a Russian Mac says
+*"кнопка папки с закладками"* where an English one says *"bookmark folder button"* — so anything reading it
+has to be a translator. `role`, `subrole` and `in` are **role tokens**: the same words on every machine,
+which is what lets a transcript say *where* a click landed without speaking the user's language. `inName` is
+the exception and is content rather than vocabulary — quoted, never matched.
+
+Only containers a person would recognise as somewhere are named: `AXToolbar`, `AXMenuBar`, `AXMenu`,
+`AXTabGroup`, `AXList`, `AXOutline`, `AXTable`, `AXWebArea`, `AXSheet`, `AXDrawer`. `AXGroup` is scaffolding
+and says nothing. The container is looked for on the **same walk** that looks for a name and a little past
+it — the name usually turns up within a level or two and the toolbar holding it a level or two above that,
+and eight is where a browser's page wrapper gives way to the window, which is recorded already.
+
+These are **emitted but not yet consumed**: `parseMacro` in `web/src/lib/macro.ts` and `ctxOf` in
+`api/_transcript.js` both read only the original four keys, so the new ones are dropped before a recording
+reaches the account. The unknown-keys rule is what makes that harmless — an older reader loads the recording
+exactly as before — but nothing downstream is using them yet.
+
 This is what turns *"clicked at 1074,159"* into *"clicked **Send** in Outlook"*, and it is the only
 per-event answer to "which application was this in" — `payload.windows` is sampled once a second at the
 **recording** level, so it says which applications appeared, never which one a given click hit.

@@ -219,6 +219,23 @@ Chromium is asked for its tree when **Record is pressed** rather than after the 
 via `AXManualAccessibility` alone unless unsupported — `AXEnhancedUserInterface` is VoiceOver's flag and
 AppKit resizes windows strangely under it.
 
+### Four extra `#ctx` keys, and the localisation problem behind them
+
+The macOS agent also writes `role`, `subrole`, `in` and `inName` above a click. The reason is that `type` —
+`kAXRoleDescription` — is **the language of the machine**: a Russian Mac says *"кнопка папки с закладками"*
+where an English one says *"bookmark folder button"*, so anything reasoning about `type` has to be a
+translator. `role`, `subrole` and `in` are role tokens, identical on every machine; `inName` is content, so
+it is quoted and never matched against.
+
+Only containers a person would recognise as *somewhere* are named — `AXToolbar`, `AXMenuBar`, `AXMenu`,
+`AXTabGroup`, `AXList`, `AXOutline`, `AXTable`, `AXWebArea`, `AXSheet`, `AXDrawer` — because `AXGroup` is
+scaffolding. The container is found on the **same** walk as the name and a little past it, bounded at eight
+levels, where a browser's page wrapper gives way to the window that is already recorded.
+
+**Nothing reads them yet:** the client's parser and the transcript engine both keep only the original four
+keys, so they are dropped before a recording reaches the account. Harmless by the format's unknown-key rule,
+and half a feature until the consuming side lands.
+
 ### Measured naming rate
 
 **81.8% of clicks named overall, 77.8% in Chrome** (22 clicks, 2026-08-21) — above the Windows overall

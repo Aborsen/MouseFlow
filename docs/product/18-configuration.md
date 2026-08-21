@@ -66,7 +66,7 @@ happens. Push a commit; see [20 — Operations](20-operations.md).
 | `/api/gallery` | `?q=<search>`, `?id=<id>`, `?mine=1` |
 | `/api/chats` | `?thread=<id>` |
 | `/api/account` | `?erase=1` (with DELETE) |
-| `/api/auth/*` | `?authpath=<subpath>` (set by the rewrite), `?to=<path>` on `finish` |
+| `/api/auth/*` | `?authpath=<subpath>` (set by the rewrite), `?to=<path>` on `finish`; the redirect back carries `?auth=<outcome>` and, on a failure, `?why=<upstream status and code>` |
 
 ## `localStorage` keys (web app)
 
@@ -79,6 +79,7 @@ happens. Push a commit; see [20 — Operations](20-operations.md).
 | `mouseflow.bringForward` | `'1'` to activate this tab when a run finishes |
 | `mouseflow.insights.assistant` | Whether the assistant panel is open |
 | `mouseflow.insights.assistant.width` | Its width |
+| `mouseflow.onboarded` | `'1'` once the first-run tour has finished or been skipped |
 
 Every write is wrapped: private mode and a full quota are expected, and losing persistence must not lose the
 session.
@@ -88,6 +89,7 @@ session.
 | Setting | Where | Default |
 |---|---|---|
 | Theme | Settings → My account | System |
+| The first-run tour | runs once by itself; Settings → Connections → Show it again | shown |
 | Sidebar collapsed | The sidebar toggle (auto below 820px) | expanded |
 | Executor | Create composer | In this browser |
 | Stay on this window | Create composer (desktop only) | off |

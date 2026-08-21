@@ -36,8 +36,26 @@ device token on every request and cannot be talked out of it. A gate in a page i
 
 Sign-in is Google via Neon Auth, proxied through `/api/auth/*` so the session cookie is first-party. The
 callback lands on `/api/auth/finish?to=<where you were>`, which exchanges the one-time verifier for the
-session cookie and redirects back with `?auth=ok` (or `missing-verifier` / `rejected` / another code,
-which the provider turns into a sentence and then strips from the URL so a refresh does not repeat it).
+session cookie and redirects back with `?auth=ok`, or one of:
+
+| Outcome | Means |
+|---|---|
+| `missing-verifier` | Google came back without a verifier, so sign-in could not be completed |
+| `rejected` | The auth service refused the exchange |
+| `no-session-cookie` | The exchange succeeded and no cookie came back |
+
+A failure also carries **`?why=`** — the upstream's **own** status and code, forwarded rather than
+summarised. It is short, names a failure mode and never a token, and it is the difference between "try
+again" and knowing which thing to fix: this used to redirect with a bare `rejected` and drop the upstream's
+answer on the floor, which is how a sign-in that works on a desktop and fails on a phone stayed
+unexplained — the one machine that knew the reason threw it away.
+
+The `rejected` message no longer guesses, either. "The attempt may have expired" was a guess the code was
+making on the user's behalf, and the wrong one on a phone, where the usual cause is the sign-in starting in
+one browser and coming back in another. It now says that, and says trying again is safe.
+
+Both parameters are stripped from the URL after they are read, so a refresh does not repeat the message;
+anything else in the query is left alone.
 
 **Signing out is verified, not assumed.** `signOut()` throws on failure like every other call, and the
 provider then *reads the session back*: a sign-out response can succeed and still leave the browser signed
@@ -94,6 +112,41 @@ rather than storing a third one, and then follows `prefers-color-scheme` live. T
 system toggles a `dark` class on the root, so that is what this sets — every vendored component's `dark:`
 utilities work untouched. Key: `mouseflow.theme`.
 
+## The first run
+
+`web/src/shell/OnboardingTour.tsx`. Five things in the sidebar and a command to run on this machine is not a
+lot, but it is five more than somebody has ever seen before — and the one that matters most, the agent, is
+**invisible until it is installed**. So the tour walks down the nav in the order the product is actually
+used, and **ends on the Connections screen with the install command in front of them**, which is the only
+step that leaves something behind.
+
+| Step | Points at | Says |
+|---|---|---|
+| 1 | Record | Press Record, work normally, stop. Every click is kept with the name of the thing clicked — "Send", not "1074, 159". Typing is kept as the fact that you typed and when, never the words. |
+| 2 | Create | Describe the job in a sentence; it works from a picture of your screen, so it reaches a spreadsheet, a folder or any window. The newest part, which is why it is Beta. |
+| 3 | Skills | A recording you keep becomes a skill: run it again, or hand it to Create as one step of something larger. |
+| 4 | Gallery | Skills other people shared. Take one and it is yours — a good way to see what this does before recording anything. |
+| 5 | Dashboard | What your recordings add up to: which applications the work happens in, how long each stretch took, and what keeps repeating. |
+| 6 | *nothing* | The agent is the half that works outside the browser. It runs only on this machine, answers only this app, and takes one command — which is on the next screen. |
+
+Each step says what the thing **is** rather than which button to press: a tour that reads like a list of
+controls teaches nothing the controls do not already say.
+
+How it draws itself, because both details were decisions:
+
+- **The spotlight is measured, never guessed** — `data-tour` on each nav link and `getBoundingClientRect` at
+  the moment the step opens, re-measured on resize and whenever the sidebar collapses (it goes to a rail
+  under 820px and can be collapsed by hand). A highlight drawn at a remembered coordinate is a highlight
+  around nothing.
+- **Four blurred panels around a gap**, not one panel with a hole cut in it. `clip-path` with an even-odd
+  fill is the tidier answer and is not reliable enough to bet a first run on; four rectangles need nothing
+  but arithmetic, and the gap is exactly the element.
+
+Shown **once per browser** (`mouseflow.onboarded`, written only when it finishes or is skipped) and
+skippable at every step — somebody who knows what they are looking at should not have to click through six
+panels to reach it. In private mode it runs every time rather than not at all. **Settings → Connections →
+The tour → Show it again** restarts it.
+
 ## Settings dialog
 
 `web/src/shell/SettingsDialog.tsx`. Three screens, one declared body height (560px, measured against the
@@ -112,6 +165,8 @@ tallest) so the dialog does not grow and shrink as you move between them.
 The same install command, platform picker and health readout as the `/connect` screen, sharing one
 implementation (`features/connect/platform.tsx`). They diverged once — the settings panel went on handing
 macOS users a PowerShell one-liner — which is why the shared module exists.
+
+Plus **The tour → Show it again**, which is the only way back to the first-run walkthrough once it has run.
 
 ### Hours
 Total and this-month hours, the five most recent timed runs, and a note saying plainly that this is wall
