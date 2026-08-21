@@ -56,10 +56,21 @@ interface Detail {
   shared: Shared[];
 }
 
+/* Two error shapes reach this: `{ error: "words" }` from api/team.js, and `{ error: { message } }` from the
+ * dev mock and from a couple of the older routes. Reading only the first turns the second into the string
+ * "[object Object]" on screen, which is a bug report nobody can act on. */
+const saidWrong = (body: unknown, status: number): string => {
+  const said = (body as { error?: unknown } | null)?.error;
+  if (typeof said === 'string' && said.trim()) return said;
+  const nested = (said as { message?: unknown } | null | undefined)?.message;
+  if (typeof nested === 'string' && nested.trim()) return nested;
+  return `HTTP ${status}`;
+};
+
 const call = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(`/api/team${path}`, { credentials: 'same-origin', ...init });
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(saidWrong(body, res.status));
   return body as T;
 };
 

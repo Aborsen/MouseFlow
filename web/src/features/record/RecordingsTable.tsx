@@ -535,12 +535,20 @@ export const RecordingsTable = ({
                         >
                           Skill
                         </Button>
+                        {/* Icon only, and that is not an oversight: the labels on this row are budgeted at
+                            four - View, Skill, Export, Delete - because a fifth wraps it onto another line,
+                            which is exactly what happened when this arrived with the word "Make" on it.
+                            The title says what it is, and the Skills page carries the same thing spelled
+                            out for anybody meeting it for the first time. */}
                         <Button
-                          variant="ghost" size="sm" leftSlot={<Sparkles className="size-4" />}
-                          title="Make a skill that can type: it asks what went into each field"
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Make a skill from ${rec.name}`}
+                          title="Make a skill that can type — it asks what went into each field"
+                          className="!size-8 !p-0"
                           onClick={() => onMakeSkill(rec)}
                         >
-                          Make
+                          <Sparkles className="size-4" />
                         </Button>
                         <Button variant="ghost" size="sm" leftSlot={<Download className="size-4" />} onClick={() => exportOne(rec)}>
                           Export
