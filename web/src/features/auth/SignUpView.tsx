@@ -7,12 +7,18 @@
  * `name` is required by the service, so it is asked for rather than invented from the address - a person
  * called "vicgorlenko-6241" in their own account is a small indignity that lasts forever.
  *
- * What happens after: the service sends a confirmation email, and the account is not usable until the link
- * in it is opened. So this ends on a panel that says so and offers to send it again, rather than dropping
- * somebody into an app that will refuse them.
+ * What happens after: a CODE, not a link, and that is a decision rather than a preference. Neon's built-in
+ * sender - the one in use until a real provider is configured - does not support verification links at all
+ * ("Verification links require a custom email provider"), so a page promising a link promised something
+ * nobody was ever going to receive. A code also happens to be the better answer on a phone: it is typed
+ * where it is read, so it cannot start in one browser and finish in another, which is the exact way the
+ * Google button spent a day being unusable.
+ *
+ * And the code is the last step rather than a detour: verifying signs the account in - the session cookie
+ * comes back through our own proxy, first-party - so "create account" ends in the app.
  */
 import { useState } from 'react';
-import { Link, useNavigate } from '@tanstack/react-router';
+import { Link } from '@tanstack/react-router';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { signInWithGoogle } from '@/lib/api';
@@ -26,33 +32,28 @@ export const SignUpView = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [again, setAgain] = useState('');
-  const [busy, setBusy] = useState<'email' | 'google' | 'resend' | null>(null);
+  const [busy, setBusy] = useState<'email' | 'google' | 'resend' | 'code' | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [sent, setSent] = useState<string | null>(null);
-  const navigate = useNavigate();
+  const [otp, setOtp] = useState('');
+  const [note, setNote] = useState<string | null>(null);
 
   const mismatch = again.length > 0 && again !== password;
   const ready = name.trim().length > 0 && email.trim().length > 0
     && passwordOk(password) && again === password;
-
-  /* Where the confirmation link lands. Our own sign-in page rather than the app: the service verifies on ITS
-   * host, so any session it establishes there is invisible here - landing on the app would show the wall and
-   * read as the confirmation not having worked. Signing in once with the password just chosen is honest and
-   * takes one step. */
-  const confirmLanding = `${location.origin}/sign-in?verified=1`;
 
   const submit = async () => {
     if (!ready) return;
     setBusy('email');
     setFailed(null);
     try {
-      await authPost('sign-up/email', {
-        name: name.trim(),
-        email: email.trim(),
-        password,
-        callbackURL: confirmLanding,
-      });
-      setSent(email.trim());
+      const address = email.trim();
+      await authPost('sign-up/email', { name: name.trim(), email: address, password });
+      /* Asked for explicitly rather than relied on. Whether creating an account sends anything by itself is
+       * a project setting we do not own, and a sign-up that silently sends nothing looks exactly like one
+       * that did. Worst case somebody gets two codes and the newer one works. */
+      await authPost('email-otp/send-verification-otp', { email: address, type: 'email-verification' });
+      setSent(address);
     } catch (err) {
       setFailed(saySo(err));
     } finally {
@@ -65,7 +66,8 @@ export const SignUpView = () => {
     setBusy('resend');
     setFailed(null);
     try {
-      await authPost('send-verification-email', { email: sent, callbackURL: confirmLanding });
+      await authPost('email-otp/send-verification-otp', { email: sent, type: 'email-verification' });
+      setNote('Sent. It can take a minute.');
     } catch (err) {
       setFailed(saySo(err));
     } finally {
@@ -73,22 +75,75 @@ export const SignUpView = () => {
     }
   };
 
+  /* The code, and then straight in.
+   *
+   * Verifying may sign the account in by itself, and may not - it depends on a setting we do not own. So the
+   * password just chosen is used to finish the job either way: it is still in memory on this page, it is
+   * known to be correct, and one POST is cheaper than sending somebody to a sign-in form to retype what they
+   * invented ninety seconds ago. */
+  const confirm = async () => {
+    if (!sent || otp.trim().length < 4) return;
+    setBusy('code');
+    setFailed(null);
+    try {
+      await authPost('email-otp/verify-email', { email: sent, otp: otp.trim() });
+      try {
+        await authPost('sign-in/email', { email: sent, password, rememberMe: true });
+      } catch (_) {
+        /* Verified but not signed in - a password that no longer matches, or auto sign-in switched off.
+         * The account is real and confirmed, so the sign-in page is the right place, not an error. */
+        location.href = '/sign-in?verified=1';
+        return;
+      }
+      location.href = '/record';
+    } catch (err) {
+      setFailed(saySo(err));
+      setBusy(null);
+    }
+  };
+
   if (sent) {
     return (
       <AuthCard
-        title="Confirm your email"
-        lead={<>We sent a link to <strong className="text-ink-primary">{sent}</strong>. Open it, and the
-          account is ready to use.</>}
+        title="Enter the code"
+        lead={<>We sent a code to <strong className="text-ink-primary">{sent}</strong>. Type it here and you
+          are in.</>}
         footer={<Link to="/sign-in" className="text-brand-primary hover:underline">Back to sign in</Link>}
       >
         {failed && <Banner kind="error">{failed}</Banner>}
-        <Banner kind="good">
-          Open the link in this same browser if you can — it finishes here. If the email has not arrived in a
-          minute, check the spam folder before sending another.
-        </Banner>
-        <Button variant="secondary" fullWidth onClick={resend} isLoading={busy === 'resend'}>
-          Send it again
+        {note && <Banner kind="good">{note}</Banner>}
+
+        <div>
+          <label htmlFor="su-otp" className="mb-1 block text-ink-body text-[0.82rem]">Code from the email</label>
+          <input
+            id="su-otp"
+            className={`${FIELD} text-center font-mono text-lg tracking-[0.4em]`}
+            value={otp}
+            /* One-time-code, so a phone offers the code from the notification instead of making somebody
+             * memorise six digits between two apps. */
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            maxLength={8}
+            placeholder="000000"
+            autoFocus
+            onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+            onKeyDown={(e) => { if (e.key === 'Enter') void confirm(); }}
+          />
+        </div>
+
+        <Button
+          fullWidth onClick={confirm} isLoading={busy === 'code'}
+          disabled={otp.trim().length < 4 || busy !== null}
+        >
+          Confirm and sign in
         </Button>
+        <Button variant="ghost" fullWidth onClick={resend} isLoading={busy === 'resend'}>
+          Send another code
+        </Button>
+        <Typography variant="p" className="text-center text-ink-inactive text-[0.78rem] leading-relaxed">
+          Codes expire after about fifteen minutes. If nothing arrives, look in the spam folder before
+          asking for another.
+        </Typography>
       </AuthCard>
     );
   }
@@ -162,9 +217,6 @@ export const SignUpView = () => {
         Signing in identifies your flows and keeps a log of your runs against your account. Nothing is
         published to the gallery unless you press Publish.
       </Typography>
-      <button type="button" className="sr-only" onClick={() => void navigate({ to: '/sign-in' })}>
-        Go to sign in
-      </button>
     </AuthCard>
   );
 };

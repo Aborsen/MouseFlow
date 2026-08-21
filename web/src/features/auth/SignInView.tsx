@@ -20,7 +20,8 @@ import {
 export const SignInView = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState<'email' | 'google' | 'resend' | null>(null);
+  const [busy, setBusy] = useState<'email' | 'google' | 'resend' | 'code' | null>(null);
+  const [otp, setOtp] = useState('');
   const [failed, setFailed] = useState<string | null>(null);
   const [code, setCode] = useState<string>('');
   const [note, setNote] = useState<string | null>(null);
@@ -73,29 +74,61 @@ export const SignInView = () => {
       {note && <Banner kind="good">{note}</Banner>}
       {failed && <Banner kind="error">{failed}</Banner>}
 
+      {/* The account exists, the password is right, and the email was never confirmed. Finished here rather
+        * than sent back to sign-up: everything needed is already on this page. A code rather than a link
+        * for the same reason as sign-up - the built-in sender does not do links. */}
       {unverified && (
-        <Button
-          variant="secondary"
-          fullWidth
-          isLoading={busy === 'resend'}
-          onClick={async () => {
-            setBusy('resend');
-            try {
-              await authPost('send-verification-email', {
-                email: email.trim(),
-                callbackURL: `${location.origin}/sign-in?verified=1`,
-              });
-              setNote('Sent. Open the link in that email, then sign in.');
+        <div className="grid gap-2 rounded-lg border border-stroke p-3">
+          <Typography variant="p" className="text-ink-body text-[0.82rem]">
+            This account still needs its email confirmed.
+          </Typography>
+          <Button
+            variant="secondary" fullWidth isLoading={busy === 'resend'}
+            onClick={async () => {
+              setBusy('resend');
+              try {
+                await authPost('email-otp/send-verification-otp', {
+                  email: email.trim(), type: 'email-verification',
+                });
+                setNote('Code sent. Type it below.');
+                setFailed(null);
+              } catch (err) {
+                setFailed(saySo(err));
+              } finally {
+                setBusy(null);
+              }
+            }}
+          >
+            Send me a code
+          </Button>
+          <input
+            className={`${FIELD} text-center font-mono tracking-[0.35em]`}
+            value={otp}
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            maxLength={8}
+            placeholder="000000"
+            aria-label="Code from the email"
+            onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+          />
+          <Button
+            fullWidth isLoading={busy === 'code'} disabled={otp.trim().length < 4 || busy !== null}
+            onClick={async () => {
+              setBusy('code');
               setFailed(null);
-            } catch (err) {
-              setFailed(saySo(err));
-            } finally {
-              setBusy(null);
-            }
-          }}
-        >
-          Send the confirmation email again
-        </Button>
+              try {
+                await authPost('email-otp/verify-email', { email: email.trim(), otp: otp.trim() });
+                await authPost('sign-in/email', { email: email.trim(), password, rememberMe: true });
+                location.href = '/record';
+              } catch (err) {
+                setFailed(saySo(err));
+                setBusy(null);
+              }
+            }}
+          >
+            Confirm and sign in
+          </Button>
+        </div>
       )}
 
       <div>
