@@ -97,7 +97,13 @@ a hold is waiting, because "I pressed Save and nothing visible happened" reads a
 The agent itself never touches the account - it has no credentials, which is a design and not a gap. The
 client's Record page takes delivery through the same path as its own Stop button: while open, its status
 poll notices within a quarter second; on arrival, one status read collects what was held while the page was
-away. An agent that never ends recordings itself (Windows today) is a valid implementation of this section.
+away. An agent that never ends recordings itself is still a valid implementation of this section - the
+client only ever reacts to the state, and never requires it.
+
+Both agents implement it as of 0.8.2: macOS from its menu bar item, Windows from a notification-area icon.
+Where the two platforms differ is only in what the icon has to solve. On macOS the agent is a login item
+with no window and no way to stop it; on Windows the console window was the only interface, which could
+neither say that a recording was running nor start one. Same answer, opposite complaints.
 
 ### The capability flags
 

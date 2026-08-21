@@ -128,19 +128,24 @@ param(
     [int]$Port = 8787,
     [string]$AllowOrigin = '*',
     [int]$MoveThrottleMs = 10,
-    [int]$MoveMinPx = 3
+    [int]$MoveMinPx = 3,
+    # The tray icon is how a person reaches the agent - starting and stopping a recording without the
+    # browser, and seeing that one is running. Off for a headless run or when something about the tray
+    # itself is being debugged; the HTTP half is identical either way.
+    [switch]$NoTray
 )
 
 $ErrorActionPreference = 'Stop'
 
 # System.Drawing is referenced for /shot: capturing the screen is what lets the app act on a goal
 # described in words rather than only replay something recorded earlier.
-Add-Type -ReferencedAssemblies 'System.Drawing','UIAutomationClient','UIAutomationTypes','WindowsBase' -TypeDefinition @'
+Add-Type -ReferencedAssemblies 'System.Drawing','System.Windows.Forms','UIAutomationClient','UIAutomationTypes','WindowsBase' -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Windows.Automation;
 using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -390,7 +395,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.8.0";
+        public const string Version = "0.8.2";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -399,6 +404,46 @@ namespace MouseFlow
         static IntPtr _kbHook = IntPtr.Zero;
 
         static bool _recording;
+        /* A recording ended at the AGENT - from the tray - waiting for the app to take delivery. Serialized
+         * text rather than events: the resolver has already finished with it, and text is what /record/stop
+         * returns anyway. Spilled to disk the moment it exists, because every way this process ends would
+         * otherwise destroy the one thing the tray promised to save. */
+        static string _heldText;
+        static int _heldEvents;
+        /// True between "capture stopped" and "the hold is safely on disk".
+        static bool _ending;
+
+        static string HeldPath
+        {
+            get
+            {
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MouseFlow", "held-recording.mmmacro");
+            }
+        }
+
+        /* A hold left by an earlier process - the agent was restarted before the app collected. Loaded, not
+         * discarded: somebody pressed Save. Unless it parses to zero events, which cannot be delivered as
+         * anything and would wedge /record/start behind a refusal forever. */
+        public static void LoadHeld()
+        {
+            try
+            {
+                string p = HeldPath;
+                if (!File.Exists(p)) return;
+                string text = File.ReadAllText(p);
+                int events = 0;
+                foreach (string line in text.Split('\n'))
+                {
+                    string t = line.Trim();
+                    if (t.Length > 0 && !t.StartsWith("#")) events++;
+                }
+                if (events > 0) { lock (Gate) { _heldText = text; _heldEvents = events; } }
+                else File.Delete(p);
+            }
+            catch { /* An unreadable hold is one that cannot be delivered; it must not stop the agent. */ }
+        }
         /* How many mouse buttons are down. A Focus marker must never be written while a gesture is in
          * progress - it splits the press from its release - and "is a gesture in progress" cannot be read
          * off the last buffered event, which was the first version of this guard: the pointer drifts, a
@@ -856,10 +901,78 @@ namespace MouseFlow
         /* moveMs = 0 means "the default this agent was started with". Not -1 and not a nullable: the wire
          * carries a query string, an absent parameter parses to 0, and 0 samples a second is not a thing
          * anybody can want - so the harmless value is the one that means "unspecified". */
-        public static void RecordStart(int moveMs)
+        /* The tray's "Stop and Save Recording". Capture stops NOW; the events are HELD, because the agent
+         * has no account to put them on - the app does, and its Record page collects a held recording
+         * through the ordinary /record/stop the moment it notices. `recording:false` with `count>0` on
+         * /record/status is the signal, and it is unambiguous because a client-driven stop never leaves
+         * that state behind. Same contract the macOS agent implements; see PROTOCOL.md. */
+        public static void EndFromTray()
+        {
+            bool was;
+            lock (Gate)
+            {
+                was = _recording;
+                _recording = false;
+                _clock.Stop();
+                _ending = was;
+            }
+            if (!was) return;
+
+            /* Same bounded wait as a client stop, so the held events carry their control names. */
+            for (int waited = 0; waited < 1500; waited += 50)
+            {
+                lock (ResolveGate) { if (_toResolve.Count == 0) break; }
+                Thread.Sleep(50);
+            }
+            lock (ResolveGate) { _resolverStop = true; }
+
+            lock (Gate)
+            {
+                List<Ev> taken = _buffer;
+                _buffer = new List<Ev>();
+                if (taken.Count == 0)
+                {
+                    /* Nothing was captured, so there is nothing to hold - and holding nothing would wedge
+                     * /record/start behind a refusal for a recording that does not exist. */
+                    _ending = false;
+                    return;
+                }
+                int lost;
+                lock (ResolveGate) { lost = _dropped; }
+                StringBuilder head = new StringBuilder();
+                head.Append("#part\tn=").Append((_part + 1).ToString(CultureInfo.InvariantCulture));
+                head.Append("\telapsedMs=").Append(_clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture));
+                head.Append("\tevents=").Append(taken.Count.ToString(CultureInfo.InvariantCulture));
+                head.Append("\tmoveMs=").Append(_sessionMs.ToString(CultureInfo.InvariantCulture));
+                head.Append("\tdropped=").Append(lost.ToString(CultureInfo.InvariantCulture)).Append("\n");
+                _heldText = head.ToString() + Serialize(taken);
+                _heldEvents = taken.Count;
+                _ending = false;
+                /* Written INSIDE the lock: the moment _heldText exists a /record/stop on another thread can
+                 * deliver it and delete the file, and a delete that beat this write would resurrect a
+                 * phantom recording at the next startup. */
+                try
+                {
+                    string p = HeldPath;
+                    Directory.CreateDirectory(Path.GetDirectoryName(p));
+                    File.WriteAllText(p, _heldText);
+                }
+                catch { /* Memory still holds it; the app is usually seconds away. */ }
+            }
+        }
+
+        /// Returns null when the recording started, or the reason it did not - a hold waiting to be saved.
+        public static string RecordStart(int moveMs)
         {
             lock (Gate)
             {
+                if (_heldText != null || _ending)
+                {
+                    /* Atomic with the state it protects: starting over a hold destroys the one thing the
+                     * tray promised to save. */
+                    return "a recording stopped at the agent is waiting to be saved - the app's Record page"
+                        + " collects it as soon as it is open, and then Record works again";
+                }
                 /* Clamped, not trusted. A caller asking for 5000 would record four events an hour and call
                  * it a session; one asking for 1 would fill the buffer faster than the drain empties it. */
                 _sessionMs = moveMs <= 0 ? _throttleMs : Math.Max(5, Math.Min(2000, moveMs));
@@ -894,6 +1007,7 @@ namespace MouseFlow
                 _resolver.SetApartmentState(ApartmentState.MTA);
                 _resolver.Start();
             }
+            return null;
         }
 
         /* Take what has piled up and KEEP RECORDING.
@@ -962,6 +1076,16 @@ namespace MouseFlow
             List<Ev> taken;
             lock (Gate)
             {
+                if (_heldText != null)
+                {
+                    /* Taking delivery of a hold: the text was serialized when the tray stopped the
+                     * recording, so there is nothing to wait for - hand it over and forget it, on disk too. */
+                    string text = _heldText;
+                    _heldText = null;
+                    _heldEvents = 0;
+                    try { File.Delete(HeldPath); } catch { }
+                    return text;
+                }
                 _recording = false;
                 _clock.Stop();
                 taken = _buffer;
@@ -1022,7 +1146,13 @@ namespace MouseFlow
         }
 
         public static bool IsRecording { get { lock (Gate) { return _recording; } } }
-        public static int RecordCount { get { lock (Gate) { return _buffer.Count; } } }
+        public static int RecordCount { get { lock (Gate) { return _heldText != null ? _heldEvents : _buffer.Count; } } }
+        /// What the tray shows, and what the permission-free half of the protocol keys on.
+        public static bool HasHeld { get { lock (Gate) { return _heldText != null; } } }
+        public static int HeldEvents { get { lock (Gate) { return _heldEvents; } } }
+        public static bool BusyEnding { get { lock (Gate) { return _ending; } } }
+        /// Without the mouse hook nothing can be recorded, so the tray must not offer to start one.
+        public static bool HookInstalled { get { return _hook != IntPtr.Zero; } }
         public static int RecordPart { get { lock (Gate) { return _part; } } }
         public static int RecordMoveMs { get { lock (Gate) { return _sessionMs; } } }
         public static long RecordElapsed { get { lock (Gate) { return _clock.ElapsedMilliseconds; } } }
@@ -2219,7 +2349,13 @@ namespace MouseFlow
                 if (_hook == IntPtr.Zero) { Respond(stream, 500, "application/json", "{\"ok\":false,\"error\":\"hook not installed\"}", origin); return; }
                 /* ?moveMs= thins the pointer path for a session meant to last hours. Absent keeps the
                  * default, so every existing caller records exactly as it did. */
-                RecordStart(QueryInt(query, "moveMs", 0));
+                string refused = RecordStart(QueryInt(query, "moveMs", 0));
+                if (refused != null)
+                {
+                    Respond(stream, 409, "application/json",
+                        "{\"ok\":false,\"error\":\"" + JsonEscape(refused) + "\"}", origin);
+                    return;
+                }
                 Respond(stream, 200, "application/json",
                     "{\"ok\":true,\"moveMs\":" + RecordMoveMs.ToString(CultureInfo.InvariantCulture) + "}", origin);
                 return;
@@ -2404,6 +2540,200 @@ namespace MouseFlow
             }
         }
     }
+
+    /* The tray icon: what the agent looks like to a person.
+     *
+     * The macOS agent grew a menu bar item for a reason that applies here in reverse. There, a login item
+     * with no window left the user no way to stop it; here the console window IS the stop button, and that
+     * is a stop button which also has to stay open, cannot say whether a recording is running, and cannot
+     * start one. So: an icon that shows the state, starts and stops a recording, and quits.
+     *
+     * Its own STA thread with its own Application.Run, and that is not a detail. NotifyIcon and
+     * ContextMenuStrip need an STA thread with a message pump; the agent already has a pump, but it belongs
+     * to the low-level hooks, and a hook pump that stalls is a hook Windows silently removes
+     * (LowLevelHooksTimeout). Nothing about drawing a menu may ever run on that thread. ServeForever owns
+     * the main thread, so the tray gets a third of its own.
+     *
+     * Everything the menu does is a call into Agent, which is locked - the tray holds no state of its own. */
+    public static class Tray
+    {
+        static System.Windows.Forms.NotifyIcon _icon;
+        static System.Windows.Forms.ContextMenuStrip _menu;
+        static System.Windows.Forms.ToolStripMenuItem _start;
+        static System.Windows.Forms.ToolStripMenuItem _stop;
+        static System.Windows.Forms.ToolStripMenuItem _heldNote;
+        static System.Windows.Forms.ToolStripSeparator _sep;
+        static System.Drawing.Icon _idleIcon;
+        static System.Drawing.Icon _liveIcon;
+        static bool _showingLive;
+        static Thread _thread;
+
+        public static string LastError;
+
+        public static void Start()
+        {
+            _thread = new Thread(new ThreadStart(Pump));
+            _thread.IsBackground = true;
+            _thread.SetApartmentState(ApartmentState.STA);
+            _thread.Start();
+        }
+
+        /* Drawn rather than shipped: a .ps1 fetched and run in memory has no file next to it to load an
+         * icon from, which is the whole shape of this agent's install. A ring when idle, a filled dot when
+         * recording - the same "recording light" the macOS status item shows. */
+        static System.Drawing.Icon Dot(bool filled)
+        {
+            using (System.Drawing.Bitmap bmp = new System.Drawing.Bitmap(16, 16))
+            {
+                using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.Clear(System.Drawing.Color.Transparent);
+                    if (filled)
+                    {
+                        using (System.Drawing.SolidBrush b = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(230, 70, 70)))
+                            g.FillEllipse(b, 2, 2, 12, 12);
+                    }
+                    else
+                    {
+                        using (System.Drawing.Pen p = new System.Drawing.Pen(System.Drawing.Color.FromArgb(230, 230, 230), 2f))
+                            g.DrawEllipse(p, 3, 3, 10, 10);
+                    }
+                }
+                return System.Drawing.Icon.FromHandle(bmp.GetHicon());
+            }
+        }
+
+        static void Pump()
+        {
+            try
+            {
+                _idleIcon = Dot(false);
+                _liveIcon = Dot(true);
+
+                _menu = new System.Windows.Forms.ContextMenuStrip();
+                System.Windows.Forms.ToolStripMenuItem header = new System.Windows.Forms.ToolStripMenuItem("MouseFlow agent " + Agent.Version);
+                header.Enabled = false;
+                _menu.Items.Add(header);
+                System.Windows.Forms.ToolStripMenuItem note = new System.Windows.Forms.ToolStripMenuItem("Records only between Start and Stop");
+                note.Enabled = false;
+                _menu.Items.Add(note);
+                _menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+
+                _start = new System.Windows.Forms.ToolStripMenuItem("Start Recording");
+                _start.Click += delegate { OnStart(); };
+                _menu.Items.Add(_start);
+
+                _stop = new System.Windows.Forms.ToolStripMenuItem("Stop and Save Recording");
+                _stop.Click += delegate { OnStop(); };
+                _menu.Items.Add(_stop);
+
+                /* Where a stopped recording IS, said in the menu, because "I pressed Save and nothing
+                 * visible happened" reads as loss. */
+                _heldNote = new System.Windows.Forms.ToolStripMenuItem("");
+                _heldNote.Enabled = false;
+                _menu.Items.Add(_heldNote);
+
+                _sep = new System.Windows.Forms.ToolStripSeparator();
+                _menu.Items.Add(_sep);
+
+                System.Windows.Forms.ToolStripMenuItem quit = new System.Windows.Forms.ToolStripMenuItem("Quit MouseFlow Agent");
+                quit.Click += delegate
+                {
+                    /* Taken down first: an icon whose process is gone lingers in the tray until somebody
+                     * hovers over it, which reads as an agent that would not quit. */
+                    try { _icon.Visible = false; _icon.Dispose(); } catch { }
+                    Environment.Exit(0);
+                };
+                _menu.Items.Add(quit);
+
+                _menu.Opening += delegate { Refresh(); };
+
+                _icon = new System.Windows.Forms.NotifyIcon();
+                _icon.Icon = _idleIcon;
+                _icon.Text = "MouseFlow agent";
+                _icon.System.Windows.Forms.ContextMenuStrip = _menu;
+                _icon.Visible = true;
+
+                /* The icon is also the recording light. One second is finer than a person can see a state
+                 * change, and the tick costs a locked bool. */
+                System.Windows.Forms.Timer light = new System.Windows.Forms.Timer();
+                light.Interval = 1000;
+                light.Tick += delegate
+                {
+                    bool live = Agent.IsRecording;
+                    if (live != _showingLive)
+                    {
+                        _showingLive = live;
+                        _icon.Icon = live ? _liveIcon : _idleIcon;
+                        _icon.Text = live ? "MouseFlow agent - recording" : "MouseFlow agent";
+                    }
+                };
+                light.Start();
+
+                Refresh();
+                System.Windows.Forms.Application.Run();
+            }
+            catch (Exception ex)
+            {
+                /* A tray that cannot be drawn must not take the agent with it: the HTTP half is the
+                 * product, the icon is how a person reaches it. Said in the banner, not swallowed. */
+                LastError = ex.Message;
+            }
+        }
+
+        /* Shown when the menu opens, which is the only moment visibility matters. */
+        static void Refresh()
+        {
+            bool recording = Agent.IsRecording;
+            bool held = Agent.HasHeld;
+            _start.Visible = !recording && !held && Agent.HookInstalled;
+            _stop.Visible = recording;
+            _heldNote.Visible = held;
+            if (held)
+            {
+                _heldNote.Text = "Recording saved here - the app collects it ("
+                    + Agent.HeldEvents.ToString(CultureInfo.InvariantCulture) + " events)";
+            }
+            _sep.Visible = true;
+        }
+
+        /* Off the tray thread, both of them: EndFromTray waits up to 1.5s for the resolver - which is still
+         * naming the very clicks that opened this menu - and a menu that freezes while it works reads as a
+         * hung agent. */
+        static void OnStart()
+        {
+            Thread t = new Thread(new ThreadStart(delegate { Agent.RecordStart(0); }));
+            t.IsBackground = true;
+            t.SetApartmentState(ApartmentState.MTA);
+            t.Start();
+        }
+
+        static void OnStop()
+        {
+            Thread t = new Thread(new ThreadStart(delegate
+            {
+                Agent.EndFromTray();
+                /* Said out loud. The menu closes the instant it is clicked and the recording goes nowhere
+                 * visible - to the person who pressed Save, silence and loss look identical. */
+                try
+                {
+                    int n = Agent.HeldEvents;
+                    _icon.BalloonTipTitle = "Recording saved";
+                    _icon.BalloonTipText = n > 0
+                        ? n.ToString(CultureInfo.InvariantCulture)
+                            + " events kept - open MouseFlow and they go to your account"
+                        : "Nothing was captured in it.";
+                    _icon.ShowBalloonTip(4000);
+                }
+                catch { }
+            }));
+            t.IsBackground = true;
+            t.SetApartmentState(ApartmentState.MTA);
+            t.Start();
+        }
+    }
+
 }
 '@
 
@@ -2418,6 +2748,12 @@ Start-Sleep -Milliseconds 250
 $err = [MouseFlow.Agent]::LastError
 if ($err) { throw "Could not install the mouse hook: $err" }
 
+# A recording stopped from the tray and never collected - this process is the second one, and the events
+# are on disk where the first one left them. Loaded before anything can start a new recording over them.
+[MouseFlow.Agent]::LoadHeld()
+
+if (-not $NoTray) { [MouseFlow.Tray]::Start() }
+
 Write-Host ""
 # Read from the compiled constant, never written twice. A hardcoded banner said 0.1.0 while the code
 # was 0.2.0, so the one place a user checks which build they are running was the one place that lied.
@@ -2426,6 +2762,22 @@ Write-Host "  listening   http://127.0.0.1:$Port"
 Write-Host "  origin      $AllowOrigin"
 Write-Host "  move filter $MoveThrottleMs ms / $MoveMinPx px"
 Write-Host "  can see     yes - /shot, /do and /windows are available to the app"
+if ($NoTray) {
+    Write-Host "  tray        off (-NoTray) - start and stop from the app"
+} else {
+    Start-Sleep -Milliseconds 300
+    $trayErr = [MouseFlow.Tray]::LastError
+    if ($trayErr) {
+        Write-Host "  tray        NOT shown: $trayErr" -ForegroundColor Yellow
+        Write-Host "              the agent works; start and stop from the app instead"
+    } else {
+        Write-Host "  tray        in the notification area - start and stop a recording there"
+    }
+}
+$heldAtStart = [MouseFlow.Agent]::HeldEvents
+if ($heldAtStart -gt 0) {
+    Write-Host "  waiting     a recording of $heldAtStart events is held for the app to collect" -ForegroundColor Cyan
+}
 Write-Host ""
 if ($AllowOrigin -eq '*') {
     Write-Warning "Any site open in your browser can drive your mouse while this agent runs."
