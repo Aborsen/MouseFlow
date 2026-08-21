@@ -29,14 +29,16 @@ naming (70.8% of clicks named, 146/151 in Chrome), `/shot`, `/windows`, the cont
 (2026-08-21): the whole protocol including the tray-equivalent menu bar, the held-recording handover, and
 the permission self-recovery.
 
-**Not verified — this is the point of this document:** the **tray icon added in 0.8.2**, and the
-held-recording mechanism behind it. It was written on a Mac with no Windows machine to run it on. It
-compiles nowhere here: `Add-Type` needs Windows, and `node agent/test-contract.mjs` (94 checks, passing)
-deliberately checks only what can be checked without a compiler.
+**Verified on a real Windows machine, 2026-08-21:** the **tray icon added in 0.8.2** and the held-recording
+mechanism behind it. It was written on a Mac with no Windows machine to run it on, and worked on the first
+run there - after one compile error found by reading rather than by running (`_icon.ContextMenuStrip`,
+mangled by a blanket type-qualification pass; `Add-Type` would have refused the entire block and the agent
+would not have started at all). What was NOT separately measured on that run: the naming rate (see below),
+and every failure path - a broken tray, a held recording surviving a restart, the 409 over a hold.
 
-**So the first thing to find out is whether the C# block compiles at all.** `Add-Type` reports its errors
-with line numbers relative to the `-TypeDefinition` string, which starts at the `Add-Type` line in the
-`.ps1`. Suspects, in the order they are likely:
+**If the C# block ever stops compiling,** `Add-Type` reports its errors with line numbers relative to the
+`-TypeDefinition` string, which starts at the `Add-Type` line in the `.ps1`. Suspects, in the order they
+are likely:
 
 - **Ambiguous type names.** `System.Windows.Forms` and `System.Drawing` are deliberately NOT in the
   `using` list, and every type inside `class Tray` is written out in full (`System.Windows.Forms.Timer`,
@@ -64,7 +66,7 @@ stall that does it. `ServeForever` owns the main thread. So the tray gets a thir
 both menu actions hand their work to yet another thread, because `EndFromTray` waits up to 1.5s for the
 resolver to finish naming the clicks that just opened the menu.
 
-**What to check first, once it runs:**
+**What to check, and what the first real run on Windows already confirmed (2026-08-21) - items 1-5 passed:**
 
 1. The icon appears in the notification area (it may be hidden behind the chevron - Windows hides new tray
    icons by default; drag it out, or check Settings > Taskbar > System tray icons).
@@ -83,7 +85,8 @@ resolver to finish naming the clicks that just opened the menu.
 
 ## The three things most likely to be wrong
 
-Not predictions - the places a Mac-written Windows feature has no way to be right by accident:
+Not predictions - the places a Mac-written Windows feature has no way to be right by accident. None of
+these were hit on the first run, which means they are untested rather than disproved:
 
 1. **The tray never appears and the agent runs fine.** The banner says so: `tray NOT shown: <message>` is
    printed from `[MouseFlow.Tray]::LastError`, which is set by the catch around the whole pump. The agent
