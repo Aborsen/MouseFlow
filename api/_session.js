@@ -92,14 +92,62 @@ async function fromDeviceToken(req, sql) {
   };
 }
 
+/* An OAuth access token, from api/oauth.js.
+ *
+ * The third way to be somebody here, and the one that scales past a single person: a device token is a
+ * secret somebody carries to wherever the AI runs, which is fine for one terminal and wrong for a connector
+ * an organisation installs once - then everyone shares one credential and therefore one account. An OAuth
+ * token is issued per PERSON, after they sign in the way they already do.
+ *
+ * Read here rather than in /api/mcp so that every route gains it at once and none of them has to know there
+ * are three kinds of caller. The cost is one query, and only for a bearer that is not a device token. */
+async function fromOAuth(req, sql) {
+  const header = String(req.headers.authorization || '');
+  const presented = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  if (!presented || presented.startsWith(DEVICE_TOKEN_PREFIX)) return null;
+
+  const rows = await sql`
+    select t.user_id, t.expires_at, u.name, u.email, u.image
+    from oauth_token t
+    left join neon_auth."user" u on u.id = t.user_id
+    where t.token_hash = ${hashToken(presented)} and t.kind = 'access' and t.revoked_at is null
+    limit 1
+  `;
+  if (!rows.length) return null;
+  const row = rows[0];
+  // An expired token is not a caller. Left in the table so the person can still see it was there.
+  if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return null;
+
+  sql`update oauth_token set last_used_at = now() where token_hash = ${hashToken(presented)}`
+    .catch(() => {});
+
+  return {
+    id: row.user_id,
+    name: String(row.name || row.email || 'Someone').slice(0, 120),
+    email: row.email ? String(row.email).slice(0, 200) : null,
+    image: row.image ? String(row.image).slice(0, 500) : null,
+    via: 'oauth',
+  };
+}
+
 /* The device token is tried FIRST when one is presented, because it is unambiguous - it carries our
  * prefix - and because trying the issuer first would mean a network round trip to answer "no" for
- * every extension request. */
+ * every extension request. An OAuth token is tried next, because it is OURS and answers locally; the
+ * issuer, which is a network hop, is last. */
 export async function whoIsCalling(req, sql) {
   const header = String(req.headers.authorization || '');
   if (header.includes(DEVICE_TOKEN_PREFIX)) {
     const byToken = await fromDeviceToken(req, sql);
     if (byToken) return byToken;
+  }
+  if (header.startsWith('Bearer ')) {
+    try {
+      const byOAuth = await fromOAuth(req, sql);
+      if (byOAuth) return byOAuth;
+    } catch (_) {
+      /* No table on this deployment yet. A missing OAuth table must not be able to break the two ways of
+       * signing in that predate it. */
+    }
   }
   return fromNeonAuth(req);
 }

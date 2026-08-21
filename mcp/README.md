@@ -30,16 +30,28 @@ second copy of anything, and `run.mjs` is the one way a skill is run, used by bo
 
 ## Adding it — HTTPS
 
-One URL, one header. Nothing to install where the AI runs.
+Give the client the URL and let it sign you in:
 
-```bash
-claude mcp add --transport http mouseflow https://mouse-agent.vercel.app/api/mcp --header "Authorization: Bearer mf_your_token_here"
+```
+https://mouseflowapp.vercel.app/api/mcp
 ```
 
-In a client that reads a config file, or in Claude's own connector settings, the same two things: the URL
-`https://mouse-agent.vercel.app/api/mcp` and a static `Authorization: Bearer mf_…` header. Never put the
-token in the URL — the MCP authorization spec forbids access tokens in a query string, and this server does
-not read one from there.
+The client gets a 401, follows it to `/.well-known/oauth-protected-resource`, registers itself, and opens a
+browser at MouseFlow's own sign-in — **Google, or your email and password, whichever you already use**. You
+approve once on a consent page that says exactly what the client will be able to do, and what it ends up
+holding identifies *you*, not the installation. Take it back any time under **Settings → My account**.
+
+That is the answer for a connector an organisation installs once: each person authorises it themselves and
+sees only their own skills.
+
+A **device token** still works, and is simpler where there is no browser — a CI job, a headless box:
+
+```bash
+claude mcp add --transport http mouseflow https://mouseflowapp.vercel.app/api/mcp --header "Authorization: Bearer mf_your_token_here"
+```
+
+Never put a token in the URL — the MCP authorization spec forbids access tokens in a query string, and this
+server does not read one from there.
 
 Then, on the machine the skills belong to:
 
@@ -49,13 +61,11 @@ MOUSEFLOW_TOKEN=mf_your_token_here node mcp/worker.mjs
 
 It prints what it found and then waits. `mouseflow_status` says whether it is being heard.
 
-**Each person uses their own token and sees their own skills.** That is the whole of the isolation: the
-account is resolved from the credential on every request, every query filters on it, and no route takes a
-user id. One caveat worth stating plainly — a connector installed once for a whole organisation with a
-single shared header means everyone on it shares one account. That is not multi-tenancy, it is one tenant
-with many users. Per-person tokens are the answer today; OAuth, so that one installed connector identifies
-the *person*, is what replaces them, and the 401 already advertises where it will live
-(`/.well-known/oauth-protected-resource`, RFC 9728).
+**Each person sees their own skills**, whichever credential they used. That is the whole of the isolation:
+the account is resolved from the credential on every request, every query filters on it, and no route takes
+a user id. The difference between the two credentials is *who they identify* — a shared header identifies an
+installation, and everyone behind it shares one account; an OAuth grant identifies a person. That is why the
+OAuth route exists and why it is the one to prefer for anything more than one person at one terminal.
 
 ## Adding it — stdio
 

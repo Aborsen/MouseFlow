@@ -13,6 +13,7 @@ import { Link } from '@tanstack/react-router';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { signInWithGoogle } from '@/lib/api';
+import { nextAfterSignIn } from '@/shell/AccountProvider';
 import {
   AuthCard, Banner, FIELD, GoogleButton, PasswordField, authPost, saySo,
 } from './shared';
@@ -57,7 +58,7 @@ export const SignInView = () => {
        * to somebody already signed in - which reads as having been logged out, and was the whole of "press
        * Back and you have to type your password again". A form nobody needs any more does not deserve a
        * history entry. */
-      location.replace('/record');
+      location.replace(nextAfterSignIn(location.search) ?? '/record');
     } catch (err) {
       setFailed(saySo(err));
       setCode(err instanceof Error && 'code' in err ? String((err as { code?: string }).code ?? '') : '');
@@ -124,7 +125,7 @@ export const SignInView = () => {
               try {
                 await authPost('email-otp/verify-email', { email: email.trim(), otp: otp.trim() });
                 await authPost('sign-in/email', { email: email.trim(), password, rememberMe: true });
-                location.replace('/record');
+                location.replace(nextAfterSignIn(location.search) ?? '/record');
               } catch (err) {
                 setFailed(saySo(err));
                 setBusy(null);
@@ -173,7 +174,7 @@ export const SignInView = () => {
           setBusy('google');
           setFailed(null);
           try {
-            location.href = await signInWithGoogle('/record');
+            location.href = await signInWithGoogle(nextAfterSignIn(location.search) ?? '/record');
           } catch (err) {
             setFailed(saySo(err));
             setBusy(null);

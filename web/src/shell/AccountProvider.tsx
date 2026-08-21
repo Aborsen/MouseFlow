@@ -37,6 +37,18 @@ export const AUTH_PATHS = ['/sign-in', '/sign-up', '/reset-password'];
 
 export const isAuthPath = (path: string) => AUTH_PATHS.includes(path.replace(/\/+$/, '') || '/');
 
+/* Where to go after signing in, when something sent us here mid-flow.
+ *
+ * Exactly ONE destination is allowed: the OAuth consent page. Not "any same-origin path", not "anything
+ * starting with a slash" - an open redirect is built out of a rule that sounds reasonable, and the only
+ * thing that legitimately parks a person at the sign-in page and wants them back is /api/oauth?do=authorize.
+ * Anything else falls through to the app, which is where a sign-in goes anyway. */
+export function nextAfterSignIn(search: string): string | null {
+  const asked = new URLSearchParams(search).get('next');
+  if (!asked) return null;
+  return asked.startsWith('/api/oauth?') ? asked : null;
+}
+
 const AccountContext = createContext<AccountValue | null>(null);
 
 export const useAccount = () => {
@@ -190,7 +202,10 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
    * A reset link is the exception: it arrives WITH a token, and whoever is holding one means to use it,
    * signed in or not. */
   if (isAuthPath(location.pathname) && !new URLSearchParams(location.search).get('token')) {
-    location.replace('/record');
+    /* Unless something is waiting to be finished. Somebody already signed in who arrives here from the OAuth
+     * consent page has to be sent ON, not into the app - otherwise the flow they started ends silently at
+     * the Record screen and the client that sent them waits forever. */
+    location.replace(nextAfterSignIn(location.search) ?? '/record');
     return null;
   }
 

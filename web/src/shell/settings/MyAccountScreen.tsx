@@ -17,14 +17,39 @@ const THEMES: { id: Theme; label: string }[] = [
   { id: 'system', label: 'System' },
 ];
 
+interface Grant {
+  clientId: string;
+  name: string;
+  since: string | null;
+  lastUsed: string | null;
+  tokens: number;
+}
+
 export const MyAccountScreen = ({ say }: { say: Say }) => {
   const { account } = useAccount();
   const [theme, setTheme] = useTheme();
   const [paired, setPaired] = useState<Device[] | null>(null);
+  /* Things that signed in AS this person through OAuth, as opposed to devices holding a token this person
+   * copied. Two lists rather than one because they are taken back differently and mean different things: a
+   * device is a machine you paired, a grant is a client you let act as you. */
+  const [grants, setGrants] = useState<Grant[] | null>(null);
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const loadGrants = useCallback(async () => {
+    try {
+      const res = await fetch('/api/oauth?do=grants', { credentials: 'same-origin' });
+      const body = await res.json();
+      setGrants(res.ok && body && body.grants ? body.grants : []);
+    } catch (_) {
+      /* An older deployment has no such route. An empty list is the honest reading of "nothing authorised
+       * here", and the block hides itself rather than showing an error about a feature nobody used. */
+      setGrants([]);
+    }
+  }, []);
+
   const load = useCallback(async () => {
+    void loadGrants();
     try {
       const body = await devices();
       setPaired(body.devices);
@@ -32,7 +57,7 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
       setPaired([]);
       say({ text: err instanceof Error ? err.message : 'could not list your devices', kind: 'bad' });
     }
-  }, [say]);
+  }, [say, loadGrants]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -107,6 +132,52 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
           </li>
         ))}
       </ul>
+
+      {grants && grants.length > 0 && (
+        <>
+          <Row
+            label="Signed in with your account"
+            note="Clients you allowed to act as you. Taking one back cuts it off at once — it will have to
+                  ask again."
+          />
+          <ul className="mt-1 flex max-h-[6.5rem] flex-col gap-1.5 overflow-y-auto">
+            {grants.map((grant) => (
+              <li
+                key={grant.clientId}
+                className="flex items-center gap-3 rounded-md border-stroke border px-2.5 py-2 text-[0.86rem]"
+              >
+                <div className="min-w-0 flex-1">
+                  <strong className="block font-semibold">{grant.name}</strong>
+                  <span className="text-[0.76rem] text-ink-inactive">
+                    {grant.lastUsed
+                      ? `last used ${new Date(grant.lastUsed).toLocaleString()}`
+                      : 'never used since you allowed it'}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      const res = await fetch(
+                        `/api/oauth?do=grants&client=${encodeURIComponent(grant.clientId)}`,
+                        { method: 'DELETE', credentials: 'same-origin' },
+                      );
+                      if (!res.ok) throw new Error('it could not be taken back');
+                      say({ text: `${grant.name} can no longer act as you.`, kind: 'good' });
+                      void loadGrants();
+                    } catch (err) {
+                      say({ text: err instanceof Error ? err.message : 'could not revoke it', kind: 'bad' });
+                    }
+                  }}
+                >
+                  Take it back
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
 
       <Row
         danger

@@ -37,13 +37,28 @@ route that takes a user id and no code path that reads one from a body or a quer
 user id is the whole bug class: one hallucinated uuid and this becomes a way to list, or run, somebody
 else's skills. The test asserts it from the source rather than trusting the reading.
 
-So **each person in an organisation adds this with their own token and sees their own skills.** The one thing
-to be careful of is a connector installed once for a whole organisation with a single shared header:
-everyone on it would share one account, which is not multi-tenancy, it is one tenant with many users. OAuth
-is what fixes that — so the connector identifies the person rather than the installation — and the 401
-already advertises where it will live: `WWW-Authenticate` carries a `resource_metadata` URL, and
-`/.well-known/oauth-protected-resource` answers it today with an empty `authorization_servers`, which states
-that there is no flow to start yet rather than leaving a client to guess.
+There are two ways to be that person.
+
+A **device token** is a per-person secret carried to wherever the AI runs. Simple, and right where there is
+no browser — a CI job, a headless box. Its shape of problem is a connector an organisation installs once with
+one shared header: everyone behind it shares one account, which is not multi-tenancy, it is one tenant with
+many users.
+
+**OAuth** is what fixes that, and it is now here. `api/oauth.js` is a small authorisation server: dynamic
+client registration (RFC 7591), an authorize page behind this app's *ordinary* sign-in wall, PKCE with S256
+and nothing else, single-use codes, and rotating refresh tokens. So a person signs in with Google or with
+their email and password — exactly as they already do — approves once on a page that says what the client
+will be able to do, and what the client holds identifies them rather than the installation. Grants are
+listed and revocable under **Settings → My account**, because the consent page promises that and a promise
+like that is either true or a lie.
+
+**Why our own authorisation server** rather than the auth service's: the hosted Better Auth instance behind
+`/api/auth` is not ours to add plugins to, so an OIDC provider cannot be switched on there. What *is* ours is
+the session it issues. The authentication stays entirely theirs; only the consent and the token are ours.
+
+Discovery is the documented chain and nothing clever: the 401 from `/api/mcp` carries
+`WWW-Authenticate: Bearer resource_metadata="…"`, that document (RFC 9728) names the authorisation server,
+and `/.well-known/oauth-authorization-server` (RFC 8414) names the endpoints.
 
 ## The queue
 

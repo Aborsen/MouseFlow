@@ -409,12 +409,47 @@ check('tools/list serves the app\'s own derivation rather than a copy',
 check('an unstamped row is not offered as a tool', /if \(role !== 'skill'\) \{ unstamped\+\+; continue; \}/.test(route));
 check('and a call with no worker listening is refused rather than left to hang',
   /No machine has ever asked this account for work/.test(route));
-check('the metadata document exists and states there is no authorisation server YET',
-  /authorization_servers: \[\]/.test(readFileSync(fileURLToPath(new URL('../api/well-known.js', import.meta.url)), 'utf8')));
+check('the metadata document names an authorisation server',
+  /authorization_servers: \[origin\]/.test(readFileSync(fileURLToPath(new URL('../api/well-known.js', import.meta.url)), 'utf8')));
 const vercel = JSON.parse(readFileSync(fileURLToPath(new URL('../vercel.json', import.meta.url)), 'utf8'));
 check('and it is routed, so the 401 does not point at the single-page app',
   vercel.rewrites.some((r) => r.source === '/.well-known/oauth-protected-resource'),
   JSON.stringify(vercel.rewrites.map((r) => r.source)));
+
+group('OAuth: the connector signs in as a person, not as an installation');
+const oauth = readFileSync(fileURLToPath(new URL('../api/oauth.js', import.meta.url)), 'utf8');
+check('only a SESSION may authorise — a token cannot consent on somebody\'s behalf',
+  /who\.via !== 'session'[\s\S]{0,40}who = null/.test(oauth));
+check('PKCE is required, and S256 only',
+  /method !== 'S256'/.test(oauth) && !/'plain'/.test(oauth));
+check('the verifier is checked against the stored challenge',
+  /createHash\('sha256'\)\.update\(verifier\)\.digest\('base64url'\)/.test(oauth));
+check('and compared in constant time', /timingSafeEqual/.test(oauth) && /sameSecret\(computed/.test(oauth));
+check('a redirect_uri must match one that was registered, exactly',
+  /const registered = \(client, uri\)[\s\S]{0,200}known === uri/.test(oauth));
+check('an unknown client or redirect is NOT redirected back to',
+  /if \(!client\) return res\.status\(400\)/.test(oauth)
+  && /if \(!registered\(client, redirectUri\ature?\)\)|if \(!registered\(client, redirectUri\)\)/.test(oauth));
+check('a code is burnt before anything is checked against it',
+  /used_at = now\(\)[\s\S]{0,120}returning code_hash[\s\S]{0,200}expires_at/.test(oauth));
+check('refresh tokens rotate', /update oauth_token set revoked_at = now\(\) where token_hash = \$\{row\.token_hash\}/.test(oauth));
+check('tokens are stored hashed, never in the clear',
+  /hashToken\(access\)/.test(oauth) && /hashToken\(refresh\)/.test(oauth));
+check('revoking a grant takes every token, not just the access one',
+  /update oauth_token set revoked_at = now\(\)[\s\S]{0,120}client_id = \$\{clientId\}/.test(oauth));
+const session = readFileSync(fileURLToPath(new URL('../api/_session.js', import.meta.url)), 'utf8');
+check('an OAuth token identifies a caller everywhere, not only in /api/mcp',
+  /from oauth_token/.test(session) && /via: 'oauth'/.test(session));
+check('and an expired one is nobody', /expires_at[\s\S]{0,80}< Date\.now\(\)\) return null/.test(session));
+const wk = readFileSync(fileURLToPath(new URL('../api/well-known.js', import.meta.url)), 'utf8');
+check('the authorisation server is advertised now that it exists',
+  /authorization_servers: \[origin\]/.test(wk) && /authorization_endpoint/.test(wk));
+check('and both documents are routed',
+  vercel.rewrites.some((r) => r.source === '/.well-known/oauth-authorization-server'),
+  JSON.stringify(vercel.rewrites.map((r) => r.source)));
+const provider = readFileSync(fileURLToPath(new URL('../web/src/shell/AccountProvider.tsx', import.meta.url)), 'utf8');
+check('the only place a sign-in may be sent back to is the consent page',
+  /asked\.startsWith\('\/api\/oauth\?'\) \? asked : null/.test(provider));
 
 group('one derivation, three readers');
 const shim = readFileSync(fileURLToPath(new URL('../web/src/lib/skill-schema.ts', import.meta.url)), 'utf8');
