@@ -1,0 +1,395 @@
+# 14 — HTTP API
+
+Vercel serverless functions in `api/`. Files beginning with an underscore are **not routes** — they are
+importable without being reachable.
+
+## Who is calling
+
+`api/_session.js`, one definition used by every route that needs one. There are three kinds of caller and
+they cannot all present the same thing:
+
+| Caller | Presents | Verified by |
+|---|---|---|
+| The web page | the session cookie, automatically — it is same-origin because auth is proxied through `/api/auth/*` | asking Neon Auth `/get-session` |
+| The extension | `Authorization: Bearer mf_…`, a **device token** the user pasted once | our own `device_token` table, **by hash** |
+| Nobody | nothing | returns `null`, which is a valid answer and the reason this does not throw |
+
+A session is verified by **asking the issuer**, never by decoding anything locally: if Neon Auth says the
+session is good it is, and this code holds no signing key. A device token is ours, so it is checked against
+our own table by SHA-256 — a token is a credential, and what leaks from a table should not be usable.
+
+The device token is tried **first** when one is presented, because it carries our prefix and is unambiguous,
+and because trying the issuer first would mean a network round trip to answer "no" for every extension
+request. `last_used_at` is updated but deliberately **not awaited**: bookkeeping should not add latency to
+every call.
+
+### Session-only routes
+
+Minting a device token, listing devices, revoking one, and erasing the account **require a session**, never a
+device token. A device that could mint another device would turn one leaked token into permanent access, and
+revoking the one you knew about would achieve nothing. The same reasoning applies to erasure: it would let one
+leaked token destroy the data it was granted to read.
+
+## CORS, and what it is not
+
+Every route sets `Access-Control-Allow-Origin` to the requesting origin when it is `chrome-extension://…`,
+and to the deployment origin otherwise. **No route sets `Allow-Credentials`.**
+
+That is the load-bearing part: the page is same-origin, so CORS does not apply to it at all, and the
+extension sends an explicit `Authorization` header rather than an ambient cookie. Not setting
+`Allow-Credentials` is what stops a cross-site page spending someone's session — and it is what makes these
+routes immune to CSRF.
+
+CORS is **not the access control** anywhere here. It governs what a *browser* will let a page read; anything
+that is not a browser can POST regardless. What bounds these endpoints is the validation and the session
+check. (An unpacked extension's id comes from its folder path, so extension origins cannot be listed
+individually — any extension origin is accepted.)
+
+---
+
+## `/api/auth/*`
+
+A deliberately dumb proxy to Neon Auth. It does not interpret Better Auth's protocol, because a proxy that
+understands the thing it forwards is a second implementation to keep in step with the first.
+
+**Why it exists:** Neon Auth lives on a Neon hostname. Talking to it directly from the page would make its
+session cookie a **third-party** cookie for this site, which Chrome is progressively refusing to carry — so
+sign-in would work one day and quietly stop the next, in a way that looks like our bug. Everything under
+`/api/auth/*` is forwarded, and the `Set-Cookie` on the way back has its `Domain` attribute stripped. The
+cookie then belongs to this site: first-party, carried without argument, no cross-site exemption needed.
+
+Details that each fixed a real failure:
+
+- **`SameSite=None` is rewritten to `Lax`** — required, not tidier: the OAuth callback arrives from Google as
+  a cross-site GET, and `Strict` would withhold the cookie on exactly that request, signing the user in
+  everywhere except the page they land on.
+- **Hop-by-hop headers are dropped** (`host`, `connection`, `content-length`, `accept-encoding`, …). A stale
+  content-length truncates the body; the original host makes the upstream build redirect URLs pointing at the
+  wrong place.
+- **Our own hop's headers are dropped** (`x-forwarded-*`, `x-vercel-*`, `x-real-ip`, `forwarded`,
+  `cdn-loop`). Forwarding `x-forwarded-host` told Neon Auth the request was for our hostname, which it does
+  not serve, and it answered 400 *"Invalid hostname header"* for **every** call.
+- **The subpath arrives as `?authpath=…`** from a rewrite in `vercel.json`, not from a filesystem catch-all:
+  a catch-all file reached the function for a one-segment path and 404'd at the platform for two, because
+  this project has no framework preset and so no framework-aware routing.
+
+`GET /api/auth/finish?to=<path>` exchanges the one-time verifier for a session cookie — only a server can do
+that — and redirects to `to` with `?auth=ok` (or a reason). `to` is kept **relative**, so this cannot be
+turned into an open redirect, and the outcome is merged into the query properly rather than appended, because
+appending `?auth=ok` to a destination that already had a query or a fragment produced
+`/?pair=extension#skills?auth=ok`, where nothing ever reads the parameter.
+
+Trusted origins are configured in `neon_auth.project_config`; see `scripts/auth-origin.mjs` in
+[20 — Operations](20-operations.md).
+
+---
+
+## `/api/sync`
+
+The account: flows, runs and device tokens.
+
+| Call | Auth | Does |
+|---|---|---|
+| `GET /api/sync` | session or device | Your flows (all of them, both halves, `deleted_at is null`) and your last 60 runs |
+| `POST /api/sync` | session or device | Upsert flows and runs, tombstone deletions |
+| `POST /api/sync?issue=1` | **session** | Mint a device token, shown once |
+| `GET /api/sync?tokens=1` | **session** | List your paired devices |
+| `DELETE /api/sync?token=<id>` | **session** | Revoke one |
+
+The extension holds skills in its own storage and the page holds its own; neither can see the other, because
+a page and an extension are separate origins with separate storage. That is a browser guarantee, not an
+oversight — so **the only place they can meet is an account.**
+
+### POST body and caps
+
+```json
+{ "flows": [ … ], "runs": [ … ], "deleted": [ "clientId", … ] }
+```
+
+| Cap | Value |
+|---|---|
+| Flows per push | 300 |
+| Runs per push | 100 |
+| Runs returned by GET | 60 |
+| **One payload** | **400,000 bytes** |
+| Client id | 80 chars |
+| Name / description | 80 / 400 chars |
+| Origins | 12 |
+| Steps / said per run | 400 / 200 entries |
+| Goal / summary / error | 4,000 / 2,000 / 2,000 chars |
+
+**Upsert on `(user_id, client_id)`.** The client owns identity because a flow is made and renamed on the
+client, which makes a repeated push idempotent — the extension pushes whenever something changes, and a retry
+after a dropped connection must not double anything.
+
+Two behaviours to know:
+
+- **The upsert clears `deleted_at`.** This is what makes a restore work, and it is also the resurrection trap
+  the [reconciler](04-record.md#cross-device-reconciliation) is built around.
+- **A delete tombstones** rather than removing, so a delete on one machine propagates instead of the flow
+  reappearing from the next machine that syncs.
+
+`source` is taken from the body (`'desktop'` or defaulting to `'web'`), **never inferred from the payload**:
+the shapes are similar enough that a guess would sometimes be wrong, and a flow labelled runnable by the
+wrong half is a broken button.
+
+**Problems are reported rather than thrown.** The response is
+`{ ok, flows, runs, deleted, problems: [ … ] }` with the counts **top level** — one bad flow should not lose
+the rest of the push. A payload over the cap names itself and its size.
+
+### Minting
+
+32 random bytes, prefixed `mf_` so a session token pasted into the wrong box fails clearly. Only the **hash**
+is stored; the response is the single moment the token exists in readable form, and it says so.
+
+---
+
+## `/api/transcript`
+
+One recording, read back and edited.
+
+```
+GET  /api/transcript?flow=<clientId>
+  -> { ok, flow, story, summary, segments, gaps }
+
+POST /api/transcript?flow=<clientId>   { remove: [3, 4, 5] }
+                                       { keep:   [1, 2, 9] }
+                                       { undo:   true }
+  -> { ok, removed, remaining, revision, undo: { revision } | null }
+```
+
+**Scoping:** every query filters on the caller's id inside the `WHERE` clause, and a flow that is not the
+caller's is a **404 rather than a 403**. Whether somebody else's flow id exists is not something this route
+will confirm — the ids are chosen by the client, so a 403 would turn this into an oracle for guessing them.
+
+The prose is not written here. The numbering, the segmenting and the honesty about what was never captured
+all live in `api/_transcript.js` as pure functions over the payload; this file fetches a row, checks whose it
+is, and writes one back. That split is not tidiness: **`remove: [3, 4]` has to mean the steps the reader saw
+numbered 3 and 4**, so the code that numbers them and the code that drops them must be the same code.
+
+### How an edit is stored, and why in the payload
+
+A removal writes `user_flow.payload` with the surviving events and stamps it with
+`edits: { revision, removed, at, action, history }`; the previous payload goes into `history`, so the edit can
+be undone. Nothing is destroyed by an edit.
+
+The stamp lives in the payload rather than in a side table because **the stamp and the events have to travel
+together, always**. They are one claim about reality: *"this is 139 of the 142 things that happened."*
+`/api/sync` hands the payload to whichever client asks, and both clients overwrite the whole payload when the
+user saves that recording again. A stamp in its own table would survive a client push that restored the
+original events, and the transcript would then say *"edited, 3 steps removed"* over a recording holding all
+142 — a sentence that is not true and that nobody could disprove from the page. Kept in the payload, the two
+go back together: an overwrite loses the edit **and** the claim, which reads as the original recording, which
+is then what it is. That failure is recoverable; the other one is a quiet lie.
+
+The cost is real and worth writing down: history competes for room with the recording itself. So it is capped
+at the last **5** edits *and* trimmed until the whole payload fits **380,000 bytes** (under sync's 400 KB),
+oldest first. A recording whose kept version has been trimmed away carries **no `undo`** in the response
+rather than offering one that would fail — so a long recording already near that ceiling gets no undo at all,
+which is the honest consequence of the choice above.
+
+An edit does **not** touch `created_at` — when a recording was made is a fact about the past — and does not
+rewrite the name or description. A client-authored description goes stale after an edit and is left stale on
+purpose: this route is not in the business of writing prose about someone's recording, and the transcript
+beside it carries the counts that are actually true.
+
+Something has to say *"edited, 3 steps removed"*, or an edited recording reads as the original — which is the
+one sentence this feature must not print. The GET says it in the **gaps**, where the rest of what a recording
+cannot tell you already is.
+
+| Limit | Value |
+|---|---|
+| Body | 100,000 bytes |
+| Step numbers per call | 5,000 |
+| Rate | 20 POSTs per minute per account (the GET is not counted — it is one row and a pure function, cheaper than the sync the page already does on load) |
+
+---
+
+## `/api/insights`
+
+```
+GET /api/insights?days=30
+```
+
+`days` defaults to 30, maximum 365 — a year of runs is a lot of `jsonb` to unroll. One read-only transaction,
+so the totals, the day series and the per-application split agree with each other. Rate: 30/min per account,
+because this unrolls every event of every recording in the window and is **the most expensive read in the
+product**.
+
+Response: `window`, `totals`, `byOutcome`, `byDay`, `applications`, `unattributed`, `previous`, `repeated`,
+`slowestSteps`, `failures`, `skills`, `gaps`, `caps`. See [08 — Dashboard](08-dashboard.md) for what each
+means and every cap.
+
+---
+
+## `/api/chat`
+
+```
+POST /api/chat  { question, model?, history? }
+  -> { ok, answer, citations, used, usage, provider, model }
+GET  /api/chat
+  -> what this deployment can serve, and which providers it holds a key for
+```
+
+The grounded assistant. Read-only tools, the SQL run here, every lookup listed. Rate: 20/min per account.
+Full description, tool list, limits and the privacy statement: [08 — Dashboard](08-dashboard.md#the-assistant).
+
+The GET reports the **allowlist** keyed by provider plus which providers are configured — it is not a list of
+models the caller may choose freely, and reading it as one is how the model picker came to list nothing while
+blaming the deployment for having no keys.
+
+---
+
+## `/api/chats`
+
+Saved conversations.
+
+| Call | Does |
+|---|---|
+| `GET /api/chats` | List your threads, most recent first |
+| `GET /api/chats?thread=<id>` | One thread and its messages |
+| `POST /api/chats` | `{ thread, title, messages }` — upsert by `(thread_id, n)` |
+| `DELETE /api/chats?thread=<id>` | **Delete**, not tombstone — the messages go with it on cascade |
+
+---
+
+## `/api/claude`
+
+The shared demo key, held server-side.
+
+```
+GET  /api/claude   -> { ok, configured, model, maxTokens }
+POST /api/claude   -> forwarded to https://api.anthropic.com/v1/messages
+```
+
+**Why it exists:** the demo needs every attendee to use one key without each of them pasting one in. The
+obvious way — put the key in the extension — does not work, because an extension ships as **readable source**:
+anyone it is handed to can open the folder, or `chrome://extensions`, and read the key out. A key distributed
+that way is a key published, and it stays valid until somebody notices. Anthropic and GitHub both scan for
+exposed keys and revoke them, so it is also likely to simply stop working mid-demo.
+
+So the key lives in a Vercel environment variable and this route attaches it. It can be rotated or switched
+off from the dashboard without touching any installed extension.
+
+**It is no longer anonymous.** Every call must identify a person — a session, or a device token — because a
+shared key anyone who finds the URL can spend is a key with no owner and no way to tell whose run cost what.
+The rate limit is per **account** rather than per IP for the same reason: an IP is not a person, and a room
+full of people at a demo shares one. This is also what makes the extension's sign-in wall more than a screen:
+the wall can be walked around by anyone willing to edit readable extension source; this cannot.
+
+It spends money for anyone who can reach it, so it is deliberately narrow:
+
+| Bound | Value |
+|---|---|
+| Models | `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-20251001` |
+| `max_tokens` | clamped to 16,000 |
+| Messages per request | 120 — a runaway loop hits this long before it hits the balance |
+| Body | 4,000,000 bytes — vision turns carry a picture, and the platform allows ~4.5 MB. A 1.5 MB cap made this proxy the tightest gate in the chain at a third of what the platform permits, and the failure it produced said only "request too large". |
+| Rate | 30/min per account |
+
+The payload is rebuilt field by field rather than forwarded wholesale, so a caller cannot smuggle in options
+it is not meant to pay for.
+
+The GET reports a **boolean and nothing else** — a prefix, a suffix or even a length would narrow a guess —
+and costs nothing upstream.
+
+Every rate limiter here is honest about itself: **a serverless instance holds its own window**, so the real
+ceiling is the stated number times however many instances are warm. It stops a stuck client and casual abuse,
+not a determined one.
+
+---
+
+## `/api/gallery`
+
+```
+GET    /api/gallery            newest published skills          (public)
+GET    /api/gallery?q=…        search name and description       (public)
+GET    /api/gallery?id=…       one skill, with its payload, and counts an install
+GET    /api/gallery?mine=1     the caller's own, including withdrawn   (session)
+POST   /api/gallery            publish                                (session)
+DELETE /api/gallery?id=…       withdraw your own                      (session)
+```
+
+Reading is public, because a gallery nobody can see is not a gallery. Writing needs a session, so a skill has
+an author and can be withdrawn by the person who published it. Page maximum 50; payload maximum 400,000 bytes
+— a long recording is large, and a skill is not a file store.
+
+Listings carry `total` (the matches before the endpoint's own limit) so a page can say "50 of 148" instead of
+calling the fifty that arrived the whole library. Parameter **names and types** travel; the author's example
+values do not.
+
+Withdrawal is a soft delete. **Search covers name and description only** — the payload is not searchable on
+purpose: a goal can contain an address or a document title, and a gallery is public.
+
+---
+
+## `/api/account`
+
+```
+DELETE /api/account?erase=1     (session only)
+```
+
+| Table | What happens |
+|---|---|
+| `user_flow` | Every flow, both halves, **hard-deleted** rather than tombstoned. A tombstone means "the client should stop showing this"; erasing an account is not that. |
+| `user_run` | Every run: goals, models, steps, what the model said |
+| `device_token` | Every paired device, so nothing keeps syncing into a deleted account |
+| `gallery_skill` | **Withdrawn, not deleted.** A published skill may already be installed by other people, and the copies they hold are theirs; withdrawing takes it out of the gallery and off the author's name, which is what the author can actually decide. |
+
+**What it cannot delete:** the Google account, and the sign-in record Neon Auth keeps for it. That row belongs
+to the issuer, not to this application, and reaching into another system's tables to remove it would be worse
+than saying plainly that it is not ours. Signing out afterwards is the client's job, and the response says so.
+
+---
+
+## `/api/models`
+
+```
+GET /api/models     (session only)
+```
+
+A **diagnostic**, not part of the product. It asks each provider for its own model list and returns what
+looks like a current chat model, so the allowlist in `api/_provider.js` can be set from fact rather than from
+memory — which is exactly how a wrong model id ships and fails at the first real request.
+
+Per provider it reports `hasKey`, the `allowlisted` ids, the full `upstream` list (sorted, so a name that
+does not match the guessed pattern is still visible — the whole point is to stop guessing), the `likely`
+subset, and which allowlisted ids are `reachable` / `missing`.
+
+Session-required because it proves which keys this deployment holds — a fact worth knowing but not worth
+publishing. It spends nothing: `/models` is not a completion.
+
+---
+
+## `api/_provider.js` — one shape for two providers
+
+Not a general-purpose SDK. It exists because the two decision loops keep the **provider's own reply object**
+as their working memory — raw Anthropic content blocks in a transcript, tool output returned as
+`tool_result` blocks inside a *user* message keyed by `tool_use_id`, with Anthropic's `is_error` flag. That is
+the real coupling, and it is the one thing a "provider interface" is usually specified without: normalising
+observations, actions and receipts does not help if the conversation itself is one vendor's data structure.
+
+```
+Message   { role: 'user' | 'assistant', text?, calls?, results? }
+Call      { id, name, input }
+Result    { id, output, isError }
+Answer    { text, calls, stopReason, usage, raw }
+```
+
+`stopReason` is one of **`end` | `tools` | `truncated` | `refused`**. Those four are what a caller has to
+branch on, and every provider expresses them differently — which is exactly how both loops came to file a
+truncated turn as a successful run.
+
+| | |
+|---|---|
+| Anthropic | `https://api.anthropic.com/v1/messages`. Exercised by this product every day. |
+| OpenAI | `https://api.openai.com/v1/responses` — the **Responses** API, not Chat Completions, because the model this deployment would serve is called with `reasoning: { effort }`. **Written but never run from here**: there is no `OPENAI_API_KEY` on the deployment. Structured so a wrong assumption fails loudly with the upstream's own message rather than silently degrading, and commented so the mapping can be checked against current documentation rather than trusted. |
+
+Model allowlists are per provider, first entry is the default, and the OpenAI default comes from
+`OPENAI_MODEL` / `OPENAI_REASONING_EFFORT` so changing it is an environment variable rather than a deploy.
+An allowlist rather than a passthrough for the same reason `/api/claude` has one: this spends somebody's
+money, and an unbounded model name is an unbounded price.
+
+It carries what a grounded chat and a tool loop need, and nothing else: no streaming, no images (the decision
+loops still call `/api/claude` directly for those), no parallel-tool subtleties beyond returning several
+calls at once.
