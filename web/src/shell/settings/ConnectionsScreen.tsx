@@ -11,6 +11,7 @@
  */
 import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
+import { restartTour } from '../OnboardingTour';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
@@ -182,6 +183,20 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
           )}
         </div>
       )}
+
+      <Row
+        label="The tour"
+        note="The five-step walk through what each part of the app is for. It runs once by itself; this is
+              how to see it again."
+      >
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { onClose(); restartTour(); }}
+        >
+          Show it again
+        </Button>
+      </Row>
 
       <Row
         label="First time here?"

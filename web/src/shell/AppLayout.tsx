@@ -13,6 +13,7 @@ import { useAgent } from '@/lib/store';
 import { AccountProvider } from './AccountProvider';
 import { AppSidebar } from './AppSidebar';
 import { SettingsDialog, type SettingsScreen } from './SettingsDialog';
+import { OnboardingTour } from './OnboardingTour';
 /* Makes this browser and the account agree, on load and on every change, without asking. Mounted here rather
  * than on the Record page because signing in on another machine can land anywhere, and waiting for somebody to
  * visit the right page before their recordings appear is the same bug in a longer form. */
@@ -83,6 +84,8 @@ const Shell = () => {
           <Outlet />
         </main>
       </div>
+
+      <OnboardingTour onOpenConnections={() => setSettings('connections')} />
 
       <SettingsDialog
         open={settings !== null}

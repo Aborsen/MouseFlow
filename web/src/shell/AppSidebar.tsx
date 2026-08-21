@@ -142,6 +142,9 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
               key={to}
               to={to}
               title={label}
+              /* What the first-run tour points at. TanStack's Link spreads what it does not consume onto
+               * the anchor, so this needs no wrapper element. */
+              data-tour={to}
               className={cn(
                 ROW,
                 'text-[0.92rem] text-ink-body hover:bg-state-hover hover:text-ink-primary',
