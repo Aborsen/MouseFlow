@@ -2652,7 +2652,7 @@ namespace MouseFlow
                 _icon = new System.Windows.Forms.NotifyIcon();
                 _icon.Icon = _idleIcon;
                 _icon.Text = "MouseFlow agent";
-                _icon.System.Windows.Forms.ContextMenuStrip = _menu;
+                _icon.ContextMenuStrip = _menu;
                 _icon.Visible = true;
 
                 /* The icon is also the recording light. One second is finer than a person can see a state
