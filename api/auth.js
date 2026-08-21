@@ -51,25 +51,31 @@ const SESSION_COOKIE = /session_token/i;
  * Domain is dropped from everything: these cookies are set through our own origin, and a Domain
  * attribute naming the upstream's host is one the browser would refuse from us anyway.
  *
- * SameSite is downgraded to Lax for the SESSION and left alone for everything else, and that
- * direction is the whole lesson of two bugs. The first version downgraded everything, which withheld
- * the OAuth challenge from the one request that needed it - `Lax` is documented to travel on a
- * top-level cross-site GET and Chrome obliges, but Safari on iOS does not at the end of a redirect
- * CHAIN, which is exactly this flow: Google, then the auth service, then us.
+ * `Partitioned` is dropped from everything, which is what Neon's own reference proxy does
+ * (`parsedCookie.partitioned = void 0`). A partitioned cookie is keyed to the top-level site it was
+ * set under; these are set under ours and only ever read on ours, so the attribute can do nothing
+ * here except confuse a browser mid-redirect.
  *
- * The second version guessed at NAMES - challenge, state, nonce - and the upstream sends both
- * `session_challenge` and `session_challange`, the misspelling and the fix, presumably for
- * compatibility with itself. The pattern matched one of them. The other stayed Lax and the phone
- * still could not sign in, now with `state_mismatch` instead.
+ * SameSite is Lax for the SESSION and None for everything else, and the split is narrower than it
+ * looks. The only non-session cookie that matters is the OAuth challenge, and its whole job is to be
+ * present when the browser lands back on OUR /api/auth/finish - which it reaches from the auth
+ * service, cross-site, at the end of a redirect chain. `Lax` is documented to travel on a top-level
+ * cross-site GET and Chrome obliges; Safari does not do it at the end of a CHAIN (WebKit 196375,
+ * 219650, still open), which is what 400 SESSION_CHALLENGE_COOKIE_NOT_FOUND was.
  *
- * So the rule is inverted, and it names the one cookie we are sure about rather than guessing at the
- * others: the session is pinned to Lax, and everything else is made able to come back cross-site -
- * which is what it exists for. Note that this UPGRADES the misspelled cookie, which the service
- * itself sends as Lax; leaving it as built was tried and is what "state_mismatch" was.
+ * Two corrections to earlier guesses in this file, both worth keeping written down. The upstream sends
+ * `session_challenge` AND `session_challange` - the misspelling is deliberate and named
+ * LEGACY_SESSION_CHALLENGE_COOKIE_NAME in the SDK - so a rule that matches cookie NAMES will always
+ * miss one. And starting OAuth needs no cookie from us at all: the `/sign-in/social/init?token=` hop
+ * works with an empty jar and sets its own `state` and `aid` first-party to the auth service's hosts.
+ * So a `state_mismatch` is NOT this function's doing - it happens on the auth service's own shared
+ * host, with its own cookies, before anything here is consulted.
  */
 const firstParty = (cookie) => {
   const name = String(cookie).split('=', 1)[0].trim();
-  const owned = cookie.replace(/;\s*Domain=[^;]*/i, '');
+  const owned = cookie
+    .replace(/;\s*Domain=[^;]*/i, '')
+    .replace(/;\s*Partitioned/i, '');
   if (SESSION_COOKIE.test(name)) {
     return owned.replace(/;\s*SameSite=None/i, '; SameSite=Lax');
   }
