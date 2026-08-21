@@ -1,10 +1,15 @@
 /* The Insightis design system's stylesheet, plus the handful of rules this app adds.
  *
  * Their globals.css is imported whole - primitives, semantic tokens, component-scoped overrides, light and
- * dark - so every vendored component behaves exactly as it does there. Nothing below redefines a token;
- * what is here is page furniture their app has no equivalent of.
+ * dark - so every vendored component behaves exactly as it does there.
+ *
+ * Then mouseflow-palette.css redefines three PRIMITIVE ramps, and nothing else: the app has to look like
+ * mouseflow.ai, and the semantic layer above those ramps is what keeps every component deciding which step
+ * it reads, per theme, exactly as upstream wrote it. See that file for what is deliberately left alone.
+ * Everything after the imports is page furniture their app has no equivalent of.
  */
 @import '../vendor/insightis-ui/src/globals.css';
+@import './mouseflow-palette.css';
 
 @layer base {
   html,
