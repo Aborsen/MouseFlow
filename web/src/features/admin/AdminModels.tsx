@@ -80,7 +80,7 @@ export const AdminModels = () => {
             value={s.value ?? ''}
             disabled={saving === s.key}
             onChange={(e) => void save(s.key, e.target.value)}
-            className="h-9 min-w-[220px] rounded-md border border-stroke bg-surface-input px-2.5 text-[0.86rem] text-ink-primary focus:border-brand-primary focus:outline-none disabled:opacity-60"
+            className="h-9 min-w-[220px] rounded-md border border-stroke bg-surface-card2 px-2.5 text-[0.86rem] text-ink-primary focus:border-brand-primary focus:outline-none disabled:opacity-60"
           >
             <option value="">default</option>
             {s.choices.map((c) => <option key={c} value={c}>{c}</option>)}

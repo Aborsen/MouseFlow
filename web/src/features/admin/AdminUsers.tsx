@@ -55,7 +55,7 @@ export const AdminUsers = () => {
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           placeholder="Search by name or email…"
-          className="h-10 w-full rounded-lg border border-stroke bg-surface-input ps-9 pe-3 text-[0.88rem] text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
+          className="h-10 w-full rounded-lg border border-stroke bg-surface-card2 ps-9 pe-3 text-[0.88rem] text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
         />
       </div>
 

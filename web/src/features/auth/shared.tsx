@@ -117,7 +117,7 @@ export const PasswordRules = ({ value }: { value: string }) => (
 
 /* ---------------------------------------------------------------- the shell around each page */
 
-export const FIELD = 'h-10 w-full rounded-lg border border-stroke bg-surface-input px-3 text-sm '
+export const FIELD = 'h-10 w-full rounded-lg border border-stroke bg-surface-card2 px-3 text-sm '
   + 'text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none';
 
 export const Banner = ({ kind, children }: { kind: 'error' | 'good'; children: ReactNode }) => (

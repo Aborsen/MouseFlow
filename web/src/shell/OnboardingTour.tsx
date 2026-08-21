@@ -260,7 +260,7 @@ export const OnboardingTour = ({ onOpenConnections }: Props) => {
                    transition-all duration-base"
         style={{ top: panelTop, left: panelLeft }}
       >
-        <Typography variant="span" className="text-ink-muted text-xs">
+        <Typography variant="span" className="text-ink-inactive text-xs">
           {index + 1} of {STEPS.length}
         </Typography>
         <Typography variant="h2" weight="semibold" className="mt-1 text-[1.05rem]">

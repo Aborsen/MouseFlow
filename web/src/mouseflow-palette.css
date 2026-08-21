@@ -1,8 +1,8 @@
 /* The app in MouseFlow's colours, on the design system's own tokens.
  *
- * The vendored design system is teal on charcoal - #07807E over #0F0E14 - and mouseflow.ai is violet on
- * indigo: #a99aff over #090b22. Somebody who clicks "Start for free" on the site and lands here should not
- * feel they arrived somewhere else, so the two now share a palette.
+ * The vendored design system is teal on charcoal - #07807E over #0F0E14 - and MouseFlow is LIME ON NAVY:
+ * #bdff7a over #0a1126. Somebody who clicks "Start for free" on the site and lands here should not feel
+ * they arrived somewhere else, so the two share a palette.
  *
  * THREE RAMPS, NOT A HUNDRED SEMANTIC TOKENS. The system is layered: primitives (--brand-400, --grey-900)
  * feed semantics (--brand-primary, --surface-page), and the components only ever read the semantics. So
@@ -15,114 +15,150 @@
  * surface, --brand-600 is still the solid button in light mode. Nothing that reads a token has to know this
  * file exists.
  *
+ * A LIGHT ACCENT ONLY WORKS ON A DARK PAGE, and that is the one place this file has to do more than swap
+ * hues. The design system assumes the accent is dark enough to be TEXT on white paper - its teal measures
+ * 4.9:1 there - and it reads the same --brand-600 for the link colour, the focus ring, the logo mark and the
+ * solid button. A lime cannot do that job: #adff5c on white is 1.2:1, which is not a low-contrast link, it
+ * is an invisible one, and `text-brand-primary` appears in 51 places. So the accent is lime in the dark
+ * theme and a DEEP GREEN of the same hue family in the light one - one accent per theme, both usable as
+ * text and as a fill - and the ramp steps the light theme reads are overridden in the light block below.
+ * Same brand, same family; the difference is which end of the ramp the paper allows.
+ *
  * The --slate-* steps are a HUE ROTATION and nothing more: lightness and saturation are untouched, so every
  * contrast ratio the light theme was designed around still holds. The site has no light theme to copy, and
- * a violet accent over blue-grey paper reads as two brands.
+ * an accent over blue-grey paper reads as two brands.
  *
  * WHAT IS DELIBERATELY LEFT ALONE:
  *
  *   --red-*        a failure is red in both palettes, and a brand colour is not a reason to make a warning
  *   --green-*      less legible. Semantic colours stay semantic - the "Ready" badge on a recording is still
- *   --orange-*     green here, on purpose.
- *   --chart-*      a chart series has to stay distinguishable from its neighbours, which is a different
- *                  problem from matching a brand.
+ *   --orange-*     green here, on purpose. (--orange-500 is re-lit per theme at the bottom, for contrast,
+ *   --chart-*      not for the brand.) A chart series has to stay distinguishable from its neighbours,
+ *                  which is a different problem from matching a brand.
  *
  * Values are HSL triplets because that is how the design system stores a colour, with the hex in a comment
- * so it can be read at a glance and diffed against the site's stylesheet.
+ * so it can be read at a glance and diffed against the site's stylesheet. THE HEX IS PART OF THE VALUE:
+ * every one below was generated from the triplet beside it, so a comment that disagrees with its value is
+ * a bug, not a note. Changing a triplet means recomputing its hex.
  */
 
 :root {
-  /* ── The accent, from the site's --mint #a99aff. It sits at 400 so that dark mode - which reads
-     --brand-secondary and --brand-hover from 400 - gets the site's exact accent, and light mode's solid
-     button (600) gets a violet deep enough to carry white text. ── */
-  --brand-50: 217 100% 97%; /* #f2efff */
-  --brand-100: 217 100% 93%; /* #e2dbff */
-  --brand-200: 90 100% 89%; /* #cfc5ff */
-  --brand-300: 90 100% 84%; /* #bcaeff */
-  --brand-400: 90 100% 72.2%; /* #a99aff — the site's accent */
-  --brand-500: 90 100% 74%; /* #8f7dff */
-  --brand-600: 90 100% 68%; /* #7c68f0 */
-  --brand-700: 90 100% 58%; /* #6753d8 */
-  --brand-800: 216 45% 37%; /* #3b3487 */
-  --brand-900: 226 56% 17%; /* #171a40 — the site's raised surface */
-  --brand-50-soft: 217 100% 97%; /* #f6f4ff — the site's cream */
-  --brand-900-soft: 226 56% 15%; /* #141636 */
+  /* ── The accent. It sits at 500 because the DARK theme - the one that matches the site - reads
+     --brand-primary from 500, and every step above and below it is a monotonic lightness ramp so that
+     "one step lighter" means the same thing here as it does upstream. 600 is the solid button in both
+     themes, which is why the light block below overrides 500/600/700 rather than the semantics. ── */
+  --brand-50: 90 70% 96%; /* #f5fcee */
+  --brand-100: 90 75% 91%; /* #e8f9d7 */
+  --brand-200: 90 100% 92%; /* #ebffd6 */
+  --brand-300: 90 100% 86%; /* #dbffb8 */
+  --brand-400: 90 100% 80%; /* #ccff99 */
+  --brand-500: 90 100% 74%; /* #bdff7a — the accent */
+  --brand-600: 90 100% 68%; /* #adff5c — the solid button, both themes */
+  --brand-700: 90 100% 58%; /* #94ff29 */
+  --brand-800: 216 45% 37%; /* #345689 — dark mode's primary badge; a surface, so it stays in the navy */
+  --brand-900: 226 56% 17%; /* #131e44 — the raised surface */
+  --brand-50-soft: 90 60% 97%; /* #f7fcf3 — light mode's accent surface */
+  --brand-900-soft: 226 56% 15%; /* #111b3c */
 
   /* ── The second accent. One family, one step brighter, so a highlight reads as a highlight rather than as
      a different brand: dark mode's --ink-highlight is tertiary-400 and its --brand-tertiary is 500. ── */
-  --tertiary-50: 217 100% 97%; /* #f4f2ff */
-  --tertiary-100: 217 100% 94%; /* #e6e1ff */
-  --tertiary-200: 90 100% 90%; /* #d5cdff */
-  --tertiary-300: 90 100% 86%; /* #c4b8ff */
-  --tertiary-400: 90 100% 83%; /* #b7a8ff */
-  --tertiary-500: 90 100% 72.2%; /* #a99aff — the site's accent */
-  --tertiary-600: 90 100% 74%; /* #8f7dff */
-  --tertiary-700: 90 100% 68%; /* #7c68f0 */
-  --tertiary-800: 90 100% 52%; /* #5546c2 */
-  --tertiary-900: 216 45% 37%; /* #3b3487 */
-  --tertiary-950: 90 100% 29%; /* #2a2470 */
+  --tertiary-50: 90 70% 96%; /* #f5fcee */
+  --tertiary-100: 90 75% 91%; /* #e8f9d7 */
+  --tertiary-200: 90 100% 93%; /* #edffdb */
+  --tertiary-300: 90 100% 88%; /* #e0ffc2 */
+  --tertiary-400: 90 100% 83%; /* #d4ffa8 — dark mode's --ink-highlight */
+  --tertiary-500: 90 100% 78%; /* #c7ff8f — dark mode's --brand-tertiary, a step above the accent */
+  --tertiary-600: 90 100% 68%; /* #adff5c */
+  --tertiary-700: 90 100% 58%; /* #94ff29 */
+  --tertiary-800: 90 100% 48%; /* #7af500 — the pressed solid button */
+  --tertiary-900: 216 45% 37%; /* #345689 */
+  --tertiary-950: 226 56% 12%; /* #0d1530 */
 
-  /* ── The dark theme's surfaces and inks. Indigo rather than charcoal, same steps in the same order, so
+  /* ── The dark theme's surfaces and inks. Navy rather than charcoal, same steps in the same order, so
      the depth relationships upstream designed are unchanged. Light mode never reads this ramp. ── */
-  --grey-50: 217 100% 97%; /* #f6f4ff — ink-primary */
-  --grey-100: 216 54% 90%; /* #e6e5f6 — ink-body */
-  --grey-200: 90 100% 90%; /* #dcdaf0 */
-  --grey-300: 216 44% 86%; /* #cfceea — ink-secondary */
-  --grey-400: 216 20% 66%; /* #9a99b8 */
-  --grey-500: 216 28% 47%; /* #565a9b */
-  --grey-600: 216 39% 28%; /* #2b2d63 — dropzone, switch-off hover */
-  --grey-700: 226 56% 22%; /* #1e2050 — chips, strokes, pressed */
-  --grey-800: 224 55% 17%; /* #171a40 — card2, hover */
-  --grey-900: 226 56% 13%; /* #111433 — card */
-  --grey-950: 226 58% 9.4%; /* #090b22 — the page, and the site's background */
+  --grey-50: 217 100% 97%; /* #f0f6ff — ink-primary */
+  --grey-100: 216 54% 90%; /* #d8e3f3 — ink-body */
+  --grey-200: 216 48% 88%; /* #d2ddef */
+  --grey-300: 216 44% 86%; /* #ccd8eb — ink-secondary */
+  --grey-400: 216 20% 66%; /* #97a5ba */
+  --grey-500: 216 28% 47%; /* #567199 */
+  --grey-600: 216 39% 28%; /* #2c4263 — dropzone, switch-off hover */
+  --grey-700: 226 56% 22%; /* #192758 — chips, strokes, pressed */
+  --grey-800: 224 55% 17%; /* #142043 — card2, hover */
+  --grey-900: 226 56% 13%; /* #0f1734 — card */
+  --grey-950: 226 58% 9.4%; /* #0a1126 — the page, and the site's background */
 
-  /* ── What sits ON the accent, and the one SEMANTIC token this file sets.
-     The design system paints its primary button white on --btn-primary-bg (--brand-600), which was right
-     while that was a deep teal and is wrong now that it is lime: white on #a3ff46 measures 1.4:1. Near-black
-     on lime reads about 12:1. Set here rather than by darkening --brand-600, which would fix one button and
-     drag down every link, active nav item and progress bar that reads the accent. ── */
+  /* ── What sits ON the accent, and the one SEMANTIC token this file sets at the root.
+     The design system paints its primary button white on --btn-primary-bg, which was right while that was
+     a deep teal and is wrong on a lime: white on #adff5c measures 1.2:1, near-black on it 14.7:1. Set here
+     rather than by darkening --brand-600, which would fix one button and drag down every link, active nav
+     item and progress bar that reads the accent. Light mode flips both of these, because there the accent
+     is the deep green and the readable side is the pale one. ── */
   --btn-primary-text: 154 44% 7%; /* #0a1a13 */
   /* The same value as a token of its own, for the handful of places that paint content over a solid accent
-     without going through a Button. Theme-independent on purpose: the accent is light in BOTH themes, so
-     anything that flips - --surface-page, --ink-primary - is the wrong answer here. Measured 15.8:1 on the
-     record disc in dark and 12.6:1 in light. */
+     without going through a Button - the record disc, the selected date-range chip, the sidebar avatar.
+     Measured 15.2:1 on the record disc in dark and 5.5:1 in light. */
   --on-accent: 154 44% 7%; /* #0a1a13 */
 
-  /* ── Dark mode's inactive ink. At #94A3B8 it was the one cool blue-grey left sitting on an indigo
-     ground; the light theme does not read this step at all. ── */
-  --slate-450: 214 18% 43%; /* #5a6a80 — light-mode captions. #7C8CA2 measured 3.2:1 on the light page and
-                               47% still left them at 4.4:1, a hair under AA; this reads 5.2:1. */
-  --slate-400: 216 22% 74%; /* #aeaecb — the site's muted text */
+  /* ── Dark mode's inactive ink, and light mode's. #94A3B8 was the one cool blue-grey left sitting on a
+     navy ground; --slate-450 is light mode's caption, where the upstream #7C8CA2 measured 3.2:1 on the
+     light page - under AA at 12px - and this reads 4.8:1 while staying a step lighter than
+     --ink-secondary, which is the whole point of having both. ── */
+  --slate-450: 214 18% 45%; /* #5e7087 */
+  --slate-400: 216 22% 74%; /* #aebacb — the site's muted text */
 
   /* ── Light mode's neutrals, rotated onto the same hue and nothing else.
-     The site has no light theme, so there is nothing to match literally - but a violet accent over
-     blue-grey paper reads as two brands, and the fix is a hue rotation rather than a new palette: every
-     step keeps its lightness and its saturation, so every contrast ratio light mode was designed around
-     is unchanged. Also read twice by the dark theme, for text on a light chip, where it is equally at
-     home. ── */
-  --slate-50: 217 50% 98%; /* was 217 50% 98% */
-  --slate-100: 217 50% 96%;
-  --slate-200: 217 50% 91%;
-  --slate-300: 216 27% 84%;
-  --slate-900: 226 56% 11%; /* the light theme's primary ink */
+     The site has no light theme, so there is nothing to match literally - but an accent over blue-grey
+     paper reads as two brands, and the fix is a hue rotation rather than a new palette: every step keeps
+     its lightness and its saturation, so every contrast ratio light mode was designed around is unchanged.
+     Also read twice by the dark theme, for text on a light chip, where it is equally at home. ── */
+  --slate-50: 217 50% 98%; /* #f7f9fc — was 210 40% 98% */
+  --slate-100: 217 50% 96%; /* #f0f4fa */
+  --slate-200: 217 50% 91%; /* #dde5f4 */
+  --slate-300: 216 27% 84%; /* #cbd4e1 */
+  --slate-900: 226 56% 11%; /* #0c142c — the light theme's primary ink */
 }
 
 /* ── The dark theme only.
  *
- * The same Beta badge from the other side. #FF6900 read 4.21:1 on the navy chip - it passed on the darker
+ * HOVER AND PRESS, because a lime is already at the top of the luminance range and lightness alone cannot
+ * move it: the ramp step upstream uses for a hover (68% -> 58%) measures 1.04:1 against the base, which is
+ * not a subtle hover, it is no hover at all. Deepening far enough to be seen takes 46% and 38%, measured
+ * 1.26:1 and 1.87:1 against the button's own fill, with the near-black label still at 11.7:1 and 7.9:1.
+ * Set as semantics rather than by bending the ramp, so "400 is lighter than 500" stays true for everything
+ * else that reads it.
+ *
+ * The Beta badge from the other side: #FF6900 read 4.21:1 on the navy chip - it passed on the darker
  * charcoal this palette replaced, and the navy is a shade lighter, which is enough to drop it under AA at
  * 12px. Two points of lightness buys 4.9:1 and the orange still reads as orange. ── */
 :root:root.dark {
-  --orange-500: 24.7 100% 58%; /* #ff8c39 — 5.2:1 on the navy chip, measured; 55%% landed at 4.48 */
+  --brand-hover: 90 100% 46%; /* #75eb00 */
+  --btn-primary-bg-hover: 90 100% 46%; /* #75eb00 */
+  --btn-primary-bg-press: 90 100% 38%; /* #61c200 */
+  --orange-500: 24.7 100% 58%; /* #ff8129 — 5.2:1 on the navy chip, measured; 55% landed at 4.48 */
 }
 
 /* ── The light theme only.
+ *
+ * THE ACCENT, deep green instead of lime - see the note at the top of this file. Overriding the three ramp
+ * steps the light theme reads carries every use of the accent at once: --brand-primary and --ink-highlight
+ * (600), --brand-secondary and the button's hover (700), --brand-hover (500), and with them the focus ring,
+ * the logo mark and the solid button, which all read --brand-600 directly. Measured on white: 6.0:1 as
+ * text, 8.2:1 for the secondary, and 5.5:1 for the pale ink that now sits on top of a solid fill.
  *
  * --orange-500 is the Beta badge, and #FF6900 on near-white paper measures 2.24:1 - unreadable at 12px, and
  * it was failing before this palette arrived. It is left alone in the dark theme, where the same value sits
  * on navy and reads fine; a semantic colour keeps its meaning, and this makes it more legible rather than
  * less. Scoped by :not(.dark) because the design system switches themes with a class on the root. ── */
 :root:root:not(.dark) {
-  --orange-500: 24.7 100% 30%; /* #993e00 — 5.0:1 against the badge own tint, measured, not estimated:
-                                  35%% looked like enough against white and read 3.98:1 on the tinted chip */
+  --brand-500: 95 85% 30%; /* #428e0b — --brand-hover */
+  --brand-600: 95 85% 24%; /* #357109 — --brand-primary, --btn-primary-bg, --focus-ring-brand, --logo-mark */
+  --brand-700: 95 85% 19%; /* #2a5a07 — --brand-secondary, --btn-primary-bg-hover */
+  --tertiary-600: 100 80% 26%; /* #31770d — --brand-tertiary */
+  --tertiary-800: 95 85% 15%; /* #214706 — the pressed solid button */
+  /* The accent is dark here, so what sits on it is the pale ink rather than the near-black. */
+  --btn-primary-text: 217 100% 97%; /* #f0f6ff */
+  --on-accent: 217 100% 97%; /* #f0f6ff */
+  --orange-500: 24.7 100% 30%; /* #993f00 — 5.0:1 against the badge's own tint, measured, not estimated:
+                                  35% looked like enough against white and read 3.98:1 on the tinted chip */
 }

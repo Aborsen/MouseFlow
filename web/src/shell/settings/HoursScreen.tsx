@@ -74,7 +74,7 @@ export const HoursScreen = () => {
       ) : (
         <table className="w-full border-collapse text-[0.85rem]">
           <thead>
-            <tr className="bg-tbl-header text-ink-secondary">
+            <tr className="bg-table-header-bg text-ink-secondary">
               <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Date</th>
               <th className="px-2.5 py-2 text-left font-medium">What</th>
               <th className="rounded-r-md px-2.5 py-2 text-right font-medium">Hours</th>
