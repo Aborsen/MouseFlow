@@ -173,8 +173,20 @@ async function pull(res, sql, who) {
   `;
   /* Facts about the PERSON, not their work. Small enough to ride along with every read rather than earn a
    * request of its own, and the first of them - whether the introduction has been seen - is needed on the
-   * first render of the app, which is exactly when this answer arrives. */
-  const prefs = await sql`select key, value from user_pref where user_id = ${who.id}`;
+   * first render of the app, which is exactly when this answer arrives.
+   *
+   * Wrapped, and the reason is a bug this caused: the table arrived in a migration, the code arrived in a
+   * deploy, and for the hours between them this line threw - which failed the WHOLE read. The app then
+   * showed no recordings at all on any machine that did not already have them in local storage, and said
+   * nothing, because a failed account read is deliberately quiet. A preference is the least important thing
+   * in this response and must never be able to take the rest of it down. */
+  let prefs = [];
+  try {
+    prefs = await sql`select key, value from user_pref where user_id = ${who.id}`;
+  } catch (_) {
+    /* No table yet, or no permission. Absent preferences mean the defaults, which is what a deployment
+     * that has never had them should do. */
+  }
   return res.status(200).json({
     ok: true,
     you: {

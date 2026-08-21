@@ -101,7 +101,7 @@ export const RecordingsTable = ({
   onAdopt,
 }: RecordingsTableProps) => {
   const [state, update] = useConsole();
-  const { reload } = useAccount();
+  const { reload, readFailed } = useAccount();
   const [term, setTerm] = useState('');
   const [shown, setShown] = useState(PAGE);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -237,10 +237,27 @@ export const RecordingsTable = ({
       </div>
 
       {state.recordings.length === 0 ? (
-        <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
-          No recordings yet. Press <strong>Start recording</strong>, or import a <code>.mmmacro</code>
-          {' '}file from Mini Mouse Macro.
-        </Typography>
+        /* Two different facts, said differently. "You have none" and "yours could not be read" look
+         * identical from here and mean opposite things - and on a machine that holds nothing locally, which
+         * is every newly signed-in phone, the second one is the one that matters. */
+        readFailed ? (
+          <div className="grid gap-2">
+            <Typography variant="p" className="text-ink-body text-[0.88rem]">
+              Your recordings could not be read from your account, so this list is showing only what is on
+              this device — which may be nothing. They are not lost.
+            </Typography>
+            <div>
+              <Button variant="secondary" size="sm" onClick={() => { void reload(); }}>
+                Try again
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
+            No recordings yet. Press <strong>Start recording</strong>, or import a <code>.mmmacro</code>
+            {' '}file from Mini Mouse Macro.
+          </Typography>
+        )
       ) : (
         <>
           {/* Строки, оставшиеся на аккаунте без локальной копии.
