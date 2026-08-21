@@ -40,6 +40,8 @@ import { neon } from '@neondatabase/serverless';
 import { randomUUID } from 'node:crypto';
 import { whoIsCalling } from './_session.js';
 import { structureOf, wireFor } from './_skill-schema.mjs';
+import { parseMacro, summarize } from './_macro.mjs';
+import { flowFor } from './_flow-for.mjs';
 
 const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const NEWEST = '2025-06-18';
@@ -597,6 +599,63 @@ async function queueAndWait(sql, who, { flowId, toolName, args }) {
   state === 'queued');
 }
 
+/* One stopped recording, as a row.
+ *
+ * parseMacro and flowFor are the app's own, imported rather than repeated - flowFor's comment says why there
+ * is one of them, and this is its fourth caller. The `windows` a replay needs are derived from the events'
+ * own `#ctx` instead of from polling the foreground window: more faithful, and available to something that
+ * was not watching while the recording ran, which is exactly the case here.
+ */
+async function saveRecording(sql, who, macro, health) {
+  const { events, problems } = parseMacro(macro);
+  if (!events.length) {
+    return { ok: false, said: 'It stopped, and nothing had been captured. Nothing was saved.' };
+  }
+
+  const seen = new Map();
+  for (const event of events) {
+    const ctx = event && event.context;
+    if (!ctx || (!ctx.app && !ctx.window)) continue;
+    const key = `${ctx.app || ''}\u0000${ctx.window || ''}`;
+    if (!seen.has(key)) seen.set(key, { title: ctx.window || ctx.app || '', process: ctx.app || '' });
+  }
+  const windows = [...seen.values()].slice(0, 12);
+
+  const now = new Date();
+  const two = (n) => String(n).padStart(2, '0');
+  const rec = {
+    id: `r${Math.random().toString(36).slice(2, 10)}`,
+    name: `MouseFlow ${two(now.getDate())}/${two(now.getMonth() + 1)} `
+      + `${two(now.getHours())}:${two(now.getMinutes())}:${two(now.getSeconds())}`,
+    created: now.toISOString(),
+    events,
+    windows,
+  };
+  const row = flowFor(rec, health);
+
+  await sql`
+    insert into user_flow
+      (user_id, client_id, source, kind, name, description, payload, origins, created_at, updated_at)
+    values
+      (${who.id}, ${row.id}, 'desktop', 'recorded', ${row.name}, ${row.description},
+       ${JSON.stringify(row.payload)}, ${row.origins}, ${row.created}, now())
+    on conflict (user_id, client_id) do update set
+      name = excluded.name, description = excluded.description, payload = excluded.payload,
+      origins = excluded.origins, updated_at = now(), deleted_at = null
+  `;
+
+  const s = summarize(events);
+  const where = windows.map((w) => w.title).filter(Boolean).slice(0, 3);
+  return {
+    ok: true,
+    said: `Saved as "${rec.name}" (${rec.id}): ${s.count} events, ${s.clicks} `
+      + `click${s.clicks === 1 ? '' : 's'}`
+      + (where.length ? `, in ${where.join(', ')}` : '') + '.'
+      + (problems.length ? ` ${problems.length} lines could not be read and were skipped.` : '')
+      + ' Nothing about what was typed is in it, by design.',
+  };
+}
+
 /* ------------------------------------------------------------------------------- the worker side */
 
 async function workerRoute(action, req, res, sql, who) {
@@ -676,8 +735,25 @@ async function workerRoute(action, req, res, sql, who) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
     const body = req.body || {};
     const id = String(body.id || '');
-    const ok = body.ok === true;
-    const said = body.said == null ? null : String(body.said).slice(0, 4000);
+    let ok = body.ok === true;
+    let said = body.said == null ? null : String(body.said).slice(0, 4000);
+
+    /* A stopped recording arrives as the five-column body the agent hands back, and turning it into a row
+     * happens HERE rather than on the machine.
+     *
+     * That is the whole point of doing it this way: the agent can then be the thing that claims the job, and
+     * an agent is a small program that speaks its own format and knows nothing about accounts, payload
+     * shapes or flow ids. Everything it would otherwise have to learn - parseMacro, flowFor, the stamp that
+     * says this row is a recording - already exists here, in one copy, shared with the app. */
+    if (body.body != null) {
+      const [job] = await sql`select flow_id from run_queue where id = ${id} and user_id = ${who.id}`;
+      if (job && job.flow_id === '#record.stop') {
+        const saved = await saveRecording(sql, who, String(body.body), body.health || null);
+        ok = saved.ok;
+        said = saved.said;
+      }
+    }
+
     const done = await sql`
       update run_queue set state = ${ok ? 'done' : 'failed'}, ok = ${ok}, said = ${said},
              finished_at = now()

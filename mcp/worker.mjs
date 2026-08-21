@@ -68,7 +68,7 @@ async function main() {
   const parts = await load();
   const lib = {
     schema: parts.schema, macro: parts.macro, agent: parts.agent,
-    engine: parts.engine, flowFor: parts.flowFor, skills: parts.skills,
+    engine: parts.engine, skills: parts.skills,
   };
   const runner = makeRunner({ lib, port: CONFIG.port, base: CONFIG.base, token: CONFIG.token, say });
 
@@ -132,7 +132,14 @@ async function main() {
     say(outcome.ok ? `done: ${job.toolName || job.id}` : `failed: ${outcome.text.split('\n')[0]}`);
 
     try {
-      const recorded = await post('report', { id: job.id, ok: outcome.ok, said: outcome.text });
+      const recorded = await post('report', {
+        id: job.id,
+        ok: outcome.ok,
+        said: outcome.text,
+        /* A stopped recording travels as the agent gave it. The server parses it and writes the row, and
+         * the sentence the caller reads is written there, from what was actually saved. */
+        ...(outcome.body != null ? { body: outcome.body, health: outcome.health || null } : {}),
+      });
       if (recorded && recorded.recorded === false) {
         say('the answer was not recorded - the job had already been cancelled');
       }

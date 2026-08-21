@@ -234,39 +234,14 @@ export function makeRunner({ lib, port, base, token, say }) {
   /* ------------------------------------------------------------------ the timer
    *
    * Recording is the one thing the queue carries that is not a skill: an instruction to the agent. Start is
-   * a single call. Stop is the interesting half - the agent hands back the five-column body and somebody has
-   * to turn it into a row on the account, which is exactly what the app does when you press Stop there.
+   * a single call. Stop hands the five-column body back UNCHANGED - turning it into a row on the account is
+   * saveRecording() in api/mcp.js, not this.
    *
-   * flowFor() is that somebody, imported rather than reimplemented. Three callers in the app already build
-   * this payload through it, for a reason its own comment states: a restored or re-synced recording that
-   * stopped matching the saved one was a real bug, fixed by having one builder. A fourth literal here would
-   * be the thing that breaks next.
+   * That split is deliberate and it is what makes this process replaceable. Everything a claimer would
+   * otherwise have to know - the payload shape, the flow id, the stamp that says a row is a recording, the
+   * parser - lives on the server in one copy. What is left here is "ask the agent, hand back what it said",
+   * which is small enough for the agent itself to do.
    */
-  const recName = () => {
-    const d = new Date();
-    const two = (n) => String(n).padStart(2, '0');
-    return `MouseFlow ${two(d.getDate())}/${two(d.getMonth() + 1)} `
-      + `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
-  };
-
-  /* Where it happened, taken from the events themselves rather than from polling the foreground window.
-   *
-   * The app samples /windows once a second while it records, because it is watching anyway. Nothing here is
-   * watching, and a worker restarted mid-recording would lose whatever it had accumulated. The contexts
-   * already carry the application and window under every click and every focus change, in order - so this
-   * is derived from the recording instead of remembered alongside it, which cannot go stale and cannot be
-   * lost. The one thing it misses is an application that was in front and never touched. */
-  const whereFrom = (events) => {
-    const seen = new Map();
-    for (const event of events) {
-      const ctx = event && event.context;
-      if (!ctx || (!ctx.app && !ctx.window)) continue;
-      const key = `${ctx.app || ''}\u0000${ctx.window || ''}`;
-      if (!seen.has(key)) seen.set(key, { title: ctx.window || ctx.app || '', process: ctx.app || '' });
-    }
-    return [...seen.values()].slice(0, 12);
-  };
-
   async function command(what, args) {
     const h = await health();
     if (!h.ok) return { ok: false, text: h.why };
@@ -303,45 +278,12 @@ export function makeRunner({ lib, port, base, token, say }) {
         return { ok: false, text: `The agent would not stop: ${err.message}` };
       }
 
-      const { events, problems } = lib.macro.parseMacro(String(body || ''));
-      if (!events.length) {
-        return { ok: false, text: 'It stopped, and nothing had been captured. Nothing was saved.' };
-      }
-
-      const rec = {
-        id: `r${Math.random().toString(36).slice(2, 10)}`,
-        name: recName(),
-        created: new Date().toISOString(),
-        events,
-        windows: whereFrom(events),
-      };
-
-      const res = await fetch(`${at}/api/sync`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ flows: [lib.flowFor.flowFor(rec, h.health)] }),
-      });
-      const saved = await res.json().catch(() => null);
-      if (!res.ok || !saved || !saved.ok) {
-        /* The recording is gone from the agent and did not reach the account. Said out loud with the count,
-         * because "stopped" reading as "saved" is how somebody loses an hour of work quietly. */
-        return {
-          ok: false,
-          text: `Recording stopped and ${events.length} events were captured, but the account would not `
-            + `take them (HTTP ${res.status}). They are lost - the agent hands a recording over once.`,
-        };
-      }
-
-      const s = lib.macro.summarize(events);
-      const where = rec.windows.map((w) => w.title).filter(Boolean).slice(0, 3);
-      return {
-        ok: true,
-        text: `Saved as "${rec.name}" (${rec.id}): ${s.count} events, ${s.clicks} `
-          + `click${s.clicks === 1 ? '' : 's'}, ${lib.macro.fmtMs(s.durationMs)}`
-          + (where.length ? `, in ${where.join(', ')}` : '') + '.'
-          + (problems.length ? ` ${problems.length} lines could not be read and were skipped.` : '')
-          + ' Nothing about what was typed is in it, by design.',
-      };
+      /* Handed over raw. Turning the five-column body into a row happens on the server - see saveRecording
+       * in api/mcp.js - so that the thing which claims the job does not have to know about payload shapes,
+       * flow ids or the stamp that says a row is a recording. That is what lets the AGENT claim it directly
+       * and this worker stop being necessary. The answer the caller reads is written there too, from what
+       * was actually saved rather than from what was sent. */
+      return { ok: true, text: '', body, health: h.health };
     }
 
     return { ok: false, text: `The machine was asked to do "${what}", which it does not know how to do.` };

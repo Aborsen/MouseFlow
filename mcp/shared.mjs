@@ -7,7 +7,7 @@
  * describe a product that no longer exists. So they are imported:
  *
  *   api/_skill-schema.mjs          structureOf, wireFor  - a skill as a tool definition, in MCP's shape
- *   web/src/lib/macro.ts           flowBody              - the five-column body /replay eats
+ *   api/_macro.mjs                 flowBody              - the five-column body /replay eats
  *   web/src/lib/agent.ts           the local agent client
  *   web/src/lib/desktop-engine.ts  runOnDesktop          - the decision loop for a goal
  *   extension/skills.js            fillGoal, missingParams
@@ -81,20 +81,16 @@ module.registerHooks({
 /** Everything the server borrows, loaded once. */
 export async function load() {
   try {
-    const [schema, macro, agent, engine, flowFor, skills] = await Promise.all([
+    const [schema, macro, agent, engine, skills] = await Promise.all([
       /* Plain JavaScript, and beside the API rather than in the web app, because /api/mcp reads it too -
        * see the note at the top of that file. Nothing to strip here. */
       import(new URL('../api/_skill-schema.mjs', import.meta.url).href),
-      import(new URL('macro.ts', LIB).href),
+      import(new URL('../api/_macro.mjs', import.meta.url).href),
       import(new URL('agent.ts', LIB).href),
       import(new URL('desktop-engine.ts', LIB).href),
-      /* One recording, as a row on the account. Three callers in the app already build this identical
-       * payload through it; the worker is the fourth, and a literal here would be the fifth that looks
-       * alike until the day it does not. */
-      import(new URL('../features/record/flow-for.ts', LIB).href),
       import(pathToFileURL(fileURLToPath(new URL('../extension/skills.js', import.meta.url))).href),
     ]);
-    return { schema, macro, agent, engine, flowFor, skills };
+    return { schema, macro, agent, engine, skills };
   } catch (err) {
     /* Named for what it is. A stripping failure and a missing file read identically otherwise, and the
      * remedies are nothing alike. */

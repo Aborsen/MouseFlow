@@ -432,24 +432,41 @@ check('and says what is and is not captured',
   /never which key/.test(started.said || ''), started.said);
 
 const ended = await runWorker({ id: 'q_stop', toolName: 'mouseflow_stop_recording', args: {}, command: '#record.stop', flow: null });
-check('a stop command saves the recording to the account', ended.ok === true,
-  `how=${ended.how} log=${ended.log}`);
-check('and names what was captured', /4 events, 2 clicks/.test(ended.said || ''), ended.said);
-const savedFlow = seen.flows[seen.flows.length - 1];
-check('the row is built by the app\'s own flowFor, stamped as a recording',
-  savedFlow && savedFlow.payload && savedFlow.payload.role === 'recording' && savedFlow.source === 'desktop',
-  JSON.stringify(savedFlow && { source: savedFlow.source, role: savedFlow.payload?.role }));
-check('the events carry their #ctx, so the transcript can name what was clicked',
-  savedFlow && savedFlow.payload.events[0] && savedFlow.payload.events[0].context
-    && savedFlow.payload.events[0].context.control === 'New mail',
-  JSON.stringify(savedFlow && savedFlow.payload.events[0]));
-check('and the windows are derived from those contexts rather than left empty',
-  savedFlow && savedFlow.payload.windows.length === 2
-    && savedFlow.payload.windows[0].process === 'OUTLOOK',
-  JSON.stringify(savedFlow && savedFlow.payload.windows));
+check('a stop command comes back ok', ended.ok === true, `how=${ended.how} log=${ended.log}`);
+check('and hands the five-column body over UNCHANGED, rather than turning it into a row itself',
+  /#ctx\tapp=OUTLOOK/.test(ended.body || '') && /1 \| 100 \| 200 \| 0 \| Left Click Down/.test(ended.body || ''),
+  String(ended.body).slice(0, 80));
+check('the machine sends no flow to the account - the server writes the row',
+  seen.flows.length === 0, JSON.stringify(seen.flows.map((f) => f.id)));
+check('and the agent it found travels with it, because only the machine knows that',
+  ended.health && ended.health.version === '0.8.2', JSON.stringify(ended.health));
 
-deployment.close();
-agent.close();
+group('and what the server makes of that body');
+/* The two halves saveRecording() composes, exercised directly: no database needed to know whether the row
+ * it would write is the right shape. */
+const { parseMacro } = await import(new URL('../api/_macro.mjs', import.meta.url).href);
+const { flowFor } = await import(new URL('../api/_flow-for.mjs', import.meta.url).href);
+const parsed = parseMacro(ended.body || '');
+check('the body parses to the events it carried', parsed.events.length === 4, String(parsed.events.length));
+check('with their #ctx intact', parsed.events[0].context?.control === 'New mail',
+  JSON.stringify(parsed.events[0]));
+const derived = new Map();
+for (const e of parsed.events) {
+  const c = e.context;
+  if (!c || (!c.app && !c.window)) continue;
+  const key = `${c.app || ''}\u0000${c.window || ''}`;
+  if (!derived.has(key)) derived.set(key, { title: c.window || c.app || '', process: c.app || '' });
+}
+const built = flowFor({ id: 'rtest', name: 'x', created: new Date(0).toISOString(),
+  events: parsed.events, windows: [...derived.values()] }, ended.health);
+check('flowFor stamps it as a recording', built.payload.role === 'recording', JSON.stringify(built.payload.role));
+check('and as desktop, which decides who may replay it', built.source === 'desktop');
+check('the windows come out of the events, not out of a poll nobody ran',
+  built.payload.windows.length === 2 && built.payload.windows[0].process === 'OUTLOOK',
+  JSON.stringify(built.payload.windows));
+check('and what the agent said about itself is recorded, because later nothing can reconstruct it',
+  built.payload.recorder.version === '0.8.2' && built.payload.recorder.canKeys === true,
+  JSON.stringify(built.payload.recorder));
 
 group('the HTTPS route: one account, and no way to name another');
 const route = readFileSync(fileURLToPath(new URL('../api/mcp.js', import.meta.url)), 'utf8');
@@ -533,4 +550,8 @@ check('vite is told it may reach outside web/, or dev would refuse to serve it',
   /fs: \{ allow: \['\.\.'\] \}/.test(readFileSync(fileURLToPath(new URL('../web/vite.config.ts', import.meta.url)), 'utf8')));
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
-if (fail) process.exitCode = 1;
+/* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
+ * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has
+ * finished and said so into one that appears to hang, and `npm test` never returns. Everything this file
+ * had to say is above this line. */
+process.exit(fail ? 1 : 0);
