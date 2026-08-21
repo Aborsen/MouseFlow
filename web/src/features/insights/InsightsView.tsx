@@ -18,6 +18,7 @@ import { useNavigate } from '@tanstack/react-router';
 import {
   AppWindow,
   ArrowRight,
+  CalendarDays,
   Clock,
   Film,
   MessageSquareText,
@@ -32,6 +33,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { DateRangePicker } from '@insightis/ui/Datepicker';
+import type { DateRange } from 'react-day-picker';
 import { ChatView } from '@/features/chat/ChatView';
 import { openingQuestion, takeAsk } from '@/features/chat/ask-about';
 
@@ -190,8 +193,28 @@ const num = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-async function fetchInsights(days: number, signal: AbortSignal): Promise<Insights> {
-  const res = await fetch(`/api/insights?days=${days}`, { credentials: 'same-origin', signal });
+/* What the page is asking about. `days` counts back from now - the old shape, and still what the preset
+ * buttons use. `from`/`to` name the ends, which is the only honest way to say "today": a day starts at
+ * midnight on the PERSON'S clock, and the server has no idea what theirs is. So the boundary is computed
+ * here, in their own time zone, and sent as two instants. */
+export type Window =
+  | { kind: 'days'; days: number }
+  | { kind: 'range'; from: Date; to: Date; label: string };
+
+const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+const endOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+
+export const todayWindow = (): Window => {
+  const now = new Date();
+  return { kind: 'range', from: startOfDay(now), to: now, label: 'Today' };
+};
+
+const asQuery = (w: Window) => (w.kind === 'days'
+  ? `days=${w.days}`
+  : `from=${encodeURIComponent(w.from.toISOString())}&to=${encodeURIComponent(w.to.toISOString())}`);
+
+async function fetchInsights(window: Window, signal: AbortSignal): Promise<Insights> {
+  const res = await fetch(`/api/insights?${asQuery(window)}`, { credentials: 'same-origin', signal });
   const body = (await res.json().catch(() => null)) as (Insights & { error?: { message?: string } }) | null;
   /* The endpoint's own words, not a status code dressed up as prose: it knows why it refused and this page
    * does not. Only when it says nothing at all does the status stand in. */
@@ -471,6 +494,17 @@ const Meter = ({ fraction, fill }: { fraction: number; fill: string }) => (
 
 const RANGES = [7, 30, 90];
 
+const PRESET = 'rounded-md px-2.5 py-1 text-[0.82rem] font-medium transition-colors duration-fast';
+const PRESET_ON = 'bg-brand-primary text-content-on-solid';
+const PRESET_OFF = 'text-ink-secondary hover:bg-state-hover';
+
+/* Two dates as one short label. The same day says itself once - "21.08", not "21.08 – 21.08", which reads
+ * as a range somebody got wrong. */
+const labelFor = (from: Date, to: Date) => {
+  const d = (x: Date) => `${String(x.getDate()).padStart(2, '0')}.${String(x.getMonth() + 1).padStart(2, '0')}`;
+  return d(from) === d(to) ? d(from) : `${d(from)} – ${d(to)}`;
+};
+
 const ASSISTANT_KEY = 'mouseflow.insights.assistant';
 const ASSISTANT_WIDTH_KEY = 'mouseflow.insights.assistant.width';
 /* 26rem was a guess about every answer. A reply with a table in it needs room, so the width is the user's -
@@ -503,7 +537,10 @@ export const InsightsView = () => {
   const [asked] = useState(() => takeAsk());
   const opening = asked ? openingQuestion(asked) : undefined;
   const navigate = useNavigate();
-  const [days, setDays] = useState(30);
+  const [window_, setWindow] = useState<Window>({ kind: 'days', days: 30 });
+  /* The calendar is a panel rather than a mode: it opens over the controls, sets a range and closes. */
+  const [picking, setPicking] = useState(false);
+  const [draft, setDraft] = useState<DateRange | undefined>(undefined);
   /* Open by default on a wide screen: an assistant nobody notices is an assistant nobody uses. Remembered,
    * because whether you want it is a preference about this page rather than about this visit. */
   const [assistant, setAssistant] = useState(() => {
@@ -562,7 +599,7 @@ export const InsightsView = () => {
     setProblem(null);
     (async () => {
       try {
-        const body = await fetchInsights(days, stop.signal);
+        const body = await fetchInsights(window_, stop.signal);
         setData(body);
       } catch (err) {
         if (stop.signal.aborted) return; // a range switch, not a failure
@@ -572,7 +609,7 @@ export const InsightsView = () => {
       }
     })();
     return () => stop.abort();
-  }, [days, attempt]);
+  }, [window_, attempt]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
@@ -693,23 +730,72 @@ export const InsightsView = () => {
         </div>
 
         {/* The range is a control, not a filter to be found in a menu: it is the first thing anyone changes. */}
-        <div className="flex items-center gap-1 rounded-lg border-stroke border bg-surface-card p-1">
+        <div className="relative flex items-center gap-1 rounded-lg border-stroke border bg-surface-card p-1">
+          <button
+            type="button"
+            onClick={() => { setPicking(false); setWindow(todayWindow()); }}
+            aria-pressed={window_.kind === 'range' && window_.label === 'Today'}
+            className={cn(PRESET, window_.kind === 'range' && window_.label === 'Today'
+              ? PRESET_ON : PRESET_OFF)}
+          >
+            Today
+          </button>
           {RANGES.map((range) => (
             <button
               key={range}
               type="button"
-              onClick={() => setDays(range)}
-              aria-pressed={days === range}
-              className={cn(
-                'rounded-md px-2.5 py-1 text-[0.82rem] font-medium transition-colors duration-fast',
-                days === range
-                  ? 'bg-brand-primary text-content-on-solid'
-                  : 'text-ink-secondary hover:bg-state-hover',
-              )}
+              onClick={() => { setPicking(false); setWindow({ kind: 'days', days: range }); }}
+              aria-pressed={window_.kind === 'days' && window_.days === range}
+              className={cn(PRESET, window_.kind === 'days' && window_.days === range
+                ? PRESET_ON : PRESET_OFF)}
             >
               {range} days
             </button>
           ))}
+          {/* Custom shows the dates once they are chosen, because "Custom" alone makes somebody open the
+            * calendar again just to remember what they asked for. */}
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(window_.kind === 'range' && window_.label !== 'Today'
+                ? { from: window_.from, to: window_.to }
+                : undefined);
+              setPicking((p) => !p);
+            }}
+            aria-expanded={picking}
+            className={cn(PRESET, 'flex items-center gap-1.5',
+              window_.kind === 'range' && window_.label !== 'Today' ? PRESET_ON : PRESET_OFF)}
+          >
+            <CalendarDays className="size-3.5" />
+            {window_.kind === 'range' && window_.label !== 'Today' ? window_.label : 'Custom'}
+          </button>
+
+          {picking && (
+            <div
+              /* Bounded and scrollable: two months of calendar is taller than a short window, and a
+                * confirm button below the fold is a picker that cannot be used. */
+              className="absolute end-0 top-[calc(100%+6px)] z-30 max-h-[min(70vh,520px)] overflow-auto rounded-xl border border-stroke bg-surface-card p-2 shadow-lg"
+              role="dialog"
+              aria-label="Choose a date range"
+            >
+              <DateRangePicker
+                selected={draft}
+                confirmLabel="Show these dates"
+                /* Nothing past today: a dashboard of the future is an empty dashboard with a confusing
+                 * label on it. */
+                endMonth={new Date()}
+                onSelect={setDraft}
+                onConfirm={(range) => {
+                  if (!range?.from) { setPicking(false); return; }
+                  /* One tapped day means that whole day, not a zero-length instant. */
+                  const from = startOfDay(range.from);
+                  const to = endOfDay(range.to ?? range.from);
+                  setWindow({ kind: 'range', from, to, label: labelFor(from, to) });
+                  setPicking(false);
+                }}
+              />
+            </div>
+          )}
         </div>
 
         <Button variant="ghost" size="sm" leftSlot={<RefreshCw className="size-4" />} isLoading={busy} onClick={reload}>

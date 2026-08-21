@@ -38,37 +38,47 @@ const HOP_BY_HOP = new Set([
  * x-vercel-* set is the same kind of thing: true of the hop, false of the request being forwarded. */
 const OUR_HOP = /^(x-forwarded-|x-vercel-|x-real-ip$|forwarded$|cdn-loop$)/i;
 
-/* Cookies that have to survive a CROSS-SITE return, and therefore keep SameSite=None.
+/* THE session cookie - the long-lived one, and the only cookie here that has no cross-site work left
+ * to do once it exists. Everything else in this flow is short-lived OAuth machinery whose whole
+ * purpose is to come back from somewhere else.
  *
- * The OAuth challenge is the whole example. It is written when the sign-in starts and read when the
- * browser comes back - and it comes back from Google, through the auth service, as a navigation from
- * ANOTHER SITE. `Lax` is documented to be sent on a top-level cross-site GET, and Chrome does send
- * it; Safari on iOS does not send it at the end of a cross-site redirect CHAIN, which is exactly the
- * shape of this flow. The result was a sign-in that worked on every desktop and failed on a phone
- * with 400 SESSION_CHALLENGE_COOKIE_NOT_FOUND - the cookie was never withheld from us, it was
- * withheld from the request that needed it.
- *
- * So these keep the attribute the upstream chose. It is a short-lived, single-purpose value that
- * exists to be returned cross-site, which is the case SameSite=None is for; the session cookie that
- * follows is still pinned to Lax below. */
-const CROSS_SITE_COOKIE = /(challenge|state|nonce|pkce|verifier|oauth)/i;
+ * Matched on `session_token`, which is also what api/_session.js looks for when it decides whether a
+ * request carries a session at all - one name, checked the same way in both places. */
+const SESSION_COOKIE = /session_token/i;
 
 /* Makes an upstream cookie belong to THIS site.
  *
- * Drop Domain so it is host-only here. SameSite=None becomes Lax for everything that lives on this
- * site afterwards - the session - because there is no longer any cross-site request for it to be
- * carried on, and Lax is the smaller permission.
+ * Domain is dropped from everything: these cookies are set through our own origin, and a Domain
+ * attribute naming the upstream's host is one the browser would refuse from us anyway.
+ *
+ * SameSite is downgraded to Lax for the SESSION and left alone for everything else, and that
+ * direction is the whole lesson of two bugs. The first version downgraded everything, which withheld
+ * the OAuth challenge from the one request that needed it - `Lax` is documented to travel on a
+ * top-level cross-site GET and Chrome obliges, but Safari on iOS does not at the end of a redirect
+ * CHAIN, which is exactly this flow: Google, then the auth service, then us.
+ *
+ * The second version guessed at NAMES - challenge, state, nonce - and the upstream sends both
+ * `session_challenge` and `session_challange`, the misspelling and the fix, presumably for
+ * compatibility with itself. The pattern matched one of them. The other stayed Lax and the phone
+ * still could not sign in, now with `state_mismatch` instead.
+ *
+ * So the rule is inverted, and it names the one cookie we are sure about rather than guessing at the
+ * others: the session is pinned to Lax, and everything else is made able to come back cross-site -
+ * which is what it exists for. Note that this UPGRADES the misspelled cookie, which the service
+ * itself sends as Lax; leaving it as built was tried and is what "state_mismatch" was.
  */
 const firstParty = (cookie) => {
   const name = String(cookie).split('=', 1)[0].trim();
   const owned = cookie.replace(/;\s*Domain=[^;]*/i, '');
-  if (CROSS_SITE_COOKIE.test(name)) {
-    /* SameSite=None is only honoured on a Secure cookie, and an upstream that sent None has already
-     * set Secure - but a cookie that lost one of the two is a cookie silently dropped, so it is
-     * stated rather than assumed. */
-    return /;\s*Secure/i.test(owned) ? owned : owned + '; Secure';
+  if (SESSION_COOKIE.test(name)) {
+    return owned.replace(/;\s*SameSite=None/i, '; SameSite=Lax');
   }
-  return owned.replace(/;\s*SameSite=None/i, '; SameSite=Lax');
+  /* SameSite=None is only honoured on a Secure cookie, so the two travel together: a cookie that has
+   * one without the other is a cookie the browser drops without saying so. */
+  const cross = /;\s*SameSite=(Lax|Strict)/i.test(owned)
+    ? owned.replace(/;\s*SameSite=(Lax|Strict)/i, '; SameSite=None')
+    : (/;\s*SameSite=None/i.test(owned) ? owned : owned + '; SameSite=None');
+  return /;\s*Secure/i.test(cross) ? cross : cross + '; Secure';
 };
 
 // Vercel has already parsed the body by the time we see it, so it is rebuilt rather than streamed.

@@ -1,6 +1,7 @@
 /* What actually happened, counted in the database.
  *
  *   GET /api/insights?days=30
+ *   GET /api/insights?from=2026-08-21T00:00:00.000Z&to=2026-08-21T23:59:59.999Z
  *
  * Every number the app shows today is summed in the browser from /api/sync, which returns the last
  * 60 runs. That makes "how many runs failed last quarter" unanswerable: the answer is not in the
@@ -105,6 +106,15 @@ const round = (v, places) => {
   const factor = 10 ** places;
   return Math.round(num(v) * factor) / factor;
 };
+/** An ISO timestamp from the query, or null. Anything unparseable is nothing rather than an error: the
+ *  fallback below is a perfectly good window, and refusing the whole request over a stray character would
+ *  make a bookmarked URL a dead end. */
+function parseWhen(raw) {
+  if (!raw) return null;
+  const when = new Date(String(raw));
+  return Number.isFinite(when.getTime()) ? when : null;
+}
+
 /* Timestamps come back from the driver as Date objects and days come back as strings. Both have to
  * leave here as one shape, because a client that has to guess will guess wrong once. */
 const iso = (v) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
@@ -133,14 +143,36 @@ export default async function handler(req, res) {
     return fail(res, 429, 'too many insight requests - wait a minute');
   }
 
+  /* Two ways to name a window, and the explicit one wins.
+   *
+   * `days` counts back from now and is what every existing caller sends. `from`/`to` name the two ends,
+   * which is the only way to say "today" or "that week in June" HONESTLY: a day boundary belongs to the
+   * person's own clock, and the server has no idea what theirs is. The page computes local midnight and
+   * sends it; this end never guesses a time zone it was not told about. */
   const asked = Number.parseInt(String((req.query && req.query.days) || ''), 10);
-  const days = Math.min(Math.max(Number.isFinite(asked) ? asked : DAYS_DEFAULT, 1), DAYS_MAX);
-  const to = new Date();
-  const from = new Date(to.getTime() - days * 86_400_000);
+  const wantFrom = parseWhen(req.query && req.query.from);
+  const wantTo = parseWhen(req.query && req.query.to);
+
+  let from;
+  let to;
+  if (wantFrom && wantTo && wantTo > wantFrom) {
+    /* Bounded by the same ceiling as `days`, for the same reason: a year of runs is a lot of jsonb to
+     * unroll, and an arbitrary pair of dates could ask for a decade. */
+    const span = Math.min(wantTo - wantFrom, DAYS_MAX * 86_400_000);
+    to = new Date(wantTo.getTime());
+    from = new Date(to.getTime() - span);
+  } else {
+    const n = Math.min(Math.max(Number.isFinite(asked) ? asked : DAYS_DEFAULT, 1), DAYS_MAX);
+    to = new Date();
+    from = new Date(to.getTime() - n * 86_400_000);
+  }
+  /* Reported as a real number rather than as the parameter that was sent: a custom range of 36 hours is
+   * not "1 day", and the page labels its axis from this. */
+  const days = Math.max(1, Math.round((to.getTime() - from.getTime()) / 86_400_000));
   const fromIso = from.toISOString();
 
   try {
-    const out = await gather(sql, who.id, fromIso);
+    const out = await gather(sql, who.id, fromIso, to.toISOString());
     return res.status(200).json({
       ok: true,
       window: {
@@ -161,15 +193,16 @@ export default async function handler(req, res) {
 
 /* ------------------------------------------------------------------------ the counting */
 
-async function gather(sql, userId, fromIso) {
+async function gather(sql, userId, fromIso, toIso) {
   /* A run's timestamp is coalesce(started_at, synced_at) throughout. started_at is nullable and some
    * runs arrived without one; those runs happened, so dropping them would quietly undercount, and
    * synced_at is never null. How many needed the fallback is reported in `gaps`. */
 
   /* The window immediately before this one, the same length. Computed here rather than in SQL so the two
    * queries cannot disagree about where the boundary is. */
-  const prevFromIso = new Date(new Date(fromIso).getTime() - (Date.now() - new Date(fromIso).getTime()))
-    .toISOString();
+  const prevFromIso = new Date(
+    new Date(fromIso).getTime() - (new Date(toIso).getTime() - new Date(fromIso).getTime()),
+  ).toISOString();
 
   /* Counts only, over the previous window, so a headline number can be compared with something. Same rules as
    * the totals below - the same RUN_MAX_SECONDS clamp, the same coalesce on the timestamp - because a delta
@@ -201,6 +234,7 @@ async function gather(sql, userId, fromIso) {
                then extract(epoch from (finished_at - started_at))::float8 end as span
       from user_run
       where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+        and coalesce(started_at, synced_at) <= ${toIso}
     ),
     r as (
       select raw.*,
@@ -241,6 +275,7 @@ async function gather(sql, userId, fromIso) {
       /* created_at is nullable - the client sends it and older builds did not - so a flow with no
        * creation date is placed by when it was last written rather than dropped. */
       and coalesce(created_at, updated_at) >= ${fromIso}
+        and coalesce(created_at, updated_at) <= ${toIso}
   `;
 
   /* Every day in the window, whether or not anything ran. A series with holes in it draws a chart
@@ -253,6 +288,7 @@ async function gather(sql, userId, fromIso) {
                then extract(epoch from (finished_at - started_at))::float8 end as span
       from user_run
       where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+        and coalesce(started_at, synced_at) <= ${toIso}
     ),
     r as (
       select day, outcome, case when span > 0 and span < ${RUN_MAX_SECONDS} then span end as secs
@@ -260,7 +296,7 @@ async function gather(sql, userId, fromIso) {
     ),
     d as (
       select generate_series(
-        date_trunc('day', ${fromIso}::timestamptz), date_trunc('day', now()), interval '1 day'
+        date_trunc('day', ${fromIso}::timestamptz), date_trunc('day', ${toIso}::timestamptz), interval '1 day'
       ) as day
     )
     select to_char(d.day, 'YYYY-MM-DD')                        as day,
@@ -310,6 +346,7 @@ async function gather(sql, userId, fromIso) {
       from user_flow
       where user_id = ${userId} and deleted_at is null and kind = 'recorded'
         and coalesce(created_at, updated_at) >= ${fromIso}
+        and coalesce(created_at, updated_at) <= ${toIso}
     ),
     ev_raw as (
       select f.client_id, f.source, e.ord,
@@ -405,6 +442,7 @@ async function gather(sql, userId, fromIso) {
                else 0 end as secs
       from user_run
       where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+        and coalesce(started_at, synced_at) <= ${toIso}
     ),
     step as (
       select w.client_id,
@@ -505,6 +543,7 @@ async function gather(sql, userId, fromIso) {
       from user_run r
       left join user_flow f on f.user_id = r.user_id and f.client_id = r.flow_id
       where r.user_id = ${userId} and coalesce(r.started_at, r.synced_at) >= ${fromIso}
+        and coalesce(r.started_at, r.synced_at) <= ${toIso}
     )
     select signature,
            count(*)::int as times,
@@ -536,6 +575,7 @@ async function gather(sql, userId, fromIso) {
           case when jsonb_typeof(r.steps) = 'array' then r.steps else '[]'::jsonb end
         ) e
       where r.user_id = ${userId} and coalesce(r.started_at, r.synced_at) >= ${fromIso}
+        and coalesce(r.started_at, r.synced_at) <= ${toIso}
         and jsonb_typeof(e->'ms') = 'number'
     )
     select tool,
@@ -565,6 +605,7 @@ async function gather(sql, userId, fromIso) {
                '\\s+',                            ' ',       'g')), 140) as reason
       from user_run
       where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+        and coalesce(started_at, synced_at) <= ${toIso}
         and (outcome = 'failed' or nullif(trim(error), '') is not null)
         /* Except somebody pressing Stop. Both halves record a stopped run by writing the single word
          * "stopped" as its error - extension/agent.js and web/src/lib/desktop-engine.ts both do, and
@@ -600,6 +641,7 @@ async function gather(sql, userId, fromIso) {
                then extract(epoch from (r.finished_at - r.started_at))::float8 end as secs
       from user_run r
       where r.user_id = ${userId} and coalesce(r.started_at, r.synced_at) >= ${fromIso}
+        and coalesce(r.started_at, r.synced_at) <= ${toIso}
         and r.flow_id is not null
     )
     select f.client_id                                             as flow_id,
