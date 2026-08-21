@@ -38,16 +38,38 @@ const HOP_BY_HOP = new Set([
  * x-vercel-* set is the same kind of thing: true of the hop, false of the request being forwarded. */
 const OUR_HOP = /^(x-forwarded-|x-vercel-|x-real-ip$|forwarded$|cdn-loop$)/i;
 
+/* Cookies that have to survive a CROSS-SITE return, and therefore keep SameSite=None.
+ *
+ * The OAuth challenge is the whole example. It is written when the sign-in starts and read when the
+ * browser comes back - and it comes back from Google, through the auth service, as a navigation from
+ * ANOTHER SITE. `Lax` is documented to be sent on a top-level cross-site GET, and Chrome does send
+ * it; Safari on iOS does not send it at the end of a cross-site redirect CHAIN, which is exactly the
+ * shape of this flow. The result was a sign-in that worked on every desktop and failed on a phone
+ * with 400 SESSION_CHALLENGE_COOKIE_NOT_FOUND - the cookie was never withheld from us, it was
+ * withheld from the request that needed it.
+ *
+ * So these keep the attribute the upstream chose. It is a short-lived, single-purpose value that
+ * exists to be returned cross-site, which is the case SameSite=None is for; the session cookie that
+ * follows is still pinned to Lax below. */
+const CROSS_SITE_COOKIE = /(challenge|state|nonce|pkce|verifier|oauth)/i;
+
 /* Makes an upstream cookie belong to THIS site.
  *
- * Drop Domain so it is host-only here, and rewrite SameSite=None - which only existed because the
- * cookie used to be cross-site - to Lax. Lax is required rather than merely tidier: the OAuth
- * callback arrives from Google as a cross-site GET, and Strict would withhold the cookie on exactly
- * that request, signing the user in everywhere except the page they land on.
+ * Drop Domain so it is host-only here. SameSite=None becomes Lax for everything that lives on this
+ * site afterwards - the session - because there is no longer any cross-site request for it to be
+ * carried on, and Lax is the smaller permission.
  */
-const firstParty = (cookie) => cookie
-  .replace(/;\s*Domain=[^;]*/i, '')
-  .replace(/;\s*SameSite=None/i, '; SameSite=Lax');
+const firstParty = (cookie) => {
+  const name = String(cookie).split('=', 1)[0].trim();
+  const owned = cookie.replace(/;\s*Domain=[^;]*/i, '');
+  if (CROSS_SITE_COOKIE.test(name)) {
+    /* SameSite=None is only honoured on a Secure cookie, and an upstream that sent None has already
+     * set Secure - but a cookie that lost one of the two is a cookie silently dropped, so it is
+     * stated rather than assumed. */
+    return /;\s*Secure/i.test(owned) ? owned : owned + '; Secure';
+  }
+  return owned.replace(/;\s*SameSite=None/i, '; SameSite=Lax');
+};
 
 // Vercel has already parsed the body by the time we see it, so it is rebuilt rather than streamed.
 function bodyFor(req) {
