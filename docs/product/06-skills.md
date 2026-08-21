@@ -116,6 +116,11 @@ What this does **not** claim is that a model can execute a skill on its own. A s
 machine, through the agent or the extension, and the schema says so in its description. A tool definition is
 how something is offered and asked for; it is not a promise about who does the work.
 
+Who does the work, when the asking is done by a model rather than by a person copying this JSON, is
+[21 — MCP server](21-mcp.md): it serves these definitions and runs the call on the machine it is running on.
+It derives them from `structureOf()` and `wireFor('mcp')` rather than from a copy, so what a model is told
+about a skill is the same sentence this panel shows.
+
 ### Parameter extraction, in order
 
 Order matters, and this is the order:

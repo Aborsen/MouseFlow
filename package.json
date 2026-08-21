@@ -8,7 +8,8 @@
     "@neondatabase/serverless": "^0.10.4"
   },
   "scripts": {
-    "migrate": "node scripts/migrate.mjs"
+    "migrate": "node scripts/migrate.mjs",
+    "test": "node agent/test-contract.mjs && node mcp/test-mcp.mjs"
   },
   "devDependencies": {
     "pg": "^8.23.0"
