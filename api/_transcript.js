@@ -1984,7 +1984,16 @@ export function transcribe(flow) {
 
 // The contract's shape, and only it: `segment`, `from` and the desktop double-click bookkeeping are
 // this file's own working state and mean nothing to a reader.
+/* `ctx` stays stripped - all three of its parts are already in `what` as prose, and a reader does not need
+ * them twice. What IS sent is the two fields a MACHINE needs and cannot get from a sentence: which control
+ * the typing went into, and how many keystrokes. The skill wizard asks "you typed into Subject - what should
+ * the skill put there?", and the alternative was parsing that name back out of the prose, which is exactly
+ * the mistake the note above warns about: it would break the first time the sentence was reworded.
+ *
+ * Null on every step that is not typing, and null on typing whose control the resolver could not read -
+ * absent means "not known", not "there was no field". */
 function publicStep(step) {
+  const ctx = step.ctx || null;
   return {
     n: step.n,
     at: step.at,
@@ -1993,6 +2002,9 @@ function publicStep(step) {
     what: step.what,
     target: step.target,
     note: step.note,
+    control: ctx && ctx.control ? ctx.control : null,
+    controlType: ctx && ctx.type ? ctx.type : null,
+    keys: step.action === 'type' ? step.keys || 0 : 0,
   };
 }
 

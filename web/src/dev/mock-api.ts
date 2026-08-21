@@ -415,18 +415,18 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           // where the work happened.
           n: 1, where: { kind: 'app', label: 'Inbox — victorg — Outlook', detail: 'OUTLOOK' }, startMs: 0, seconds: 41,
           steps: [
-            { n: 1, at: 0, ms: 0, action: 'click', what: 'clicked the "New mail" button in OUTLOOK', target: '1030,1053', note: null },
-            { n: 2, at: 4100, ms: 210, action: 'click', what: 'clicked the "To" edit box in OUTLOOK', target: '158,271', note: null },
-            { n: 3, at: 9400, ms: 180, action: 'click', what: 'clicked at 980,612 in OUTLOOK', target: '980,612', note: 'OUTLOOK was under the pointer, but nothing there had a name the agent could read' },
-            { n: 4, at: 11000, ms: 47200, action: 'type', what: 'typed for 47.2s - 132 keystrokes into the "Message body" edit box in OUTLOOK', target: null, note: 'which keys is not recorded, deliberately: the agent reads that a key was pressed and when, never which one, so nothing here can carry text - and a replay cannot reproduce it' },
+            { n: 1, at: 0, ms: 0, action: 'click', what: 'clicked the "New mail" button in OUTLOOK', target: '1030,1053', note: null, control: 'New mail', controlType: 'button', keys: 0 },
+            { n: 2, at: 4100, ms: 210, action: 'click', what: 'clicked the "To" edit box in OUTLOOK', target: '158,271', note: null, control: 'To', controlType: 'edit box', keys: 0 },
+            { n: 3, at: 9400, ms: 180, action: 'click', what: 'clicked at 980,612 in OUTLOOK', target: '980,612', note: 'OUTLOOK was under the pointer, but nothing there had a name the agent could read', control: null, controlType: null, keys: 0 },
+            { n: 4, at: 11000, ms: 47200, action: 'type', what: 'typed for 47.2s - 132 keystrokes into the "Message body" edit box in OUTLOOK', target: null, note: 'which keys is not recorded, deliberately: the agent reads that a key was pressed and when, never which one, so nothing here can carry text - and a replay cannot reproduce it', control: 'Message body', controlType: 'edit box', keys: 132 },
           ],
           note: null,
         },
         {
           n: 2, where: { kind: 'app', label: 'Book1 - Excel', detail: 'EXCEL' }, startMs: 41000, seconds: 33,
           steps: [
-            { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null },
-            { n: 6, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches in EXCEL', target: null, note: null },
+            { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null, control: 'B4', controlType: 'cell', keys: 0 },
+            { n: 6, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches in EXCEL', target: null, note: null, control: null, controlType: null, keys: 0 },
           ],
           note: null,
         },

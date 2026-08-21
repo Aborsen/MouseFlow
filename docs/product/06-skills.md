@@ -46,6 +46,42 @@ When more exist than are shown, it says so — *"4 older ones are on the Record 
 truncation reads as "this is all of them". The ones hidden are the **oldest**, which is what makes the
 truncation acceptable.
 
+### Two outcomes, and the wizard
+
+**Repeat it exactly** is the original: the recording's events, copied, replayed by screen position. Free,
+fast, literal — and it cannot type, because keystroke content is never stored
+([17 — Privacy](17-privacy-security.md)). A recording that typed replays without the typing and reports the
+skipped events as `unplayable`.
+
+**Make a skill** opens the wizard (`features/record/SkillWizard.tsx`), which asks for the part that was
+deliberately never watched. Three screens:
+
+1. **What it did** — the recording's steps, from `GET /api/transcript`, which is the one place that turns a
+   payload into steps. Anything can be left out. A step whose target had no name the resolver could read is
+   switched off with the reason, because a goal made of coordinates would put back the fragility this path
+   exists to escape.
+2. **What to type** — one card per typing run, naming the field it went into and how many keystrokes it was.
+   Each is *ask each time* (a parameter, name and type prefilled from the field), *always the same* (a fixed
+   string), or *type nothing*.
+3. **Name it** — the assembled goal, editable. It stops following the choices the moment somebody edits it.
+
+What comes out is a **created** skill: `goalTemplate` plus `params`, under `gs_<recording id>`. Which means
+it is a tool the moment it is saved — `structureOf()` gives it typed, required parameters, and the MCP server
+([21 — MCP server](21-mcp.md)) offers it with them.
+
+**Why a goal and not a macro**, since the question is obvious: the five-column replay format has no `type`
+action — its vocabulary is mouse plus `Focus` and `Key Down`, and `Key Down` carries no key — so a literal
+typing skill means changing the parser in *both* agents. `/do` does type, but `/replay` is one shot, so a
+hybrid needs a client orchestrating replay-type-replay, which is a third execution path. The goal path
+already types (the model writes the text), already re-reads the screen (so a moved window stops mattering)
+and already reaches an AI with its parameters. Nothing in either agent changes. The cost is a model call per
+step — slower, and not free — which is the trade `api/_skill-schema.mjs` already states to a model in words.
+
+**Why not just record the keystrokes.** Because a captured string is one instance. "Weekly report, 21 Aug"
+is not a skill; `{{subject}}` is. A parameter has to be declared by somebody who knows what varies, so the
+wizard would be needed either way — and asking once, at the moment the skill is made, captures nothing
+sensitive by accident, ever.
+
 ### Saving as a skill
 
 One implementation for every page that offers it (`features/record/save-as-skill.ts`), because a payload

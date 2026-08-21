@@ -21,6 +21,7 @@ import { type RecordedEvent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
 import { describeRecording, hasSkillFor, saveAsSkill } from '@/features/record/save-as-skill';
+import { SkillWizard } from '@/features/record/SkillWizard';
 import {
   type SkillStructure,
   type WireFormat,
@@ -271,6 +272,10 @@ export const SkillsView = () => {
       .sort((a, b) => madeAt(b) - madeAt(a)),
     [local.recordings, flows],
   );
+
+  /* Который скилл делаем визардом. Отдельная величина, а не флаг рядом с `making`: буквальный повтор
+   * сохраняется одним нажатием, а этот путь - разговор, и пока он идёт список должен жить дальше. */
+  const [wizardFor, setWizardFor] = useState<typeof local.recordings[number] | null>(null);
 
   const convert = useCallback(async (rec: typeof local.recordings[number]) => {
     setMaking(rec.id);
@@ -646,14 +651,27 @@ export const SkillsView = () => {
                   </span>
                 </span>
 
+                {/* Два исхода, и разница между ними стоит того, чтобы стоять рядом. «Repeat it exactly» -
+                  * то, что было: буквальный повтор координат, бесплатный и быстрый, и он не печатает,
+                  * потому что содержимое нажатий нигде не хранится. Визард спрашивает недостающий текст
+                  * один раз и делает скилл-ЦЕЛЬ: он печатает, перечитывает экран и уезжает к ИИ с
+                  * параметрами. См. SkillWizard.tsx. */}
                 <Button
+                  variant="secondary"
                   size="sm"
-                  leftSlot={<Sparkles className="size-4" />}
                   isLoading={making === rec.id}
                   disabled={!!making}
                   onClick={() => void convert(rec)}
                 >
-                  Save as skill
+                  Repeat it exactly
+                </Button>
+                <Button
+                  size="sm"
+                  leftSlot={<Sparkles className="size-4" />}
+                  disabled={!!making}
+                  onClick={() => setWizardFor(rec)}
+                >
+                  Make a skill
                 </Button>
               </li>
             ))}
@@ -1109,6 +1127,22 @@ export const SkillsView = () => {
           separate, deliberate act.
         </Typography>
       </div>
+
+      {wizardFor && (
+        <SkillWizard
+          rec={wizardFor}
+          onClose={() => setWizardFor(null)}
+          onSaved={(made) => {
+            setWizardFor(null);
+            void reload();
+            setSaid({
+              text: `"${made}" is a skill now — it asks for what it needs and types it. The recording is `
+                + 'untouched.',
+              kind: 'good',
+            });
+          }}
+        />
+      )}
     </div>
   );
 };
