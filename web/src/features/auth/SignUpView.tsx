@@ -92,10 +92,10 @@ export const SignUpView = () => {
       } catch (_) {
         /* Verified but not signed in - a password that no longer matches, or auto sign-in switched off.
          * The account is real and confirmed, so the sign-in page is the right place, not an error. */
-        location.href = '/sign-in?verified=1';
+        location.replace('/sign-in?verified=1');
         return;
       }
-      location.href = '/record';
+      location.replace('/record');
     } catch (err) {
       setFailed(saySo(err));
       setBusy(null);

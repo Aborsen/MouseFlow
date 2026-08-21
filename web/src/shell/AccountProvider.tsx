@@ -145,6 +145,26 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     location.href = location.origin + '/';
   }, []);
 
+  /* A page the browser kept.
+   *
+   * Back and Forward can restore this app from the back/forward cache with its JavaScript frozen: no effect
+   * runs again, so whatever it concluded about the session when it loaded is what it still shows. A page
+   * restored from before a sign-in therefore shows the wall to somebody who now has a session - one half of
+   * "press Back and it asks for the password again".
+   *
+   * Only that half is acted on. Reloading because the check came back EMPTY would be wrong: whoAmI answers
+   * null for a network blip as readily as for a real sign-out, and taking a working app away over a blip is
+   * worse than showing it a moment longer. Nothing leaks by waiting, either - the API checks the session on
+   * every request and a page with no session gets nothing out of it. */
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (!e.persisted || account) return;
+      void whoAmI().then((me) => { if (me) location.reload(); });
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => window.removeEventListener('pageshow', onShow);
+  }, [account]);
+
   const value = useMemo(
     () => ({ account, flows, runs, loaded, readFailed, reload, leave, leaveProblem: leaving }),
     [account, flows, runs, loaded, readFailed, reload, leave, leaving],
@@ -158,6 +178,20 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
    * definition. Matched on the real path rather than through the router, because this sits above it. */
   if (!account && isAuthPath(location.pathname)) {
     return <>{children}</>;
+  }
+
+  /* Signed in, and looking at a door.
+   *
+   * Two ways to get here that both happen: Back onto a sign-in page the browser still has in history, and a
+   * bookmark of /sign-in made before there was an account. Showing the form to somebody who already has a
+   * session is the other half of "press Back and it asks for the password again" - the session was never
+   * gone; the page simply asked. Replaced rather than pushed, so Back does not bounce between the two.
+   *
+   * A reset link is the exception: it arrives WITH a token, and whoever is holding one means to use it,
+   * signed in or not. */
+  if (isAuthPath(location.pathname) && !new URLSearchParams(location.search).get('token')) {
+    location.replace('/record');
+    return null;
   }
 
   if (!account) {

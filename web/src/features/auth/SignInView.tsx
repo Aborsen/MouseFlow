@@ -51,8 +51,13 @@ export const SignInView = () => {
       await authPost('sign-in/email', { email: address, password, rememberMe: true });
       /* A full load rather than a router navigation: the account provider reads the session once, on mount,
        * and this is the moment it changed. Reloading is the honest way to get every part of the app to
-       * agree, and it happens exactly once per sign-in. */
-      location.href = '/record';
+       * agree, and it happens exactly once per sign-in.
+       *
+       * REPLACE, not assign. Pushing left this page in history, so Back landed on a sign-in form belonging
+       * to somebody already signed in - which reads as having been logged out, and was the whole of "press
+       * Back and you have to type your password again". A form nobody needs any more does not deserve a
+       * history entry. */
+      location.replace('/record');
     } catch (err) {
       setFailed(saySo(err));
       setCode(err instanceof Error && 'code' in err ? String((err as { code?: string }).code ?? '') : '');
@@ -119,7 +124,7 @@ export const SignInView = () => {
               try {
                 await authPost('email-otp/verify-email', { email: email.trim(), otp: otp.trim() });
                 await authPost('sign-in/email', { email: email.trim(), password, rememberMe: true });
-                location.href = '/record';
+                location.replace('/record');
               } catch (err) {
                 setFailed(saySo(err));
                 setBusy(null);
