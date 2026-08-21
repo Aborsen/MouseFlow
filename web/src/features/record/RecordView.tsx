@@ -504,12 +504,13 @@ export const RecordView = () => {
 
       const where = seenWindows.current.slice();
       const s = summarize(events);
-      /* Named by WHEN: "MouseFlow 21/08 13:07" reads as a moment, sorts like one, and two recordings made
-       * a minute apart stay tellable-apart - which "Recording 3" and a window title both failed at. */
+      /* Named by WHEN, to the SECOND: "MouseFlow 21/08 13:34:07" reads as a moment and sorts like one.
+       * Minutes were tried and were not enough - three recordings inside one minute came out with three
+       * identical names, which is the same uselessness as "Recording 3" wearing a timestamp. */
       const at = new Date();
       const two = (v: number) => String(v).padStart(2, '0');
       const name = `MouseFlow ${two(at.getDate())}/${two(at.getMonth() + 1)} ${
-        two(at.getHours())}:${two(at.getMinutes())}`;
+        two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`;
 
       const made = { id: uid(), name, created: new Date().toISOString(), events, windows: where };
       update((prev) => ({ recordings: [...prev.recordings, made] }));
