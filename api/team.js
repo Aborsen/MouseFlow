@@ -1,0 +1,414 @@
+/* Teams: who may see whose work.
+ *
+ *   GET    /api/team                      my teams, my role in each, who else is in them
+ *   GET    /api/team?id=X                 one team: members, their activity, pending invites, shared skills
+ *   POST   /api/team                      { name }            make one; I am its owner
+ *   POST   /api/team?id=X                 { email, role }     add somebody, or invite an address with no account
+ *   POST   /api/team?id=X&share=<flow>    show one of MY skills to the team
+ *   PATCH  /api/team?id=X                 { userId, role }    change a role                    (owner)
+ *   DELETE /api/team?id=X                 leave it
+ *   DELETE /api/team?id=X&user=<uuid>     remove somebody                                      (owner, admin)
+ *   DELETE /api/team?id=X&invite=<email>  cancel an invitation                                 (owner, admin)
+ *   DELETE /api/team?id=X&share=<flow>    stop showing one of my skills
+ *   DELETE /api/team?id=X&team=1          delete the team                                      (owner)
+ *
+ * THREE ROLES, CHECKED IN THE QUERIES. Not a permission table: that earns its keep when somebody needs
+ * "sees the dashboard but not the transcripts", and until that request exists it is a second product to keep
+ * correct. Growing out of this into one is linear; the other direction is not.
+ *
+ * WHAT A TEAM DOES NOT DO. Joining one hands over nothing already recorded. ACTIVITY - that a person made a
+ * recording, when, how a run ended - becomes visible to owners and admins, because a team that cannot see
+ * whether it is working is not a team. CONTENT - the events, the transcript, the chat - stays private until
+ * it is shared, one thing at a time, by the person who owns it. That is the same rule the gallery has always
+ * had, and the reason is the same: a membership that retroactively opened everything somebody had ever
+ * recorded would be a surprise about other people's screens.
+ *
+ * EVERY QUERY IS SCOPED BY THE CALLER'S OWN MEMBERSHIP, resolved from the credential and never from the
+ * request. A team id in a query string is a claim, not a permission: `roleOf` turns it into one or into
+ * nothing, and every write says which roles it accepts before it runs.
+ */
+
+import { neon } from '@neondatabase/serverless';
+import { randomBytes } from 'node:crypto';
+import { whoIsCalling } from './_session.js';
+
+const NAME_MAX = 60;
+const TEAMS_PER_PERSON = 20;
+const MEMBERS_MAX = 200;
+const ROLES = ['owner', 'admin', 'member'];
+
+function cors(req, res) {
+  const origin = req.headers.origin || '';
+  res.setHeader('Access-Control-Allow-Origin',
+    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
+  res.setHeader('Access-Control-Max-Age', '86400');
+}
+
+const fail = (res, status, message) => res.status(status).json({ error: message });
+const text = (value, max) => (value == null ? null : String(value).trim().slice(0, max) || null);
+const newId = () => `t_${randomBytes(8).toString('hex')}`;
+
+/** The caller's role in one team, or null. The only thing that turns a team id into a permission. */
+async function roleOf(sql, teamId, userId) {
+  const rows = await sql`
+    select m.role from team_member m
+    join team t on t.id = m.team_id and t.deleted_at is null
+    where m.team_id = ${teamId} and m.user_id = ${userId}
+  `;
+  return rows.length ? rows[0].role : null;
+}
+
+const manages = (role) => role === 'owner' || role === 'admin';
+
+/* Anybody added by an address before they had an account.
+ *
+ * Claimed on read rather than on every request: joining a team matters the moment somebody looks at one, and
+ * putting this in the hot path would cost every /api/sync a second query for a row that almost never exists.
+ * Matched case-insensitively, because an address is not case-sensitive in the half that matters and people
+ * type it either way. */
+async function claimInvites(sql, who) {
+  if (!who.email) return;
+  const invites = await sql`
+    select i.team_id, i.role, i.invited_by from team_invite i
+    join team t on t.id = i.team_id and t.deleted_at is null
+    where lower(i.email) = lower(${who.email})
+  `;
+  for (const invite of invites) {
+    await sql`
+      insert into team_member (team_id, user_id, role, invited_by)
+      values (${invite.team_id}, ${who.id}, ${invite.role}, ${invite.invited_by})
+      on conflict (team_id, user_id) do nothing
+    `;
+    await sql`delete from team_invite where team_id = ${invite.team_id} and lower(email) = lower(${who.email})`;
+  }
+}
+
+/** Names and addresses for a set of ids, from the auth service's own table. */
+async function peopleFor(sql, ids) {
+  if (!ids.length) return new Map();
+  const rows = await sql`
+    select u.id::text as id, to_jsonb(u) as who from neon_auth."user" u where u.id::text = any(${ids})
+  `;
+  const out = new Map();
+  for (const row of rows) {
+    const w = row.who || {};
+    out.set(row.id, { name: w.name ?? null, email: w.email ?? null, image: w.image ?? null });
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------------------- reads */
+
+async function myTeams(sql, who) {
+  await claimInvites(sql, who);
+  const teams = await sql`
+    select t.id, t.name, t.created_at, m.role, m.joined_at,
+           (select count(*)::int from team_member x where x.team_id = t.id) as members
+    from team_member m
+    join team t on t.id = m.team_id and t.deleted_at is null
+    where m.user_id = ${who.id}
+    order by t.created_at
+  `;
+  return { teams };
+}
+
+/** One team. Activity is included only for the roles that may see it; a member gets the roster. */
+async function oneTeam(sql, who, teamId) {
+  const role = await roleOf(sql, teamId, who.id);
+  if (!role) return null;
+
+  const [team] = await sql`select id, name, created_at, created_by from team where id = ${teamId} and deleted_at is null`;
+  if (!team) return null;
+
+  const members = await sql`
+    select user_id::text as id, role, joined_at from team_member where team_id = ${teamId} order by joined_at
+  `;
+  const people = await peopleFor(sql, members.map((m) => m.id));
+
+  /* What each person HOLDS and when they were last busy - counts and dates, never content. The same shape
+   * the admin list uses, scoped to this team, and only for the roles that run it. */
+  let activity = new Map();
+  if (manages(role)) {
+    const ids = members.map((m) => m.id);
+    const rows = ids.length ? await sql`
+      select u.id::text as id,
+             coalesce(f.recordings, 0)::int as recordings,
+             coalesce(f.skills, 0)::int     as skills,
+             coalesce(r.runs, 0)::int       as runs,
+             f.last_recorded, r.last_run
+      from (select unnest(${ids}::uuid[]) as id) u
+      left join (
+        select user_id,
+               count(*) filter (where payload->>'role' is distinct from 'skill')::int as recordings,
+               count(*) filter (where payload->>'role' = 'skill')::int as skills,
+               max(updated_at) as last_recorded
+        from user_flow where deleted_at is null group by user_id
+      ) f on f.user_id = u.id
+      left join (
+        select user_id, count(*)::int as runs, max(started_at) as last_run
+        from user_run group by user_id
+      ) r on r.user_id = u.id
+    ` : [];
+    activity = new Map(rows.map((r) => [r.id, r]));
+  }
+
+  const invites = manages(role)
+    ? await sql`select email, role, created_at from team_invite where team_id = ${teamId} order by created_at`
+    : [];
+
+  /* The skills people have deliberately shown this team. Names and owners, not payloads: opening one is a
+   * separate act with an id in it, exactly as the admin screens work. */
+  const shared = await sql`
+    select s.flow_id, s.user_id::text as owner_id, s.shared_at, f.name, f.description, f.source, f.kind
+    from team_share s
+    join team_member m on m.team_id = s.team_id and m.user_id = s.user_id
+    left join user_flow f on f.user_id = s.user_id and f.client_id = s.flow_id and f.deleted_at is null
+    where s.team_id = ${teamId}
+    order by s.shared_at desc
+  `;
+
+  return {
+    team: { id: team.id, name: team.name, created: team.created_at, createdBy: team.created_by },
+    you: { role },
+    members: members.map((m) => {
+      const person = people.get(m.id) || {};
+      const act = activity.get(m.id);
+      return {
+        id: m.id,
+        role: m.role,
+        joined: m.joined_at,
+        name: person.name ?? null,
+        email: person.email ?? null,
+        /* Absent rather than zero when the caller may not see it: nothing here should let a member work out
+         * how busy a colleague is by reading a missing field as a number. */
+        activity: act
+          ? {
+            recordings: act.recordings, skills: act.skills, runs: act.runs,
+            lastRecorded: act.last_recorded, lastRun: act.last_run,
+          }
+          : null,
+      };
+    }),
+    invites: invites.map((i) => ({ email: i.email, role: i.role, created: i.created_at })),
+    shared: shared.map((s) => ({
+      flowId: s.flow_id,
+      ownerId: s.owner_id,
+      owner: (people.get(s.owner_id) || {}).name ?? (people.get(s.owner_id) || {}).email ?? null,
+      name: s.name ?? null,
+      description: s.description ?? null,
+      source: s.source ?? null,
+      kind: s.kind ?? null,
+      /* A share whose flow is gone. Said, not hidden: "this was shared and has since been deleted" is a
+       * different fact from "this was never shared". */
+      missing: s.name == null,
+      at: s.shared_at,
+    })),
+  };
+}
+
+/* ------------------------------------------------------------------------------- writes */
+
+async function createTeam(sql, who, body) {
+  const name = text(body && body.name, NAME_MAX);
+  if (!name) return { status: 400, body: { error: 'a team needs a name' } };
+  const [{ n }] = await sql`
+    select count(*)::int as n from team_member m join team t on t.id = m.team_id and t.deleted_at is null
+    where m.user_id = ${who.id}
+  `;
+  if (n >= TEAMS_PER_PERSON) {
+    return { status: 400, body: { error: `you are already in ${n} teams, which is the limit` } };
+  }
+  const id = newId();
+  await sql`insert into team (id, name, created_by) values (${id}, ${name}, ${who.id})`;
+  await sql`insert into team_member (team_id, user_id, role) values (${id}, ${who.id}, 'owner')`;
+  return { status: 200, body: { ok: true, id, name } };
+}
+
+async function addMember(sql, who, teamId, body) {
+  const role = await roleOf(sql, teamId, who.id);
+  if (!manages(role)) return { status: 404, body: { error: 'not found' } };
+
+  const email = text(body && body.email, 200);
+  const wanted = ROLES.includes(body && body.role) ? body.role : 'member';
+  if (!email || !email.includes('@')) return { status: 400, body: { error: 'that is not an email address' } };
+  /* Only an owner hands out the roles that can hand out roles. An admin who could make owners could make
+   * themselves one, which is the same as having no roles at all. */
+  if (wanted !== 'member' && role !== 'owner') {
+    return { status: 403, body: { error: 'only the owner can add an owner or an admin' } };
+  }
+
+  const [{ n }] = await sql`select count(*)::int as n from team_member where team_id = ${teamId}`;
+  if (n >= MEMBERS_MAX) return { status: 400, body: { error: 'this team is full' } };
+
+  const found = await sql`
+    select u.id::text as id from neon_auth."user" u where lower(to_jsonb(u)->>'email') = lower(${email}) limit 1
+  `;
+  if (found.length) {
+    await sql`
+      insert into team_member (team_id, user_id, role, invited_by)
+      values (${teamId}, ${found[0].id}, ${wanted}, ${who.id})
+      on conflict (team_id, user_id) do update set role = excluded.role
+    `;
+    return { status: 200, body: { ok: true, added: true } };
+  }
+  await sql`
+    insert into team_invite (team_id, email, role, invited_by) values (${teamId}, ${email}, ${wanted}, ${who.id})
+    on conflict (team_id, email) do update set role = excluded.role
+  `;
+  /* Said plainly, because nothing is sent. There is no mail from here and an invite that quietly depended on
+   * one would be an invite that never happened. */
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      added: false,
+      note: `${email} has no account here yet. They are on the list: when they sign up with that address and `
+        + 'open their teams, they will be in. Nothing was emailed — tell them yourself.',
+    },
+  };
+}
+
+async function setRole(sql, who, teamId, body) {
+  const role = await roleOf(sql, teamId, who.id);
+  if (role !== 'owner') return { status: 404, body: { error: 'not found' } };
+  const target = text(body && body.userId, 64);
+  const wanted = ROLES.includes(body && body.role) ? body.role : null;
+  if (!target || !wanted) return { status: 400, body: { error: 'a member and a role, please' } };
+  if (target === who.id && wanted !== 'owner') {
+    /* An owner demoting themselves while alone would leave a team nobody can manage. */
+    const [{ n }] = await sql`select count(*)::int as n from team_member where team_id = ${teamId} and role = 'owner'`;
+    if (n <= 1) return { status: 400, body: { error: 'make somebody else an owner first' } };
+  }
+  const done = await sql`
+    update team_member set role = ${wanted} where team_id = ${teamId} and user_id = ${target} returning user_id
+  `;
+  if (!done.length) return { status: 404, body: { error: 'they are not in this team' } };
+  return { status: 200, body: { ok: true } };
+}
+
+async function removeMember(sql, who, teamId, target) {
+  const mine = await roleOf(sql, teamId, who.id);
+  if (!mine) return { status: 404, body: { error: 'not found' } };
+  const leaving = !target || target === who.id;
+  if (!leaving && !manages(mine)) return { status: 403, body: { error: 'only an owner or admin can do that' } };
+
+  const id = leaving ? who.id : target;
+  const [them] = await sql`select role from team_member where team_id = ${teamId} and user_id = ${id}`;
+  if (!them) return { status: 404, body: { error: 'they are not in this team' } };
+  if (!leaving && them.role !== 'member' && mine !== 'owner') {
+    return { status: 403, body: { error: 'only the owner can remove an owner or an admin' } };
+  }
+  if (them.role === 'owner') {
+    const [{ n }] = await sql`select count(*)::int as n from team_member where team_id = ${teamId} and role = 'owner'`;
+    if (n <= 1) return { status: 400, body: { error: 'a team needs an owner - hand it over first' } };
+  }
+  await sql`delete from team_member where team_id = ${teamId} and user_id = ${id}`;
+  /* Their shares go with them. A share means "this person let the team see this", and they are no longer
+   * this person's team. */
+  await sql`delete from team_share where team_id = ${teamId} and user_id = ${id}`;
+  return { status: 200, body: { ok: true, left: leaving } };
+}
+
+async function share(sql, who, teamId, flowId, on) {
+  const role = await roleOf(sql, teamId, who.id);
+  if (!role) return { status: 404, body: { error: 'not found' } };
+  if (!on) {
+    await sql`delete from team_share where team_id = ${teamId} and user_id = ${who.id} and flow_id = ${flowId}`;
+    return { status: 200, body: { ok: true, shared: false } };
+  }
+  /* Only your own, and only something that exists. Sharing is a statement about your own work; there is no
+   * shape of this request that can put somebody else's row in front of a team. */
+  const mine = await sql`
+    select client_id from user_flow where user_id = ${who.id} and client_id = ${flowId} and deleted_at is null
+  `;
+  if (!mine.length) return { status: 404, body: { error: 'you have nothing with that id' } };
+  await sql`
+    insert into team_share (team_id, user_id, flow_id) values (${teamId}, ${who.id}, ${flowId})
+    on conflict (team_id, user_id, flow_id) do nothing
+  `;
+  return { status: 200, body: { ok: true, shared: true } };
+}
+
+async function deleteTeam(sql, who, teamId) {
+  const role = await roleOf(sql, teamId, who.id);
+  if (role !== 'owner') return { status: 404, body: { error: 'not found' } };
+  /* Tombstoned, like a flow: the rows stay, the team stops existing for every read. Nobody's recordings are
+   * touched by this - a team never held any. */
+  await sql`update team set deleted_at = now() where id = ${teamId}`;
+  return { status: 200, body: { ok: true, deleted: true } };
+}
+
+/* ------------------------------------------------------------------------------- the route */
+
+export default async function handler(req, res) {
+  cors(req, res);
+  if (req.method === 'OPTIONS') { res.status(204).end(); return; }
+  if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');
+
+  const sql = neon(process.env.DATABASE_URL);
+  let who;
+  try {
+    who = await whoIsCalling(req, sql);
+  } catch (_) {
+    who = null;
+  }
+  if (!who) return fail(res, 401, 'Sign in first.');
+
+  const query = req.query || {};
+  const teamId = text(query.id, 64);
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+
+  try {
+    if (req.method === 'GET') {
+      if (!teamId) return res.status(200).json({ ok: true, ...(await myTeams(sql, who)) });
+      const one = await oneTeam(sql, who, teamId);
+      /* Not found rather than forbidden, and for the reason every other private read here uses it: a 403
+       * confirms that the team exists to somebody who was never meant to learn that. */
+      if (!one) return fail(res, 404, 'not found');
+      return res.status(200).json({ ok: true, ...one });
+    }
+
+    if (req.method === 'POST') {
+      const flowId = text(query.share, 80);
+      const out = !teamId ? await createTeam(sql, who, body)
+        : flowId ? await share(sql, who, teamId, flowId, true)
+          : await addMember(sql, who, teamId, body);
+      return res.status(out.status).json(out.body);
+    }
+
+    if (req.method === 'PATCH') {
+      if (!teamId) return fail(res, 400, 'which team?');
+      const out = await setRole(sql, who, teamId, body);
+      return res.status(out.status).json(out.body);
+    }
+
+    if (req.method === 'DELETE') {
+      if (!teamId) return fail(res, 400, 'which team?');
+      const flowId = text(query.share, 80);
+      const invited = text(query.invite, 200);
+      if (flowId) {
+        const out = await share(sql, who, teamId, flowId, false);
+        return res.status(out.status).json(out.body);
+      }
+      if (invited) {
+        const role = await roleOf(sql, teamId, who.id);
+        if (!manages(role)) return fail(res, 404, 'not found');
+        await sql`delete from team_invite where team_id = ${teamId} and lower(email) = lower(${invited})`;
+        return res.status(200).json({ ok: true });
+      }
+      if (query.team) {
+        const out = await deleteTeam(sql, who, teamId);
+        return res.status(out.status).json(out.body);
+      }
+      const out = await removeMember(sql, who, teamId, text(query.user, 64));
+      return res.status(out.status).json(out.body);
+    }
+
+    return fail(res, 405, 'GET, POST, PATCH or DELETE');
+  } catch (err) {
+    return fail(res, 500, err.message);
+  }
+}
