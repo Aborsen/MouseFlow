@@ -47,9 +47,14 @@ const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const NEWEST = '2025-06-18';
 const SERVER = { name: 'mouseflow', version: '0.2.0' };
 
-/* How long a tools/call waits for a machine to do the work before it answers "still going". Bounded well
- * under the function's own limit, because an answer that arrives as a gateway timeout is not an answer. */
-const CALL_WAIT_MS = 110_000;
+/* How long a tools/call waits for a machine to do the work before it answers "still going".
+ *
+ * Was just under two minutes, which is well inside the function's own limit and well OUTSIDE what an MCP
+ * client will hold a request open for: the first real call died as "Connection closed" while the job sat
+ * happily in the queue, which tells the person nothing and looks exactly like a broken server. Half a minute
+ * is under every client's patience, and the answer it gives when the wait runs out - the run id, and which
+ * tool asks after it - is a better outcome than a dropped connection in every case. */
+const CALL_WAIT_MS = 25_000;
 const CALL_POLL_MS = 1_500;
 /* And how long a worker's claim request may hold open with nothing to do. One request every half minute
  * beats one every three seconds, and an idle loop is not billed as CPU. */
