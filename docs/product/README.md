@@ -45,6 +45,9 @@ both of which need a computer that is *not* already attached — and the machine
 consent page is rendered from the same function the server sends, rather than mocked up, because a picture
 of a consent screen that is not the consent screen is the one picture nobody should draw.
 
+Regenerate them with `node scripts/shoot-docs.mjs`, and look at what comes out — the script cannot tell a
+rendered page from a rendered error.
+
 **Absent is not the same as false.** The product draws this distinction everywhere: a capability flag
 that is missing means "this agent is too old to say", not "no"; a `#ctx` line that is absent means "not
 known", not "nothing was there". The documentation follows the same rule, because collapsing the two is

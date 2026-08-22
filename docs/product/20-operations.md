@@ -146,6 +146,29 @@ uncommitted changes. Fix things upstream; that is where the design system lives.
 `vendor/insightis-ui/vendored.json` — repo, ref, commit, date — so "which version is this?" has an answer that
 does not depend on anybody's memory.
 
+## The documentation's screenshots
+
+```bash
+node scripts/shoot-docs.mjs
+```
+
+Regenerates every picture in `docs/img` from the running app — twenty-seven of them, in about two minutes.
+Run it after any change to a screen these documents show, and **look at the results before committing**: the
+script cannot tell a rendered page from a rendered error, and a screenshot is a claim.
+
+It starts the dev server itself with the account fixture (`MOCK_API=1`) and serves it over HTTPS **under the
+deployment's own hostname**, resolved to loopback by the browser it launches — without that, every picture
+shows `localhost:4400` as the address to paste into an AI client, which is worse than no picture. Two shots
+are staged, with only the agent's `/health` and `/api/mcp?pending=1` stubbed, because they show a computer
+that is *not* attached to an account and any machine this runs on is. The consent page is rendered from
+`consentPage()` in `api/oauth.js` rather than mocked up.
+
+Needs Google Chrome and, for the downscale at the end, macOS `sips`. The script's own header explains the
+three non-obvious things it does; each of them was a bug first.
+
+`node mcp/test-mcp.mjs` checks that every screenshot a document references actually exists, which is the half
+that can be automated.
+
 ## Tests
 
 ```bash
