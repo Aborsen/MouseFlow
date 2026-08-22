@@ -67,6 +67,10 @@ table row records the whole row's text.
 
 ## The output
 
+![The transcript panel](../img/record-transcript.png)
+
+*The same derivation `mouseflow_transcript` serves to a model — [21 — MCP](21-mcp.md).*
+
 ### `flow`
 
 `{ id, name, kind, source, created, origins, windows }` — identity, read from whichever of several field

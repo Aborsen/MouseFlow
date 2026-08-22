@@ -32,6 +32,8 @@ this guide and the settings panel, which is how most people actually reach it �
 about macOS. Somebody on a Mac opened settings and was handed a PowerShell one-liner, which is exactly the
 failure the platform switch was built to prevent.
 
+![The connection guide](../img/connect-guide.png)
+
 ## The steps
 
 ### 1. Copy the install command
@@ -181,6 +183,32 @@ the desktop half is Chrome/Edge in practice.
 | Windows | The tray icon's **Quit MouseFlow Agent** (0.8.2+), or close the PowerShell window |
 | macOS | The menu bar's **Stop Until Next Login** or **Quit and Turn Off Start at Login** |
 | macOS, by command | `launchctl bootout gui/$(id -u)/com.mouseflow.agent` — `pkill` does **not** work: `KeepAlive` starts it again a second later, so a "stop" that killed the process would be a switch that does nothing |
+
+## Letting an AI act on this computer
+
+Everything above gets the agent running so **you** can press Record. One more switch decides whether an
+AI connected to your account may ask this computer to do the same thing.
+
+![Attaching this computer](../img/settings-connections-attach.png)
+
+**Let Claude drive this computer** is the whole ceremony. It mints a device token, hands it to the agent
+across loopback and never shows it — a credential nobody sees is a credential nobody mislays. From then
+on the agent asks the account whether there is work, takes it, and reports back; **nothing reaches in**,
+because there is no inbound path to reach in through.
+
+It is switched off in two places, and they now say the same words: **Detach** here, or
+**"Let My AI Act On This Mac"** in the agent's own menu, the cursor icon at the top of the screen. Off,
+the agent makes no outbound call at all.
+
+The address an AI is connected *with* is on this page too, and on the Connections panel in settings —
+both, because both are where somebody is standing when the word "connect" is in their head:
+
+![Connect an AI, on the guide](../img/connect-guide-ai.png)
+
+![Connect an AI, in settings](../img/settings-connections-mcp.png)
+
+All of it — what a connected AI can read, what it can ask for, how it signs in, and what it is refused —
+is [21 — MCP](21-mcp.md).
 
 ## The one-liner tradeoff, stated
 

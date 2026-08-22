@@ -27,7 +27,8 @@ commit `17bbcc5` (agents 0.8.2, extension 0.16.2, web app on React 19 / Vite / T
 | [18 — Configuration reference](18-configuration.md) | Every environment variable, flag, query parameter, storage key and tuning constant |
 | [19 — Limits and known gaps](19-limits-and-known-gaps.md) | Inherent limits, unverified areas, and defects found while writing this |
 | [20 — Operations](20-operations.md) | Deploy, migrate, develop, test |
-| [21 — MCP server](21-mcp.md) | Skills as tools an AI can call: stdio and HTTPS, the queue and the worker, per-account identity, what it borrows and what it refuses |
+| [21 — MCP](21-mcp.md) | Connecting an AI to an account: every tool, how it signs in, how it comes to be allowed to act on your computer, what it refuses, and what to do when an answer says something did not happen |
+| [22 — Teams](22-teams.md) | Who may see whose work, the three roles, and the much longer list of what a team deliberately does not open |
 
 ## Two conventions this documentation keeps
 
@@ -35,6 +36,14 @@ commit `17bbcc5` (agents 0.8.2, extension 0.16.2, web app on React 19 / Vite / T
 event, 81.8% of clicks named on macOS, 70.8% on Windows) it is stated as measured and where it came
 from. Where something has never been observed working, that is stated too — see
 [19 — Limits and known gaps](19-limits-and-known-gaps.md).
+
+**The screenshots are of the app, not of a drawing of it.** Every picture in these documents was taken from
+the running application, against the development fixture account (`MOCK_API=1`), at the deployment's own
+address so the URLs in them are the URLs you would paste. Two are **staged**, and say so where they appear:
+the "Claude asked to start a recording here" banner and the Connections screen before a machine is attached,
+both of which need a computer that is *not* already attached — and the machine these were taken on is. The
+consent page is rendered from the same function the server sends, rather than mocked up, because a picture
+of a consent screen that is not the consent screen is the one picture nobody should draw.
 
 **Absent is not the same as false.** The product draws this distinction everywhere: a capability flag
 that is missing means "this agent is too old to say", not "no"; a `#ctx` line that is absent means "not

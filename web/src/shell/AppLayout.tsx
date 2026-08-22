@@ -10,7 +10,7 @@ import { cn } from '@insightis/ui/cn';
 import { Typography } from '@insightis/ui/Typography';
 import { AGENT_WANTS } from '@/lib/agent';
 import { useAgent } from '@/lib/store';
-import { AccountProvider, isAuthPath } from './AccountProvider';
+import { AccountProvider, isAuthPath, isPublicPath } from './AccountProvider';
 import { AppSidebar } from './AppSidebar';
 import { SettingsDialog, type SettingsScreen } from './SettingsDialog';
 import { OnboardingTour } from './OnboardingTour';
@@ -36,8 +36,12 @@ const Shell = () => {
    * the router so a navigation between them re-evaluates. */
   /* The admin has a frame of its own, so the product's must stand aside - otherwise there are two
    * sidebars and two headers, one of them leading somewhere the admin did not ask to go. */
+  /* And /mcp, which is a page about the product rather than a screen inside it: a sidebar and an agent
+   * pill above it would be furniture belonging to an app the reader may not have. */
   const bare = useRouterState({
-    select: (s) => isAuthPath(s.location.pathname) || s.location.pathname.startsWith('/admin'),
+    select: (s) => isAuthPath(s.location.pathname)
+      || isPublicPath(s.location.pathname)
+      || s.location.pathname.startsWith('/admin'),
   });
   if (bare) return <Outlet />;
   return <ShellFrame />;

@@ -82,10 +82,13 @@ const when = (iso: string | null | undefined) => {
   return `${two(d.getDate())}.${two(d.getMonth() + 1)}`;
 };
 
+/* Second person, because the only place these are shown says them ABOUT the reader. They were written in
+ * the third - "owns it", "adds and removes members" - and rendered after the word "you", which put "you owns
+ * it" on the screen. */
 const ROLE_WORDS: Record<Role, string> = {
-  owner: 'owns it — can rename it, delete it and move anybody’s role',
-  admin: 'adds and removes members, and sees everyone’s activity',
-  member: 'sees the team’s shared skills, and their own activity',
+  owner: 'You own it — you can rename it, delete it, and move anybody’s role',
+  admin: 'You add and remove members, and see everyone’s activity',
+  member: 'You see the team’s shared skills, and your own activity',
 };
 
 export const TeamScreen = ({ say }: { say: Say }) => {
@@ -219,7 +222,7 @@ export const TeamScreen = ({ say }: { say: Say }) => {
         <div className="grid gap-3.5 rounded-xl border border-stroke p-3.5">
           <div className="flex flex-wrap items-baseline gap-2">
             <Typography variant="h3" weight="semibold" className="text-[0.92rem]">{detail.team.name}</Typography>
-            <span className="text-[0.78rem] text-ink-inactive">you {ROLE_WORDS[detail.you.role]}</span>
+            <span className="text-[0.78rem] text-ink-inactive">{ROLE_WORDS[detail.you.role]}</span>
           </div>
 
           {/* -------- members */}

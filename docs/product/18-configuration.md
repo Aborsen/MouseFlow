@@ -14,6 +14,15 @@ Everything that can be set, in one place.
 | `OPENAI_REASONING_EFFORT` | optional | Default reasoning effort. Falls back to `high`. |
 | `MOCK_API` | local development only | `MOCK_API=1` serves the account endpoints from an in-memory fixture. Dev-server middleware; it has **no path into a build**. |
 
+### The MCP server and worker (`mcp/`, local — not Vercel)
+
+| Variable | Default | |
+|---|---|---|
+| `MOUSEFLOW_TOKEN` | — | required; the device token this machine signs in with |
+| `MOUSEFLOW_URL` | `https://mouse-agent.vercel.app` | the deployment holding the account |
+| `MOUSEFLOW_AGENT_PORT` | `8787` | where the local agent listens |
+| `MOUSEFLOW_WORKER_NAME` | the hostname | what to call this machine in the queue (worker only) |
+
 **A function reads `process.env` from its own deployment's captured environment**, so a variable added
 afterwards does not reach the deployment already serving — it reports `configured: false` until a new build
 happens. Push a commit; see [20 — Operations](20-operations.md).
@@ -162,6 +171,13 @@ definition.
 | `THIN_MIN_MS` / `THIN_PER_MINUTE` | 60,000 / 6 | `_transcript.js` |
 | Text caps (label / target / note / detail) | 80 / 200 / 400 / 300 | `_transcript.js` |
 | `WINDOWS_MAX` / `ORIGINS_MAX` | 24 / 12 | `_transcript.js` |
+| `CALL_WAIT_MS` / `CALL_POLL_MS` | 25,000 / 1,500 | `mcp.js` — how long a `tools/call` waits for a machine |
+| `CLAIM_WAIT_MAX_MS` / `CLAIM_POLL_MS` | 25,000 / 1,000 | `mcp.js` — how long a claim may hold open |
+| `CLAIM_STALE_MS` | 2,700,000 (45 min) | `mcp.js` — after which a claimed job is failed with a reason |
+| `CODE_TTL_MS` | 300,000 (5 min) | `oauth.js` |
+| `ACCESS_TTL_MS` / `REFRESH_TTL_MS` | 30 days / 180 days | `oauth.js` |
+| `CLIENTS_MAX_URIS` | 10 | `oauth.js` |
+| `NAME_MAX` / `TEAMS_PER_PERSON` / `MEMBERS_MAX` | 60 / 20 / 200 | `team.js` |
 
 ### Pairs that must change together
 
@@ -172,6 +188,8 @@ definition.
 | `PAYLOAD_BUDGET_BYTES` (`transcript.js`) and `PAYLOAD_MAX_BYTES` (`sync.js`) | The edit history has to leave room for the recording, or editing a large recording silently stops it syncing |
 | `EVENTS_MAX_PER_PART` (`long-session.ts`) and `PAYLOAD_MAX_BYTES` | A part must fit the cap |
 | The edit stamp shape | `transcript.js` and `_recording-tools.js` — otherwise "revision 3" means two things and an undo restores the wrong one |
+| `CALL_WAIT_MS` (`mcp.js`) and what an MCP client will hold a request open for | Longer, and a call that is working reports itself as a dropped connection — which is what happened at 110 seconds |
+| The tool table in `mcp.js` and `web/src/features/mcp/facts.ts` | The page and the panel describe what the server offers; the suite checks both directions |
 
 ## Vercel project settings
 

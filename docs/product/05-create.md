@@ -10,6 +10,8 @@ for two things in a row left no trace of the first.
 Turns are kept in memory only, deliberately: a run is already recorded on the account (which is what the
 Dashboard reads), and persisting a second copy here would give two records that can disagree.
 
+![The Create page](../img/create.png)
+
 ## Two executors
 
 Chosen in the composer, beside the message it applies to, not as a mode above the page — the same goal

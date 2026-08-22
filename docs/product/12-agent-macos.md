@@ -165,8 +165,19 @@ the main one. Nothing else changed shape.
 | **Start Recording** | idle |
 | **Stop and Save Recording** | while recording |
 | *a line saying a recording is waiting* | while a hold exists |
+| **Let My AI Act On This Mac** | always, on a build that can be attached — ticked while it is taking work, with a line underneath saying which state that is |
 | **Stop Until Next Login** | always — launchd forgets the job for this session; signing in brings it back |
 | **Quit and Turn Off Start at Login** | always — the login item is removed too |
+
+**Let My AI Act On This Mac** is the switch for everything in [21 — MCP](21-mcp.md): on, the agent asks the
+account whether there is work and does it; off, it makes no outbound call at all. Its subtitle describes the
+state it is *in* rather than what the click will do — "It asks your account for work — nothing reaches in",
+or "Off. Nothing leaves this Mac." — because a tick can be read in both directions at a glance, and this is
+the one item where reading it the wrong way is expensive.
+
+It is worded to match the app, which is not a detail either: it said **Take Work From My Account** here and
+**Let Claude drive this computer** there, and the person who turned it on in one place could not find it in
+the other. Two names for one switch is two switches, to everybody reading them.
 
 The icon doubles as the recording light. Stopping from here **holds** the events; see
 [10 — Agent protocol § A recording may end at the AGENT](10-agent-protocol.md#a-recording-may-end-at-the-agent).

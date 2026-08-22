@@ -13,6 +13,11 @@ Both halves produce the same kind of object — a *flow* on your account — and
 way on the Dashboard. Recordings are compatible with [Mini Mouse Macro](https://www.dopesoft.co.uk/)
 `.mmmacro` files in both directions.
 
+![The web app on the Record page](../img/record.png)
+
+*The app: the sidebar, the agent's own status in the top bar, the recorder, and everything this
+account holds.*
+
 ## The three clients
 
 | | Runs where | Aims at | Can reach |
@@ -24,6 +29,11 @@ way on the Dashboard. Recordings are compatible with [Mini Mouse Macro](https://
 The web app is the only place with an account. Neither the agent nor the extension can act as the user
 against the server: the agent has no credentials at all (by design), and the extension carries a
 user-pasted **device token**.
+
+There is a fourth client, and it is the first one that is not a person: an **AI connected over MCP**.
+It reads the account through the same routes the app does, and asks for work on the machine through a
+queue the agent empties — it has no path *into* anybody's computer, because none exists. See
+[21 — MCP](21-mcp.md).
 
 ### Why there are three and not one
 
@@ -109,6 +119,11 @@ before it offers a button:
 `canSee` / `canWindows` / `canName` / `canKeys` / `canDrain` are reported by the agent on `/health`.
 A missing flag means the agent predates it, which is an answer; `canKeys: false` specifically means the
 keyboard hook failed to install. See [10 — Agent protocol](10-agent-protocol.md).
+
+![The page about connecting an AI](../img/mcp-page.png)
+
+*[`/mcp`](https://mouseflowapp.vercel.app/mcp) — the public page about the fourth client, readable
+without an account.*
 
 ## What the product deliberately does not do
 

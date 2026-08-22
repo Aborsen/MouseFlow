@@ -6,6 +6,8 @@
 A skill is a flow with a name, a description and — where the goal had variable parts — parameters. It is
 what makes something you did once worth handing to somebody else.
 
+![The Skills page](../img/skills.png)
+
 ## What is listed here, and what is not
 
 Recordings and skills share one table (`user_flow`), which is the right design: both are "a thing on your
@@ -47,6 +49,10 @@ truncation reads as "this is all of them". The ones hidden are the **oldest**, w
 truncation acceptable.
 
 ### Two outcomes, and the wizard
+
+![The wizard, step one](../img/record-skill-wizard.png)
+
+![The wizard, step two](../img/record-skill-wizard-2.png)
 
 **Repeat it exactly** is the original: the recording's events, copied, replayed by screen position. Free,
 fast, literal — and it cannot type, because keystroke content is never stored
@@ -128,6 +134,11 @@ The More panel holds:
   listing survives it: withdrawing is a separate act, done in the gallery.
 
 ## Skill structure, and the three wire formats
+
+![A skill as an MCP tool definition](../img/skills-structure.png)
+
+*This is not a preview of what a model might be told: it is the same derivation the MCP server serves.
+See [21 — MCP](21-mcp.md#skills-as-tools).*
 
 `web/src/lib/skill-schema.ts`. A skill on this account is already the same thing a tool call is: a named,
 described unit of work with the variable parts pulled out. `extension/skills.js` does the pulling —

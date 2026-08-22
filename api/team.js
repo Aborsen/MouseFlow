@@ -128,8 +128,13 @@ async function oneTeam(sql, who, teamId) {
   `;
   const people = await peopleFor(sql, members.map((m) => m.id));
 
-  /* What each person HOLDS and when they were last busy - counts and dates, never content. The same shape
-   * the admin list uses, scoped to this team, and only for the roles that run it. */
+  /* What each person HOLDS and when they were last busy - counts and dates, never content, and only for the
+   * roles that run the team.
+   *
+   * ACCOUNT-WIDE, not team-scoped, and that is not an oversight to be tidied later: a recording belongs to
+   * an account, and only a SHARE connects one to a team, so there is nothing to scope these by. An owner
+   * sees "twelve recordings", not "twelve for us". Said here because the comment used to claim the
+   * opposite, and a wrong comment about who can see what is worse than none. */
   let activity = new Map();
   if (manages(role)) {
     const ids = members.map((m) => m.id);

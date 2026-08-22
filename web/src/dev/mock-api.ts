@@ -444,6 +444,52 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     });
   }
 
+  /* Teams. A fixture with one of each role in it, because the screen's whole job is to show the difference
+   * between them: an owner sees everybody's activity, a member sees only the shared skills and their own.
+   * A screen that could only be looked at signed in to a real deployment is a screen nobody looks at while
+   * they are changing it - and the same emptiness made it the one settings screen with no picture in the
+   * documentation. */
+  if (url.startsWith('/api/team')) {
+    const query = new URLSearchParams(url.split('?')[1] || '');
+    if (method === 'GET' && !query.get('id')) {
+      return json(res, 200, {
+        ok: true,
+        teams: [{ id: 't_dev1', name: 'Operations', role: 'owner', members: 3, created_at: hoursAgo(720) }],
+      });
+    }
+    if (method === 'GET') {
+      return json(res, 200, {
+        ok: true,
+        team: { id: 't_dev1', name: 'Operations', created: hoursAgo(720), createdBy: ACCOUNT.id },
+        you: { role: 'owner' },
+        members: [
+          {
+            id: ACCOUNT.id, role: 'owner', joined: hoursAgo(720), name: ACCOUNT.name, email: ACCOUNT.email,
+            activity: { recordings: 12, skills: 3, runs: 41, lastRecorded: hoursAgo(3), lastRun: hoursAgo(2) },
+          },
+          {
+            id: 'u_dev2', role: 'admin', joined: hoursAgo(400), name: 'Margaryta K.', email: 'margaryta@example.dev',
+            activity: { recordings: 7, skills: 2, runs: 18, lastRecorded: hoursAgo(26), lastRun: hoursAgo(20) },
+          },
+          {
+            id: 'u_dev3', role: 'member', joined: hoursAgo(96), name: 'Pavlo D.', email: 'pavlo@example.dev',
+            activity: { recordings: 2, skills: 0, runs: 4, lastRecorded: hoursAgo(50), lastRun: hoursAgo(48) },
+          },
+        ],
+        invites: [{ email: 'newcomer@example.dev', role: 'member', created: hoursAgo(12) }],
+        shared: [{
+          flowId: 'wf_dev_1', ownerId: ACCOUNT.id, owner: ACCOUNT.name,
+          name: 'Reply that the invoice is approved',
+          description: 'Re-runs its goal through the agent, so it adapts and can take different details each time.',
+          source: 'web', kind: 'created', missing: false, at: hoursAgo(20),
+        }],
+      });
+    }
+    /* Writes are not mocked: they would have to be remembered to be believed, and the screen is read far
+     * more often than it is written to. */
+    return json(res, 501, { error: { message: 'not mocked - run against the deployment for this' } });
+  }
+
   /* The assistant. A FIXTURE, not a fake loop: the reply is canned and says so in its own text, and it
    * exists because the bug it caught was pure layout - a 270px "based on" sidebar laid out beside the answer
    * inside a 416px panel, which left the words about 60px to be read in. That needs a rendered reply to

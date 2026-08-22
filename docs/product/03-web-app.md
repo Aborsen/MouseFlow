@@ -24,6 +24,8 @@ the way in. `defaultPreload: 'intent'`.
 
 ## The sign-in wall
 
+![The sign-in page](../img/sign-in.png)
+
 `AccountProvider` (`web/src/shell/AccountProvider.tsx`) asks `/api/auth/get-session` before anything
 renders. Three states:
 
@@ -71,6 +73,8 @@ the rows came back a moment later and hid it; had the request failed, the record
 gone. See [04 — Record § reconciliation](04-record.md#cross-device-reconciliation).
 
 ## Sidebar
+
+![The sidebar and top bar](../img/record.png)
 
 `web/src/shell/AppSidebar.tsx`. Five destinations — Record, Create (Beta), Skills, Gallery, Dashboard —
 then an hours row and the account row.
@@ -149,26 +153,54 @@ The tour → Show it again** restarts it.
 
 ## Settings dialog
 
-`web/src/shell/SettingsDialog.tsx`. Three screens, one declared body height (560px, measured against the
+`web/src/shell/SettingsDialog.tsx`. Four screens, one declared body height (560px, measured against the
 tallest) so the dialog does not grow and shrink as you move between them.
 
 ### My account
+
+![My account](../img/settings-account.png)
+
 - Your email.
 - **Theme** — Light / Dark / System.
+- **Pair a device** — mints a device token and shows it **once**, because only its hash is stored. It is
+  what the extension, a CLI and the MCP server sign in with. Before this button existed the only thing
+  that minted one was *Connect the extension* on the Skills page, and being sent here to find a list you
+  can only revoke from is the kind of instruction that reads as a lie.
 - **Paired devices** — every device token, with when it was created and last used, and Revoke on each.
+- **Signed in with your account** — clients you allowed to act as you over OAuth, grouped by client
+  rather than by token, because nobody thinks in access tokens. Revoking one takes every token it holds
+  at once. Shown only when there is something in it. See [21 — MCP](21-mcp.md#who-it-lets-in).
 - **Delete my data** — arms in the button rather than behind a `confirm()`, and disarms itself after a
   moment. See [14 — HTTP API § `/api/account`](14-http-api.md#apiaccount) for exactly what it deletes,
   and what it cannot.
 - **Log out** — pinned to the bottom, and verified (above).
 
+### Teams
+
+Who may see whose work. Its own document: [22 — Teams](22-teams.md).
+
 ### Connections
+
+![Connections](../img/settings-connections.png)
+
 The same install command, platform picker and health readout as the `/connect` screen, sharing one
 implementation (`features/connect/platform.tsx`). They diverged once — the settings panel went on handing
 macOS users a PowerShell one-liner — which is why the shared module exists.
 
-Plus **The tour → Show it again**, which is the only way back to the first-run walkthrough once it has run.
+Plus three things that are only here:
+
+- **The tour → Show it again**, the only way back to the first-run walkthrough once it has run.
+- **Let Claude drive this computer** — attaches this machine to the account so a connected AI can ask it
+  for work. One click: a device token is minted, handed to the agent across loopback, and never shown.
+  Shown only when the running agent can do it at all (`linked` present on `/health`), because absent
+  means "this build cannot", not "off".
+- **Connect an AI** — the MCP address, with a Copy button, so nobody has to open the documentation to
+  find the one line they need to paste. See [21 — MCP](21-mcp.md#connecting-it).
 
 ### Hours
+
+![Hours](../img/settings-hours.png)
+
 Total and this-month hours, the five most recent timed runs, and a note saying plainly that this is wall
 clock and not time saved. Five rows because six plus the note came to 427px of a 401px body.
 

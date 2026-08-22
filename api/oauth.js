@@ -106,7 +106,10 @@ async function register(req, res, sql) {
 
 /* ------------------------------------------------------------------------------- the consent page */
 
-function consentPage({ origin, client, params, who }) {
+/* Exported so it can be rendered outside a request - the documentation's screenshot of this page is taken
+ * from this function rather than mocked up, which is the only way a picture of a consent screen stays true
+ * to the consent screen. */
+export function consentPage({ origin, client, params, who }) {
   const q = new URLSearchParams(params).toString();
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -135,9 +138,9 @@ function consentPage({ origin, client, params, who }) {
   <h1>Connect ${escapeHtml(client.name)}?</h1>
   <p>It is asking to act as <span class="who">${escapeHtml(who.email || who.name || 'you')}</span> on MouseFlow.</p>
   <ul>
-    <li>It will see <strong>your</strong> skills, and nobody else's.</li>
-    <li>It can ask to run one on a machine where your MouseFlow worker is running — which moves the real
-        mouse and keyboard there.</li>
+    <li>It will see <strong>your</strong> recordings, transcripts and runs, and nobody else's.</li>
+    <li>It can ask a computer you have attached to start or stop a recording there, or to run one of your
+        skills — which moves the real mouse and keyboard on it.</li>
     <li>It cannot read what you typed while recording. Nothing holds that.</li>
     <li>You can take this back at any time under Settings → My account.</li>
   </ul>

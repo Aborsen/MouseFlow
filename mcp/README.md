@@ -8,11 +8,16 @@ through the local agent.
 | | The decider is… | Add it with | Needs |
 |---|---|---|---|
 | **stdio** — `mcp/server.mjs` | on this machine | `claude mcp add … -- node …/server.mjs` | the agent running here |
-| **HTTPS** — `/api/mcp` | anywhere: a phone, a browser, someone else's editor | a URL and a bearer token | the agent **and** `mcp/worker.mjs` running on the machine |
+| **HTTPS** — `/api/mcp` | anywhere: a phone, a browser, someone else's editor | a URL, and your ordinary sign-in | the agent running on the machine, attached to your account |
 
 The HTTPS half cannot reach into your computer, and nothing on the internet should be able to. So the
-computer dials out: a call becomes a queued job, `worker.mjs` claims it, runs it, and reports back. A machine
-with no worker running claims nothing, and the caller is told exactly that rather than left waiting.
+computer dials out: a call becomes a queued job, the **agent** claims it, runs it, and reports back. A
+machine that is not taking work claims nothing, and the caller is told exactly that rather than left
+waiting. Only a *created* skill — a goal, which needs a model in the loop — still wants `mcp/worker.mjs`.
+
+The full account of all this, with pictures of every step, is
+[`docs/product/21-mcp.md`](../docs/product/21-mcp.md), and the page people are sent to is
+[`/mcp`](https://mouseflowapp.vercel.app/mcp).
 
 No dependencies anywhere. `shared.mjs` borrows the app's own modules so that nothing in this directory is a
 second copy of anything, and `run.mjs` is the one way a skill is run, used by both halves.
@@ -56,8 +61,16 @@ server does not read one from there.
 **Reading needs nothing else.** The analysis tools answer from the account, so they work the moment the
 connector is added — no agent, no worker, nothing running.
 
-**Doing** needs a machine, because recording and replaying are things only the agent can do. Register the
-worker as a login item once and forget it:
+**Doing** needs a machine, because recording and replaying are things only the agent can do — and there is
+nothing extra to install for it. In the app: **avatar → Connections → "Let Claude drive this computer"**.
+That mints a device token, hands it to the agent across loopback and never shows it; from then on the agent
+asks your account for work. It is switched off again in the agent's own menu bar, under **"Let My AI Act On
+This Mac"**.
+
+`mouseflow_status` says whether a machine is being heard.
+
+The one exception is a **created** skill, which is a goal and needs a model deciding each step. The agent has
+no model, so those still want the worker. Register it as a login item once and forget it:
 
 ```bash
 bash mcp/install-worker-mac.sh
@@ -65,15 +78,12 @@ bash mcp/install-worker-mac.sh
 
 It asks for the device token without echoing it, writes a launchd job, and starts it. From then on it comes
 up when you sign in and comes back if it dies — the same KeepAlive the agent uses. `--status` says whether
-it is up and shows its last few lines; `--uninstall` takes it off.
-
-Or run it in a terminal, if you would rather see it:
+it is up and shows its last few lines; `--uninstall` takes it off. Or run it in a terminal, if you would
+rather see it:
 
 ```bash
 MOUSEFLOW_TOKEN=mf_your_token_here node mcp/worker.mjs
 ```
-
-Either way, `mouseflow_status` says whether it is being heard.
 
 **Each person sees their own skills**, whichever credential they used. That is the whole of the isolation:
 the account is resolved from the credential on every request, every query filters on it, and no route takes
@@ -125,7 +135,7 @@ Both `server.mjs` and `worker.mjs` read the same environment:
 | `mouseflow_runs` | what was asked for, which model drove it, how it ended, how long it took |
 | `mouseflow_activity` | the account in numbers over a window, and which applications the work was in |
 
-**Doing — needs the worker and the agent:**
+**Doing — needs a machine that is taking work:**
 
 | | |
 |---|---|
@@ -172,8 +182,9 @@ example to fall back on.
 
 ## Access, in both directions
 
-Outward, to your account: the device token, and nothing else. It never touches this directory — it arrives
-in the environment.
+Outward, to your account: over HTTPS, whichever credential the client holds — an **OAuth token issued to a
+person** (the one to prefer) or a device token. Over stdio, a device token, and nothing else; it never
+touches this directory — it arrives in the environment.
 
 Inward, to your machine: **the local agent has no authentication at all.** That is true with or without
 this server (`docs/product/19-limits-and-known-gaps.md` says so), so anything already running on your
@@ -186,7 +197,7 @@ and the reason the tool list is bounded rather than open.
 node mcp/test-mcp.mjs
 ```
 
-75 checks. Stands up a fake deployment and a fake agent, spawns the stdio server and drives the real
+Over a hundred checks. Stands up a fake deployment and a fake agent, spawns the stdio server and drives the real
 protocol — the handshake, the tool list, a replay with its `#ctx` lines, a goal run through the decision
 loop, every refusal — then spawns the **worker** and watches it claim a job, run it and report. It also
 asserts the HTTPS route's isolation from its source: that every `user_id` in every query comes from the

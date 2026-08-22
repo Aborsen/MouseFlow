@@ -14,7 +14,7 @@
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 let pass = 0;
@@ -560,6 +560,59 @@ check('and the MCP bridge reads the same file',
   /_skill-schema\.mjs/.test(readFileSync(fileURLToPath(new URL('shared.mjs', import.meta.url)), 'utf8')));
 check('vite is told it may reach outside web/, or dev would refuse to serve it',
   /fs: \{ allow: \['\.\.'\] \}/.test(readFileSync(fileURLToPath(new URL('../web/vite.config.ts', import.meta.url)), 'utf8')));
+
+/* ------------------------------------------------------------------------------- what people are told
+ *
+ * The product page at /mcp, the address on the Connections panel and this server all describe the same
+ * thing, and the failure mode when they drift is the one this repository has already shipped twice: an
+ * instruction pointing at something that is not there. So the page's tool table is checked against the
+ * server's, in both directions - nothing offered goes undescribed, and nothing described is unoffered. */
+
+group('what the app tells people about MCP');
+const facts = readFileSync(fileURLToPath(new URL('../web/src/features/mcp/facts.ts', import.meta.url)), 'utf8');
+const mcpRoute = readFileSync(fileURLToPath(new URL('../api/mcp.js', import.meta.url)), 'utf8');
+const named = (text) => new Set([...text.matchAll(/name: '(mouseflow_[a-z_]+)'/g)].map((m) => m[1]));
+const served = named(mcpRoute);
+const described = named(facts);
+const missing = [...served].filter((n) => !described.has(n));
+const invented = [...described].filter((n) => !served.has(n));
+check('every tool the server offers is described on the page', missing.length === 0, missing.join(', '));
+check('and nothing is described that the server does not offer', invented.length === 0, invented.join(', '));
+check('nine of them, so a count in prose can be trusted', served.size === 9, String(served.size));
+check('the page names the endpoint the server actually answers on',
+  /const MCP_PATH = '\/api\/mcp'/.test(facts));
+check('and builds the address from the origin it is served from, not a constant',
+  /location\.origin/.test(facts));
+
+const connections = readFileSync(
+  fileURLToPath(new URL('../web/src/shell/settings/ConnectionsScreen.tsx', import.meta.url)), 'utf8');
+check('the Connections panel shows the address from that one file',
+  /from '@\/features\/mcp\/facts'/.test(connections) && /mcpUrl\(\)/.test(connections));
+const view = readFileSync(
+  fileURLToPath(new URL('../web/src/features/mcp/McpView.tsx', import.meta.url)), 'utf8');
+check('and so does the page it links to', /from '\.\/facts'/.test(view));
+const main = readFileSync(fileURLToPath(new URL('../web/src/main.tsx', import.meta.url)), 'utf8');
+check('/mcp is a route', /path: '\/mcp'/.test(main));
+const account = readFileSync(
+  fileURLToPath(new URL('../web/src/shell/AccountProvider.tsx', import.meta.url)), 'utf8');
+check('and it is readable with no account, or it is a door that opens from inside',
+  /PUBLIC_PATHS = \['\/mcp'\]/.test(account) && /isPublicPath\(location\.pathname\)/.test(account));
+
+/* A picture that 404s is the documentation's version of the same bug. */
+group('the documentation points at pictures that exist');
+const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));
+const imgDir = fileURLToPath(new URL('../docs/img/', import.meta.url));
+let images = 0;
+let broken = [];
+for (const file of readdirSync(docsDir).filter((f) => f.endsWith('.md'))) {
+  const text = readFileSync(docsDir + file, 'utf8');
+  for (const [, rel] of text.matchAll(/!\[[^\]]*\]\(\.\.\/img\/([^)]+)\)/g)) {
+    images++;
+    if (!existsSync(imgDir + rel)) broken.push(file + ' -> ' + rel);
+  }
+}
+check('every screenshot referenced is in docs/img', broken.length === 0, broken.join(', '));
+check('and there are pictures at all', images >= 20, String(images));
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by

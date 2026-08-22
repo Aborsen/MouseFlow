@@ -14,6 +14,7 @@ import { CreateView } from '@/features/create/CreateView';
 import { SkillsView } from '@/features/skills/SkillsView';
 import { GalleryView } from '@/features/gallery/GalleryView';
 import { ConnectView } from '@/features/connect/ConnectView';
+import { McpView } from '@/features/mcp/McpView';
 import { SignInView } from '@/features/auth/SignInView';
 import { SignUpView } from '@/features/auth/SignUpView';
 import { ResetPasswordView } from '@/features/auth/ResetPasswordView';
@@ -56,6 +57,9 @@ const routes = [
     beforeLoad: () => { throw redirect({ to: '/dashboard' }); },
   }),
   createRoute({ getParentRoute: () => rootRoute, path: '/connect', component: ConnectView }),
+  /* The one page that is about the product rather than part of it, and the only route readable with no
+   * account - see PUBLIC_PATHS. It is what "add MouseFlow to Claude" points at. */
+  createRoute({ getParentRoute: () => rootRoute, path: '/mcp', component: McpView }),
   /* The three ways in. Reachable while signed OUT, which is the whole point - the account provider lets
    * these through its wall rather than showing it, because a wall in front of the sign-up page is a door
    * that only opens from inside. */

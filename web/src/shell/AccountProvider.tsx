@@ -37,6 +37,19 @@ export const AUTH_PATHS = ['/sign-in', '/sign-up', '/reset-password'];
 
 export const isAuthPath = (path: string) => AUTH_PATHS.includes(path.replace(/\/+$/, '') || '/');
 
+/* Pages that are readable with no account at all, and are NOT a way in.
+ *
+ * Different from AUTH_PATHS in the half that matters: an auth page is redirected AWAY from once somebody is
+ * signed in, because a sign-in form shown to somebody who already has a session reads as having been logged
+ * out. A public page is simply public - it renders the same either way.
+ *
+ * /mcp is here because of who reads it: somebody deciding whether to have an account, and the administrator
+ * who will never sign in but has to approve connecting an AI to one. A wall in front of the page that
+ * explains the product is a door that only opens from inside. */
+export const PUBLIC_PATHS = ['/mcp'];
+
+export const isPublicPath = (path: string) => PUBLIC_PATHS.includes(path.replace(/\/+$/, '') || '/');
+
 /* Where to go after signing in, when something sent us here mid-flow.
  *
  * Exactly ONE destination is allowed: the OAuth consent page. Not "any same-origin path", not "anything
@@ -188,7 +201,7 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   /* The pages that EXIST to be seen signed out. Showing the wall over the sign-up page would be a door
    * that only opens from inside, and the reset link from an email lands here with no session by
    * definition. Matched on the real path rather than through the router, because this sits above it. */
-  if (!account && isAuthPath(location.pathname)) {
+  if (!account && (isAuthPath(location.pathname) || isPublicPath(location.pathname))) {
     return <>{children}</>;
   }
 

@@ -37,6 +37,8 @@ slow answer is worse than a refusal**.
 | POST | `/replay` | 5 s | `{ ok }` — starts a replay and returns immediately |
 | GET | `/replay/status` | 2.5 s | `{ playing, step, steps, pass, passes, flowPass, flowPasses, index, total, unplayable, retargeted }` |
 | POST | `/replay/abort` | 4 s | `{ ok }` |
+| POST | `/account` | 5 s | `{ ok, linked: true, taking }` — body `token=mf_… base=https://…`, and optionally `taking=0` |
+| DELETE | `/account` | 5 s | `{ ok, linked: false }` |
 | POST | `/autostart/enable` | 8 s | `{ ok }` — needs the agent to exist as a file on disk |
 | POST | `/autostart/disable` | — | `{ ok }` |
 
@@ -362,13 +364,45 @@ sleep, and release every held button and key on every exit path, including the f
 dies holding the left mouse button leaves the machine unusable. The Windows agent also honours a held ESC as
 a hardware-level escape hatch, which is worth copying.
 
+## `/account` — the machine asks, and nothing reaches in
+
+From 0.8.3. Everything else in this table is the app telling the agent what to do **now**, over loopback,
+because a person pressed something. This is the one route that changes what the agent does when nobody is
+looking: attached, it asks the account whether there is work — a recording to start, a recording to stop, a
+replay to run — takes it, does it through the very same code paths above, and reports back.
+
+`POST /account` with `token=mf_… base=https://…` attaches it; `DELETE /account` detaches it. `/health` then
+carries two more facts, and they are two rather than one on purpose:
+
+| | |
+|---|---|
+| `linked` | attached to an account at all |
+| `taking` | attached **and** currently asking for work |
+
+Attached-and-not-taking is the ordinary resting state, and collapsing the pair would make the app offer to
+pair a machine that is already paired. **Absent** means the agent is too old to do this at all — which is
+"cannot", not "off", and the app reads it that way.
+
+Three properties are the design rather than details of it:
+
+- **The connection only ever goes outward.** There is no inbound path, in either state. Switched off, the
+  agent makes no outbound call either — not a poll, not a heartbeat.
+- **The token is handed over across loopback and never shown.** The app is signed in as the person, mints
+  one, and passes it here. A credential somebody has to carry is a credential somebody mislays.
+- **A refused token switches taking off**, rather than retrying a revoked credential for ever into a log
+  nobody reads.
+
+`agent/PROTOCOL.md` is normative for this route; [21 — MCP](21-mcp.md#letting-it-act-on-your-computer) is
+what it is for.
+
 ## Authentication
 
 **Today: none.** Any process on the machine can POST `/do` and inject input, or GET `/shot` and capture
 every monitor. `-AllowOrigin` defaults to `*` and is only echoed as a response header, never used to reject.
 
-A design is being chosen. Until it lands, a new agent should implement the table above **without** auth and
-leave a single seam for it — one function every route calls before doing anything. Do not design a scheme in
+A design is being chosen. Note that `/account` does not change this: the token it stores is what the agent
+presents *outward* to the account, and it authenticates nothing inward. Until a design lands, a new agent
+should implement the table above **without** auth and leave a single seam for it — one function every route calls before doing anything. Do not design a scheme in
 parallel: two agents with two schemes is worse than one agent with none.
 
 See [17 — Privacy and security](17-privacy-security.md) for what that means in practice.

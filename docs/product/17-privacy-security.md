@@ -49,6 +49,24 @@ window titles and the control names go to the user's own account when a recordin
 that already travelled when a recording was kept as a skill — it now travels earlier, which is the trade for
 being able to ask questions about a recording straight after making it.
 
+## What an AI connected over MCP can reach
+
+A connector is a fourth thing holding your account, so it is worth saying exactly what it gets. Everything
+below is the full list; [21 — MCP](21-mcp.md) is the same list with the reasoning.
+
+| | |
+|---|---|
+| **It is one account, resolved from the credential** | Never from the request. There is no route that takes a user id, so a hallucinated one cannot become somebody else's data |
+| **Metadata and prose, never payloads** | Recordings, transcripts, runs and totals. There is no tool that hands over the raw stream of coordinates and clicks |
+| **It cannot read what you typed** | Because nothing holds it — see above. This is not a filter that could be forgotten |
+| **It cannot act on a machine you have not attached** | And attaching is one button in the app, revocable from the agent's own menu bar |
+| **It cannot run a free-text goal** | Only the skills that exist. A skill is bounded by what its author recorded or wrote |
+| **What it holds is revocable** | Every grant is listed under Settings → My account, and revoking takes every token that client holds, access and refresh together |
+
+The consent page is not a formality — it is where those promises are made, so it says them:
+
+![The consent page](../img/oauth-consent.png)
+
 ## The assistant, and why it necessarily sends your history
 
 Everything a tool returns goes into a prompt and is sent to the model provider, named back in `provider`.
@@ -106,6 +124,8 @@ The system prompts are the product's position, not decoration. In both executors
 | **Session verification is delegated** | To the issuer. No signing key exists in this codebase. |
 | **Device tokens are stored as hashes** | 32 random bytes, prefixed `mf_`, shown once. If the table leaks, what leaks is not usable. |
 | **Minting and erasing need a session** | Not a device token. One leaked token must not be able to mint permanent access, or destroy the data it was granted to read. |
+| **Consent needs a session too** | A device token or an OAuth token presenting itself at the OAuth consent page is nobody. Only a person at a browser may say "this client may act as me". |
+| **PKCE, S256 only** | And redirect addresses matched by exact string, never by prefix. Codes are single-use and burnt before anything is checked against them; refresh tokens rotate. |
 
 Every rate limiter is **honest about itself**: a serverless instance holds its own window, so the real ceiling
 is the stated number times however many instances are warm. It stops a stuck client and casual abuse, not a

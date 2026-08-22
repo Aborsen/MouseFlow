@@ -11,8 +11,12 @@ they cannot all present the same thing:
 | Caller | Presents | Verified by |
 |---|---|---|
 | The web page | the session cookie, automatically — it is same-origin because auth is proxied through `/api/auth/*` | asking Neon Auth `/get-session` |
-| The extension | `Authorization: Bearer mf_…`, a **device token** the user pasted once | our own `device_token` table, **by hash** |
+| The extension, a CLI, the agent | `Authorization: Bearer mf_…`, a **device token** | our own `device_token` table, **by hash** |
+| An MCP connector | `Authorization: Bearer …`, an **OAuth access token** issued to a person | our own `oauth_token` table, by hash, and not expired |
 | Nobody | nothing | returns `null`, which is a valid answer and the reason this does not throw |
+
+The result carries `via: 'session' | 'device' | 'oauth'`, which two routes act on: the OAuth consent page,
+where only a session may agree to anything, and the session-only routes below.
 
 A session is verified by **asking the issuer**, never by decoding anything locally: if Neon Auth says the
 session is good it is, and this code holds no signing key. A device token is ours, so it is checked against
@@ -339,6 +343,64 @@ DELETE /api/account?erase=1     (session only)
 **What it cannot delete:** the Google account, and the sign-in record Neon Auth keeps for it. That row belongs
 to the issuer, not to this application, and reaching into another system's tables to remove it would be worse
 than saying plainly that it is not ours. Signing out afterwards is the client's job, and the response says so.
+
+---
+
+## `/api/mcp`
+
+```
+POST   /api/mcp                    JSON-RPC 2.0: initialize, ping, tools/list, tools/call
+GET    /api/mcp                    a short document about the server — no credential needed
+GET    /api/mcp?pending=1          "is anything waiting for a machine?"  (any credential)
+POST   /api/mcp?worker=claim       a machine takes the next job          (long-polls, ≤25 s)
+POST   /api/mcp?worker=report      …and says how it went
+GET    /api/mcp?worker=state&id=   …and asks whether it was cancelled meanwhile
+```
+
+Everything about it — every tool, what it refuses, how a request reaches somebody's desktop — is
+[21 — MCP](21-mcp.md). Three things belong here, beside the other routes:
+
+- **`GET` with no query is answerable without a credential**, so an address opened in a browser explains
+  itself instead of returning 401. Every *other* `GET` therefore has to be excluded by name, and that is a
+  sharp edge that has already cut once: `?pending=1` fell into the information document and came back
+  `{name, version}` — no error, no 401, just the wrong answer — and the banner that reads `waiting` from it
+  silently never appeared.
+- **A missing or bad credential answers 401 with `WWW-Authenticate`** naming the protected-resource
+  document, which is how a client discovers where to sign somebody in.
+- **A failure inside a tool is a tool answer, not a transport error.** The client should see a sentence it
+  can act on.
+
+---
+
+## `/api/oauth`
+
+```
+POST   /api/oauth?do=register       RFC 7591 dynamic client registration
+GET    /api/oauth?do=authorize      the consent page, behind the ordinary sign-in wall
+POST   /api/oauth?do=approve        "yes, this client may act as me" -> a code
+POST   /api/oauth?do=token          code + verifier -> tokens; also the refresh grant
+POST   /api/oauth?do=revoke         RFC 7009
+GET    /api/oauth?do=grants         what I have authorised            (session only)
+DELETE /api/oauth?do=grants&client= take one back                     (session only)
+```
+
+MouseFlow is its own authorisation server because the hosted auth service behind `/api/auth` is not ours to
+add plugins to — but the **session** it issues is. So the authentication stays entirely theirs and only the
+consent and the token are ours. PKCE with `S256` is required; redirect addresses are matched by exact string;
+codes are single-use and burnt before validation; refresh tokens rotate; every token is stored as a hash.
+Only a caller whose `via` is `session` may consent. Details in [21 — MCP](21-mcp.md#who-it-lets-in).
+
+`/.well-known/oauth-protected-resource` and `/.well-known/oauth-authorization-server` are `api/well-known.js`,
+routed by `vercel.json` rewrites.
+
+---
+
+## `/api/team`
+
+Teams, their members and what they may see: [22 — Teams](22-teams.md) has the routes, the roles and the much
+longer list of what a team deliberately does **not** open. The rule this document cares about is the same one
+everywhere else: the caller's identity comes from the credential, a team id in a query string is a claim
+rather than a permission, and `roleOf()` is the only thing that turns one into the other.
 
 ---
 

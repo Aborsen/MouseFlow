@@ -16,6 +16,8 @@ plausible number is worse than admitting the gap, because a made-up number gets 
 There is also **no chart library**: every mark is a `div` or a line of inline SVG. A dependency for eight
 bars would be the largest thing in the bundle.
 
+![The Dashboard](../img/dashboard.png)
+
 ## Controls
 
 | Control | Behaviour |

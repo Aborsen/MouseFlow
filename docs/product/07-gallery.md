@@ -6,6 +6,8 @@ Reading it needs no account — it is public, which is what lets the extension i
 Installing puts a **copy** on your account, so that is a signed-in act, and the copy is yours: rename it,
 run it, change it.
 
+![The Gallery](../img/gallery.png)
+
 ## Two views of the same data
 
 The second exists because the first cannot be both.

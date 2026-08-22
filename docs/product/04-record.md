@@ -5,6 +5,8 @@
 
 ## The recorder card
 
+![The Record page](../img/record.png)
+
 One card, one height, three states. What varies between them is **words inside a footer that always
 exists** — never whether a block is there — because the card used to change height every time capture
 started or stopped, and what moved was the whole list underneath it.
@@ -147,6 +149,10 @@ A list you can work through, following the Insightis Chats Library. Columns: che
 
 ### Row actions
 
+![Making a skill from a recording](../img/record-skill-wizard.png)
+
+*Skill opens the wizard — see [06 — Skills](06-skills.md#two-outcomes-and-the-wizard).*
+
 | Control | Does |
 |---|---|
 | Play (icon) | Replay now with this recording's own repeat / speed / loop |
@@ -230,6 +236,24 @@ Guards that matter here, each from a real failure:
   Stop and Save promised to keep.
 - **The newest** dangling session takes the tail, not the first: a row orphaned by an old crash must not
   swallow a tail belonging to yesterday evening's session.
+
+## When a chat asks for a recording here
+
+`web/src/features/record/WaitingForThisMac.tsx`. An AI connected over MCP can ask for a recording to be
+started on this computer. If nothing here is listening yet, the request sits on a queue — and the app,
+which is the only place somebody can say yes, says so:
+
+![Claude asked to start a recording here](../img/record-waiting.png)
+
+**Let it through** attaches this computer to the account and what was waiting starts within seconds.
+The banner renders only when something is genuinely queued **and** this computer is not taking work;
+the moment either stops being true it removes itself. It polls `/api/mcp?pending=1` every 20 seconds,
+and only while it could be the answer — an agent already taking work will pick the job up on its own,
+and one too old to be attached has nothing to offer.
+
+Consent arrives **with the request** rather than as a switch on a settings screen nobody opened, which
+is both the friendlier design and the stronger one: the question is asked at the moment it means
+something. See [21 — MCP](21-mcp.md#letting-it-act-on-your-computer).
 
 ## Cross-device reconciliation
 

@@ -10,6 +10,7 @@
  * features/connect/platform.tsx so a third surface cannot be half-right either.
  */
 import { useNavigate } from '@tanstack/react-router';
+import { ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { restartTour } from '../OnboardingTour';
 import { Button } from '@insightis/ui/Button';
@@ -25,6 +26,7 @@ import { mintDeviceToken } from '@/lib/api';
 import {
   Command, DownloadLink, PlatformPicker, needsRestart, usePlatform,
 } from '@/features/connect/platform';
+import { CONSENT_LINE, mcpUrl } from '@/features/mcp/facts';
 import { Row, type Say } from '../SettingsDialog';
 
 export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => void }) => {
@@ -55,6 +57,18 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
       say({ text: `Copied — paste it into ${terminal}.`, kind: 'good' });
     } catch (_) {
       say({ text: 'The clipboard was blocked. Select the command and copy it.', kind: 'bad' });
+    }
+  };
+
+  /* The same clipboard, a different sentence. The address below is not pasted into a terminal, and being
+   * told to paste a URL into PowerShell is the kind of small wrongness that makes somebody stop trusting
+   * the instructions on a page. */
+  const copyAddress = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      say({ text: 'Copied. Add it to your AI as a custom connector.', kind: 'good' });
+    } catch (_) {
+      say({ text: 'The clipboard was blocked. Select the address and copy it.', kind: 'bad' });
     }
   };
 
@@ -256,6 +270,38 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
           </Button>
         </Row>
       )}
+
+      {/* Connecting an AI to the ACCOUNT, which is the other half of the switch above.
+        *
+        * That switch says a chat may drive this computer; this is how a chat comes to have the account at
+        * all. Both belong on this screen because both are answers to "connect MouseFlow to something", and
+        * somebody who has just turned the switch on is exactly the person who now needs the address.
+        *
+        * The URL is shown rather than described. "Add MouseFlow to Claude" without the one line to paste is
+        * an instruction that sends somebody to the documentation to find it, which is where the last three
+        * of these went wrong. */}
+      <Row
+        label="Connect an AI"
+        note={'Anything that speaks MCP — Claude on the web, in the desktop app or in a terminal — can read '
+          + 'your recordings, transcripts and runs through this address, and with the switch above on it '
+          + 'can start a recording here or run one of your skills. It signs in with the MouseFlow account '
+          + 'you already have; there is no token to copy.'}
+      >
+        <Button
+          variant="ghost"
+          size="sm"
+          rightSlot={<ExternalLink className="size-4" />}
+          onClick={() => window.open('/mcp', '_blank', 'noopener,noreferrer')}
+        >
+          How to connect it
+        </Button>
+      </Row>
+
+      <Command text={mcpUrl()} onCopy={copyAddress} />
+
+      <Typography variant="p" className="mt-2 max-w-[62ch] text-ink-inactive text-[0.82rem]">
+        {CONSENT_LINE}
+      </Typography>
 
       <Row
         label="First time here?"

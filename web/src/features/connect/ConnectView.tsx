@@ -20,7 +20,7 @@
  * working agent is returning a black screenshot.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { Check, Copy, Loader2 } from 'lucide-react';
+import { Check, Copy, ExternalLink, Loader2 } from 'lucide-react';
 import { type ReactNode, useCallback, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
@@ -34,6 +34,7 @@ import { refreshAgent, useAgent, useConsole } from '@/lib/store';
  * Вынесено туда после того, как выяснилось, что установочная команда живёт на ДВУХ экранах, а про macOS
  * узнал только один. */
 import { Command, DownloadLink, PlatformPicker, needsRestart, usePlatform } from './platform';
+import { CONSENT_LINE, mcpUrl } from '@/features/mcp/facts';
 
 interface Step {
   title: string;
@@ -451,6 +452,45 @@ export const ConnectView = () => {
             Start recording
           </Button>
         )}
+      </section>
+
+      {/* The other thing somebody can connect, on the page called Connections.
+        *
+        * Deliberately AFTER the agent steps and in a card of its own rather than as a sixth step: it is not
+        * part of getting the agent working, and a numbered step somebody does not need is a step that makes
+        * the four they do need look optional. But this is the page they are on when the word "connect" is
+        * in their head, and being sent to the documentation for one line to paste is how an instruction
+        * stops being followed. */}
+      <section className="mt-4 rounded-xl border-stroke border bg-surface-card p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <Typography variant="h2" weight="semibold" className="text-[1.05rem]">
+              Connect an AI
+            </Typography>
+            <Typography variant="p" className="mt-1 max-w-[68ch] text-ink-secondary text-[0.88rem]">
+              Claude — on the web, in the desktop app or in a terminal — can read your recordings,
+              transcripts and runs through this address, and start a recording on this computer or run one
+              of your skills. It signs in with the MouseFlow account you already have; there is no token to
+              copy.
+            </Typography>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            rightSlot={<ExternalLink className="size-4" />}
+            onClick={() => window.open('/mcp', '_blank', 'noopener,noreferrer')}
+          >
+            How to connect it
+          </Button>
+        </div>
+
+        <div className="mt-3">
+          <Command text={mcpUrl()} onCopy={(t) => void copy(t)} />
+        </div>
+
+        <Typography variant="p" className="mt-2 max-w-[70ch] text-ink-inactive text-[0.82rem]">
+          {CONSENT_LINE}
+        </Typography>
       </section>
     </div>
   );
