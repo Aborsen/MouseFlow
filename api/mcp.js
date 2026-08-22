@@ -287,6 +287,11 @@ function tableOf(skills) {
 
 /* ------------------------------------------------------------------------------- the queue */
 
+/* Said in three different failures, so it is written once: an instruction that drifts between messages is
+ * an instruction somebody follows to two different places. */
+const WHERE = 'open MouseFlow, click your avatar at the bottom of the sidebar, then Connections, then '
+  + '"Let Claude drive this computer"';
+
 const jobId = () => `q_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
 /** Whether a machine has asked for work lately, and when. */
@@ -484,14 +489,15 @@ async function callTool(sql, who, params, req) {
     if (seen === undefined) {
       lines.push('Whether a machine is listening cannot be read on this deployment.');
     } else if (!seen) {
-      lines.push('No machine has ever asked this account for work. Running a skill needs the MouseFlow '
-        + 'worker going on the computer the skill belongs to: `node mcp/worker.mjs`.');
+      lines.push('No machine has ever asked this account for work. To let one, ' + WHERE + '. '
+        + 'It takes one click and nothing is typed or copied.');
     } else {
       const ago = Math.round((Date.now() - seen.getTime()) / 1000);
       lines.push(ago < 90
         ? `A machine is listening for work (last asked ${ago}s ago).`
-        : `No machine has asked for work in ${Math.round(ago / 60)} minutes, so a skill call would sit in `
-          + 'the queue. The worker may not be running.');
+        : `No machine has asked for work in ${Math.round(ago / 60)} minutes, so a call would sit in the `
+          + 'queue. That computer may be asleep or off, or it may have stopped taking work - the switch is '
+          + "in the MouseFlow agent's own menu bar, the cursor icon at the top of the screen.");
     }
     if (busy.length) {
       lines.push(`Queued or running: ${busy.map((b) => `${b.tool_name || b.id} (${b.state})`).join(', ')}.`);
@@ -559,9 +565,14 @@ async function callTool(sql, who, params, req) {
 async function queueAndWait(sql, who, { flowId, toolName, args }) {
   const seen = await workerSeen(sql, who.id);
   if (seen === null) {
-    return say('No machine has ever asked this account for work, so there is nothing to run this on. The '
-      + 'MouseFlow worker has to be running on the computer this account is paired with. Nothing was '
-      + 'queued.', true);
+    /* The whole of what somebody has to do, in the answer they are already reading.
+     *
+     * This used to name a worker and a command. That was true for a week and is the wrong advice now - and a
+     * stale instruction in a failure message is worse than none: it sends the person somewhere that does not
+     * exist, and they conclude the product is broken rather than that the sentence is. */
+    return say('This account has no computer listening, so there is nothing to run this on. To let one: '
+      + WHERE + ". It takes one click - nothing to type, nothing to copy - and the agent's own menu bar is "
+      + 'where you switch it off again. Nothing was queued.', true);
   }
 
   const already = await sql`
@@ -846,6 +857,27 @@ export default async function handler(req, res) {
     who = null;
   }
   if (!who) return unauthorized(req, res);
+
+  /* "Is anything waiting for a machine?" - asked by the app, answered without a job id.
+   *
+   * The app is the only place a person can say yes, and it cannot offer to unless it knows there is
+   * something to say yes TO. Without this the failure is silent in the one window that could fix it: a
+   * command sits in a queue, the chat says nothing picked it up, and the app - open on the same screen -
+   * shows an ordinary Record page. */
+  if (req.method === 'GET' && req.query && req.query.pending) {
+    const rows = await sql`
+      select id, tool_name, created_at from run_queue
+      where user_id = ${who.id} and state = 'queued'
+      order by created_at limit 5
+    `;
+    res.status(200).json({
+      ok: true,
+      waiting: rows.length,
+      oldest: rows.length ? rows[0].created_at : null,
+      tools: rows.map((r) => r.tool_name).filter(Boolean),
+    });
+    return;
+  }
 
   const action = req.query && req.query.worker;
   if (action) return workerRoute(String(action), req, res, sql, who);

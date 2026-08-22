@@ -43,6 +43,7 @@ import {
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
 import { SkillWizard } from './SkillWizard';
+import { WaitingForThisMac } from './WaitingForThisMac';
 import { flowFor } from './flow-for';
 
 /* mm:ss, for the readout beside the disc.
@@ -913,6 +914,16 @@ export const RecordView = () => {
      * actions, and squeezing that into a 1fr column beside the recorder is what made it wrap to three lines
      * and push the page sideways. The recorder is small; it goes above. */
     <div className="flex flex-col gap-4 p-5">
+      {/* Above everything, because it is about something that is already waiting rather than about anything
+        * on this page - and because the alternative was a person hunting through settings for a switch they
+        * had no reason to know existed. Renders nothing at all unless a request is genuinely queued and this
+        * computer is not taking work. */}
+      <WaitingForThisMac
+        health={health ?? null}
+        port={state.port}
+        onDone={(said) => setNote(said)}
+      />
+
       {/* One component, one height, three states - see RecorderCard. The footer is what varies, and it is a
         * slot that always exists rather than three blocks that come and go, which is what made this card
         * change size every time capture started or stopped. */}
