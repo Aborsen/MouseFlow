@@ -3391,6 +3391,12 @@ final class MenuActions: NSObject, NSMenuDelegate {
         let link = Account.link
         takingItem?.isHidden = link == nil
         takingItem?.state = link?.taking == true ? .on : .off
+        takingNoteItem?.isHidden = link == nil
+        /* Says which of the two states it is in, rather than what the switch would do - a tick can be read
+         * either way at a glance, and this is the one item where reading it wrong matters. */
+        takingNoteItem?.title = link?.taking == true
+            ? "It asks your account for work — nothing reaches in"
+            : "Off. Nothing leaves this Mac."
         takingSeparator?.isHidden = link == nil
     }
 
@@ -3494,13 +3500,25 @@ menu.addItem(stopSaveSep)
 stopSaveSeparator = stopSaveSep
 /* Visible only when this Mac is attached to an account - see menuNeedsUpdate. */
 var takingItem: NSMenuItem?
+var takingNoteItem: NSMenuItem?
 var takingSeparator: NSMenuItem?
-let taking = NSMenuItem(title: "Take Work From My Account",
+/* Named to be RECOGNISED, not to be accurate about the mechanism.
+ *
+ * "Take Work From My Account" describes exactly what the agent does and told a person nothing: they had
+ * turned it on in the app, where it is called letting an AI drive this computer, and then met a different
+ * sentence in the menu and asked what it was. Two names for one switch is two switches, as far as anybody
+ * reading them is concerned. The note underneath carries the mechanism, the way the recorder's note does. */
+let taking = NSMenuItem(title: "Let My AI Act On This Mac",
                         action: #selector(MenuActions.toggleTaking), keyEquivalent: "")
 taking.target = menuActions
 taking.isHidden = true
 menu.addItem(taking)
 takingItem = taking
+let takingNote = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+takingNote.isEnabled = false
+takingNote.isHidden = true
+menu.addItem(takingNote)
+takingNoteItem = takingNote
 let takingSep = NSMenuItem.separator()
 takingSep.isHidden = true
 menu.addItem(takingSep)

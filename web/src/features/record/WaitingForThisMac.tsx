@@ -90,8 +90,8 @@ export const WaitingForThisMac = ({
         <Typography variant="p" className="mt-0.5 text-ink-body text-[0.84rem] leading-relaxed">
           Nothing on this computer is listening yet, so it is sitting in the queue. Letting it through
           attaches this computer to your account: from then on a connected AI can start and stop recordings
-          here and run your skills. Nothing reaches in — the agent asks. You can switch it off any time in
-          the agent’s own menu, the cursor icon at the top of the screen.
+          here and run your skills. Nothing reaches in — the agent asks. Switching it off again is
+          “Let My AI Act On This Mac” in the agent’s own menu, the cursor icon at the top of the screen.
         </Typography>
         {problem && (
           <Typography variant="p" className="mt-1 text-[0.82rem] text-fb-red-text">{problem}</Typography>

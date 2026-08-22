@@ -215,9 +215,11 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
           label="Let Claude drive this computer"
           note={health.linked
             ? (health.taking
-              ? 'Attached, and taking work. A connected AI can ask it to start or stop recording, or to run '
-                + 'one of your skills. Switch it off in the agent’s menu bar, or detach it here.'
-              : 'Attached, but not taking work — switch it on in the agent’s menu bar (the cursor icon).')
+              ? 'On. A connected AI can ask this computer to start or stop a recording, or to run one of '
+                + 'your skills. The switch is “Let My AI Act On This Mac” in the agent’s own menu — the '
+                + 'cursor icon at the top of the screen — or detach it here.'
+              : 'Attached, but switched off. Turn on “Let My AI Act On This Mac” in the agent’s menu, the '
+                + 'cursor icon at the top of the screen.')
             : 'Nothing can reach this computer from outside; it asks. Attaching lets it ask your account for '
               + 'work, so an AI connected to MouseFlow can start a recording here or run a skill. Off until '
               + 'you say otherwise, and the agent’s menu bar is where you turn it off again.'}
