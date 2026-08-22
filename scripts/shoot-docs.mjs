@@ -421,7 +421,9 @@ async function main() {
     const consent = await browser({ port: 9403 });
     try {
       await consent.goto('file://' + html, 1200);
-      await consent.shot('oauth-consent.png');
+      /* The card, not the window it happens to be centred in: the consent page is one small panel on a
+       * large ground, and a full-viewport capture of it is nine parts empty. */
+      await consent.shotElement('oauth-consent.png', 'main', 26);
     } finally {
       consent.close();
     }
