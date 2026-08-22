@@ -493,6 +493,18 @@ check('the queue is filtered by owner on the worker side as well',
   /from run_queue[\s\S]{0,120}user_id = \$\{who\.id\}/.test(route)
   && /update run_queue[\s\S]{0,200}user_id = \$\{who\.id\}/.test(route));
 check('a notification gets 202 and no body', /startsWith\('notifications\/'\)[\s\S]{0,80}202/.test(route));
+/* The unauthenticated info document runs before authentication, so every other GET has to be excluded by
+ * name - and one that is not is answered with a document about the server rather than an error. `?pending`
+ * fell into it and the in-app banner silently never appeared, which is what a route that swallows unknown
+ * queries looks like from the outside: fine. */
+check('the info document does not swallow the other GETs',
+  /const aGetForSomethingElse = req\.query && \(req\.query\.worker \|\| req\.query\.pending\)/.test(route));
+const getQueries = [...route.matchAll(/req\.method === 'GET' && req\.query && req\.query\.(\w+)/g)]
+  .map((m) => m[1]);
+check('and every GET query it does have is one of them',
+  getQueries.length > 0 && getQueries.every((q) => /aGetForSomethingElse/.test(route)
+    && new RegExp(`req\\.query\\.${q}\\b`).test(route.slice(0, route.indexOf('aGetForSomethingElse') + 200))),
+  getQueries.join(','));
 check('tools/list serves the app\'s own derivation rather than a copy',
   /wireFor\('mcp', entry\.structure\)/.test(route) && /from '\.\/_skill-schema\.mjs'/.test(route));
 check('an unstamped row is not offered as a tool', /if \(role !== 'skill'\) \{ unstamped\+\+; continue; \}/.test(route));
