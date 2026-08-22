@@ -12,6 +12,8 @@ is done rather than asking you to confirm it.
 
 ## Platform detection
 
+![The same guide with Windows selected](../img/connect-windows.png)
+
 Guessed from the browser, then corrected by fact:
 
 1. `navigator.userAgentData.platform` — the one answer the browser promises not to spoil. Chrome froze the

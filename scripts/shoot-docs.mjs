@@ -45,8 +45,11 @@ const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const HOST = 'mouseflowapp.vercel.app';
 const PORT = 4443;
 const SITE = `https://${HOST}`;
-const WIDTH = 1400;
-const HEIGHT = 920;
+/* 1680x1050, which is a real desktop rather than a convenient one. At 1400 the Dashboard's heading column
+ * collapses beside the assistant panel and every picture of it looked like a broken page; the app is used
+ * at this size and the screenshots should show it at this size. */
+const WIDTH = 1680;
+const HEIGHT = 1050;
 const SCALE = 2;
 /** What the PNGs are downscaled to. 1400 is the CSS width, so a retina capture lands back at 1x. */
 const FINAL_WIDTH = 1400;
@@ -173,7 +176,7 @@ async function browser({ port = 9400, before = '' } = {}) {
       return r.result.value;
     },
     /** Wait for something on the page rather than for a number of milliseconds. */
-    async until(expression, tries = 40, every = 500) {
+    async until(expression, tries = 90, every = 500) {
       for (let i = 0; i < tries; i++) {
         if (await page.eval(expression)) return true;
         await wait(every);
@@ -296,16 +299,19 @@ async function main() {
       }
 
       console.log('taking:');
+
+      /* ---- the product page ---- */
       await page.goto(SITE + '/mcp', 2500);
       await page.shot('mcp-page.png');
       for (const id of ['tools', 'connect', 'identity', 'doing', 'limits']) {
         await page.shotElement(`mcp-${id}.png`, '#' + id, 18);
       }
 
+      /* ---- record ---- */
       await page.goto(SITE + '/record', 2500);
       await page.shot('record.png');
       await page.eval("window.__mf.clickText('View')");
-      await wait(2000);
+      await wait(2200);
       await page.shot('record-transcript.png');
 
       await page.goto(SITE + '/record', 2500);
@@ -316,6 +322,7 @@ async function main() {
       await wait(1200);
       await page.shot('record-skill-wizard-2.png');
 
+      /* ---- skills ---- */
       await page.goto(SITE + '/skills', 2500);
       await page.shot('skills.png');
       await page.eval("window.__mf.clickAttr('aria-label', 'More for')");
@@ -329,17 +336,68 @@ async function main() {
       await wait(500);
       await page.shot('skills-structure.png');
 
-      for (const [path, name] of [['/create', 'create'], ['/gallery', 'gallery'], ['/dashboard', 'dashboard']]) {
-        await page.goto(SITE + path, 2500);
-        await page.shot(name + '.png');
+      await page.goto(SITE + '/skills', 2500);
+      if (await page.eval("window.__mf.clickText('Connect extension')")) {
+        await wait(1200);
+        await page.shot('skills-extension.png');
       }
 
+      /* ---- create ----
+         Two things happen before this one is taken, and both matter.
+         Switched to the desktop half, because "In this browser" needs the extension, which is not installed
+         in a headless Chrome, so the default view is an apology rather than the product; then RELOADED, so
+         the notice about the missing extension is not still on screen under the other mode.
+         And the Live context panel is removed, because it shows a live capture of whatever is on the screen
+         of the machine this runs on. That is somebody's actual desktop and it must not end up in a public
+         document. The panel is described in the text instead. */
+      await page.goto(SITE + '/create', 3000);
+      await page.eval("window.__mf.clickText('On this computer')");
+      await wait(1200);
+      await page.goto(SITE + '/create', 3000);
+      await page.eval(`document.querySelectorAll('aside').forEach((a) => {
+        if ((a.textContent || '').includes('Live context')) a.remove();
+      })`);
+      await wait(600);
+      await page.shot('create.png');
+
+      /* ---- gallery ---- */
+      await page.goto(SITE + '/gallery', 3000);
+      await page.shot('gallery.png');
+      // "See all N" is how a browse row opens into a collection of its own.
+      if (await page.eval("window.__mf.clickText('See all')")) {
+        await wait(1800);
+        await page.shot('gallery-collection.png');
+      }
+
+      /* ---- dashboard ---- */
+      await page.goto(SITE + '/dashboard', 3500);
+      await page.shot('dashboard.png');
+      await page.eval(`(() => {
+        const el = [...document.querySelectorAll('*')].find((e) => (e.textContent || '').trim().startsWith('Activity by day'));
+        if (el) el.scrollIntoView({ block: 'start' });
+        scrollBy(0, -80);
+        return !!el;
+      })()`);
+      await wait(700);
+      await page.shot('dashboard-sections.png');
+      /* No picture of the assistant ANSWERING, deliberately: the fixture's reply says in its own text that
+       * it is a canned reply from the dev mock - which is the right thing for a developer to see and the
+       * wrong thing to put in a public document. Its resting state, with the three questions it offers, is
+       * in dashboard.png. */
+
+      /* ---- the connect guide, both platforms ---- */
       await page.goto(SITE + '/connect', 3000);
+      await page.eval("window.__mf.clickText('macOS')");
+      await wait(900);
       await page.shot('connect-guide.png');
       if (await page.eval("window.__mf.mark('Connect an AI', 'section', 'ai')")) {
         await page.shotElement('connect-guide-ai.png', '[data-shot="ai"]', 90);
       }
+      await page.eval("window.__mf.clickText('Windows')");
+      await wait(900);
+      await page.shot('connect-windows.png');
 
+      /* ---- settings ---- */
       await openSettings(page, 'My account');
       await page.shot('settings-account.png');
       await page.eval("window.__mf.clickText('Pair a device')");
@@ -370,11 +428,17 @@ async function main() {
     const staged = await browser({ port: 9401, before: STAGED });
     try {
       await staged.goto(SITE + '/record', 3000);
+      /* Two answers have to land before this renders - the agent's health, then the queue - and the second
+       * is only asked for once the first says this machine is not attached. A miss is reported and skipped
+       * rather than thrown: losing one picture should not cost the twelve after it. */
       const there = await staged.until(
         "window.__mf.mark('Claude asked to', 'div', 'banner')");
-      if (!there) throw new Error('the banner never appeared');
-      await wait(600);
-      await staged.shotElement('record-waiting.png', '[data-shot="banner"]', 90);
+      if (there) {
+        await wait(600);
+        await staged.shotElement('record-waiting.png', '[data-shot="banner"]', 90);
+      } else {
+        console.log('  SKIPPED record-waiting.png - the banner never appeared');
+      }
 
       await openSettings(staged, 'Connections');
       await staged.eval(`(() => {

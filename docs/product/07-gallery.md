@@ -77,6 +77,8 @@ there are more. Above the rows: a search over every published flow (debounced 25
 and description), and the count — `50 of 148` when the endpoint reports a total, otherwise just what
 arrived, because claiming more would be inventing it.
 
+![One collection](../img/gallery-collection.png)
+
 ## Collection view
 
 Opened from a row. The heading is the collection's own, and then:

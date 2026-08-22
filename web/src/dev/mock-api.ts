@@ -449,6 +449,127 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
    * A screen that could only be looked at signed in to a real deployment is a screen nobody looks at while
    * they are changing it - and the same emptiness made it the one settings screen with no picture in the
    * documentation. */
+  /* The Dashboard. A fixture whose numbers AGREE WITH EACH OTHER, which is the only kind worth having:
+   * byOutcome sums to totals.runs, the day rows sum to the same, the application shares plus the
+   * unattributed share come to one. A fixture that disagrees with itself teaches the page to render
+   * something that can never arrive, and the first person to notice is a user looking at real data.
+   *
+   * Added because there was nothing here: /api/insights answered 501 and the Dashboard rendered its error
+   * box, which is what the documentation's screenshot of it showed. */
+  if (url.startsWith('/api/insights')) {
+    const days = Number(new URLSearchParams(url.split('?')[1] || '').get('days')) || 30;
+    const from = new Date(now - days * 86400_000).toISOString();
+    const totals = {
+      runs: 47, ok: 39, failed: 5, stopped: 2, running: 1,
+      recordings: 18, createdSkills: 6, agentHours: 3.42,
+    };
+    const share = (n: number, of: number) => (of ? Math.round((n / of) * 1000) / 1000 : 0);
+    /* Nine days with something on them, summing to the 47 above. */
+    const dayRuns = [3, 6, 2, 8, 5, 4, 9, 6, 4];
+    const dayOk = [3, 5, 2, 7, 4, 3, 8, 5, 2];
+    const dayFailed = [0, 1, 0, 1, 0, 1, 1, 0, 1];
+    return json(res, 200, {
+      ok: true,
+      window: { days, from, to: new Date(now).toISOString(), timeZone: 'UTC' },
+      totals,
+      previous: {
+        from: new Date(now - days * 2 * 86400_000).toISOString(), to: from,
+        had: true, runs: 31, ok: 24, failed: 6, stopped: 1, agentHours: 2.15,
+      },
+      byOutcome: (['ok', 'failed', 'stopped', 'running'] as const).map((outcome) => ({
+        outcome, runs: totals[outcome], share: share(totals[outcome], totals.runs),
+      })),
+      byDay: dayRuns.map((runs, i) => ({
+        day: new Date(now - (dayRuns.length - i) * 86400_000).toISOString().slice(0, 10),
+        runs, ok: dayOk[i], failed: dayFailed[i],
+        agentSeconds: Math.round(runs * 262.4),
+      })),
+      applications: [
+        { name: 'chrome', kind: 'app', recordings: 9, runs: 24, seconds: 5120.4, share: 0.416 },
+        { name: 'outlook', kind: 'app', recordings: 4, runs: 11, seconds: 2740.8, share: 0.223 },
+        { name: 'excel', kind: 'app', recordings: 3, runs: 7, seconds: 1980.2, share: 0.161 },
+        { name: 'slack', kind: 'app', recordings: 1, runs: 3, seconds: 890.6, share: 0.072 },
+        { name: 'https://app.hubspot.com', kind: 'origin', recordings: 1, runs: 2, seconds: 604.0, share: 0.049 },
+      ],
+      unattributed: {
+        seconds: 966.1,
+        share: 0.079,
+        why: 'Time that happened but cannot be placed: agent steps with no page or no timing, the model '
+          + 'thinking between steps, and the part of a recording before anything named where it was.',
+      },
+      repeated: [
+        {
+          signature: 'sig_invoice', label: 'reply that the invoice is approved', times: 11,
+          seconds: 1342.5, timed: 11, lastAt: hoursAgo(4), flowIds: ['wf_dev_1'],
+        },
+        {
+          signature: 'sig_pipeline', label: 'update the pipeline sheet from the CRM', times: 7,
+          seconds: 986.0, timed: 6, lastAt: hoursAgo(27), flowIds: ['dr_dev_1'],
+        },
+        {
+          signature: 'sig_triage', label: 'triage the overnight support queue', times: 5,
+          seconds: 611.2, timed: 5, lastAt: hoursAgo(51), flowIds: [],
+        },
+      ],
+      slowestSteps: [
+        { tool: 'screenshot', calls: 214, medianMs: 812, p90Ms: 1640 },
+        { tool: 'click', calls: 189, medianMs: 240, p90Ms: 610 },
+        { tool: 'type', calls: 96, medianMs: 1180, p90Ms: 2310 },
+        { tool: 'wait_for', calls: 44, medianMs: 2050, p90Ms: 4400 },
+      ],
+      failures: [
+        {
+          reason: 'the window it was recorded in was not open', times: 3, lastAt: hoursAgo(20),
+          example: { runId: 'r_dev_9', error: 'no window matching "Book1 - Excel"' },
+        },
+        {
+          reason: 'stopped at a checkpoint and nobody answered', times: 2, lastAt: hoursAgo(72),
+          example: { runId: 'r_dev_4', error: 'checkpoint "send the reply" timed out after 10m' },
+        },
+      ],
+      skills: [
+        {
+          flowId: 'wf_dev_1', name: 'Reply that the invoice is approved', kind: 'created', source: 'web',
+          runs: 11, ok: 10, failed: 1, medianSeconds: 122.0, lastRunAt: hoursAgo(4),
+        },
+        {
+          flowId: 'dr_dev_1', name: 'Outlook (PWA) · 6 clicks', kind: 'recorded', source: 'desktop',
+          runs: 7, ok: 6, failed: 1, medianSeconds: 140.9, lastRunAt: hoursAgo(27),
+        },
+        {
+          flowId: 'ronly_account_1', name: 'Neon Console · 4 clicks', kind: 'recorded', source: 'desktop',
+          runs: 3, ok: 3, failed: 0, medianSeconds: 9.1, lastRunAt: hoursAgo(50),
+        },
+      ],
+      gaps: [
+        {
+          question: 'How much time did this save me?',
+          why: 'Nothing here holds how long the same task takes by hand, and there is no field for it in '
+            + 'user_run. Agent hours are measured wall clock; "time saved" would be a number this endpoint '
+            + 'made up, so it does not report one.',
+        },
+        {
+          question: 'Why is my mail time listed under a browser?',
+          why: 'Because the application a click landed in is a PROCESS name, read from the window manager, '
+            + 'and a web app hosted in a browser is that browser: Outlook as a PWA counts as chrome.',
+        },
+        {
+          question: 'Where did the rest of my day go?',
+          why: 'Only runs and recordings are timed. The hours between them are recorded nowhere, so these '
+            + 'day totals are activity, not a working day.',
+        },
+      ],
+      caps: {
+        days: 365,
+        applications: { shown: 5, total: 5, limit: 12 },
+        repeated: { shown: 3, total: 3, limit: 10 },
+        slowestSteps: { shown: 4, total: 4, limit: 10, minCalls: 2 },
+        failures: { shown: 2, total: 2, limit: 10 },
+        skills: { shown: 3, total: 3, limit: 20 },
+      },
+    });
+  }
+
   if (url.startsWith('/api/team')) {
     const query = new URLSearchParams(url.split('?')[1] || '');
     if (method === 'GET' && !query.get('id')) {

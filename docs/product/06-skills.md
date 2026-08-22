@@ -181,6 +181,8 @@ value appearing twice becomes **one** parameter used twice: *"reply to X and cc 
 
 ## Connecting the extension
 
+![Connect the extension](../img/skills-extension.png)
+
 The extension has no session of its own, and cannot get one: signing in inside an extension needs an OAuth
 client tied to its id, and an unpacked extension's id is derived from its folder path — different on every
 machine. So the web app mints a **device token** and the extension uses it thereafter. The same shape a CLI

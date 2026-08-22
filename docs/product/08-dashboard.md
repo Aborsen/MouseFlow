@@ -18,6 +18,9 @@ bars would be the largest thing in the bundle.
 
 ![The Dashboard](../img/dashboard.png)
 
+*Every figure is a field `/api/insights` sent; nothing is
+derived in the browser.*
+
 ## Controls
 
 | Control | Behaviour |
@@ -71,11 +74,18 @@ Every list is capped and **every cap is reported with the total it was cut from*
 12 of 34" instead of implying it is everything: applications 12, repeated 10, slowest steps 10, failures 10,
 skills 20.
 
+![Activity, the work worth automating, and what went wrong](../img/dashboard-sections.png)
+
 ## The gaps
 
 First-class, not a footnote. Each is a question somebody will ask of this page and the reason the stored
 data cannot answer it, with the real count from *this* window — so a gap that has stopped applying shows a
-nought rather than being a warning nobody rereads. Among them:
+nought rather than being a warning nobody rereads.
+
+**They are no longer printed at the bottom of the page.** Read there, unasked for, they came across as a
+disclaimer rather than as what they are, which is answers. They are still in the endpoint's response and
+the assistant reads them, so "why does this not tell me what I saved" gets those exact words at the moment
+somebody asks the question — which is where an answer belongs. Among them:
 
 - **How much time did this save me?** Nothing holds how long the same task takes by hand, and there is no
   field for it. Every "time saved" number in a product like this is a baseline somebody typed.
