@@ -88,8 +88,10 @@ function unauthorized(req, res, why) {
   res.status(401).json({
     error: why || 'missing_token',
     resource,
-    hint: 'Send Authorization: Bearer <device token>. Mint one in the app under Settings → My account. '
-      + 'Each person uses their own, and sees only their own skills.',
+    hint: 'Add this URL to your client and sign in with your MouseFlow account - the 401 above names where. '
+      + 'Or send Authorization: Bearer <device token>, minted in the app under Settings → My account. '
+      + 'Either way it is one person: each sees only their own recordings and skills. '
+      + `https://${host}/mcp explains all of it.`,
   });
 }
 
@@ -845,13 +847,19 @@ export default async function handler(req, res) {
    * appeared. A route that swallows unknown queries fails exactly like this: quietly, and looking fine. */
   const aGetForSomethingElse = req.query && (req.query.worker || req.query.pending);
   if (req.method === 'GET' && !aGetForSomethingElse) {
+    const host = req.headers['x-forwarded-host'] || req.headers.host || 'mouseflowapp.vercel.app';
     res.status(200).json({
       name: SERVER.name,
       version: SERVER.version,
       protocol: 'MCP over HTTP POST, JSON-RPC 2.0',
-      auth: 'Bearer <device token> — mint one in the app under Settings → My account',
-      note: 'Running a skill needs the MouseFlow worker on the machine the skill belongs to. See '
-        + 'docs/product/21-mcp.md.',
+      /* Both ways in, and the one to prefer first. This said "Bearer <device token>" alone for as long as
+       * a device token was the only answer, and went on saying it after OAuth landed - which is how a
+       * document about a server starts describing a server that no longer exists. */
+      auth: 'Add this URL to your client and sign in with your MouseFlow account (OAuth), or send '
+        + 'Authorization: Bearer <device token> from Settings → My account',
+      note: 'Reading works the moment you connect. Recording and running a skill need a computer attached '
+        + 'to the account — in the app: Connections → "Let Claude drive this computer".',
+      docs: `https://${host}/mcp`,
     });
     return;
   }
