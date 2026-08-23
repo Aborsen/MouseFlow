@@ -101,6 +101,26 @@ The agent deliberately **survives a broken tray** — the banner prints `tray NO
 HTTP half is the product. The console window is still visible on purpose: hide it before the tray is
 verified on a machine and a tray that failed to appear leaves a running agent with no interface at all.
 
+## Attaching this PC to an account
+
+`POST /account` with `token=mf_… base=https://…` attaches this machine; `DELETE /account` detaches it. The
+app hands the token over across loopback — the same pairing the extension gets — so nobody reads a token,
+copies one, or keeps one anywhere. It is written to `%LOCALAPPDATA%\MouseFlow\account.json`, which is the
+per-user profile: another standard user on the same PC cannot read it. That is the Windows equivalent of the
+`0600` the macOS agent sets.
+
+`/health` then answers two more facts: `linked` (attached at all) and `taking` (attached **and** switched
+on). The app shows **Let Claude drive this computer** only when `linked` is present — absent means *this
+build cannot*, not *off* — so an older agent hides the button rather than offering one that 404s.
+
+Once taking is on, the agent long-polls `POST /api/mcp?worker=claim` for a job, does it, and reports to
+`?worker=report`. **There is no inbound path to the PC at any point**, and an agent that is not taking work
+makes no outbound call at all — not a poll, not a heartbeat. A refused token (401 or 403) switches taking
+off rather than retrying for ever.
+
+It is visible in the tray while it is on, and in the startup banner, because this is the one thing the agent
+does because a *service* asked rather than because something on this machine did.
+
 ## Autostart
 
 `POST /autostart/enable` writes `MouseFlowAgent.cmd` into the Startup folder. No admin rights; deleting the

@@ -400,6 +400,10 @@ namespace MouseFlow
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
         static IntPtr _hook = IntPtr.Zero;
+
+        /* Whether the low-level hook is installed, for the courier - which has to refuse a recording the
+           same way /record/start does rather than start one that would capture nothing. */
+        public static bool HookInstalled { get { return _hook != IntPtr.Zero; } }
         static Native.HookProc _kbProc; // same reason, separately rooted
         static IntPtr _kbHook = IntPtr.Zero;
 
@@ -2341,6 +2345,12 @@ namespace MouseFlow
                     /* So the app can tell an older agent from this one and say which. A missing
                        endpoint answers 404, which reads as "broken" rather than "out of date". */
                     + ",\"canSee\":true"
+                    /* Whether this PC can be attached to an account at all, and whether it is taking work.
+                       The app shows "Let Claude drive this computer" only when `linked` is PRESENT - absent
+                       means "this build cannot", not "off" - so an older agent degrades to hiding the
+                       button rather than offering one that 404s. */
+                    + ",\"linked\":" + (Account.Linked ? "true" : "false")
+                    + ",\"taking\":" + (Account.Taking ? "true" : "false")
                     /* Separate from canSee because it arrived later: an 0.2.0 agent can act on
                        pictures but cannot say what is already open, and the app degrades to that
                        rather than refusing to run. */
@@ -2481,6 +2491,48 @@ namespace MouseFlow
                 return;
             }
 
+            /* Attaching this PC to an account, and detaching it.
+
+               Handed over across loopback by the app, which is signed in as the person - so nobody reads a
+               token, copies one, or keeps one anywhere. The same pairing the extension gets over its
+               bridge, for the same reason: a credential a person has to carry is a credential a person
+               mislays. */
+            if (path == "/account")
+            {
+                if (method == "DELETE")
+                {
+                    Account.Forget();
+                    Respond(stream, 200, "application/json", "{\"ok\":true,\"linked\":false}", origin);
+                    return;
+                }
+                if (method != "POST")
+                {
+                    Respond(stream, 405, "application/json",
+                        "{\"ok\":false,\"error\":\"POST or DELETE\"}", origin);
+                    return;
+                }
+                Dictionary<string, string> fields = ParseFields(body);
+                string token = Get(fields, "token", null);
+                if (token == null || !token.StartsWith("mf_"))
+                {
+                    Respond(stream, 400, "application/json",
+                        "{\"ok\":false,\"error\":\"a MouseFlow device token, which starts with mf_\"}", origin);
+                    return;
+                }
+                string accountBase = Get(fields, "base", null);
+                /* Taking work is the point of attaching, so it is on unless the caller says otherwise - and
+                   the tray says so from the moment it is, which is where somebody would look to turn it
+                   off. */
+                bool taking = Get(fields, "taking", "1") != "0";
+                Account.Set(token, accountBase, taking);
+                /* The tray is NOT poked from here. It reads the state when its menu opens, and touching a
+                   ToolStripMenuItem from this thread is a cross-thread call into WinForms - the class of
+                   bug that shows up once, on somebody else's machine. */
+                Respond(stream, 200, "application/json",
+                    "{\"ok\":true,\"linked\":true,\"taking\":" + (taking ? "true" : "false") + "}", origin);
+                return;
+            }
+
             if (path == "/autostart/enable" && method == "POST")
             {
                 string err = EnableAutostart();
@@ -2536,6 +2588,10 @@ namespace MouseFlow
             stream.Flush();
         }
 
+        /* The same escaper, reachable from Account and Courier. They build JSON for the account rather
+           than for a browser, and a second escaper would be a second place to get a quote wrong. */
+        public static string JsonText(string s) { return JsonEscape(s); }
+
         static string JsonEscape(string s)
         {
             if (s == null) return "";
@@ -2568,6 +2624,479 @@ namespace MouseFlow
         }
     }
 
+    /* Reading JSON, in the smallest thing that can read one claim response.
+
+       WHY NOT JavaScriptSerializer, WHICH IS ONE LINE. It needs System.Web.Extensions in the Add-Type
+       reference list, and that assembly does not exist on .NET Core - so a user who ran the install command
+       in PowerShell 7 instead of Windows PowerShell would get a failed Add-Type and NO AGENT AT ALL, not a
+       courier that misbehaves. The blast radius decided this: a parser bug stops jobs being claimed, a bad
+       assembly reference stops the agent existing.
+
+       So it reads what it has to read and nothing more, and every failure path returns null rather than
+       throwing - the caller treats an unreadable answer as "no work", which is the safe reading.
+
+       It is a real parser rather than a regex over the response, because one of the fields is a REPLAY BODY:
+       a multi-line blob full of escaped quotes and newlines. Pulling that out with a pattern is how a skill
+       replays half of itself. */
+    public static class Json
+    {
+        public static object Parse(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            try
+            {
+                int i = 0;
+                return Value(text, ref i);
+            }
+            catch { return null; }
+        }
+
+        static void Ws(string s, ref int i)
+        {
+            while (i < s.Length && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
+        }
+
+        static object Value(string s, ref int i)
+        {
+            Ws(s, ref i);
+            if (i >= s.Length) throw new FormatException("nothing here");
+            char c = s[i];
+            if (c == '{') return Obj(s, ref i);
+            if (c == '[') return Arr(s, ref i);
+            if (c == '"') return Str(s, ref i);
+            if (c == 't') { Word(s, ref i, "true"); return true; }
+            if (c == 'f') { Word(s, ref i, "false"); return false; }
+            if (c == 'n') { Word(s, ref i, "null"); return null; }
+            return Num(s, ref i);
+        }
+
+        static void Word(string s, ref int i, string word)
+        {
+            if (i + word.Length > s.Length || s.Substring(i, word.Length) != word)
+                throw new FormatException("not " + word);
+            i += word.Length;
+        }
+
+        static Dictionary<string, object> Obj(string s, ref int i)
+        {
+            Dictionary<string, object> map = new Dictionary<string, object>();
+            i++;
+            Ws(s, ref i);
+            if (i < s.Length && s[i] == '}') { i++; return map; }
+            while (true)
+            {
+                Ws(s, ref i);
+                string key = Str(s, ref i);
+                Ws(s, ref i);
+                if (i >= s.Length || s[i] != ':') throw new FormatException("expected a colon");
+                i++;
+                map[key] = Value(s, ref i);
+                Ws(s, ref i);
+                if (i < s.Length && s[i] == ',') { i++; continue; }
+                if (i < s.Length && s[i] == '}') { i++; return map; }
+                throw new FormatException("unterminated object");
+            }
+        }
+
+        static List<object> Arr(string s, ref int i)
+        {
+            List<object> list = new List<object>();
+            i++;
+            Ws(s, ref i);
+            if (i < s.Length && s[i] == ']') { i++; return list; }
+            while (true)
+            {
+                list.Add(Value(s, ref i));
+                Ws(s, ref i);
+                if (i < s.Length && s[i] == ',') { i++; continue; }
+                if (i < s.Length && s[i] == ']') { i++; return list; }
+                throw new FormatException("unterminated array");
+            }
+        }
+
+        static string Str(string s, ref int i)
+        {
+            if (i >= s.Length || s[i] != '"') throw new FormatException("expected a string");
+            i++;
+            StringBuilder sb = new StringBuilder();
+            while (i < s.Length)
+            {
+                char c = s[i++];
+                if (c == '"') return sb.ToString();
+                if (c != '\\') { sb.Append(c); continue; }
+                if (i >= s.Length) break;
+                char e = s[i++];
+                if (e == '"') sb.Append('"');
+                else if (e == '\\') sb.Append('\\');
+                else if (e == '/') sb.Append('/');
+                else if (e == 'b') sb.Append('\b');
+                else if (e == 'f') sb.Append('\f');
+                else if (e == 'n') sb.Append('\n');
+                else if (e == 'r') sb.Append('\r');
+                else if (e == 't') sb.Append('\t');
+                else if (e == 'u')
+                {
+                    if (i + 4 > s.Length) break;
+                    sb.Append((char)Convert.ToInt32(s.Substring(i, 4), 16));
+                    i += 4;
+                }
+                else throw new FormatException("unknown escape");
+            }
+            throw new FormatException("unterminated string");
+        }
+
+        static object Num(string s, ref int i)
+        {
+            int start = i;
+            while (i < s.Length && "-+.eE0123456789".IndexOf(s[i]) >= 0) i++;
+            if (i == start) throw new FormatException("not a number");
+            return double.Parse(s.Substring(start, i - start), CultureInfo.InvariantCulture);
+        }
+
+        /* ---------------------------------------------------------------- reading one out */
+
+        public static object Child(object node, string key)
+        {
+            Dictionary<string, object> map = node as Dictionary<string, object>;
+            if (map == null) return null;
+            object v;
+            return map.TryGetValue(key, out v) ? v : null;
+        }
+
+        public static string Text(object node, string key) { return Child(node, key) as string; }
+
+        public static int Int(object node, string key, int fallback)
+        {
+            object v = Child(node, key);
+            return v is double ? (int)(double)v : fallback;
+        }
+
+        public static bool Truth(object node, string key, bool fallback)
+        {
+            object v = Child(node, key);
+            return v is bool ? (bool)v : fallback;
+        }
+    }
+
+    /* ================================================================ the account
+
+       Taking work from the account: what makes "start recording on my PC" possible from a chat that is not
+       on this PC.
+
+       The thing it solves is a DIRECTION, not a feature. This agent listens on loopback and nothing on the
+       internet can reach it - deliberately, and that is not going to change. So the machine asks: it holds a
+       token, long-polls the account for a job, does it, and says how it went. No inbound path to this
+       computer exists at any point, and an agent that is not taking work makes no outbound call at all.
+
+       OFF UNTIL SOMEBODY SWITCHES IT ON, and visible in the tray while it is. Everything else this agent
+       does happens because something on this machine asked; this is the one thing it would do because a
+       service said so, and that difference belongs where the person can see it and turn it off.
+
+       The token is handed over by the app across loopback - the same pairing the extension gets - so nobody
+       has to read one, copy one, or keep one anywhere. It is written under LocalApplicationData, which is
+       the per-user profile: another standard user on the same PC cannot read it. That is the Windows
+       equivalent of the 0600 the macOS agent sets, and it is stated in the docs rather than left to be
+       discovered.
+
+       This mirrors the Swift agent's Account and Courier, deliberately and almost line for line. The two
+       implementations answering one contract is the whole point of agent/PROTOCOL.md, and a courier that
+       drifted would be a Windows machine that silently stopped being drivable. */
+    public static class Account
+    {
+        static readonly object Gate = new object();
+        static string _token;
+        static string _base = "https://mouseflowapp.vercel.app";
+        static bool _taking;
+
+        static string Dir
+        {
+            get
+            {
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MouseFlow");
+            }
+        }
+
+        static string StatePath { get { return Path.Combine(Dir, "account.json"); } }
+
+        public static bool Linked { get { lock (Gate) { return !string.IsNullOrEmpty(_token); } } }
+        public static bool Taking { get { lock (Gate) { return !string.IsNullOrEmpty(_token) && _taking; } } }
+        public static string Token { get { lock (Gate) { return _token; } } }
+        public static string Base { get { lock (Gate) { return _base; } } }
+
+        /* Read once at startup. A missing or unreadable file means "not linked", which is the safe answer. */
+        public static void Load()
+        {
+            try
+            {
+                if (!File.Exists(StatePath)) return;
+                object raw = Json.Parse(File.ReadAllText(StatePath, Encoding.UTF8));
+                string token = Json.Text(raw, "token");
+                if (string.IsNullOrEmpty(token)) return;
+                string b = Json.Text(raw, "base");
+                lock (Gate)
+                {
+                    _token = token;
+                    if (!string.IsNullOrEmpty(b)) _base = b;
+                    _taking = Json.Truth(raw, "taking", false);
+                }
+            }
+            catch { /* Not linked is the safe reading of a file that cannot be read. */ }
+        }
+
+        static void Save()
+        {
+            try
+            {
+                Directory.CreateDirectory(Dir);
+                string json;
+                lock (Gate)
+                {
+                    if (string.IsNullOrEmpty(_token))
+                    {
+                        if (File.Exists(StatePath)) File.Delete(StatePath);
+                        return;
+                    }
+                    json = "{\"token\":\"" + Agent.JsonText(_token) + "\",\"base\":\"" + Agent.JsonText(_base)
+                        + "\",\"taking\":" + (_taking ? "true" : "false") + "}";
+                }
+                File.WriteAllText(StatePath, json, Encoding.UTF8);
+            }
+            catch { /* An unwritable profile is not a reason to refuse the pairing that is already in memory. */ }
+        }
+
+        public static void Set(string token, string b, bool taking)
+        {
+            lock (Gate)
+            {
+                _token = token;
+                if (!string.IsNullOrEmpty(b)) _base = b;
+                _taking = taking;
+            }
+            Save();
+        }
+
+        public static void SetTaking(bool on)
+        {
+            lock (Gate) { if (!string.IsNullOrEmpty(_token)) _taking = on; }
+            Save();
+        }
+
+        public static void Forget()
+        {
+            lock (Gate) { _token = null; _taking = false; }
+            Save();
+        }
+    }
+
+    /* The one outward-facing loop: ask for work, do it, say how it went.
+
+       Long-polling rather than a fast poll - the endpoint holds the request open for up to half a minute
+       with nothing to say - so an idle machine costs one request a minute rather than twenty, and an idle
+       wait costs no CPU at either end. Backs off to a minute on failure, because an agent that hammers a
+       deployment which is down makes the outage worse.
+
+       One job at a time, and no queue of its own. There is one mouse. */
+    public static class Courier
+    {
+        const int ClaimWaitSeconds = 25;
+        static int _backoff = 2;
+
+        public static void Begin()
+        {
+            /* Windows PowerShell's default is whatever ServicePointManager was left at, and on 5.1 that can
+               still be TLS 1.0 - which every current deployment refuses at the handshake. Setting it here
+               rather than at startup keeps it next to the only code that makes an outbound call. */
+            try { ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12; }
+            catch { /* A runtime without TLS 1.2 cannot reach the account at all; the request will say so. */ }
+
+            Thread t = new Thread(new ThreadStart(Loop));
+            t.IsBackground = true;
+            t.Name = "mouseflow.courier";
+            t.Start();
+        }
+
+        static void Loop()
+        {
+            while (true)
+            {
+                if (!Account.Taking) { Thread.Sleep(5000); continue; }
+
+                string token = Account.Token;
+                string root = Account.Base;
+                int status;
+                string answer = Post(root + "/api/mcp?worker=claim", token,
+                    "{\"worker\":\"" + Agent.JsonText(Environment.MachineName) + "\",\"wait\":"
+                    + ClaimWaitSeconds.ToString(CultureInfo.InvariantCulture) + "}", out status);
+
+                if (status == 401 || status == 403)
+                {
+                    /* The token was revoked, or the account is gone. Stopping is the honest response:
+                       retrying a refused credential for ever is a log nobody reads and a request nobody
+                       wanted. */
+                    Account.SetTaking(false);
+                    Console.WriteLine("[mouseflow] the account refused this PC's token - taking work is now "
+                        + "off. Pair again from the app.");
+                    continue;
+                }
+
+                if (answer == null || status != 200)
+                {
+                    Console.WriteLine("[mouseflow] could not ask for work (HTTP " + status.ToString(CultureInfo.InvariantCulture)
+                        + ") - waiting " + _backoff.ToString(CultureInfo.InvariantCulture) + "s");
+                    Thread.Sleep(_backoff * 1000);
+                    _backoff = Math.Min(60, _backoff * 2);
+                    continue;
+                }
+
+                _backoff = 2;
+                object job = Json.Child(Json.Parse(answer), "job");
+                string id = Json.Text(job, "id");
+                if (string.IsNullOrEmpty(id)) continue;   // nothing to do; the long poll simply timed out
+
+                bool ok;
+                string said;
+                string body = Carry(job, out ok, out said);
+                Report(root, token, id, ok, said, body);
+            }
+        }
+
+        /* ------------------------------------------------------------------ doing it */
+
+        static string Carry(object job, out bool ok, out string said)
+        {
+            string command = Json.Text(job, "command");
+
+            if (command == "#record.start")
+            {
+                if (!Agent.HookInstalled)
+                {
+                    ok = false;
+                    said = "This PC has no input hook, so nothing would be captured.";
+                    return null;
+                }
+                if (Agent.IsPlaying) { ok = false; said = "It is replaying something right now."; return null; }
+                string refused = Agent.RecordStart(Json.Int(Json.Child(job, "args"), "moveMs", 0));
+                if (refused != null) { ok = false; said = refused; return null; }
+                ok = true;
+                said = "Recording. It captures clicks, drags, scrolls and pointer movement, and that a key "
+                    + "was pressed - never which key.";
+                return null;
+            }
+
+            if (command == "#record.stop")
+            {
+                if (!Agent.IsRecording) { ok = false; said = "Nothing was recording."; return null; }
+                ok = true;
+                said = "";
+                return Agent.RecordStop();
+            }
+
+            string replay = Json.Text(job, "body");
+            if (!string.IsNullOrEmpty(replay))
+            {
+                /* A skill, as a replay body the deployment built. Everything that makes it a skill - the
+                   events, the parameters, the tool definition - stayed there; what arrives here is the
+                   format this agent has always spoken. */
+                string raise = Json.Text(job, "activate");
+                if (!string.IsNullOrEmpty(raise)) { Agent.DoAction(raise); Thread.Sleep(350); }
+
+                string refused = Agent.StartReplay(replay);
+                if (refused != null) { ok = false; said = refused; return null; }
+
+                /* Waited out here rather than reported as started: an answer that arrives before the work
+                   has happened has told the caller nothing. */
+                DateTime until = DateTime.UtcNow.AddMinutes(30);
+                while (Agent.IsPlaying && DateTime.UtcNow < until) Thread.Sleep(400);
+                if (Agent.IsPlaying)
+                {
+                    ok = false;
+                    said = "It was still replaying after thirty minutes.";
+                    return null;
+                }
+                ok = true;
+                said = "Replayed it on this PC. What the applications did with it is not something MouseFlow "
+                    + "can see; the actions were sent.";
+                return null;
+            }
+
+            ok = false;
+            said = "This PC was asked to do something it does not understand. Its agent may be older than "
+                + "the account expects.";
+            return null;
+        }
+
+        static void Report(string root, string token, string id, bool ok, string said, string body)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("{\"id\":\"").Append(Agent.JsonText(id)).Append("\",\"ok\":").Append(ok ? "true" : "false")
+              .Append(",\"said\":\"").Append(Agent.JsonText(said == null ? "" : said)).Append("\"");
+            if (body != null)
+            {
+                sb.Append(",\"body\":\"").Append(Agent.JsonText(body)).Append("\"");
+                /* What this agent is, at the moment of the recording - the only moment the answer exists.
+                   The row the deployment writes stamps it, exactly as the app's own does. */
+                sb.Append(",\"health\":{\"version\":\"").Append(Agent.JsonText(Agent.Version))
+                  .Append("\",\"canName\":true,\"canKeys\":").Append(Agent.HookInstalled ? "true" : "false").Append("}");
+            }
+            sb.Append("}");
+
+            int status;
+            if (Post(root + "/api/mcp?worker=report", token, sb.ToString(), out status) == null)
+            {
+                /* The work happened and the answer did not arrive. Said out loud, because the person on the
+                   other end is being told nothing picked it up while something did. */
+                Console.WriteLine("[mouseflow] the outcome of " + id + " could not be reported");
+            }
+        }
+
+        /* ------------------------------------------------------------------ the wire */
+
+        static string Post(string url, string token, string body, out int status)
+        {
+            status = 0;
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = "POST";
+                req.ContentType = "application/json";
+                req.Headers.Add("Authorization", "Bearer " + token);
+                /* Longer than the endpoint's own wait, so a long poll that answers at the last moment is an
+                   answer rather than a timeout this end invented. */
+                req.Timeout = 90000;
+                req.ReadWriteTimeout = 90000;
+                req.KeepAlive = false;
+
+                byte[] payload = Encoding.UTF8.GetBytes(body);
+                req.ContentLength = payload.Length;
+                using (Stream s = req.GetRequestStream()) s.Write(payload, 0, payload.Length);
+
+                using (HttpWebResponse res = (HttpWebResponse)req.GetResponse())
+                {
+                    status = (int)res.StatusCode;
+                    using (StreamReader r = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                        return r.ReadToEnd();
+                }
+            }
+            catch (WebException ex)
+            {
+                HttpWebResponse res = ex.Response as HttpWebResponse;
+                if (res != null)
+                {
+                    status = (int)res.StatusCode;
+                    try
+                    {
+                        using (StreamReader r = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                            return r.ReadToEnd();
+                    }
+                    catch { return null; }
+                }
+                return null;
+            }
+            catch { return null; }
+        }
+    }
+
     /* The tray icon: what the agent looks like to a person.
      *
      * The macOS agent grew a menu bar item for a reason that applies here in reverse. There, a login item
@@ -2589,6 +3118,7 @@ namespace MouseFlow
         static System.Windows.Forms.ToolStripMenuItem _start;
         static System.Windows.Forms.ToolStripMenuItem _stop;
         static System.Windows.Forms.ToolStripMenuItem _heldNote;
+        static System.Windows.Forms.ToolStripMenuItem _taking;
         static System.Windows.Forms.ToolStripSeparator _sep;
         static System.Drawing.Icon _idleIcon;
         static System.Drawing.Icon _liveIcon;
@@ -2661,6 +3191,13 @@ namespace MouseFlow
                 _heldNote.Enabled = false;
                 _menu.Items.Add(_heldNote);
 
+                /* Taking work is the only thing this agent does because a SERVICE said so; everything
+                 * else happens because something on this machine asked. That difference belongs where the
+                 * person can see it and turn it off, which on Windows is here. */
+                _taking = new System.Windows.Forms.ToolStripMenuItem("");
+                _taking.Click += delegate { OnTaking(); };
+                _menu.Items.Add(_taking);
+
                 _sep = new System.Windows.Forms.ToolStripSeparator();
                 _menu.Items.Add(_sep);
 
@@ -2716,6 +3253,13 @@ namespace MouseFlow
             bool held = Agent.HasHeld;
             _start.Visible = !recording && !held && Agent.HookInstalled;
             _stop.Visible = recording;
+            /* Only once this PC is attached: an item that says "not taking work" to somebody who has
+               never paired is an offer to switch on something they have not got. */
+            _taking.Visible = Account.Linked;
+            _taking.Text = Account.Taking
+                ? "Taking work from your account - click to stop"
+                : "Not taking work - click to start";
+
             _heldNote.Visible = held;
             if (held)
             {
@@ -2728,6 +3272,11 @@ namespace MouseFlow
         /* Off the tray thread, both of them: EndFromTray waits up to 1.5s for the resolver - which is still
          * naming the very clicks that opened this menu - and a menu that freezes while it works reads as a
          * hung agent. */
+        static void OnTaking()
+        {
+            Account.SetTaking(!Account.Taking);
+        }
+
         static void OnStart()
         {
             Thread t = new Thread(new ThreadStart(delegate { Agent.RecordStart(0); }));
@@ -2779,6 +3328,13 @@ if ($err) { throw "Could not install the mouse hook: $err" }
 # are on disk where the first one left them. Loaded before anything can start a new recording over them.
 [MouseFlow.Agent]::LoadHeld()
 
+# Whether this PC is attached to an account, read before anything can ask for work. A missing or unreadable
+# file means "not linked", which is the safe answer - see the Account class.
+[MouseFlow.Account]::Load()
+# The one outward-facing loop. It does nothing at all until somebody switches taking on from the app, and
+# an agent that is not taking work makes no outbound call.
+[MouseFlow.Courier]::Begin()
+
 if (-not $NoTray) { [MouseFlow.Tray]::Start() }
 
 Write-Host ""
@@ -2789,6 +3345,17 @@ Write-Host "  listening   http://127.0.0.1:$Port"
 Write-Host "  origin      $AllowOrigin"
 Write-Host "  move filter $MoveThrottleMs ms / $MoveMinPx px"
 Write-Host "  can see     yes - /shot, /do and /windows are available to the app"
+# Said in the banner as well as the tray: this is the one thing the agent does because a service asked, and
+# somebody reading a console window should not have to open a menu to find out whether it is on.
+if ([MouseFlow.Account]::Linked) {
+    if ([MouseFlow.Account]::Taking) {
+        Write-Host "  account     attached - taking work (turn it off in the tray)" -ForegroundColor Yellow
+    } else {
+        Write-Host "  account     attached - not taking work"
+    }
+} else {
+    Write-Host "  account     not attached - nothing reaches in"
+}
 if ($NoTray) {
     Write-Host "  tray        off (-NoTray) - start and stop from the app"
 } else {

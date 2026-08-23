@@ -42,6 +42,7 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 | POST | `/replay` | 5s | `{ok}` — starts a replay, returns immediately |
 | GET | `/replay/status` | 2.5s | `{playing, step, steps, pass, passes, index, total, unplayable}` |
 | POST | `/replay/abort` | 4s | `{ok}` |
+| POST | `/account` | 5s | `{ok, linked, taking}` — attaches this machine to an account; `DELETE` detaches |
 | POST | `/autostart/enable` | 8s | `{ok}` — needs the agent to exist as a file on disk |
 | POST | `/autostart/disable` | — | `{ok}` |
 

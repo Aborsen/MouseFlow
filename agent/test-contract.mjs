@@ -53,13 +53,40 @@ for (const route of unique) {
   check(`${route} — windows ${inPs ? 'да' : 'НЕТ'}, macos ${inSwift ? 'да' : 'НЕТ'}`, inPs && inSwift);
 }
 
+// ------------------------------------------------------------------ курьер
+/* Курьер - единственное, что агент делает не потому, что его попросили с этой машины. Обе реализации
+ * обязаны отвечать одному контракту: иначе Windows-машина молча перестаёт быть управляемой, а выясняется
+ * это только у пользователя. */
+group('курьер: обе реализации берут работу одинаково');
+check('claim идёт на ?worker=claim',
+  ps.includes('worker=claim') && swift.includes('worker=claim'));
+check('report идёт на ?worker=report',
+  ps.includes('worker=report') && swift.includes('worker=report'));
+for (const field of ['#record.start', '#record.stop']) {
+  check(`${field} понимают оба`, ps.includes(field) && swift.includes(field));
+}
+check('оба читают body и activate - это replay скилла',
+  /"body"|Text\(job, "body"\)/.test(ps) && swift.includes('job["body"]'));
+check('оба шлют wait, иначе long-poll превращается в опрос',
+  ps.includes('\\"wait\\"') && swift.includes('"wait"'));
+check('оба выключают taking при 401/403 - отказанный токен не повторяют вечно',
+  /401 \|\| status == 403/.test(ps) && /401 \|\| status == 403/.test(swift));
+check('оба стампят health на записи - версия и что агент умел в тот момент',
+  ps.includes('\\"health\\"') && swift.includes('"health"'));
+/* Токен лежит в профиле пользователя, а не рядом с бинарником. */
+check('оба держат состояние в account.json',
+  ps.includes('account.json') && swift.includes('account.json'));
+
 // ------------------------------------------------------------------ /health
 group('/health отдаёт одни и те же поля');
 /* Клиент читает эти поля по именам. Поле, которое одна реализация не присылает, - это не «чуть меньше
  * данных»: canDrain отсутствует, и приложение перестаёт предлагать долгую сессию; canName отсутствует, и
  * запись молча теряет имена. */
 for (const field of ['version', 'screen', 'recording', 'playing', 'canSee', 'canWindows', 'canName',
-  'canKeys', 'canDrain', 'autostart', 'canAutostart', 'originPinned', 'platform']) {
+  'canKeys', 'canDrain', 'autostart', 'canAutostart', 'originPinned', 'platform',
+  /* На них приложение вешает кнопку "Let Claude drive this computer": отсутствие linked означает
+   * "эта сборка не умеет", а не "выключено". */
+  'linked', 'taking']) {
   check(`${field} — в обоих`, ps.includes(`\\"${field}\\"`) && swift.includes(`\\"${field}\\"`),
     `ps ${ps.includes(`\\"${field}\\"`)}, swift ${swift.includes(`\\"${field}\\"`)}`);
 }
