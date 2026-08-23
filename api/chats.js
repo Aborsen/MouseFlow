@@ -29,6 +29,9 @@
  */
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const cors = (req, res) => {
   const origin = req.headers.origin;
@@ -214,7 +217,7 @@ async function remove(res, sql, userId, threadId) {
   return res.status(200).json({ ok: true, deleted: gone[0].id });
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');
@@ -225,6 +228,7 @@ export default async function handler(req, res) {
   try {
     who = await whoIsCalling(req, sql);
   } catch (err) {
+    await report(err, req, { route: 'chats' });
     return fail(res, 500, 'could not check who is calling: ' + err.message);
   }
   if (!who) return fail(res, 401, 'sign in first');
@@ -242,7 +246,11 @@ export default async function handler(req, res) {
   } catch (err) {
     /* The message, not a generic failure: this endpoint's errors are almost always a shape the client sent,
      * and "could not save that conversation" with nothing after it is a bug report nobody can act on. */
+    await report(err, req, { route: 'chats' });
     return fail(res, 500, 'could not reach the conversation store: ' + err.message);
   }
   return fail(res, 405, 'GET, POST or DELETE');
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'chats');

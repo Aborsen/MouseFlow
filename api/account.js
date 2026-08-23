@@ -24,6 +24,9 @@
 
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -38,7 +41,7 @@ function cors(req, res) {
 const fail = (res, status, message) =>
   res.status(status).json({ error: { type: 'account_error', message } });
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (req.method !== 'DELETE') return fail(res, 405, 'DELETE only');
@@ -50,6 +53,7 @@ export default async function handler(req, res) {
   try {
     who = await whoIsCalling(req, sql);
   } catch (err) {
+    await report(err, req, { route: 'account' });
     return fail(res, 500, 'could not check who is calling: ' + err.message);
   }
   if (!who) return fail(res, 401, 'sign in first');
@@ -88,6 +92,10 @@ export default async function handler(req, res) {
         'Your Google account is not ours to delete - sign out to finish.',
     });
   } catch (err) {
+    await report(err, req, { route: 'account' });
     return fail(res, 500, err.message);
   }
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'account');

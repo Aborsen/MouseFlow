@@ -12,6 +12,9 @@
  */
 import { keyFor, MODELS, PROVIDERS } from './_provider.js';
 import { whoIsCalling } from './_session.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const UPSTREAM = {
   anthropic: {
@@ -26,7 +29,7 @@ const UPSTREAM = {
   },
 };
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('cache-control', 'no-store');
   if (req.method !== 'GET') {
     res.status(405).json({ ok: false, error: { message: 'GET' } });
@@ -75,3 +78,6 @@ export default async function handler(req, res) {
 
   res.status(200).json({ ok: true, providers: out });
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'models');

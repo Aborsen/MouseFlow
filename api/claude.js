@@ -30,6 +30,9 @@
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { readSettings } from './admin.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const UPSTREAM = 'https://api.anthropic.com/v1/messages';
 
@@ -91,7 +94,7 @@ function fail(res, status, message) {
   res.status(status).json({ error: { type: 'proxy_error', message } });
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
 
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
@@ -226,3 +229,6 @@ export default async function handler(req, res) {
   res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
   res.send(text);
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'claude');

@@ -52,6 +52,9 @@
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { peopleFor, scopeFor } from './_team-scope.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const DAYS_DEFAULT = 30;
 const DAYS_MAX = 365;                 // a year of runs is a lot of jsonb to unroll; past that, ask again
@@ -132,7 +135,7 @@ function parseWhen(raw) {
 const iso = (v) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
 const share = (part, whole) => (num(whole) > 0 ? round(num(part) / num(whole), 4) : 0);
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (req.method !== 'GET') return fail(res, 405, 'GET only');
@@ -144,6 +147,7 @@ export default async function handler(req, res) {
   try {
     who = await whoIsCalling(req, sql);
   } catch (err) {
+    await report(err, req, { route: 'insights' });
     return fail(res, 500, 'could not check who is calling: ' + err.message);
   }
   if (!who) {
@@ -194,6 +198,7 @@ export default async function handler(req, res) {
       String((req.query && req.query.person) || '').trim() || null,
     );
   } catch (err) {
+    await report(err, req, { route: 'insights' });
     return fail(res, 500, 'could not check that team: ' + err.message);
   }
   if (scope.error) return fail(res, scope.error.status, scope.error.message);
@@ -232,6 +237,7 @@ export default async function handler(req, res) {
       ...out,
     });
   } catch (err) {
+    await report(err, req, { route: 'insights' });
     return fail(res, 500, err.message);
   }
 }
@@ -1070,3 +1076,6 @@ function gapsFor(t, idleSeconds) {
     },
   ];
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'insights');

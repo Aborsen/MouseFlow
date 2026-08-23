@@ -17,6 +17,9 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const AUTH_BASE = process.env.NEON_AUTH_BASE_URL;
 const PAGE_MAX = 50;
@@ -149,7 +152,7 @@ function installable(payload) {
   return Object.assign({}, payload, { params: publicParams(payload) });
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
@@ -166,6 +169,7 @@ export default async function handler(req, res) {
     return fail(res, 405, 'GET, POST or DELETE');
   } catch (err) {
     // The reason matters more than tidiness when a demo is failing.
+    await report(err, req, { route: 'gallery' });
     return fail(res, 500, err.message);
   }
 }
@@ -296,3 +300,6 @@ async function withdraw(req, res, sql) {
   if (!rows.length) return fail(res, 404, 'not your skill, or already withdrawn');
   return res.status(200).json({ ok: true, withdrawn: id });
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'gallery');

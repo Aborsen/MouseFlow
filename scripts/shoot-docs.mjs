@@ -448,6 +448,18 @@ async function main() {
         "window.__mf.mark('Claude asked to', 'div', 'banner')");
       if (there) {
         await wait(600);
+        /* Two shapes of the same moment, and both are wanted.
+         *
+         * The cropped one is right inline in a document, where a tall picture of a mostly-empty Record
+         * page pushes the sentence explaining it off the screen. The full-viewport one is right in the
+         * marketing site's spotlight rows, which draw every visual in one fixed 8:5 frame: a 1400x231
+         * strip in that frame is contained rather than cropped, so it sits centred against the FRAME's
+         * flat surface instead of the app's own ground, and reads as a cutout pasted on. Same pixels
+         * either way — only the amount of real page around them differs.
+         *
+         * Taken before the settings dialog is opened, so this is the banner on an otherwise ordinary
+         * Record page and not a second copy of settings-connections-attach.png. */
+        await staged.shot('record-waiting-full.png');
         await staged.shotElement('record-waiting.png', '[data-shot="banner"]', 90);
       } else {
         console.log('  SKIPPED record-waiting.png - the banner never appeared');
@@ -501,6 +513,10 @@ async function main() {
       /* The card, not the window it happens to be centred in: the consent page is one small panel on a
        * large ground, and a full-viewport capture of it is nine parts empty. */
       await consent.shotElement('oauth-consent.png', 'main', 26);
+      /* And the whole window, for the marketing site — see the note on record-waiting-full above. Nine
+       * parts empty is the wrong trade inline and the right one in a fixed 8:5 frame, because there the
+       * empty part is the consent page's real ground rather than a panel's flat fill. */
+      await consent.shot('oauth-consent-full.png');
     } finally {
       consent.close();
     }

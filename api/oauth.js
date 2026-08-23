@@ -29,6 +29,9 @@
 import { neon } from '@neondatabase/serverless';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { whoIsCalling } from './_session.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const CODE_TTL_MS = 5 * 60 * 1000;
 const ACCESS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -398,7 +401,7 @@ async function forget(req, res, sql, who) {
 
 /* ------------------------------------------------------------------------------- the route */
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -451,3 +454,6 @@ export default async function handler(req, res) {
     return oops(res, 500, 'server_error', err.message);
   }
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'oauth');

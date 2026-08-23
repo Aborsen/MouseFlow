@@ -45,6 +45,9 @@ import { whoIsCalling } from './_session.js';
  * to be right. */
 import { manages, peopleFor, roleOf } from './_team-scope.js';
 import { invitationMail, mailProblem, sendMail } from './_mail.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const NAME_MAX = 60;
 const TEAMS_PER_PERSON = 20;
@@ -438,7 +441,7 @@ async function deleteTeam(sql, who, teamId) {
 
 /* ------------------------------------------------------------------------------- the route */
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');
@@ -519,6 +522,10 @@ export default async function handler(req, res) {
 
     return fail(res, 405, 'GET, POST, PATCH or DELETE');
   } catch (err) {
+    await report(err, req, { route: 'team' });
     return fail(res, 500, err.message);
   }
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'team');

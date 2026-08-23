@@ -70,6 +70,9 @@
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { transcribe, removeSteps } from './_transcript.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const ID_MAX = 80;                    // the width api/sync.js stores a client id at
 const BODY_MAX_BYTES = 100_000;
@@ -233,7 +236,7 @@ function fit(payload) {
 
 /* ------------------------------------------------------------------------------ the route */
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (req.method !== 'GET' && req.method !== 'POST') {
@@ -249,6 +252,7 @@ export default async function handler(req, res) {
   try {
     who = await whoIsCalling(req, sql);
   } catch (err) {
+    await report(err, req, { route: 'transcript' });
     return fail(res, 500, 'could not check who is calling: ' + err.message);
   }
   if (!who) {
@@ -273,6 +277,7 @@ export default async function handler(req, res) {
     return await edit(req, res, sql, who.id, flowId);
   } catch (err) {
     if (err instanceof Halt) return fail(res, err.status, err.message);
+    await report(err, req, { route: 'transcript' });
     return fail(res, 500, err.message);
   }
 }
@@ -690,3 +695,6 @@ function said(payload, remaining) {
     undo: entry && Number.isInteger(entry.revision) ? { revision: entry.revision } : null,
   };
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'transcript');

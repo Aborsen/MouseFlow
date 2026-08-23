@@ -837,6 +837,45 @@ check('source maps are uploaded only when a token is present, and the build neve
 check('and they are deleted after upload, so they are not served from the CDN',
   /filesToDeleteAfterUpload/.test(viteConfig));
 
+/* The server half. The bug that motivated it was CAUGHT and turned into a 500 by the route's own handler,
+ * so an outer wrapper alone would have missed it — which is why both paths are checked here. */
+group('a server crash reaches Sentry, handled or not');
+const reporter = read('../api/_report.js');
+check('the envelope is three lines: header, item header, event',
+  /JSON\.stringify\(\{ event_id: id, sent_at/.test(reporter)
+  && /JSON\.stringify\(\{ type: 'event' \}\)/.test(reporter));
+check('sent to the envelope endpoint with the DSN key, at version 7',
+  /\/api\/\$\{dsn\.project\}\/envelope\/\?sentry_key=\$\{dsn\.key\}&sentry_version=7/.test(reporter));
+check('the scheme comes from the DSN rather than being assumed https',
+  /protocol: url\.protocol/.test(reporter));
+check('the innermost frame goes LAST, which is the order Sentry draws',
+  /return frames\.reverse\(\);/.test(reporter));
+check('node internals are marked not-in-app, or a trace is forty frames of runtime',
+  /in_app: !filename\.startsWith\('node:'\)/.test(reporter));
+check('the request carries the route and NOT the query string, the body or the headers',
+  /String\(req\.url \|\| ''\)\.split\('\?'\)\[0\]/.test(reporter)
+  && !/req\.headers/.test(reporter));
+check('no DSN means it does nothing at all', /if \(!dsnOf\(\)\) return;/.test(reporter));
+check('and reporting never throws on top of the failure it is reporting',
+  /catch \(_\) \{[\s\S]{0,200}?return false;/.test(reporter));
+check('it is awaited before responding, since a function can be frozen the instant it returns',
+  /await report\(err, req/.test(read('../api/insights.js')));
+
+/* Every route that turns an exception into a 500 has to say so, or the commonest failure stays invisible. */
+let silent = [];
+for (const file of readdirSync(fileURLToPath(new URL('../api/', import.meta.url))).filter((f) => f.endsWith('.js'))) {
+  const text = readFileSync(fileURLToPath(new URL('../api/' + file, import.meta.url)), 'utf8');
+  for (const [, before] of text.matchAll(/([\s\S]{160})return fail\(res, 500,/g)) {
+    if (!/await report\(/.test(before)) silent.push(file);
+  }
+}
+check('no route answers 500 without reporting it', silent.length === 0, [...new Set(silent)].join(', '));
+check('and the routes carry the outer net too',
+  readdirSync(fileURLToPath(new URL('../api/', import.meta.url)))
+    .filter((f) => f.endsWith('.js') && !f.startsWith('_') && f !== 'well-known.js' && f !== 'auth.js')
+    .every((f) => /export default wrap\(/.test(
+      readFileSync(fileURLToPath(new URL('../api/' + f, import.meta.url)), 'utf8'))));
+
 /* A picture that 404s is the documentation's version of the same bug. */
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));

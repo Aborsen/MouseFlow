@@ -26,6 +26,9 @@
 import { neon } from '@neondatabase/serverless';
 import { randomBytes } from 'node:crypto';
 import { whoIsCalling, hashToken, DEVICE_TOKEN_PREFIX } from './_session.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const FLOWS_MAX = 300;        // per push
 const RUNS_MAX = 100;
@@ -50,7 +53,7 @@ const fail = (res, status, message) =>
 
 const text = (value, max) => (value == null ? null : String(value).slice(0, max));
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');
@@ -62,6 +65,7 @@ export default async function handler(req, res) {
   try {
     who = await whoIsCalling(req, sql);
   } catch (err) {
+    await report(err, req, { route: 'sync' });
     return fail(res, 500, 'could not check who is calling: ' + err.message);
   }
   if (!who) {
@@ -86,6 +90,7 @@ export default async function handler(req, res) {
     if (req.method === 'POST') return await push(req, res, sql, who);
     return fail(res, 405, 'GET, POST or DELETE');
   } catch (err) {
+    await report(err, req, { route: 'sync' });
     return fail(res, 500, err.message);
   }
 }
@@ -308,3 +313,6 @@ async function push(req, res, sql, who) {
     problems,
   });
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'sync');

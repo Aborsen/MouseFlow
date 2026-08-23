@@ -42,6 +42,9 @@ import { whoIsCalling } from './_session.js';
 import { structureOf, wireFor } from './_skill-schema.mjs';
 import { flowBody, parseMacro, summarize } from './_macro.mjs';
 import { flowFor } from './_flow-for.mjs';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const NEWEST = '2025-06-18';
@@ -833,7 +836,7 @@ async function workerRoute(action, req, res, sql, who) {
 
 /* ------------------------------------------------------------------------------- the route */
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
@@ -974,3 +977,6 @@ export default async function handler(req, res) {
     res.status(200).json(rpcError(id, -32603, err.message));
   }
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'mcp');

@@ -66,6 +66,9 @@ import { whoIsCalling } from './_session.js';
 import { ask, MODELS, DEFAULT_MODEL, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
 import { recordingTools } from './_recording-tools.js';
 import { readSettings } from './admin.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 /* The assistant's model when the caller named none: the admin's choice first, then the provider default -
  * OpenAI when this deployment has that key, Anthropic otherwise. One function, because the GET probe and
@@ -1219,7 +1222,7 @@ async function probe(res) {
   });
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   cors(req, res);
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (req.method === 'GET') return await probe(res);
@@ -1237,6 +1240,7 @@ export default async function handler(req, res) {
   try {
     who = await whoIsCalling(req, sql);
   } catch (err) {
+    await report(err, req, { route: 'chat' });
     return fail(res, 500, 'could not check who is calling: ' + err.message);
   }
   if (!who) {
@@ -1272,6 +1276,7 @@ export default async function handler(req, res) {
   try {
     scope = await scopeFor(sql, who, text(body.team, 64) || null, text(body.person, 64) || null);
   } catch (err) {
+    await report(err, req, { route: 'chat' });
     return fail(res, 500, 'could not check that team: ' + err.message);
   }
   if (scope.error) return fail(res, scope.error.status, scope.error.message);
@@ -1338,6 +1343,10 @@ export default async function handler(req, res) {
     if (err instanceof NotAnAnswer) return fail(res, err.status || 502, err.message);
     // ProviderError already carries the upstream's own words and the right status, including the 503.
     if (err instanceof ProviderError) return fail(res, err.status || 502, err.message);
+    await report(err, req, { route: 'chat' });
     return fail(res, 500, err.message);
   }
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'chat');

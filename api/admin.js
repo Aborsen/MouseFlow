@@ -19,6 +19,9 @@
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { MODELS, PROVIDERS, providerFor } from './_provider.js';
+/* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
+ * deliberately sends the route and the message, never the query string or the body. */
+import { report, wrap } from './_report.js';
 
 /* ---------------------------------------------------------------- the gate */
 
@@ -230,7 +233,7 @@ function fail(res, status, error) {
   res.status(status).json({ ok: false, error });
 }
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   res.setHeader('cache-control', 'no-store');
 
   const admins = adminEmails();
@@ -313,6 +316,10 @@ export default async function handler(req, res) {
 
     return fail(res, 405, 'GET or PATCH');
   } catch (err) {
+    await report(err, req, { route: 'admin' });
     return fail(res, 500, 'admin query failed: ' + (err && err.message ? err.message : 'unknown'));
   }
 }
+
+/* The outer net: anything thrown before or around the handler's own try block. */
+export default wrap(handler, 'admin');
