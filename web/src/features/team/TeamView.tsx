@@ -479,9 +479,9 @@ export const TeamView = () => {
                     <>
                       <MailWarning className="mt-0.5 size-3.5 shrink-0 text-fb-attention" />
                       <span className="text-ink-inactive">
-                        No email leaves this deployment{mail?.problem ? ` — ${mail.problem}` : ''}. Somebody
-                        added is still in; tell them yourself, and they are in as soon as they sign up with
-                        that address and open this page.
+                        No email leaves this deployment yet{mail?.problem ? ` — ${mail.problem}` : ''}.
+                        Somebody added is still in; tell them yourself, and they are in as soon as they sign
+                        up with that address and open this page.
                       </span>
                     </>
                   )}

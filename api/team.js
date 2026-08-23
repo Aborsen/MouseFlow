@@ -320,9 +320,9 @@ async function tellThem(who, email, teamName, role, added, origin) {
     mailed: false,
     mailProblem: out.why || null,
     note: added
-      ? `${email} is in. No email could be sent (${out.why}) — tell them yourself.`
+      ? `${email} is in. No email was sent — ${out.why}. Tell them yourself.`
       : `${email} has no account here yet. They are on the list: when they sign up with that address and `
-        + `open Teams, they will be in. No email could be sent (${out.why}) — tell them yourself.`,
+        + `open Teams, they will be in. No email was sent — ${out.why}. Tell them yourself.`,
   };
 }
 

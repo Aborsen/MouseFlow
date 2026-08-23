@@ -101,16 +101,29 @@ told plainly that nothing was sent, and to say so themselves.
 
 ### Configuring it
 
+**This deployment sends nothing today**, and that is deliberate rather than unfinished: sending to an
+arbitrary address needs a verified sender, a verified sender needs a domain, and there is not one yet. The
+screenshot above is of the app in that state — the panel says plainly that no email leaves the deployment,
+and adding somebody still works exactly as it always has.
+
+Turning it on is two variables and no code:
+
 | | |
 |---|---|
 | `RESEND_API_KEY` | from resend.com |
-| `MAIL_FROM` | a verified sender, e.g. `MouseFlow <team@yourdomain>` |
+| `MAIL_FROM` | a verified sender on a domain you own, e.g. `MouseFlow <team@yourdomain>` |
 
-There is **no default sender** on purpose: a provider's sandbox address delivers only to the account holder,
-which looks like it is working in testing and like nothing at all in production. With either variable
-missing, `GET /api/team` answers `mail: { configured: false, problem }` and the page says so *before* an
-address is typed — being told "no email could be sent" after inviting four colleagues is the wrong minute to
-find out.
+There is **no default sender** on purpose. A provider's sandbox address (`onboarding@resend.dev` and its
+equivalents) delivers only to the address that owns the provider account, so it looks like it is working in
+testing and reaches nobody in production — which is worse than sending nothing, because nothing is at least
+reported. With either variable missing, `GET /api/team` answers
+`mail: { configured: false, problem: 'RESEND_API_KEY and MAIL_FROM are not set' }` and the page says so
+*before* an address is typed: being told "no email was sent" after inviting four colleagues is the wrong
+minute to find out.
+
+`api/_mail.js` is the only file that knows which provider this is. It is one `fetch` against one HTTP API
+with no dependency, so swapping Resend for something else is a change to that file and nothing else — the
+invitation's wording, every screen and the row-is-the-invitation rule are all outside it.
 
 An invitation that is still waiting can be sent again from the roster. Sending is capped at **25 per account
 per hour**, counted from the invite rows themselves rather than from an in-process counter that a fresh

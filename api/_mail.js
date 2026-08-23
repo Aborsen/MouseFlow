@@ -36,15 +36,20 @@ export const looksLikeEmail = (value) => typeof value === 'string' && /^[^@\s]+@
 
 export const mailConfigured = () => Boolean(process.env.RESEND_API_KEY && process.env.MAIL_FROM);
 
-/** Why it is not configured, in the words of somebody who has to go and fix it. */
+/* Why it is not configured - the CAUSE only, with no sentence around it.
+ *
+ * It used to return a whole sentence ("no mail is sent from this deployment: ..."), and every caller
+ * already had a sentence of its own to put it in. So the panel read "No email leaves this deployment - no
+ * mail is sent from this deployment: RESEND_API_KEY and MAIL_FROM are not set", which is the same thing
+ * said twice and reads as a bug. The cause belongs to this file; the framing belongs to whoever is
+ * speaking. */
 export function mailProblem() {
   const missing = [
     process.env.RESEND_API_KEY ? null : 'RESEND_API_KEY',
     process.env.MAIL_FROM ? null : 'MAIL_FROM',
   ].filter(Boolean);
   if (!missing.length) return null;
-  return `no mail is sent from this deployment: ${missing.join(' and ')} `
-    + `${missing.length > 1 ? 'are' : 'is'} not set`;
+  return `${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not set`;
 }
 
 /**

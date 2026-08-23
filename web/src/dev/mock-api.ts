@@ -629,9 +629,12 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           { id: 't_dev1', name: 'Operations', role: 'owner', members: 3, created_at: hoursAgo(720) },
           { id: 't_dev2', name: 'Finance', role: 'admin', members: 2, created_at: hoursAgo(300) },
         ],
-        /* The configured deployment, because that is the path the screen is written for: what is emailed,
-         * and the button that sends it again. The other branch is one sentence of text. */
-        mail: { configured: true, problem: null },
+        /* UNCONFIGURED, because that is what the deployment is: no domain has been bought yet, so no
+         * sender is verified and nothing is sent. The fixture matches the live app rather than the app we
+         * intend to have — a screenshot is a claim, and one showing "they are emailed" beside a deployment
+         * that emails nothing is the wrong claim to put in a document. Flip this the day the two variables
+         * are set, and retake the pictures. */
+        mail: { configured: false, problem: 'RESEND_API_KEY and MAIL_FROM are not set' },
       });
     }
     if (method === 'GET' && query.get('id') === 't_dev2') {

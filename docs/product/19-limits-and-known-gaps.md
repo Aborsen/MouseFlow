@@ -71,6 +71,8 @@ These are not bugs and no amount of work inside the current design removes them.
 | macOS: Chrome's tab strip | Measured and **still nameless**: the hit test returns an unnamed group, climbing finds nothing, and the bounded child descent reached no tabs either (8 tab clicks, 0 named). The tabs must live in another branch, likely an `AXTabGroup` under the window. Finding it needs an AX-tree inspection of a real Chrome, not another guess. |
 | The OpenAI provider path | **Written, never run from here.** No `OPENAI_API_KEY` on the deployment. Structured so a wrong assumption fails loudly with the upstream's own message rather than silently degrading. |
 | Antivirus / EDR behaviour | **Untested.** A global mouse hook plus `SendInput` looks exactly like a RAT. |
+| Team invitation emails | **Written, never sent from here.** No `RESEND_API_KEY` / `MAIL_FROM` on the deployment — a verified sender needs a domain, and there is not one yet. The message builder and the unconfigured path are covered by the suite; the send itself has never made a real request. Invitations work regardless: the row is the invitation, and every screen says nothing was emailed. |
+| The team dashboard at a large team | **Not measured past a handful of accounts.** `/api/insights?team=` unrolls every event of every recording for every member in one read-only transaction, and it is already the most expensive read in the product for one account. A 200-person team — the schema's cap — has never been tried, and the rate limit (30/min) counts requests, not accounts. If it becomes slow, the fix is to bound the per-application unrolling by member count rather than to raise a timeout. |
 
 ---
 
