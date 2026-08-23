@@ -876,6 +876,29 @@ check('and the routes carry the outer net too',
     .every((f) => /export default wrap\(/.test(
       readFileSync(fileURLToPath(new URL('../api/' + f, import.meta.url)), 'utf8'))));
 
+/* A goal skill needs a model in the loop, so it runs through mcp/worker.mjs rather than through the agent.
+ * That was a macOS-only story: there was an installer for the Mac and nothing at all for Windows, so a
+ * Windows user could be driven for RECORDED skills and not for created ones. */
+group('the worker can be installed on either platform');
+const mac = read('../mcp/install-worker-mac.sh');
+const win = read('../mcp/install-worker-windows.ps1');
+check('both refuse anything that is not a device token',
+  /mf_\*\)/.test(mac) && /StartsWith\('mf_'\)/.test(win));
+check('both read the token without echoing it',
+  /read -rs TOKEN/.test(mac) && /-AsSecureString/.test(win));
+check('both refuse a Node older than 22.18, which the worker needs',
+  /22 \] \|\| \{ \[ "\$NODE_MAJOR" -eq 22 \] && \[ "\$NODE_MINOR" -lt 18/.test(mac)
+  && /major -lt 22 -or \(\$major -eq 22 -and \$minor -lt 18\)/.test(win));
+check('both take the same three settings',
+  ['MOUSEFLOW_TOKEN', 'MOUSEFLOW_URL', 'MOUSEFLOW_AGENT_PORT'].every((k) => mac.includes(k) && win.includes(k)));
+check('both can say whether it is running, and both can remove it',
+  /--status/.test(mac) && /--uninstall/.test(mac) && /\$Status/.test(win) && /\$Uninstall/.test(win));
+check('both write somewhere readable, since a worker that cannot reach the account says so there',
+  /StandardErrorPath/.test(mac) && /worker\.log/.test(win));
+/* The one place they genuinely differ, and it is a platform fact rather than an omission. */
+check('the Windows one says it has no KeepAlive, because the Startup folder has none',
+  /does not restart it if it dies/.test(win));
+
 /* A picture that 404s is the documentation's version of the same bug. */
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));

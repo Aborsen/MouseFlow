@@ -393,6 +393,19 @@ turn, in waves. That path types, and adapts to a window that has moved, at the c
 step. The agent has no model in it, so a created skill still needs `mcp/worker.mjs` on the machine; the
 claim says which kind a job is rather than leaving the claimer to guess.
 
+There is an installer for each platform, so the worker is a login item rather than a terminal somebody has
+to keep open:
+
+| | |
+|---|---|
+| macOS | `bash mcp/install-worker-mac.sh` — a launchd job, with `KeepAlive`, so it comes back if it dies |
+| Windows | `powershell -ExecutionPolicy Bypass -File mcp\install-worker-windows.ps1` — a Startup-folder item |
+
+Both take the token without echoing it, refuse anything that is not a `mf_` device token, refuse a Node
+older than 22.18, and answer `--status` / `-Status` and `--uninstall` / `-Uninstall`. They differ in one way
+that is a platform fact rather than an omission: launchd restarts a job that dies and the Startup folder does
+not, so the Windows one says so and `-Status` is how you find out.
+
 Either way the run is logged to the account (`kind: 'replay'` or `'agent'`, with `flowId`), so the dashboard
 and the assistant see it like any other.
 
