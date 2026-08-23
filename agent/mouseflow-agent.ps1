@@ -400,10 +400,6 @@ namespace MouseFlow
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
         static IntPtr _hook = IntPtr.Zero;
-
-        /* Whether the low-level hook is installed, for the courier - which has to refuse a recording the
-           same way /record/start does rather than start one that would capture nothing. */
-        public static bool HookInstalled { get { return _hook != IntPtr.Zero; } }
         static Native.HookProc _kbProc; // same reason, separately rooted
         static IntPtr _kbHook = IntPtr.Zero;
 
