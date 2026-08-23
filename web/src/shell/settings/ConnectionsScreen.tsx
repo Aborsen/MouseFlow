@@ -227,16 +227,29 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
       {health && health.linked !== undefined && (
         <Row
           label="Let Claude drive this computer"
+          /* Where the switch IS, in the words of the machine you are actually on.
+           *
+           * This said “Let My AI Act On This Mac”, in the menu bar, “the cursor icon at the top of the
+           * screen” — on Windows, where there is no menu bar, no cursor icon at the top of the screen and
+           * the item is worded differently. It was written when only a Mac could be attached at all, and
+           * it survived the Windows agent gaining the same ability. `health.platform` is reported by the
+           * agent itself, so it is a fact about the machine rather than a guess from a user-agent string. */
           note={health.linked
             ? (health.taking
               ? 'On. A connected AI can ask this computer to start or stop a recording, or to run one of '
-                + 'your skills. The switch is “Let My AI Act On This Mac” in the agent’s own menu — the '
-                + 'cursor icon at the top of the screen — or detach it here.'
-              : 'Attached, but switched off. Turn on “Let My AI Act On This Mac” in the agent’s menu, the '
-                + 'cursor icon at the top of the screen.')
+                + 'your skills. ' + (health.platform === 'windows'
+                  ? 'The switch is in the agent’s tray menu, in the notification area — or detach it here.'
+                  : 'The switch is “Let My AI Act On This Mac” in the agent’s own menu — the cursor icon at '
+                    + 'the top of the screen — or detach it here.')
+              : 'Attached, but switched off. ' + (health.platform === 'windows'
+                ? 'Turn it back on from the agent’s tray menu, in the notification area.'
+                : 'Turn on “Let My AI Act On This Mac” in the agent’s menu, the cursor icon at the top of '
+                  + 'the screen.'))
             : 'Nothing can reach this computer from outside; it asks. Attaching lets it ask your account for '
               + 'work, so an AI connected to MouseFlow can start a recording here or run a skill. Off until '
-              + 'you say otherwise, and the agent’s menu bar is where you turn it off again.'}
+              + 'you say otherwise, and ' + (health.platform === 'windows'
+                ? 'the agent’s tray menu is where you turn it off again.'
+                : 'the agent’s menu bar is where you turn it off again.')}
         >
           <Button
             variant={health.linked ? 'ghost' : 'secondary'}

@@ -899,6 +899,15 @@ check('both write somewhere readable, since a worker that cannot reach the accou
 check('the Windows one says it has no KeepAlive, because the Startup folder has none',
   /does not restart it if it dies/.test(win));
 
+/* Copy that names a mechanism only one platform has is copy that is wrong on the other. It said "the
+ * cursor icon at the top of the screen" to Windows users the day Windows could be attached at all. */
+group('the app describes the machine somebody is actually on');
+const conn = read('../web/src/shell/settings/ConnectionsScreen.tsx');
+check('the attach panel branches on the platform the agent reports',
+  /health\.platform === 'windows'/.test(conn));
+check('and Windows is told about a tray, not a menu bar',
+  /tray menu, in the notification area/.test(conn));
+
 /* A picture that 404s is the documentation's version of the same bug. */
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));
