@@ -90,10 +90,24 @@ Teams page, and a line telling them to delete it if they do not recognise it. It
 are in, here it is" for somebody who already has an account with that address, and "create one with this
 address" for somebody who does not.
 
-**The link is a place, not a key.** It points at `/team` and carries no token, so opening it as the wrong
-person joins nothing. That is deliberate, and it is why there is no "click here to accept": a tokenised join
-link means anybody who ever sees the message — a forward, a shared inbox, a mail log — can take the seat it
-was meant for. An address-bound row cannot be handed on.
+**The link is a place, not a key.** It carries no token, so opening it as the wrong person joins nothing.
+That is deliberate, and it is why there is no "click here to accept": a tokenised join link means anybody who
+ever sees the message — a forward, a shared inbox, a mail log — can take the seat it was meant for. An
+address-bound row cannot be handed on.
+
+Which place depends on the reader, and getting this wrong was a real bug: both links used to point at
+`/team`, and everything in this product sits behind a **sign-in** card. So the message told a newcomer to
+create an account with that address, and the page it named offered them a password they had never set. Now:
+
+| | Lands on |
+|---|---|
+| Already has an account with that address | `/team` — the sign-in wall keeps the address, so signing in arrives there |
+| No account yet | `/sign-up?next=/team&email=<their address>` — the address is prefilled, and creating the account lands on the team |
+
+`next` is checked against an allowlist of this app's own pages (`web/src/features/auth/shared.tsx`), because
+it arrives in a link anybody can write and "any path starting with a slash" is what an open redirect is made
+of. The sign-in wall also carries a **Create an account** link now, keeping whichever page somebody was
+trying to reach.
 
 Because of that, a message that never arrives costs a **conversation**, not a seat. If mail is not
 configured on the deployment, everything works exactly as it did before it existed: the person adding is

@@ -109,6 +109,15 @@ const esc = (s) => String(s == null ? '' : s)
  * nothing to do with them.
  */
 export function invitationMail({ teamName, inviterName, inviterEmail, toEmail, url, hasAccount, role }) {
+  /* Two different doors, because they are two different jobs.
+   *
+   * Somebody who already has an account wants the team; somebody who does not has to make one first, and
+   * sending them to /team put them in front of a SIGN-IN card offering a password they had never set. So
+   * the newcomer's link goes to the sign-up page instead, carrying the address the invitation was sent to
+   * and the page to land on once the account exists — both of which the message has already promised. */
+  const link = hasAccount
+    ? url
+    : `${url.replace(/\/team$/, '')}/sign-up?next=%2Fteam&email=${encodeURIComponent(toEmail || '')}`;
   const who = inviterName && inviterEmail && inviterName !== inviterEmail
     ? `${inviterName} (${inviterEmail})`
     : inviterEmail || inviterName || 'Somebody';
@@ -136,7 +145,7 @@ export function invitationMail({ teamName, inviterName, inviterEmail, toEmail, u
     `${who} ${verb} “${team}” on MouseFlow.`,
     '',
     next,
-    url,
+    link,
     '',
     privacy,
     '',
@@ -152,7 +161,7 @@ export function invitationMail({ teamName, inviterName, inviterEmail, toEmail, u
     </p>
     <p style="margin:0 0 18px;font-size:15px;line-height:1.5">${esc(next)}</p>
     <p style="margin:0 0 22px">
-      <a href="${esc(url)}" style="display:inline-block;background:#1c1d21;color:#fff;text-decoration:none;padding:11px 18px;border-radius:8px;font-size:14px;font-weight:600">Open Teams</a>
+      <a href="${esc(link)}" style="display:inline-block;background:#1c1d21;color:#fff;text-decoration:none;padding:11px 18px;border-radius:8px;font-size:14px;font-weight:600">Open Teams</a>
     </p>
     <p style="margin:0 0 18px;font-size:13px;line-height:1.55;color:#5b5d66">${esc(privacy)}</p>
     <p style="margin:0;padding-top:16px;border-top:1px solid #e6e7eb;font-size:12px;line-height:1.55;color:#84868f">

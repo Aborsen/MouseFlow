@@ -729,10 +729,32 @@ check('it says to delete the message if they do not recognise it',
   /delete this email/i.test(waiting.text) && /delete this email/i.test(waiting.html));
 check('and that nothing of theirs was opened by it', /nothing of yours was/i.test(waiting.text));
 
-/* The security property of the whole feature, in one check: the link is a place, not a key. */
-const links = [...waiting.text.matchAll(/https?:\/\/\S+/g)].map((m) => m[0]);
-check('the link carries no token - it is the Teams page and nothing else',
-  links.length === 1 && links[0] === 'https://mouseflowapp.vercel.app/team', links.join(' '));
+/* The security property of the whole feature: the link is a PLACE, not a key. Two places, because the two
+ * readers have different next steps - and neither carries anything that would let the holder of a
+ * forwarded message take the seat. */
+const linksIn = (mail) => [...mail.text.matchAll(/https?:\/\/\S+/g)].map((m) => m[0]);
+const waitingLinks = linksIn(waiting);
+const alreadyLinks = linksIn(already);
+check('somebody who already has an account is sent to the Teams page',
+  alreadyLinks.length === 1 && alreadyLinks[0] === 'https://mouseflowapp.vercel.app/team',
+  alreadyLinks.join(' '));
+check('and somebody who does not is sent to SIGN UP, not to a sign-in wall',
+  waitingLinks.length === 1 && waitingLinks[0].startsWith('https://mouseflowapp.vercel.app/sign-up?'),
+  waitingLinks.join(' '));
+check('carrying where to land and the address it was sent to, and nothing else',
+  /next=%2Fteam/.test(waitingLinks[0]) && /email=newcomer%40example\.dev/.test(waitingLinks[0])
+  && !/token|code|key|secret|invite=/i.test(waitingLinks[0]), waitingLinks[0]);
+
+/* And the page that link names has to accept where it was told to go. An allowlist, because `next` arrives
+ * in a link anybody can write. */
+const shared = read('../web/src/features/auth/shared.tsx');
+check('sign-up lands only on this app\'s own places, never on an arbitrary path',
+  /const LANDINGS = \[/.test(shared) && /LANDINGS\.includes\(asked\)/.test(shared));
+check('and /team is one of them, since an invitation names it', /'\/team'/.test(shared));
+check('the sign-up page reads that destination rather than always going to Record',
+  /nextFrom\(location\.search\)/.test(read('../web/src/features/auth/SignUpView.tsx')));
+check('and the wall offers a way to create an account at all',
+  /\/sign-up\?next=/.test(read('../web/src/shell/SignInWall.tsx')));
 check('the row is written before anything is sent, so a lost message costs a conversation, not a seat',
   teamApi.indexOf('insert into team_invite') < teamApi.indexOf('const post = await tellThem'));
 

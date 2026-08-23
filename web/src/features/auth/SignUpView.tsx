@@ -24,12 +24,19 @@ import { Typography } from '@insightis/ui/Typography';
 import { signInWithGoogle } from '@/lib/api';
 import {
   AuthCard, Banner, FIELD, GoogleButton, PasswordField, PasswordRules,
-  authPost, passwordOk, saySo,
+  authPost, emailFrom, nextFrom, passwordOk, saySo,
 } from './shared';
 
 export const SignUpView = () => {
+  /* Where to go once there is an account, and which address to start from.
+   *
+   * Both come from the link that sent them here, and both exist because of one message: a team invitation
+   * says "create an account with THIS address and you will be in" — so arriving at an empty form that then
+   * lands on Record makes the reader do the remembering, and leaves them with no sign that any of it
+   * worked. Read once, at mount: a later navigation within the app does not re-run sign-up. */
+  const [landing] = useState(() => nextFrom(location.search));
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(() => emailFrom(location.search));
   const [password, setPassword] = useState('');
   const [again, setAgain] = useState('');
   const [busy, setBusy] = useState<'email' | 'google' | 'resend' | 'code' | null>(null);
@@ -95,7 +102,7 @@ export const SignUpView = () => {
         location.replace('/sign-in?verified=1');
         return;
       }
-      location.replace('/record');
+      location.replace(landing);
     } catch (err) {
       setFailed(saySo(err));
       setBusy(null);
@@ -205,7 +212,7 @@ export const SignUpView = () => {
           setBusy('google');
           setFailed(null);
           try {
-            location.href = await signInWithGoogle('/record');
+            location.href = await signInWithGoogle(landing);
           } catch (err) {
             setFailed(saySo(err));
             setBusy(null);

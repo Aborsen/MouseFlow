@@ -18,6 +18,37 @@ import { cn } from '@insightis/ui/cn';
 
 /* Better Auth answers a failure with a message and a code. The code is the part worth branching on - the
  * message is prose and changes - so both are kept and the caller decides. */
+/* Where a sign-in or a sign-up may send somebody afterwards.
+ *
+ * An ALLOWLIST of this app's own places, not "any path starting with a slash": `?next=` arrives in a link
+ * that anybody can write - an invitation email, a shared URL - and the rule that sounds reasonable is
+ * exactly the one an open redirect is built out of. Anything unrecognised falls through to Record, which
+ * is where a sign-in goes anyway.
+ *
+ * `/team` is on it because an invitation email names it: the whole point of that message is to land
+ * somebody on the team they were added to, and before this it landed them on Record with no idea whether
+ * anything had worked. */
+const LANDINGS = ['/record', '/team', '/skills', '/dashboard', '/gallery', '/create', '/connect'];
+
+export function nextFrom(search: string): string {
+  try {
+    const asked = new URLSearchParams(search).get('next');
+    return asked && LANDINGS.includes(asked) ? asked : '/record';
+  } catch (_) {
+    return '/record';
+  }
+}
+
+/** An address a link offered to prefill. Only ever a convenience — the service still decides. */
+export function emailFrom(search: string): string {
+  try {
+    const asked = new URLSearchParams(search).get('email') || '';
+    return asked.includes('@') ? asked.slice(0, 200) : '';
+  } catch (_) {
+    return '';
+  }
+}
+
 export class AuthError extends Error {
   code: string;
   status: number;

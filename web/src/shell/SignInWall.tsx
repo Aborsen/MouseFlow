@@ -239,6 +239,23 @@ export const SignInWall = ({ problem, onSignIn }: Props) => {
           Continue with Google
         </Button>
 
+        {/* The way OUT of this card for somebody who has never been here.
+          *
+          * This wall is a sign-IN form, and it was the only thing behind every address in the product —
+          * including /team, which is what a team invitation asks people to open. So the message said
+          * "create an account with this address" and the page it named offered no way to create one; the
+          * reader's options were a password they had never set, or Google. The current path travels along,
+          * so signing up returns them to the page they were trying to reach rather than to Record. */}
+        <Typography variant="p" className="text-center text-ink-secondary text-[0.82rem]">
+          New here?{' '}
+          <a
+            href={`/sign-up?next=${encodeURIComponent(location.pathname)}`}
+            className="font-semibold text-brand-primary underline-offset-2 hover:underline"
+          >
+            Create an account
+          </a>
+        </Typography>
+
         <Typography variant="p" className="text-center text-ink-inactive text-xs">
           Signing in identifies your flows and keeps a log of your runs against your account. Nothing is
           published to the gallery unless you press Publish.
