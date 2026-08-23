@@ -1,0 +1,38 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "title": "Option A — Roster table", "x": 0, "y": 0, "w": 1440, "h": 900 },
+    { "file": "PeopleCards.dc.html", "title": "Option B — People cards", "x": 1560, "y": 0, "w": 1440, "h": 900 },
+    { "file": "Workspace.dc.html", "title": "Option C — Workspace tabs", "x": 3120, "y": 0, "w": 1440, "h": 900 }
+  ],
+  "annotations": [
+    {
+      "id": "opt-a",
+      "x": 0,
+      "y": -150,
+      "w": 420,
+      "text": "OPTION A — Roster table\n\nOne full-width surface. Teams become a segmented control, so the left column disappears and the table gets the whole page. An invitation is a ROW, not a separate list — somebody who is not here yet.\n\nBest for: teams that keep growing, and anyone who wants to compare people at a glance.\nTradeoff: the most utilitarian of the three. Reads like an admin console, not like your team."
+    },
+    {
+      "id": "opt-b",
+      "x": 1560,
+      "y": -150,
+      "w": 420,
+      "text": "OPTION B — People cards\n\nA card per person, with the SHAPE of their fortnight, not just its total — the ten bars are runs per day, red where they failed. Pending invitations are cards in the same grid.\n\nBest for: 3–12 people, where the team is a group of humans rather than rows.\nTradeoff: stops working past ~20 people, and one screen holds far fewer of them."
+    },
+    {
+      "id": "opt-c",
+      "x": 3120,
+      "y": -150,
+      "w": 420,
+      "text": "OPTION C — Workspace tabs\n\nMembers / Invitations / Shared skills / Settings. The page stops being one long scroll, and deleting a team moves out of the main view into Settings where it belongs.\n\nBest for: several teams, and keeping destructive actions away from everyday ones.\nTradeoff: everything is one click further away, and you can no longer see the whole team at once."
+    },
+    {
+      "id": "shared-notes",
+      "x": 0,
+      "y": 980,
+      "w": 900,
+      "text": "All three keep what the current page gets right: the privacy line stays visible (a team opens activity, never content), roles stay editable inline for an owner, and the route through to the team dashboard is one click from here.\n\nAll three also fix the same two things: \"ADD SOMEBODY\" is no longer a whole panel for one input, and \"Delete this team\" is no longer a red link sitting loose at the bottom of the page.\n\nMix and match — the picker from B and the table from A is a real option."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}

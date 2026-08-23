@@ -1692,16 +1692,16 @@ export const InsightsView = () => {
       {/* Narrow: the same panel, over the page, because 26rem beside a dashboard leaves neither readable. */}
       {assistant === 'open' && !wide && (
         <div className="fixed inset-0 z-40 flex flex-col bg-surface-page">
-          <div className="flex items-center gap-2 border-stroke border-b px-4 py-2.5">
-            <Typography variant="span" weight="semibold" className="text-[0.95rem]">Ask about this</Typography>
-            <Button variant="ghost" size="sm" className="ms-auto" onClick={() => setAssistant('closed')}>Close</Button>
-          </div>
+          {/* No title bar of its own any more: the panel's header names itself and carries a close button,
+            * and two rows of chrome saying the same thing was the overlay repeating the panel. No minimise
+            * here — there is no rail to minimise into at this width. */}
           <ChatView
             key={`${teamShown?.team?.id ?? 'mine'}:${personShown?.id ?? 'all'}`}
             embedded
             opening={opening}
             team={teamShown?.team ?? null}
             person={personShown}
+            onClose={() => setAssistant('closed')}
           />
         </div>
       )}

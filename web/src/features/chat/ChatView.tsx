@@ -566,27 +566,38 @@ export const ChatView = ({ embedded = false, opening, team, person, onMinimize, 
           </>
         )}
 
-        <div className={cn('flex flex-wrap items-center gap-2', !embedded && 'mt-3')}>
-          {/* A name, not a model id. Which model answered is a fact about the deployment, not a decision to
-              put in front of somebody asking where their week went - the panel uses whatever OPENAI_MODEL
-              names and says nothing about it unless a request fails. The picker survives on the /chat page,
-              where choosing is reasonable. */}
-          <Typography variant="span" weight="semibold" className="text-[0.92rem]">
-            Insightis agent
-          </Typography>
+        {/* TWO ROWS in the panel, one on the page.
+          *
+          * At 416px the single row ran out of width the moment the panel gained a scope label and its own
+          * window controls: the name, a team name, New chat, History, minimise and close do not fit, and
+          * flex-wrap broke them at whatever point happened to be tight. So the identity - who is answering,
+          * and about whom - gets a line of its own, and the controls get theirs: History at the left where
+          * reading starts, and the three that act on the panel itself gathered at the right. */}
+        <div className={cn(embedded ? 'flex flex-col gap-1.5' : 'flex flex-wrap items-center gap-2 mt-3')}>
+          <div className={cn('flex items-center gap-2', !embedded && 'contents')}>
+            {/* A name, not a model id. Which model answered is a fact about the deployment, not a decision
+                to put in front of somebody asking where their week went - the panel uses whatever
+                OPENAI_MODEL names and says nothing about it unless a request fails. The picker survives on
+                the /chat page, where choosing is reasonable. */}
+            <Typography variant="span" weight="semibold" className="text-[0.92rem]">
+              Insightis agent
+            </Typography>
 
           {/* Whose history this panel is reading, beside its name. Without it the same three sentences of
               interface answer about one person or about nine, and nothing on screen says which. */}
-          {team && (
-            <span
-              title={person
-                ? `Answering about ${person.name || 'one member'} in ${team.name}`
-                : `Answering about everybody in ${team.name}`}
-              className="max-w-[12rem] truncate rounded-full bg-state-hover px-2 py-0.5 text-[0.72rem] text-ink-secondary"
-            >
-              {person ? (person.name || 'one member') : team.name}
-            </span>
-          )}
+            {team && (
+              <span
+                title={person
+                  ? `Answering about ${person.name || 'one member'} in ${team.name}`
+                  : `Answering about everybody in ${team.name}`}
+                className="max-w-[12rem] truncate rounded-full bg-state-hover px-2 py-0.5 text-[0.72rem] text-ink-secondary"
+              >
+                {person ? (person.name || 'one member') : team.name}
+              </span>
+            )}
+          </div>
+
+          <div className={cn('flex items-center gap-1', !embedded && 'contents')}>
 
           {!embedded && (
             <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
@@ -612,64 +623,70 @@ export const ChatView = ({ embedded = false, opening, team, person, onMinimize, 
             </label>
           )}
 
-          <Button
-            variant="ghost"
-            size="sm"
-            className="ms-auto"
-            leftSlot={<Plus className="size-4" />}
-            disabled={asking || !turns.length}
-            onClick={newChat}
-          >
-            New chat
-          </Button>
+            {/* History first, because it is the only one that opens something to READ; the three after it
+                act on the panel. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              leftSlot={<History className="size-4" />}
+              onClick={() => {
+                setShowHistory((open) => !open);
+                if (!showHistory) void refreshHistory();
+              }}
+            >
+              History
+              {history.length > 0 && (
+                <span className="ms-1 text-ink-inactive tabular-nums">{history.length}</span>
+              )}
+            </Button>
 
-          {/* A disclosure over the thread rather than a list beside it: this panel is 416px wide on the
-            * Dashboard, and the weight is right anyway - you are reading a conversation, not browsing an
-            * archive. */}
-          <Button
-            variant="ghost"
-            size="sm"
-            leftSlot={<History className="size-4" />}
-            onClick={() => {
-              setShowHistory((open) => !open);
-              if (!showHistory) void refreshHistory();
-            }}
-          >
-            History
-            {history.length > 0 && (
-              <span className="ms-1 text-ink-inactive tabular-nums">{history.length}</span>
+            <span className="ms-auto" />
+
+            {/* A plus, not the words "New chat": at this width the label was competing with History for a
+                row that also has to hold the window controls, and the glyph is the one everything else
+                spells this action with. */}
+            <button
+              type="button"
+              onClick={newChat}
+              disabled={asking || !turns.length}
+              title="New chat"
+              aria-label="New chat"
+              className={cn(
+                'grid size-7 place-items-center rounded-md text-ink-inactive',
+                'hover:bg-state-hover hover:text-ink-primary disabled:opacity-disabled',
+              )}
+            >
+              <Plus className="size-4" />
+            </button>
+
+            {/* The panel's own window controls, last in the row where a window's controls belong. */}
+            {(onMinimize || onClose) && (
+              <span className="flex items-center gap-0.5 border-stroke border-s ps-1">
+                {onMinimize && (
+                  <button
+                    type="button"
+                    onClick={onMinimize}
+                    title="Minimise — keeps this conversation, one click to bring it back"
+                    aria-label="Minimise the assistant"
+                    className="grid size-7 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+                  >
+                    <Minus className="size-4" />
+                  </button>
+                )}
+                {onClose && (
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    title="Close the assistant"
+                    aria-label="Close the assistant"
+                    className="grid size-7 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+                  >
+                    <X className="size-4" />
+                  </button>
+                )}
+              </span>
             )}
-          </Button>
-
-          {/* The panel's own window controls, last in the row where a window's controls belong. Icon-only
-              and labelled for screen readers: at 416px wide, two more worded buttons would wrap the row
-              onto a second line and eat the conversation's height. */}
-          {(onMinimize || onClose) && (
-            <span className="ms-1 flex items-center gap-0.5 border-stroke border-s ps-1.5">
-              {onMinimize && (
-                <button
-                  type="button"
-                  onClick={onMinimize}
-                  title="Minimise — keeps this conversation, one click to bring it back"
-                  aria-label="Minimise the assistant"
-                  className="grid size-7 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
-                >
-                  <Minus className="size-4" />
-                </button>
-              )}
-              {onClose && (
-                <button
-                  type="button"
-                  onClick={onClose}
-                  title="Close the assistant"
-                  aria-label="Close the assistant"
-                  className="grid size-7 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
-                >
-                  <X className="size-4" />
-                </button>
-              )}
-            </span>
-          )}
+          </div>
         </div>
 
         {showHistory && (

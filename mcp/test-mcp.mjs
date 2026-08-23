@@ -645,6 +645,48 @@ check('and the roster stays whole while the counting narrows, or the filter is a
   /memberIds: ids/.test(scopeSrc) && /ids: chosen \? \[chosen\] : ids/.test(scopeSrc));
 check('the range presets are Today, 7 days and Custom', /const RANGES = \[7\];/.test(dash));
 
+/* The bug this covers reached production: a `const people` referenced one line above its own declaration,
+ * so every request that filtered the dashboard to one person answered 500. It survived a browser check
+ * because the dev fixture answers /api/insights itself — the page was exercised, this file was not. It is
+ * a pure function now, so the suite can simply run it. */
+group('the dashboard can say whose numbers it is showing');
+const { shapeScope } = await import('../api/insights.js');
+const roster = new Map([
+  ['u1', { name: 'Vic', email: 'v@x.dev' }],
+  ['u2', { name: 'Margaryta', email: 'm@x.dev' }],
+]);
+const members = [{ id: 'u1', role: 'owner' }, { id: 'u2', role: 'admin' }];
+const rows = [{ id: 'u1', runs: 4, recordings: 1 }, { id: 'u2', runs: 9, recordings: 3 }];
+const whole = shapeScope({
+  scope: { kind: 'team', team: { id: 't1', name: 'Ops' }, role: 'owner', members },
+  people: roster, rows, callerId: 'u1',
+});
+check('a whole team names no single person', whole.person === undefined && whole.people.length === 2);
+check('and its rows are busiest first', whole.people.map((p) => p.name).join() === 'Margaryta,Vic');
+check('each row carries the role from the membership, not from the row',
+  whole.people.map((p) => p.role).join() === 'admin,owner');
+check('the reader is marked, so the page never has to compare ids itself',
+  whole.people.find((p) => p.id === 'u1').you === true
+  && whole.people.find((p) => p.id === 'u2').you === false);
+
+const one = shapeScope({
+  scope: { kind: 'team', team: { id: 't1', name: 'Ops' }, role: 'owner', person: 'u2', members },
+  people: roster, rows, callerId: 'u1',
+});
+check('filtered to one member, it resolves them to a NAME rather than echoing the id',
+  one.person && one.person.id === 'u2' && one.person.name === 'Margaryta' && one.person.you === false);
+check('and the roster survives the filter, or the picker has no way back',
+  one.people.length === 2);
+/* The regression itself: any throw here is the shape of the bug that shipped. */
+let threw = null;
+try {
+  shapeScope({
+    scope: { kind: 'team', team: { id: 't1', name: 'Ops' }, role: 'admin', person: 'u9', members },
+    people: roster, rows: [], callerId: 'u2',
+  });
+} catch (err) { threw = err.message; }
+check('an unknown person does not throw, it answers with the id and no name', threw === null, threw);
+
 /* The assistant's team scope is the one place in this product where one person's question reads another
  * person's rows, so what it may reach is checked rather than reviewed. */
 group('the assistant on a team can count, and cannot read or write');

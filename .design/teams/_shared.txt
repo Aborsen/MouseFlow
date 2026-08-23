@@ -1,0 +1,4 @@
+page #0a1126 | card #0f1734 | card2 #142043 | stroke #192758
+ink #f0f6ff | body #d8e3f3 | secondary #ccd8eb | inactive #aebacb
+accent #adff5c on-accent #0a1a13 | green #03ae72 | red-text #f26363 | attention #ff8129
+DM Sans

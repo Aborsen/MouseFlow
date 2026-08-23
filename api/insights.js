@@ -207,38 +207,14 @@ export default async function handler(req, res) {
     );
     /* Who the numbers belong to, sent back rather than assumed by the page. A dashboard that says "47 runs"
      * without saying whose is the one screenshot that gets pasted into a chat and misread. */
-    const said = { kind: scope.kind, people: [] };
-    if (scope.kind === 'team') {
-      said.team = scope.team;
-      said.role = scope.role;
-      /* Which one person the numbers are about, if any. Sent as the resolved person rather than as the id
-       * that was asked for, so the page labels its header from the answer and not from its own request. */
-      if (scope.person) {
-        const one = people.get(scope.person) || {};
-        said.person = {
-          id: scope.person,
-          name: one.name ?? null,
-          email: one.email ?? null,
-          you: scope.person === who.id,
-        };
-      }
-      const people = await peopleFor(sql, scope.memberIds);
-      const roles = new Map(scope.members.map((m) => [m.id, m.role]));
-      said.people = out.people.map((row) => {
-        const person = people.get(row.id) || {};
-        return {
-          ...row,
-          role: roles.get(row.id) || 'member',
-          name: person.name ?? null,
-          email: person.email ?? null,
-          you: row.id === who.id,
-        };
-      /* Busiest first, and a tie broken by name rather than by whatever order the database felt like -
-       * a table that reshuffles between two refreshes of the same window looks broken. */
-      }).sort((a, b) => (b.runs - a.runs)
-        || (b.recordings - a.recordings)
-        || String(a.name || a.email || a.id).localeCompare(String(b.name || b.email || b.id)));
-    }
+    const said = scope.kind === 'team'
+      ? shapeScope({
+        scope,
+        people: await peopleFor(sql, scope.memberIds),
+        rows: out.people,
+        callerId: who.id,
+      })
+      : { kind: 'personal', people: [] };
     delete out.people;
 
     return res.status(200).json({
@@ -258,6 +234,48 @@ export default async function handler(req, res) {
   } catch (err) {
     return fail(res, 500, err.message);
   }
+}
+
+/* Who the numbers belong to, shaped for the page.
+ *
+ * A PURE FUNCTION, and exported, for a reason that cost a production 500: this used to be a dozen lines
+ * inline in the handler, where the only way to run it was to have a database, a session and a team - so it
+ * was never run by anything but a real request. A `const people` referenced one line above its own
+ * declaration therefore shipped, and every filtered request answered "Cannot access 'people' before
+ * initialization". Out here it takes plain arguments and returns a plain object, so the suite executes it.
+ */
+export function shapeScope({ scope, people, rows, callerId }) {
+  const roles = new Map((scope.members || []).map((m) => [m.id, m.role]));
+  const said = { kind: 'team', team: scope.team, role: scope.role, people: [] };
+
+  /* The resolved person rather than the id that was asked for, so the page labels its header from the
+   * answer and not from its own request. */
+  if (scope.person) {
+    const one = people.get(scope.person) || {};
+    said.person = {
+      id: scope.person,
+      name: one.name ?? null,
+      email: one.email ?? null,
+      you: scope.person === callerId,
+    };
+  }
+
+  said.people = (rows || []).map((row) => {
+    const person = people.get(row.id) || {};
+    return {
+      ...row,
+      role: roles.get(row.id) || 'member',
+      name: person.name ?? null,
+      email: person.email ?? null,
+      you: row.id === callerId,
+    };
+  /* Busiest first, and a tie broken by name rather than by whatever order the database felt like - a table
+   * that reshuffles between two refreshes of the same window looks broken. */
+  }).sort((a, b) => (b.runs - a.runs)
+    || (b.recordings - a.recordings)
+    || String(a.name || a.email || a.id).localeCompare(String(b.name || b.email || b.id)));
+
+  return said;
 }
 
 /* ------------------------------------------------------------------------ the counting */

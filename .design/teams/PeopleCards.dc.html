@@ -1,0 +1,270 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap">
+  <style>
+    body { margin: 0; font-family: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+    a { color: #adff5c; text-decoration: none; } a:hover { color: #c7ff8f; }
+    * { box-sizing: border-box; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 900px; display: flex; background: #0a1126; color: #f0f6ff; font-size: 14px;">
+
+  <aside style="width: 236px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; background: #0f1734; border-right: 1px solid #192758;">
+    <div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px 8px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" style="flex-shrink: 0; color: #adff5c;"><path d="M5 4l14 8-6 1.6L10.5 20z" fill="currentColor"></path></svg>
+      <span style="font-weight: 600; font-size: 15px;">MouseFlow</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"></circle></svg>
+      <span>Record</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4l1.8 4.8L18.6 10.6l-4.8 1.8L12 17.2l-1.8-4.8L5.4 10.6l4.8-1.8z"></path></svg>
+      <span style="flex-grow: 1;">Create</span>
+      <span style="padding: 1px 7px; border-radius: 999px; background: rgba(255,129,41,0.15); color: #ff8129; font-size: 10.5px; font-weight: 600;">Beta</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7.5A1.5 1.5 0 015.5 6h4l2 2.5h7A1.5 1.5 0 0120 10v7.5A1.5 1.5 0 0118.5 19h-13A1.5 1.5 0 014 17.5z"></path></svg>
+      <span>Skills</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="1.4"></rect><rect x="13" y="4" width="7" height="7" rx="1.4"></rect><rect x="4" y="13" width="7" height="7" rx="1.4"></rect><rect x="13" y="13" width="7" height="7" rx="1.4"></rect></svg>
+      <span>Gallery</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 19V11M12 19V5M19 19v-6"></path></svg>
+      <span>Dashboard</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; background: #192758; color: #f0f6ff; font-weight: 600; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#adff5c" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19a5.5 5.5 0 0111 0"></path><path d="M16 5.5a3 3 0 010 5.6M17.5 19a5.4 5.4 0 00-2-4.2"></path></svg>
+      <span>Teams</span>
+    </div>
+    <div style="flex-grow: 1;"></div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-top: 1px solid #192758;">
+      <span style="flex-grow: 1; font-size: 11px; color: #ccd8eb; font-weight: 500;">Hours</span>
+      <span style="font-size: 11px; color: #f0f6ff;">0.5 h</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px;">
+      <span style="width: 18px; height: 18px; flex-shrink: 0; display: grid; place-items: center; border-radius: 999px; background: #c7ff8f; color: #0a1a13; font-size: 10px; font-weight: 700;">V</span>
+      <span style="display: flex; flex-direction: column; line-height: 1.15; min-width: 0;">
+        <strong style="font-size: 12px; font-weight: 600;">Vic Gorlenko</strong>
+        <span style="font-size: 10.5px; color: #aebacb;">vic@example.dev</span>
+      </span>
+    </div>
+  </aside>
+
+  <main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+    <div style="display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #192758;">
+      <span style="font-size: 15px; font-weight: 600;">Teams</span>
+      <span style="flex-grow: 1;"></span>
+      <span style="display: flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid rgba(242,99,99,0.4); border-radius: 999px; color: #f26363; font-size: 12.5px;">
+        <span style="width: 7px; height: 7px; border-radius: 999px; background: #b91d1d;"></span>Agent offline
+      </span>
+    </div>
+
+    <div style="flex-grow: 1; min-height: 0; display: flex;">
+
+      <!-- teams rail: each team shows who is in it, so choosing one is a visual act -->
+      <div style="width: 232px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; padding: 16px 12px; border-right: 1px solid #192758;">
+        <span style="padding: 0 8px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: #aebacb;">Your teams</span>
+
+        <div style="display: flex; flex-direction: column; gap: 7px; padding: 10px; border-radius: 10px; background: #192758;">
+          <span style="display: flex; align-items: center; gap: 8px;">
+            <strong style="flex-grow: 1; font-size: 13.5px; font-weight: 600;">Operations</strong>
+            <span style="padding: 2px 7px; border-radius: 999px; background: rgba(173,255,92,0.15); color: #adff5c; font-size: 10.5px; font-weight: 600;">owner</span>
+          </span>
+          <span style="display: flex; align-items: center; gap: -6px;">
+            <span style="width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; border: 2px solid #192758; background: #c7ff8f; color: #0a1a13; font-size: 10px; font-weight: 700;">V</span>
+            <span style="width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; border: 2px solid #192758; background: #2c4263; font-size: 10px; font-weight: 700; margin-left: -7px;">M</span>
+            <span style="width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; border: 2px solid #192758; background: #2c4263; font-size: 10px; font-weight: 700; margin-left: -7px;">P</span>
+            <span style="margin-left: 8px; font-size: 11.5px; color: #aebacb;">3 people</span>
+          </span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 7px; padding: 10px; border-radius: 10px;">
+          <span style="display: flex; align-items: center; gap: 8px;">
+            <strong style="flex-grow: 1; font-size: 13.5px; font-weight: 500; color: #d8e3f3;">Finance</strong>
+            <span style="padding: 2px 7px; border-radius: 999px; background: #192758; color: #ccd8eb; font-size: 10.5px; font-weight: 600;">admin</span>
+          </span>
+          <span style="display: flex; align-items: center;">
+            <span style="width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; border: 2px solid #0a1126; background: #c7ff8f; color: #0a1a13; font-size: 10px; font-weight: 700;">V</span>
+            <span style="width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; border: 2px solid #0a1126; background: #2c4263; font-size: 10px; font-weight: 700; margin-left: -7px;">I</span>
+            <span style="margin-left: 8px; font-size: 11.5px; color: #aebacb;">2 people</span>
+          </span>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 9px 10px; border: 1px dashed #2c4263; border-radius: 10px; color: #aebacb; font-size: 13px;">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg>
+          Make a team
+        </div>
+      </div>
+
+      <!-- the team itself, as people -->
+      <div style="flex-grow: 1; min-width: 0; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <span style="display: flex; flex-direction: column; gap: 3px; min-width: 0;">
+            <span style="font-size: 20px; font-weight: 700; letter-spacing: -0.01em;">Operations</span>
+            <span style="font-size: 12.5px; color: #aebacb;">You own it — you can rename it, delete it, and move anybody’s role</span>
+          </span>
+          <span style="flex-grow: 1;"></span>
+          <span style="display: flex; align-items: center; gap: 7px; padding: 8px 13px; border: 1px solid #192758; border-radius: 8px; color: #d8e3f3; font-size: 13px;">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 19V11M12 19V5M19 19v-6"></path></svg>
+            Team dashboard
+          </span>
+          <span style="display: flex; align-items: center; gap: 7px; padding: 8px 14px; background: #adff5c; color: #0a1a13; border-radius: 8px; font-size: 13px; font-weight: 600;">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"></path></svg>
+            Add somebody
+          </span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;">
+
+          <!-- a person, with the shape of their fortnight rather than only its total -->
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 15px; background: #0f1734; border: 1px solid #192758; border-radius: 12px;">
+            <div style="display: flex; align-items: center; gap: 11px;">
+              <span style="width: 38px; height: 38px; flex-shrink: 0; display: grid; place-items: center; border-radius: 999px; background: #c7ff8f; color: #0a1a13; font-weight: 700; font-size: 15px;">V</span>
+              <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+                <strong style="font-size: 14px; font-weight: 600;">Vic Gorlenko</strong>
+                <span style="font-size: 11.5px; color: #aebacb;">vic@example.dev</span>
+              </span>
+              <span style="padding: 3px 9px; border-radius: 999px; background: rgba(173,255,92,0.13); color: #adff5c; font-size: 11px; font-weight: 600;">owner</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">12</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">recordings</span></span>
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">3</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">skills</span></span>
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">41</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">runs</span></span>
+            </div>
+            <div style="display: flex; align-items: flex-end; gap: 3px; height: 30px;">
+              <span style="flex-grow: 1; height: 40%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 70%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 25%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 95%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 55%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 45%; background: #b91d1d; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 80%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 60%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 35%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 72%; background: #03ae72; border-radius: 2px;"></span>
+            </div>
+            <span style="font-size: 11.5px; color: #aebacb;">Last run today · last recorded today</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 15px; background: #0f1734; border: 1px solid #192758; border-radius: 12px;">
+            <div style="display: flex; align-items: center; gap: 11px;">
+              <span style="width: 38px; height: 38px; flex-shrink: 0; display: grid; place-items: center; border-radius: 999px; background: #2c4263; color: #f0f6ff; font-weight: 700; font-size: 15px;">M</span>
+              <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+                <strong style="font-size: 14px; font-weight: 600;">Margaryta K.</strong>
+                <span style="font-size: 11.5px; color: #aebacb;">margaryta@example.dev</span>
+              </span>
+              <span style="padding: 3px 9px; border-radius: 999px; background: #192758; color: #ccd8eb; font-size: 11px; font-weight: 600;">admin</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">7</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">recordings</span></span>
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">2</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">skills</span></span>
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">18</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">runs</span></span>
+            </div>
+            <div style="display: flex; align-items: flex-end; gap: 3px; height: 30px;">
+              <span style="flex-grow: 1; height: 20%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 55%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 30%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 15%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 62%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 40%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 25%; background: #b91d1d; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 48%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 70%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 33%; background: #03ae72; border-radius: 2px;"></span>
+            </div>
+            <span style="font-size: 11.5px; color: #aebacb;">Last run 22.08 · last recorded 22.08</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 15px; background: #0f1734; border: 1px solid #192758; border-radius: 12px;">
+            <div style="display: flex; align-items: center; gap: 11px;">
+              <span style="width: 38px; height: 38px; flex-shrink: 0; display: grid; place-items: center; border-radius: 999px; background: #2c4263; color: #f0f6ff; font-weight: 700; font-size: 15px;">P</span>
+              <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+                <strong style="font-size: 14px; font-weight: 600;">Pavlo D.</strong>
+                <span style="font-size: 11.5px; color: #aebacb;">pavlo@example.dev</span>
+              </span>
+              <span style="padding: 3px 9px; border-radius: 999px; background: #192758; color: #ccd8eb; font-size: 11px; font-weight: 600;">member</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;">
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">2</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">recordings</span></span>
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">0</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">skills</span></span>
+              <span style="display: flex; flex-direction: column; gap: 1px;"><strong style="font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;">4</strong><span style="font-size: 10.5px; color: #aebacb; text-transform: uppercase; letter-spacing: 0.03em;">runs</span></span>
+            </div>
+            <div style="display: flex; align-items: flex-end; gap: 3px; height: 30px;">
+              <span style="flex-grow: 1; height: 10%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 10%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 30%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 10%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 45%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 10%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 22%; background: #03ae72; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 10%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 10%; background: #2c4263; border-radius: 2px;"></span>
+              <span style="flex-grow: 1; height: 18%; background: #03ae72; border-radius: 2px;"></span>
+            </div>
+            <span style="font-size: 11.5px; color: #aebacb;">Last run 21.08 · last recorded 21.08</span>
+          </div>
+
+          <!-- somebody who is not here yet, in the same shape as somebody who is -->
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 15px; border: 1px dashed #2c4263; border-radius: 12px;">
+            <div style="display: flex; align-items: center; gap: 11px;">
+              <span style="width: 38px; height: 38px; flex-shrink: 0; display: grid; place-items: center; border-radius: 999px; border: 1px dashed #2c4263; color: #aebacb;">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="12" rx="2"></rect><path d="M3.5 7.5l8.5 6 8.5-6"></path></svg>
+              </span>
+              <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+                <strong style="font-size: 13.5px; font-weight: 500; color: #ccd8eb;">newcomer@example.dev</strong>
+                <span style="font-size: 11.5px; color: #aebacb;">emailed 22.08 · no account yet</span>
+              </span>
+            </div>
+            <span style="font-size: 11.5px; color: #aebacb; line-height: 1.5;">They are in as soon as they sign up with that address and open Teams.</span>
+            <span style="display: flex; align-items: center; gap: 8px; margin-top: auto;">
+              <span style="display: flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px solid #192758; border-radius: 7px; font-size: 12px; color: #d8e3f3;">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 12l16-8-6 16-2.5-6.2z"></path></svg>
+                Send again
+              </span>
+              <span style="padding: 6px 11px; border-radius: 7px; font-size: 12px; color: #aebacb;">Cancel</span>
+            </span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 15px; min-height: 150px; border: 1px dashed #2c4263; border-radius: 12px; color: #aebacb;">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="9" r="3.4"></circle><path d="M5.5 19.5a6.5 6.5 0 0113 0"></path></svg>
+            <span style="font-size: 13px; font-weight: 500;">Add somebody</span>
+            <span style="font-size: 11.5px; text-align: center; line-height: 1.45;">by email address —<br>they do not need an account first</span>
+          </div>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; margin-top: 2px;">
+          <span style="font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: #aebacb;">Shared with this team</span>
+          <span style="display: flex; align-items: center; gap: 7px; padding: 6px 11px; background: #0f1734; border: 1px solid #192758; border-radius: 999px; font-size: 12.5px; color: #d8e3f3;">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#03ae72" stroke-width="2.4"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>
+            Reply that the invoice is approved <span style="color: #aebacb;">yours</span>
+          </span>
+          <span style="display: flex; align-items: center; gap: 6px; padding: 6px 11px; border: 1px dashed #2c4263; border-radius: 999px; font-size: 12.5px; color: #aebacb;">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"></path></svg>
+            Share one of mine
+          </span>
+          <span style="flex-grow: 1;"></span>
+          <span style="font-size: 11.5px; color: #aebacb;">Joining opens nothing already recorded</span>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
