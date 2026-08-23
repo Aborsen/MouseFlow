@@ -2,6 +2,7 @@
  *
  *   GET /api/insights?days=30
  *   GET /api/insights?from=2026-08-21T00:00:00.000Z&to=2026-08-21T23:59:59.999Z
+ *   GET /api/insights?days=30&team=t_ab12          the same counts over everybody in one team
  *
  * Every number the app shows today is summed in the browser from /api/sync, which returns the last
  * 60 runs. That makes "how many runs failed last quarter" unanswerable: the answer is not in the
@@ -20,6 +21,16 @@
  * in `gaps`, with the real counts, and the page shows them. A dashboard that hides its own blind
  * spots is worse than one that names them, because the blind spots are exactly where someone will
  * put weight.
+ *
+ * WHOSE ROWS ARE COUNTED. One account by default - the caller's - which is what every existing caller asks
+ * for and gets. With `team`, every member of that team, and ONLY for an owner or an admin of it: the same
+ * line db/008_team.sql draws, resolved by api/_team-scope.js so there is one derivation of it rather than
+ * one per endpoint. A member who asks for the team scope is refused by name and keeps their own numbers.
+ *
+ * What that scope does NOT open is content. Everything counted here is a count, a duration or a name that
+ * was already in a list a manager could see: how many runs, how they ended, which application, what a skill
+ * is called. There is no query in this file that returns an event, a transcript, a goal's page or a chat -
+ * so "the team's dashboard" cannot become a way to read a colleague's screen.
  *
  * Where the time numbers come from, precisely:
  *
@@ -40,6 +51,7 @@
 
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+import { peopleFor, scopeFor } from './_team-scope.js';
 
 const DAYS_DEFAULT = 30;
 const DAYS_MAX = 365;                 // a year of runs is a lot of jsonb to unroll; past that, ask again
@@ -171,10 +183,46 @@ export default async function handler(req, res) {
   const days = Math.max(1, Math.round((to.getTime() - from.getTime()) / 86_400_000));
   const fromIso = from.toISOString();
 
+  /* A team id in the query string is a claim, not a permission - scopeFor turns it into a set of accounts
+   * or into a refusal, resolving the caller from the credential every time. */
+  let scope;
   try {
-    const out = await gather(sql, who.id, fromIso, to.toISOString());
+    scope = await scopeFor(sql, who, String((req.query && req.query.team) || '').trim() || null);
+  } catch (err) {
+    return fail(res, 500, 'could not check that team: ' + err.message);
+  }
+  if (scope.error) return fail(res, scope.error.status, scope.error.message);
+
+  try {
+    const out = await gather(sql, scope.ids, fromIso, to.toISOString(), scope.kind === 'team');
+    /* Who the numbers belong to, sent back rather than assumed by the page. A dashboard that says "47 runs"
+     * without saying whose is the one screenshot that gets pasted into a chat and misread. */
+    const said = { kind: scope.kind, people: [] };
+    if (scope.kind === 'team') {
+      said.team = scope.team;
+      said.role = scope.role;
+      const people = await peopleFor(sql, scope.ids);
+      const roles = new Map(scope.members.map((m) => [m.id, m.role]));
+      said.people = out.people.map((row) => {
+        const person = people.get(row.id) || {};
+        return {
+          ...row,
+          role: roles.get(row.id) || 'member',
+          name: person.name ?? null,
+          email: person.email ?? null,
+          you: row.id === who.id,
+        };
+      /* Busiest first, and a tie broken by name rather than by whatever order the database felt like -
+       * a table that reshuffles between two refreshes of the same window looks broken. */
+      }).sort((a, b) => (b.runs - a.runs)
+        || (b.recordings - a.recordings)
+        || String(a.name || a.email || a.id).localeCompare(String(b.name || b.email || b.id)));
+    }
+    delete out.people;
+
     return res.status(200).json({
       ok: true,
+      scope: said,
       window: {
         days,
         from: fromIso,
@@ -193,7 +241,7 @@ export default async function handler(req, res) {
 
 /* ------------------------------------------------------------------------ the counting */
 
-async function gather(sql, userId, fromIso, toIso) {
+async function gather(sql, ids, fromIso, toIso, wantPeople) {
   /* A run's timestamp is coalesce(started_at, synced_at) throughout. started_at is nullable and some
    * runs arrived without one; those runs happened, so dropping them would quietly undercount, and
    * synced_at is never null. How many needed the fallback is reported in `gaps`. */
@@ -213,7 +261,7 @@ async function gather(sql, userId, fromIso, toIso) {
              case when started_at is not null and finished_at is not null
                then extract(epoch from (finished_at - started_at))::float8 end as span
       from user_run
-      where user_id = ${userId}
+      where user_id = any(${ids}::uuid[])
         and coalesce(started_at, synced_at) >= ${prevFromIso}
         and coalesce(started_at, synced_at) < ${fromIso}
     )
@@ -233,7 +281,7 @@ async function gather(sql, userId, fromIso, toIso) {
              case when started_at is not null and finished_at is not null
                then extract(epoch from (finished_at - started_at))::float8 end as span
       from user_run
-      where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+      where user_id = any(${ids}::uuid[]) and coalesce(started_at, synced_at) >= ${fromIso}
         and coalesce(started_at, synced_at) <= ${toIso}
     ),
     r as (
@@ -271,7 +319,7 @@ async function gather(sql, userId, fromIso, toIso) {
       count(*) filter (where kind = 'recorded')::int as recordings,
       count(*) filter (where kind = 'created')::int  as created_skills
     from user_flow
-    where user_id = ${userId} and deleted_at is null
+    where user_id = any(${ids}::uuid[]) and deleted_at is null
       /* created_at is nullable - the client sends it and older builds did not - so a flow with no
        * creation date is placed by when it was last written rather than dropped. */
       and coalesce(created_at, updated_at) >= ${fromIso}
@@ -287,7 +335,7 @@ async function gather(sql, userId, fromIso, toIso) {
              case when started_at is not null and finished_at is not null
                then extract(epoch from (finished_at - started_at))::float8 end as span
       from user_run
-      where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+      where user_id = any(${ids}::uuid[]) and coalesce(started_at, synced_at) >= ${fromIso}
         and coalesce(started_at, synced_at) <= ${toIso}
     ),
     r as (
@@ -342,14 +390,21 @@ async function gather(sql, userId, fromIso, toIso) {
    */
   const appsQ = sql`
     with flow as (
-      select client_id, source, origins, payload
+      /* Keyed by ACCOUNT AND client id, not by client id alone.
+       *
+       * A client id is generated on the machine that made the recording, so it is unique to a person and
+       * not to the table. One account asking about itself could never collide; a team scope counts several
+       * accounts at once, and two people's recordings sharing an id would have their events interleaved
+       * into one partition below and attributed to whichever named an application first. Composing the key
+       * costs a concatenation and removes the question. */
+      select user_id::text || ':' || client_id as key, source, origins, payload
       from user_flow
-      where user_id = ${userId} and deleted_at is null and kind = 'recorded'
+      where user_id = any(${ids}::uuid[]) and deleted_at is null and kind = 'recorded'
         and coalesce(created_at, updated_at) >= ${fromIso}
         and coalesce(created_at, updated_at) <= ${toIso}
     ),
     ev_raw as (
-      select f.client_id, f.source, e.ord,
+      select f.key, f.source, e.ord,
              /* The gap before this event. Both spellings, because the two recorders disagree and
               * reading only one would give the other half a duration of zero. */
              greatest(0, case
@@ -385,7 +440,7 @@ async function gather(sql, userId, fromIso, toIso) {
         ) with ordinality as e(v, ord)
     ),
     ev as (
-      select client_id, source, ord, origin,
+      select key, source, ord, origin,
              least(delay_ms, ${EVENT_GAP_MAX_MS}::numeric) + move_ms as ms,
              greatest(0, delay_ms - ${EVENT_GAP_MAX_MS}::numeric)    as dropped_ms
       from ev_raw
@@ -394,21 +449,21 @@ async function gather(sql, userId, fromIso, toIso) {
      * within a group the first row is the one that named it. Events before the first focus event
      * belong to no known page and stay null on purpose. */
     carried as (
-      select client_id, source, ord, ms, dropped_ms, origin,
+      select key, source, ord, ms, dropped_ms, origin,
              count(origin) over (
-               partition by client_id order by ord rows between unbounded preceding and current row
+               partition by key order by ord rows between unbounded preceding and current row
              ) as grp
       from ev
     ),
     placed as (
-      select client_id, source, ms, dropped_ms,
-             first_value(origin) over (partition by client_id, grp order by ord) as at_origin
+      select key, source, ms, dropped_ms,
+             first_value(origin) over (partition by key, grp order by ord) as at_origin
       from carried
     ),
     /* The one name a whole recording can be attributed to, when its events do not say. Exactly one,
      * or none: "several" is not an answer to "where did this happen". */
     solo as (
-      select f.client_id,
+      select f.key,
              case when f.source = 'desktop' then (
                select case when count(distinct t.title) = 1 then min(t.title) end
                from (
@@ -427,25 +482,25 @@ async function gather(sql, userId, fromIso, toIso) {
       from flow f
     ),
     flow_time as (
-      select p.client_id,
+      select p.key,
              (case when p.source = 'desktop' then 'app' else 'origin' end)::text as kind,
              left(coalesce(p.at_origin, s.only_name), 120) as name,
              p.ms, p.dropped_ms
-      from placed p join solo s on s.client_id = p.client_id
+      from placed p join solo s on s.key = p.key
     ),
     wall as (
-      select client_id, steps,
+      select user_id::text || ':' || client_id as key, steps,
              case when started_at is not null and finished_at is not null
                     and extract(epoch from (finished_at - started_at)) > 0
                     and extract(epoch from (finished_at - started_at)) < ${RUN_MAX_SECONDS}
                then extract(epoch from (finished_at - started_at))::float8
                else 0 end as secs
       from user_run
-      where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+      where user_id = any(${ids}::uuid[]) and coalesce(started_at, synced_at) >= ${fromIso}
         and coalesce(started_at, synced_at) <= ${toIso}
     ),
     step as (
-      select w.client_id,
+      select w.key,
              case when jsonb_typeof(s->'ms') = 'number' then greatest(0, (s->>'ms')::numeric) end as ms,
              case when s->>'url' ~ '^https?://'
                then left(lower(regexp_replace(s->>'url', '^(https?://[^/?#]+).*$', '\\1')), 120)
@@ -456,22 +511,22 @@ async function gather(sql, userId, fromIso, toIso) {
         ) s
     ),
     run_left as (
-      select w.client_id,
+      select w.key,
              greatest(0, w.secs - coalesce(sum(
                case when st.origin is not null and st.ms is not null then st.ms else 0 end
              ), 0) / 1000.0)::float8 as secs
-      from wall w left join step st on st.client_id = w.client_id
-      group by w.client_id, w.secs
+      from wall w left join step st on st.key = w.key
+      group by w.key, w.secs
     ),
     combined as (
       select name, kind,
-             count(distinct client_id)::int as recordings,
+             count(distinct key)::int as recordings,
              0::int                         as runs,
              (sum(ms) / 1000.0)::float8     as seconds
       from flow_time where name is not null group by name, kind
       union all
       select origin as name, 'origin'::text as kind,
-             0::int, count(distinct client_id)::int, (sum(ms) / 1000.0)::float8
+             0::int, count(distinct key)::int, (sum(ms) / 1000.0)::float8
       from step where origin is not null and ms is not null group by origin
     ),
     rolled as (
@@ -542,7 +597,7 @@ async function gather(sql, userId, fromIso, toIso) {
              end as signature
       from user_run r
       left join user_flow f on f.user_id = r.user_id and f.client_id = r.flow_id
-      where r.user_id = ${userId} and coalesce(r.started_at, r.synced_at) >= ${fromIso}
+      where r.user_id = any(${ids}::uuid[]) and coalesce(r.started_at, r.synced_at) >= ${fromIso}
         and coalesce(r.started_at, r.synced_at) <= ${toIso}
     )
     select signature,
@@ -574,7 +629,7 @@ async function gather(sql, userId, fromIso, toIso) {
         jsonb_array_elements(
           case when jsonb_typeof(r.steps) = 'array' then r.steps else '[]'::jsonb end
         ) e
-      where r.user_id = ${userId} and coalesce(r.started_at, r.synced_at) >= ${fromIso}
+      where r.user_id = any(${ids}::uuid[]) and coalesce(r.started_at, r.synced_at) >= ${fromIso}
         and coalesce(r.started_at, r.synced_at) <= ${toIso}
         and jsonb_typeof(e->'ms') = 'number'
     )
@@ -604,7 +659,7 @@ async function gather(sql, userId, fromIso, toIso) {
                '[0-9]+',                          'n',       'g'),
                '\\s+',                            ' ',       'g')), 140) as reason
       from user_run
-      where user_id = ${userId} and coalesce(started_at, synced_at) >= ${fromIso}
+      where user_id = any(${ids}::uuid[]) and coalesce(started_at, synced_at) >= ${fromIso}
         and coalesce(started_at, synced_at) <= ${toIso}
         and (outcome = 'failed' or nullif(trim(error), '') is not null)
         /* Except somebody pressing Stop. Both halves record a stopped run by writing the single word
@@ -633,18 +688,19 @@ async function gather(sql, userId, fromIso, toIso) {
    * place is in `gaps`. */
   const skillsQ = sql`
     with r as (
-      select r.client_id, r.flow_id, r.outcome,
+      select r.user_id, r.client_id, r.flow_id, r.outcome,
              coalesce(r.started_at, r.synced_at) as at,
              case when r.started_at is not null and r.finished_at is not null
                     and extract(epoch from (r.finished_at - r.started_at)) > 0
                     and extract(epoch from (r.finished_at - r.started_at)) < ${RUN_MAX_SECONDS}
                then extract(epoch from (r.finished_at - r.started_at))::float8 end as secs
       from user_run r
-      where r.user_id = ${userId} and coalesce(r.started_at, r.synced_at) >= ${fromIso}
+      where r.user_id = any(${ids}::uuid[]) and coalesce(r.started_at, r.synced_at) >= ${fromIso}
         and coalesce(r.started_at, r.synced_at) <= ${toIso}
         and r.flow_id is not null
     )
     select f.client_id                                             as flow_id,
+           f.user_id::text                                         as owner_id,
            coalesce(nullif(trim(f.name), ''), '(unnamed)')         as name,
            f.kind, f.source,
            count(*)::int                                           as runs,
@@ -656,17 +712,76 @@ async function gather(sql, userId, fromIso, toIso) {
            max(r.at)                                               as last_run_at,
            count(*) over ()::int                                    as groups
     from r
-    join user_flow f on f.user_id = ${userId} and f.client_id = r.flow_id
-    group by f.client_id, f.name, f.kind, f.source
+    /* The run's OWN owner, not the caller's. Pinning this to the person asking was right while the only
+     * possible scope was one account and quietly wrong the moment a team's runs are counted: it would have
+     * matched a colleague's run against a same-id flow of the caller's, or dropped it entirely. */
+    join user_flow f on f.user_id = r.user_id and f.client_id = r.flow_id
+    group by f.user_id, f.client_id, f.name, f.kind, f.source
     order by runs desc, last_run_at desc
     limit ${SKILLS_MAX}
   `;
 
-  const [totalsRows, prevRows, flowRows, dayRows, appRows, repeatedRows, slowRows, failureRows, skillRows] =
-    await sql.transaction(
-      [totalsQ, prevTotalsQ, flowsQ, byDayQ, appsQ, repeatedQ, slowestQ, failuresQ, skillsQ],
-      { readOnly: true },
-    );
+  /* One row per account in the scope, for the team view: the same counts the header shows, split by the
+   * person they belong to.
+   *
+   * Every id gets a row, including the ones with nothing in the window - a team table that silently omits
+   * whoever did not record anything reads as a roster, and then somebody wonders why a colleague is
+   * missing. `left join` over the id list, so a quiet fortnight is a line of noughts rather than an
+   * absence.
+   *
+   * COUNTS AND DATES ONLY, which is the same line the roster on the Teams screen draws. There is no column
+   * here that could tell you what somebody was working on. */
+  const peopleQ = sql`
+    with ids as (select unnest(${ids}::uuid[]) as id),
+    f as (
+      select user_id,
+             count(*) filter (where kind = 'recorded')::int as recordings,
+             count(*) filter (where kind = 'created')::int  as created_skills,
+             max(coalesce(created_at, updated_at))          as last_made
+      from user_flow
+      where user_id = any(${ids}::uuid[]) and deleted_at is null
+        and coalesce(created_at, updated_at) >= ${fromIso}
+        and coalesce(created_at, updated_at) <= ${toIso}
+      group by user_id
+    ),
+    r as (
+      select user_id,
+             count(*)::int                                   as runs,
+             count(*) filter (where outcome = 'ok')::int      as ok,
+             count(*) filter (where outcome = 'failed')::int  as failed,
+             count(*) filter (where outcome = 'stopped')::int as stopped,
+             -- The same clamp every duration in this file uses, so a person's hours add up to the header's.
+             coalesce(sum(case when started_at is not null and finished_at is not null
+               and extract(epoch from (finished_at - started_at)) > 0
+               and extract(epoch from (finished_at - started_at)) < ${RUN_MAX_SECONDS}
+               then extract(epoch from (finished_at - started_at))::float8 end), 0)::float8 as agent_seconds,
+             max(coalesce(started_at, synced_at))            as last_run
+      from user_run
+      where user_id = any(${ids}::uuid[]) and coalesce(started_at, synced_at) >= ${fromIso}
+        and coalesce(started_at, synced_at) <= ${toIso}
+      group by user_id
+    )
+    select ids.id::text                          as id,
+           coalesce(f.recordings, 0)::int        as recordings,
+           coalesce(f.created_skills, 0)::int    as created_skills,
+           coalesce(r.runs, 0)::int              as runs,
+           coalesce(r.ok, 0)::int                as ok,
+           coalesce(r.failed, 0)::int            as failed,
+           coalesce(r.stopped, 0)::int           as stopped,
+           coalesce(r.agent_seconds, 0)::float8  as agent_seconds,
+           r.last_run, f.last_made
+    from ids
+    left join f on f.user_id = ids.id
+    left join r on r.user_id = ids.id
+  `;
+
+  /* Appended rather than always run: in a personal scope the breakdown is the header with one row under
+   * it, and it would be a query the commonest request on this endpoint pays for and nothing reads. */
+  const asked = [totalsQ, prevTotalsQ, flowsQ, byDayQ, appsQ, repeatedQ, slowestQ, failuresQ, skillsQ];
+  if (wantPeople) asked.push(peopleQ);
+
+  const [totalsRows, prevRows, flowRows, dayRows, appRows, repeatedRows, slowRows, failureRows, skillRows,
+    peopleRows = []] = await sql.transaction(asked, { readOnly: true });
 
   const t = totalsRows[0] || {};
   const f = flowRows[0] || {};
@@ -766,6 +881,9 @@ async function gather(sql, userId, fromIso, toIso) {
 
   const skills = skillRows.map((r) => ({
     flowId: String(r.flow_id),
+    /* Whose it is. Always sent, because in a team scope two people can run skills of the same name and the
+     * page has to be able to tell them apart - and in a personal scope it is simply the reader. */
+    ownerId: r.owner_id == null ? null : String(r.owner_id),
     name: String(r.name),
     kind: r.kind === 'created' ? 'created' : 'recorded',
     source: r.source === 'desktop' ? 'desktop' : 'web',
@@ -776,7 +894,23 @@ async function gather(sql, userId, fromIso, toIso) {
     lastRunAt: iso(r.last_run_at),
   }));
 
+  /* Stripped off by the handler once it has attached names to it - `gather` has no business reading the
+   * auth table, and the transaction it runs is read-only over this schema. */
+  const people = peopleRows.map((r) => ({
+    id: String(r.id),
+    recordings: num(r.recordings),
+    createdSkills: num(r.created_skills),
+    runs: num(r.runs),
+    ok: num(r.ok),
+    failed: num(r.failed),
+    stopped: num(r.stopped),
+    agentHours: round(num(r.agent_seconds) / 3600, 2),
+    lastRun: iso(r.last_run),
+    lastMade: iso(r.last_made),
+  }));
+
   return {
+    people,
     totals,
     byOutcome,
     byDay,

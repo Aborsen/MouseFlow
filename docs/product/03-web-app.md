@@ -13,7 +13,8 @@ Entry point: `web/src/main.tsx`.
 | `/create` | [Create](05-create.md) | Marked **Beta** in the sidebar. |
 | `/skills` | [Skills](06-skills.md) | |
 | `/gallery` | [Gallery](07-gallery.md) | |
-| `/dashboard` | [Dashboard](08-dashboard.md) | |
+| `/dashboard` | [Dashboard](08-dashboard.md) | `?team=<id>` scopes it to a whole team, for its owners and admins. |
+| `/team` | [Teams](22-teams.md) | |
 | `/insights` | Dashboard | The old path, kept: it is linked from a published roadmap review. |
 | `/chat` | → `/dashboard` | The assistant moved onto the page whose numbers it answers about. |
 | `/connect` | [Connections](09-connections.md) | Not in the sidebar — it is setup, not a place you work. |
@@ -76,8 +77,8 @@ gone. See [04 — Record § reconciliation](04-record.md#cross-device-reconcilia
 
 ![The sidebar and top bar](../img/record.png)
 
-`web/src/shell/AppSidebar.tsx`. Five destinations — Record, Create (Beta), Skills, Gallery, Dashboard —
-then an hours row and the account row.
+`web/src/shell/AppSidebar.tsx`. Six destinations — Record, Create (Beta), Skills, Gallery, Dashboard,
+Teams — then an hours row and the account row.
 
 - **Collapse** is remembered (`mouseflow.side.tight`); it is a preference about this screen rather than
   about this visit. Below 820px it collapses itself, because a 236px sidebar and a two-column view do not
@@ -86,8 +87,11 @@ then an hours row and the account row.
   toggle and the avatar. They each sized themselves before, which is why the collapsed rail looked ragged.
 - **Hours** is the sum of `hoursOf(run)` over the account's runs — wall clock, from a run's first step to
   its last, *not* time saved. Clicking it opens the screen it summarises.
-- **Beta on Create alone**: of the five things this product does, it is the one that acts on a real
-  machine from a model's decisions, so it is the one that can be wrong in a way that costs something.
+- **Beta on Create alone**: of the things this product does, it is the one that acts on a real machine
+  from a model's decisions, so it is the one that can be wrong in a way that costs something.
+- **Teams is last, and it is a place rather than a setting.** It was a pane of the settings dialog while it
+  was one roster you filled in once; several teams, people being moved and invitations to chase do not fit
+  560 declared pixels, and a dialog has no address for an invitation email to link to.
 
 ## Top bar
 
@@ -153,8 +157,9 @@ The tour → Show it again** restarts it.
 
 ## Settings dialog
 
-`web/src/shell/SettingsDialog.tsx`. Four screens, one declared body height (560px, measured against the
-tallest) so the dialog does not grow and shrink as you move between them.
+`web/src/shell/SettingsDialog.tsx`. Three screens, one declared body height (560px, measured against the
+tallest) so the dialog does not grow and shrink as you move between them. Teams was a fourth and is now its
+own page — see the sidebar, above.
 
 ### My account
 
@@ -174,10 +179,6 @@ tallest) so the dialog does not grow and shrink as you move between them.
   moment. See [14 — HTTP API § `/api/account`](14-http-api.md#apiaccount) for exactly what it deletes,
   and what it cannot.
 - **Log out** — pinned to the bottom, and verified (above).
-
-### Teams
-
-Who may see whose work. Its own document: [22 — Teams](22-teams.md).
 
 ### Connections
 

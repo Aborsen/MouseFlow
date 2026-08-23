@@ -27,7 +27,34 @@ derived in the browser.*
 |---|---|
 | **7 / 30 / 90 days** | The range. A control, not a filter buried in a menu — it is the first thing anyone changes. Server cap is 365. |
 | **Refresh** | Re-reads the window. |
-| **Ask about this** | Opens the assistant panel beside the page. Remembered (`mouseflow.insights.assistant`), and so is its width. |
+| **Ask about this** | Opens the assistant panel beside the page. Remembered (`mouseflow.insights.assistant`), and so is its width. Not offered on the team view — see below. |
+| **Mine / a team** | Whose numbers. Only shown to somebody who owns or administers a team; see [Whose numbers](#whose-numbers). |
+
+## Whose numbers
+
+Yours, unless you switch. An owner or an admin of a team can point this page at that **whole team** — every
+member's recordings, runs and skills, counted exactly the same way. It is the only place in the product
+where one person's screen adds up somebody else's work, so three things hold it in place:
+
+- **The switch is offered only to somebody who owns or administers a team.** `api/_team-scope.js` checks the
+  role again on every request; a control that is merely hidden is not a rule. A member who edits the address
+  is refused by name, and a team they are not in at all answers `404` — which does not confirm it exists.
+- **The scope is in the address** (`/dashboard?team=t_ab12`), so a link opens what the sender was looking at
+  and a screenshot of "47 runs" can be traced back to whose.
+- **Nothing on the team view is content.** Counts, durations, application names, skill names — all of them
+  were already on the team roster. No query in `api/insights.js` returns an event, a transcript, a goal or a
+  chat, so "the team's dashboard" cannot become a way to read a colleague's screen.
+
+The team view adds a **Who did what** table — one row per member, over the window on screen — and gives the
+skills table a *Whose* column. Everybody gets a row, including the people with nothing in the window, since
+a table that silently omits a quiet fortnight reads as a roster with somebody missing.
+
+**The assistant is not offered there.** It reads the account of whoever is asking and has no team scope, so
+a panel answering about your six runs beside a header counting the team's ninety would be two different
+questions on one screen. The button stays visible and says why, because a control that disappears reads as a
+bug in the page.
+
+The full account of the roles is in [22 — Teams](22-teams.md#the-teams-dashboard).
 
 ## What is counted, and how
 

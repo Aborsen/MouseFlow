@@ -1,9 +1,22 @@
 # 22 — Teams
 
-`api/team.js`, `db/008_team.sql`, `web/src/shell/settings/TeamScreen.tsx`. Who may see whose work — and,
-much more importantly, what a team deliberately does **not** open.
+`api/team.js`, `api/_team-scope.js`, `api/_mail.js`, `db/008_team.sql`,
+`web/src/features/team/TeamView.tsx`. Who may see whose work — and, much more importantly, what a team
+deliberately does **not** open.
 
-![Teams](../img/settings-team.png)
+![Teams](../img/team.png)
+
+## Where it lives
+
+**`/team`, in the sidebar.** It was the fourth pane of the settings dialog, which was the right size while a
+team was one roster you filled in once. It is the wrong size for what it is now: several teams, people being
+added and moved, invitations to chase, and a dashboard scoped to each one. None of that is a *setting*, and
+a dialog has no address — which matters, because the invitation email has to be able to link somewhere.
+
+**One person can run several teams**, up to the limit below: an operations team, a finance team, one per
+client. Each has its own name, its own people and its own roles, and your role can differ between them —
+owner of one, member of another. The list on the left is every team you are in; the panel beside it is the
+one you have open.
 
 ## What a team is for
 
@@ -58,14 +71,50 @@ never from the request.
 
 ## Inviting somebody who has no account yet
 
-An invitation is a **row**, not an email. There is no sender in this product's control, and an invitation
-that depends on a message arriving is an invitation that silently does not happen.
+**The invitation is a row. The email is a courtesy.** That distinction is the whole design, and it is what
+makes the feature safe.
 
-So: you add an address; they sign up however they were going to; the next time they open the team screen the
-invitation is claimed by the address they signed up with. Claimed **on read** rather than on every request —
-joining a team matters the moment somebody looks at one, and putting the check in the hot path would cost
-every `/api/sync` a query for a row that almost never exists. Matched case-insensitively, because an address
-is not case-sensitive in the half that matters and people type it both ways.
+The row is written first, and membership is decided by **the address on the account that opens the page** —
+so you add an address; they sign up however they were going to; the next time they open Teams the invitation
+is claimed. Claimed **on read** rather than on every request: joining a team matters the moment somebody
+looks at one, and putting the check in the hot path would cost every `/api/sync` a query for a row that
+almost never exists. Matched case-insensitively, because an address is not case-sensitive in the half that
+matters and people type it both ways.
+
+**They must make the account themselves.** Nothing here creates one for them, and the message says so.
+
+### What the message says, and what it is worth
+
+Adding somebody sends them one email: who added them, what a team does and does not open, a link to the
+Teams page, and a line telling them to delete it if they do not recognise it. It is worded two ways — "you
+are in, here it is" for somebody who already has an account with that address, and "create one with this
+address" for somebody who does not.
+
+**The link is a place, not a key.** It points at `/team` and carries no token, so opening it as the wrong
+person joins nothing. That is deliberate, and it is why there is no "click here to accept": a tokenised join
+link means anybody who ever sees the message — a forward, a shared inbox, a mail log — can take the seat it
+was meant for. An address-bound row cannot be handed on.
+
+Because of that, a message that never arrives costs a **conversation**, not a seat. If mail is not
+configured on the deployment, everything works exactly as it did before it existed: the person adding is
+told plainly that nothing was sent, and to say so themselves.
+
+### Configuring it
+
+| | |
+|---|---|
+| `RESEND_API_KEY` | from resend.com |
+| `MAIL_FROM` | a verified sender, e.g. `MouseFlow <team@yourdomain>` |
+
+There is **no default sender** on purpose: a provider's sandbox address delivers only to the account holder,
+which looks like it is working in testing and like nothing at all in production. With either variable
+missing, `GET /api/team` answers `mail: { configured: false, problem }` and the page says so *before* an
+address is typed — being told "no email could be sent" after inviting four colleagues is the wrong minute to
+find out.
+
+An invitation that is still waiting can be sent again from the roster. Sending is capped at **25 per account
+per hour**, counted from the invite rows themselves rather than from an in-process counter that a fresh
+serverless instance would reset.
 
 ## Sharing a skill with the team
 
@@ -78,14 +127,47 @@ foreign key: deleting a flow should make the share meaningless, not make the del
 has gone is reported as `missing` rather than hidden, because a name that vanished is a thing somebody may
 be looking for.
 
+## The team's dashboard
+
+An owner or an admin can point `/dashboard` at a whole team — the same page, the same window controls, the
+same measurements, counted over every member instead of over the reader. There is a **Mine / team** switch
+in the page header, and the scope lives in the address (`/dashboard?team=t_ab12`) so it can be linked, and
+so a screenshot of "47 runs" can be traced back to whose. The button through to it is on this page.
+
+![The team view of the Dashboard](../img/dashboard-team.png)
+
+It adds one section, **Who did what**: one row per member — recordings, skills, runs, how they finished,
+agent time and the last run, over the window on screen. Everybody gets a row, including the people with
+nothing in it, because a table that silently omits a quiet fortnight reads as a roster with somebody missing.
+
+Three things keep it honest:
+
+- **The switch is only offered to somebody who owns or administers a team**, and `api/_team-scope.js` checks
+  the role again on every request. A control that is merely hidden is not a rule.
+- **Nothing on it is content.** Counts, durations, application names, skill names — every one of them was
+  already on the roster above. There is no path from the team view to a colleague's transcript, and no query
+  in `api/insights.js` that returns an event, a goal or a chat.
+- **The assistant is not offered on the team view.** It reads the account of whoever is asking and has no
+  team scope, so a panel answering about your six runs beside a header counting the team's ninety would be
+  two different questions on one screen. The button says why rather than disappearing.
+
+A member who asks for the team scope — by editing the address, say — is refused **by name**: *"Only an owner
+or an admin sees a team's numbers. Yours are on the personal view."* A team the caller is not in at all
+answers `404`, which does not confirm that it exists.
+
+`api/_team-scope.js` is the single derivation of all of this. Both endpoints that turn a team id into a
+permission import it, because a second copy of `roleOf()` would be a second place for the rule that decides
+whether one person sees another person's work to be right.
+
 ## Routes
 
 | | |
 |---|---|
-| `GET /api/team` | my teams, my role in each, how many people are in them |
+| `GET /api/team` | my teams, my role in each, how many people are in them, and whether mail is configured |
 | `GET /api/team?id=X` | one team: members, their activity if I may see it, pending invitations, shared skills |
 | `POST /api/team` | `{ name }` — make one; I am its owner |
-| `POST /api/team?id=X` | `{ email, role }` — add somebody, or invite an address with no account |
+| `POST /api/team?id=X` | `{ email, role }` — add somebody, or invite an address with no account; emails them |
+| `POST /api/team?id=X&remind=<email>` | send a waiting invitation again (owner, admin) |
 | `POST /api/team?id=X&share=<flow>` | show one of **my** skills to the team |
 | `PATCH /api/team?id=X` | `{ userId, role }` — change a role (owner) |
 | `DELETE /api/team?id=X` | leave it |
@@ -101,6 +183,7 @@ be looking for.
 | Team name | 60 characters |
 | Teams per person | 20 |
 | Members per team | 200 |
+| Invitations sent | 25 per account, per hour |
 
 ## Where this meets MCP
 

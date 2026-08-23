@@ -12,6 +12,8 @@ Everything that can be set, in one place.
 | `OPENAI_API_KEY` | The OpenAI path of `/api/chat` | Not set on the deployment; that path is written but has never been run from here. |
 | `OPENAI_MODEL` | optional | Default model for the OpenAI provider. Falls back to `gpt-5.6-luna`. |
 | `OPENAI_REASONING_EFFORT` | optional | Default reasoning effort. Falls back to `high`. |
+| `RESEND_API_KEY` | Team invitation emails | From resend.com. Without it an invitation is still written and still works — nothing is sent, and `GET /api/team` says so rather than implying a message is on its way. See [22 — Teams](22-teams.md#configuring-it). |
+| `MAIL_FROM` | Team invitation emails | A verified sender, e.g. `MouseFlow <team@yourdomain>`. **No default on purpose**: a provider's sandbox address delivers only to the account holder, which looks like working in testing and like nothing at all in production. |
 | `MOCK_API` | local development only | `MOCK_API=1` serves the account endpoints from an in-memory fixture. Dev-server middleware; it has **no path into a build**. |
 
 ### The MCP server and worker (`mcp/`, local — not Vercel)

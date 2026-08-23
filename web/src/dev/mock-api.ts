@@ -457,8 +457,49 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
    * Added because there was nothing here: /api/insights answered 501 and the Dashboard rendered its error
    * box, which is what the documentation's screenshot of it showed. */
   if (url.startsWith('/api/insights')) {
-    const days = Number(new URLSearchParams(url.split('?')[1] || '').get('days')) || 30;
+    const asked = new URLSearchParams(url.split('?')[1] || '');
+    const days = Number(asked.get('days')) || 30;
     const from = new Date(now - days * 86400_000).toISOString();
+    /* The team scope, and the same rule the endpoint enforces: only a team this account owns or
+     * administers. 't_dev3' is here to be REFUSED - the page has a path for a team the reader may not
+     * read, and a fixture where every id succeeds never renders it. */
+    const wantsTeam = asked.get('team');
+    if (wantsTeam && wantsTeam !== 't_dev1' && wantsTeam !== 't_dev2') {
+      return json(res, 403, {
+        error: {
+          type: 'insights_error',
+          message: 'Only an owner or an admin sees a team’s numbers. Yours are on the personal view.',
+        },
+      });
+    }
+    /* One row per member, and the rows SUM TO THE HEADER: runs 24+15+8 = 47, recordings 9+6+3 = 18,
+     * skills 3+2+1 = 6, hours 1.80+1.10+0.52 = 3.42. A team fixture whose people disagree with its own
+     * totals teaches the page to render something that can never arrive. */
+    const people = [
+      {
+        id: ACCOUNT.id, name: ACCOUNT.name, email: ACCOUNT.email, role: 'owner', you: true,
+        recordings: 9, createdSkills: 3, runs: 24, ok: 20, failed: 3, stopped: 1,
+        agentHours: 1.8, lastRun: hoursAgo(2), lastMade: hoursAgo(3),
+      },
+      {
+        id: 'u_dev2', name: 'Margaryta K.', email: 'margaryta@example.dev', role: 'admin', you: false,
+        recordings: 6, createdSkills: 2, runs: 15, ok: 13, failed: 1, stopped: 1,
+        agentHours: 1.1, lastRun: hoursAgo(20), lastMade: hoursAgo(26),
+      },
+      {
+        id: 'u_dev3', name: 'Pavlo D.', email: 'pavlo@example.dev', role: 'member', you: false,
+        recordings: 3, createdSkills: 1, runs: 8, ok: 6, failed: 1, stopped: 0,
+        agentHours: 0.52, lastRun: hoursAgo(48), lastMade: hoursAgo(50),
+      },
+    ];
+    const scope = wantsTeam
+      ? {
+        kind: 'team',
+        team: { id: wantsTeam, name: wantsTeam === 't_dev2' ? 'Finance' : 'Operations' },
+        role: wantsTeam === 't_dev2' ? 'admin' : 'owner',
+        people: wantsTeam === 't_dev2' ? people.slice(0, 2) : people,
+      }
+      : { kind: 'personal', people: [] };
     const totals = {
       runs: 47, ok: 39, failed: 5, stopped: 2, running: 1,
       recordings: 18, createdSkills: 6, agentHours: 3.42,
@@ -470,6 +511,7 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     const dayFailed = [0, 1, 0, 1, 0, 1, 1, 0, 1];
     return json(res, 200, {
       ok: true,
+      scope,
       window: { days, from, to: new Date(now).toISOString(), timeZone: 'UTC' },
       totals,
       previous: {
@@ -527,17 +569,22 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           example: { runId: 'r_dev_4', error: 'checkpoint "send the reply" timed out after 10m' },
         },
       ],
+      /* ownerId on every row, in both scopes: the endpoint sends it either way, and a fixture that only
+       * had it under `team` would let the personal view drift into depending on its absence. */
       skills: [
         {
-          flowId: 'wf_dev_1', name: 'Reply that the invoice is approved', kind: 'created', source: 'web',
+          flowId: 'wf_dev_1', ownerId: ACCOUNT.id,
+          name: 'Reply that the invoice is approved', kind: 'created', source: 'web',
           runs: 11, ok: 10, failed: 1, medianSeconds: 122.0, lastRunAt: hoursAgo(4),
         },
         {
-          flowId: 'dr_dev_1', name: 'Outlook (PWA) · 6 clicks', kind: 'recorded', source: 'desktop',
+          flowId: 'dr_dev_1', ownerId: wantsTeam ? 'u_dev2' : ACCOUNT.id,
+          name: 'Outlook (PWA) · 6 clicks', kind: 'recorded', source: 'desktop',
           runs: 7, ok: 6, failed: 1, medianSeconds: 140.9, lastRunAt: hoursAgo(27),
         },
         {
-          flowId: 'ronly_account_1', name: 'Neon Console · 4 clicks', kind: 'recorded', source: 'desktop',
+          flowId: 'ronly_account_1', ownerId: wantsTeam ? 'u_dev3' : ACCOUNT.id,
+          name: 'Neon Console · 4 clicks', kind: 'recorded', source: 'desktop',
           runs: 3, ok: 3, failed: 0, medianSeconds: 9.1, lastRunAt: hoursAgo(50),
         },
       ],
@@ -572,10 +619,38 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
 
   if (url.startsWith('/api/team')) {
     const query = new URLSearchParams(url.split('?')[1] || '');
+    /* TWO teams, not one. One person runs several - an operations team, a finance team, a client - and the
+     * screen is built for that: a column of teams, and a dashboard switch that becomes a select past the
+     * second. A fixture with a single team would leave both of those branches unlooked at. */
     if (method === 'GET' && !query.get('id')) {
       return json(res, 200, {
         ok: true,
-        teams: [{ id: 't_dev1', name: 'Operations', role: 'owner', members: 3, created_at: hoursAgo(720) }],
+        teams: [
+          { id: 't_dev1', name: 'Operations', role: 'owner', members: 3, created_at: hoursAgo(720) },
+          { id: 't_dev2', name: 'Finance', role: 'admin', members: 2, created_at: hoursAgo(300) },
+        ],
+        /* The configured deployment, because that is the path the screen is written for: what is emailed,
+         * and the button that sends it again. The other branch is one sentence of text. */
+        mail: { configured: true, problem: null },
+      });
+    }
+    if (method === 'GET' && query.get('id') === 't_dev2') {
+      return json(res, 200, {
+        ok: true,
+        team: { id: 't_dev2', name: 'Finance', created: hoursAgo(300), createdBy: 'u_dev2' },
+        you: { role: 'admin' },
+        members: [
+          {
+            id: ACCOUNT.id, role: 'admin', joined: hoursAgo(300), name: ACCOUNT.name, email: ACCOUNT.email,
+            activity: { recordings: 12, skills: 3, runs: 41, lastRecorded: hoursAgo(3), lastRun: hoursAgo(2) },
+          },
+          {
+            id: 'u_dev4', role: 'owner', joined: hoursAgo(300), name: 'Iryna B.', email: 'iryna@example.dev',
+            activity: { recordings: 4, skills: 1, runs: 9, lastRecorded: hoursAgo(70), lastRun: hoursAgo(66) },
+          },
+        ],
+        invites: [],
+        shared: [],
       });
     }
     if (method === 'GET') {

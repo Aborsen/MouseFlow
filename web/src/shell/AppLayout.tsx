@@ -25,6 +25,7 @@ const TITLES: Record<string, string> = {
   '/skills': 'Skills',
   '/gallery': 'Gallery',
   '/dashboard': 'Dashboard',
+  '/team': 'Teams',
   // Still routed, because it was live and is linked from outside the app.
   '/insights': 'Dashboard',
   '/connect': 'Connections',

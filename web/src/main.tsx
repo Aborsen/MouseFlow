@@ -24,6 +24,7 @@ import { AdminUsers } from '@/features/admin/AdminUsers';
 import { AdminUser } from '@/features/admin/AdminUser';
 import { AdminModels } from '@/features/admin/AdminModels';
 import { InsightsView } from '@/features/insights/InsightsView';
+import { TeamView } from '@/features/team/TeamView';
 
 // Before the first paint, so the page does not flash the wrong colour on the way in.
 bootTheme();
@@ -56,6 +57,9 @@ const routes = [
     path: '/chat',
     beforeLoad: () => { throw redirect({ to: '/dashboard' }); },
   }),
+  /* Teams. A module of its own since it stopped being a roster and became a place: several teams, the
+   * people in them, and the button through to the dashboard scoped to one. */
+  createRoute({ getParentRoute: () => rootRoute, path: '/team', component: TeamView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/connect', component: ConnectView }),
   /* The one page that is about the product rather than part of it, and the only route readable with no
    * account - see PUBLIC_PATHS. It is what "add MouseFlow to Claude" points at. */

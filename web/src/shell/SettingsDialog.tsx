@@ -10,6 +10,11 @@
  *   My account    who you are, the theme, what is paired with you, and the way out of all of it
  *   Connections   the local agent: what it is doing, the one command that changes it, how to stop it
  *   Hours         their Balance screen, in the unit that means something for a tool that does work
+ *
+ * Teams WAS a fourth one and is now its own page, in the sidebar. It outgrew this dialog the moment it
+ * stopped being a roster you fill in once: several teams, people being added and moved, invitations to
+ * chase, and a dashboard scoped to each. None of that fits 560 declared pixels, and none of it is a
+ * setting. A dialog also has no address, and the invitation email has to be able to link somewhere.
  */
 import * as Dialog from '@radix-ui/react-dialog';
 import {
@@ -20,7 +25,6 @@ import {
   Monitor,
   ShieldQuestion,
   User,
-  Users,
   X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -31,9 +35,8 @@ import { useAccount } from './AccountProvider';
 import { MyAccountScreen } from './settings/MyAccountScreen';
 import { ConnectionsScreen } from './settings/ConnectionsScreen';
 import { HoursScreen } from './settings/HoursScreen';
-import { TeamScreen } from './settings/TeamScreen';
 
-export type SettingsScreen = 'account' | 'team' | 'connections' | 'hours';
+export type SettingsScreen = 'account' | 'connections' | 'hours';
 
 /* The one height all three screens are written to fit (see BODY below), and the row metrics the nav shares
  * with the sidebar's. Declared once rather than inferred from whichever screen happened to be tallest.
@@ -50,7 +53,6 @@ const GLYPH = 'size-[18px] shrink-0';
 
 const TITLES: Record<SettingsScreen, string> = {
   account: 'My account',
-  team: 'Teams',
   connections: 'Connections',
   hours: 'Hours',
 };
@@ -116,7 +118,6 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
               </Typography>
               <nav className="flex flex-col gap-0.5 max-sm:flex-row">
                 {item('account', 'My account', User)}
-                {item('team', 'Teams', Users)}
                 {item('connections', 'Connections', Monitor)}
                 {item('hours', 'Hours', Clock)}
               </nav>
@@ -177,7 +178,6 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
                 reached at all, and each screen is written to fit without one. */}
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {screen === 'account' && <MyAccountScreen say={setSaid} />}
-              {screen === 'team' && <TeamScreen say={setSaid} />}
               {screen === 'connections' && <ConnectionsScreen say={setSaid} onClose={onClose} />}
               {screen === 'hours' && <HoursScreen />}
 

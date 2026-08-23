@@ -213,6 +213,7 @@ cannot tell you already is.
 
 ```
 GET /api/insights?days=30
+GET /api/insights?days=30&team=t_ab12
 ```
 
 `days` defaults to 30, maximum 365 — a year of runs is a lot of `jsonb` to unroll. One read-only transaction,
@@ -220,9 +221,16 @@ so the totals, the day series and the per-application split agree with each othe
 because this unrolls every event of every recording in the window and is **the most expensive read in the
 product**.
 
-Response: `window`, `totals`, `byOutcome`, `byDay`, `applications`, `unattributed`, `previous`, `repeated`,
-`slowestSteps`, `failures`, `skills`, `gaps`, `caps`. See [08 — Dashboard](08-dashboard.md) for what each
-means and every cap.
+`team` counts every member of that team instead of the caller alone, and is accepted **only from an owner or
+an admin of it**: `api/_team-scope.js` turns the id into a set of accounts or into a refusal — `403` with a
+reason for a member of the team, `404` for somebody who is not in it, which does not confirm that it exists.
+Without the parameter the scope is one account, so every existing caller and every bookmark asks exactly the
+question it always asked.
+
+Response: `scope`, `window`, `totals`, `byOutcome`, `byDay`, `applications`, `unattributed`, `previous`,
+`repeated`, `slowestSteps`, `failures`, `skills`, `gaps`, `caps`. `scope` says whose the numbers are, and in
+a team scope carries one row per member — counts and dates only. See [08 — Dashboard](08-dashboard.md) for
+what each means and every cap, and [22 — Teams](22-teams.md#the-teams-dashboard) for the roles.
 
 ---
 
@@ -400,7 +408,13 @@ routed by `vercel.json` rewrites.
 Teams, their members and what they may see: [22 — Teams](22-teams.md) has the routes, the roles and the much
 longer list of what a team deliberately does **not** open. The rule this document cares about is the same one
 everywhere else: the caller's identity comes from the credential, a team id in a query string is a claim
-rather than a permission, and `roleOf()` is the only thing that turns one into the other.
+rather than a permission, and `roleOf()` is the only thing that turns one into the other. It lives in
+`api/_team-scope.js` and is imported by both endpoints that need it — this one and `/api/insights` — because
+a second copy of it would be a second place for it to be right.
+
+Adding somebody emails them (`api/_mail.js`), and the response says whether that happened and why not. The
+link in the message is **a deep link, not a token**: membership is decided by the address on the account that
+opens the page, so a forwarded message hands nobody a seat. Capped at 25 invitations per account per hour.
 
 ---
 

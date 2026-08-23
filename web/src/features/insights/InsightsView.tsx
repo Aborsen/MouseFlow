@@ -6,6 +6,16 @@
  * given a shape as well as a number: a bar you can compare without reading it, a colour that means the same
  * thing everywhere on the page.
  *
+ * WHOSE NUMBERS. Yours, unless you switch. An owner or an admin of a team can point this page at that whole
+ * team - every member's recordings, runs and skills, counted the same way - which is the only place in the
+ * product where one person's screen adds up somebody else's work. Three things keep that honest:
+ *
+ *   the switch is only OFFERED to somebody who owns or administers a team, and the endpoint checks the role
+ *     again on every request, because a control that is merely hidden is not a rule;
+ *   the scope is written into the address, so a screenshot of "47 runs" can be traced back to whose;
+ *   nothing on the team view is content. Counts, durations, application names, skill names - every one of
+ *     them was already visible on the team roster. There is no path from here to a colleague's transcript.
+ *
  * Two deliberate absences, both honest rather than accidental:
  *
  *  - No chart library. Every mark here is a div or a line of inline SVG. A dependency for eight bars would
@@ -28,6 +38,7 @@ import {
   Sparkles,
   Timer,
   TriangleAlert,
+  Users,
 } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
@@ -107,6 +118,8 @@ interface FailureRow {
 
 interface SkillRow {
   flowId: string;
+  /** Whose it is. Only ever needed in the team scope, where two people can have a skill of one name. */
+  ownerId?: string | null;
   name: string;
   kind: string;
   source: string;
@@ -169,6 +182,7 @@ interface Insights {
   failures: FailureRow[];
   skills: SkillRow[];
   gaps: GapRow[];
+  scope?: ScopeSaid;
   /* The endpoint's own count of what each cap cut, because this page only ever sees the rows that
    * survived one and so cannot work it out for itself. */
   caps?: {
@@ -180,6 +194,44 @@ interface Insights {
     skills: Cap;
   };
 }
+
+/** One member of a team, over the same window as everything else on the page. Counts and dates only. */
+interface PersonRow {
+  id: string;
+  name: string | null;
+  email: string | null;
+  role: 'owner' | 'admin' | 'member';
+  /** The reader themselves, marked by the endpoint rather than compared here against an account id. */
+  you: boolean;
+  recordings: number;
+  createdSkills: number;
+  runs: number;
+  ok: number;
+  failed: number;
+  stopped: number;
+  agentHours: number;
+  lastRun: string | null;
+  lastMade: string | null;
+}
+
+/* Who the numbers on this page belong to, in the endpoint's own words rather than in what this page asked
+ * for. The two can differ - a request naming a team the caller has since been removed from is refused, not
+ * quietly answered about them - and the one worth rendering is the answer. */
+interface ScopeSaid {
+  kind: 'personal' | 'team';
+  team?: { id: string; name: string };
+  role?: 'owner' | 'admin';
+  people: PersonRow[];
+}
+
+/** A skill's owner, named from the people the same response already listed. */
+const whose = (ownerId: string | null | undefined, people: PersonRow[]): string => {
+  if (!ownerId) return '—';
+  const found = people.find((p) => p.id === ownerId);
+  if (!found) return '—';
+  if (found.you) return 'you';
+  return found.name || found.email || 'somebody';
+};
 
 /* Arrays are read through this rather than trusted, because a section that renders as nothing is a far
  * better failure than a whole page replaced by a React crash when one key is absent. */
@@ -213,8 +265,15 @@ const asQuery = (w: Window) => (w.kind === 'days'
   ? `days=${w.days}`
   : `from=${encodeURIComponent(w.from.toISOString())}&to=${encodeURIComponent(w.to.toISOString())}`);
 
-async function fetchInsights(window: Window, signal: AbortSignal): Promise<Insights> {
-  const res = await fetch(`/api/insights?${asQuery(window)}`, { credentials: 'same-origin', signal });
+/* Which account, or which team. `mine` sends nothing, so every existing caller and every bookmark keeps
+ * asking exactly the question it always asked. */
+export type Scope = { kind: 'mine' } | { kind: 'team'; id: string };
+
+const asScope = (scope: Scope) => (scope.kind === 'team' ? `&team=${encodeURIComponent(scope.id)}` : '');
+
+async function fetchInsights(window: Window, scope: Scope, signal: AbortSignal): Promise<Insights> {
+  const res = await fetch(`/api/insights?${asQuery(window)}${asScope(scope)}`,
+    { credentials: 'same-origin', signal });
   const body = (await res.json().catch(() => null)) as (Insights & { error?: { message?: string } }) | null;
   /* The endpoint's own words, not a status code dressed up as prose: it knows why it refused and this page
    * does not. Only when it says nothing at all does the status stand in. */
@@ -541,6 +600,53 @@ export const InsightsView = () => {
   const opening = asked ? openingQuestion(asked) : undefined;
   const navigate = useNavigate();
   const [window_, setWindow] = useState<Window>({ kind: 'days', days: 30 });
+
+  /* WHOSE numbers, kept in the address rather than only in state.
+   *
+   * Read from the query string on the way in, so the Teams page can link straight to a team's dashboard and
+   * so a link somebody pastes opens what they were looking at. Written back with replaceState rather than
+   * through the router: /dashboard declares no search schema, and adding one to type a single optional
+   * string would push validation into every other caller of this route.
+   *
+   * The scope named here is a REQUEST. What the page renders is `data.scope`, which is the endpoint's
+   * answer - a team the reader has since been removed from is refused, not answered about. */
+  const [scope, setScope] = useState<Scope>(() => {
+    try {
+      const id = new URLSearchParams(window.location.search).get('team');
+      return id ? { kind: 'team', id } : { kind: 'mine' };
+    } catch (_) {
+      return { kind: 'mine' };
+    }
+  });
+
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      if (scope.kind === 'team') url.searchParams.set('team', scope.id);
+      else url.searchParams.delete('team');
+      window.history.replaceState(null, '', url.toString());
+    } catch (_) { /* nothing on this page depends on the address being right */ }
+  }, [scope]);
+
+  /* The teams this person may point the page at: the ones they own or administer, and no others. A member
+   * is not offered a switch at all, because the only thing it could do is be refused - and their own
+   * numbers are already what they are looking at.
+   *
+   * Failure is silence on purpose. This is a control, not the content: a dashboard that renders an error
+   * because the team list could not be read would be broken by something it does not need. */
+  const [teams, setTeams] = useState<{ id: string; name: string; role: string }[]>([]);
+  useEffect(() => {
+    const stop = new AbortController();
+    (async () => {
+      try {
+        const res = await fetch('/api/team', { credentials: 'same-origin', signal: stop.signal });
+        if (!res.ok) return;
+        const body = (await res.json()) as { teams?: { id: string; name: string; role: string }[] };
+        setTeams((body.teams ?? []).filter((t) => t.role === 'owner' || t.role === 'admin'));
+      } catch (_) { /* see above */ }
+    })();
+    return () => stop.abort();
+  }, []);
   /* The calendar is a panel rather than a mode: it opens over the controls, sets a range and closes. */
   const [picking, setPicking] = useState(false);
   const [draft, setDraft] = useState<DateRange | undefined>(undefined);
@@ -602,7 +708,7 @@ export const InsightsView = () => {
     setProblem(null);
     (async () => {
       try {
-        const body = await fetchInsights(window_, stop.signal);
+        const body = await fetchInsights(window_, scope, stop.signal);
         setData(body);
       } catch (err) {
         if (stop.signal.aborted) return; // a range switch, not a failure
@@ -612,7 +718,7 @@ export const InsightsView = () => {
       }
     })();
     return () => stop.abort();
-  }, [window_, attempt]);
+  }, [window_, scope, attempt]);
 
   const reload = useCallback(() => setAttempt((n) => n + 1), []);
 
@@ -704,6 +810,13 @@ export const InsightsView = () => {
     [data?.failures],
   );
 
+  /* What the endpoint says it counted, which is the only thing worth putting on screen. `scope` above is
+   * what was asked for; these two agree except in the moment between switching and the answer arriving,
+   * and during a refusal - when the page must keep saying "yours", because that is what is on it. */
+  const showing = data?.scope;
+  const teamShown = showing?.kind === 'team' ? showing : null;
+  const people = useMemo(() => list(teamShown?.people), [teamShown]);
+
   /* The agent time already spent on goals that ran more than once. Not a saving - see the tile. */
   const repeatCost = useMemo(
     () => list(data?.repeated).reduce((sum, row) => sum + (num(row.seconds) ?? 0), 0),
@@ -717,20 +830,77 @@ export const InsightsView = () => {
     <div className="flex h-[calc(100dvh-3.25rem)] min-h-0">
       <div className="min-w-0 flex-1 overflow-y-auto p-5">
       <header className="mb-4 flex flex-wrap items-end gap-3">
-        <div className="min-w-0 flex-1">
+        {/* A wrap threshold rather than min-w-0.
+         *
+         * The controls beside it cannot shrink below their own buttons, so with `min-w-0` this column was
+         * the only thing that could give - and it gave all of it: with the assistant panel open, the
+         * heading came out one word per line down a 60px gutter. 20rem is the width at which the sentence
+         * still reads; below that the controls wrap to their own line instead, which is what `flex-wrap`
+         * was there to do. */}
+        <div className="min-w-[20rem] flex-1">
           <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
-            Work pulse
+            {teamShown ? `${teamShown.team?.name ?? 'Team'} · everybody` : 'Work pulse'}
           </Typography>
           <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.5rem] leading-tight tracking-tight">
             What happened, and where the leverage is
           </Typography>
           <Typography variant="p" className="mt-1 max-w-[76ch] text-ink-inactive text-[0.85rem]">
-            Activity, reliability and repeated work, read from your own recordings and runs.{' '}
+            Activity, reliability and repeated work, read from{' '}
+            {teamShown
+              ? `every member’s recordings and runs — ${people.length} ${people.length === 1 ? 'person' : 'people'}.`
+              : 'your own recordings and runs.'}{' '}
             {data
               ? `${new Date(data.window.from).toLocaleDateString()} to ${new Date(data.window.to).toLocaleDateString()}.`
               : 'Nothing here leaves your account.'}
           </Typography>
         </div>
+
+        {/* --------------------------------------------------------------- whose numbers
+          *
+          * Offered only to somebody who owns or administers a team. Not a permission - the endpoint checks
+          * the role again on every request, and would refuse this by name - but a control that can only
+          * ever be refused is worse than no control.
+          *
+          * A segmented pair while there is one team to switch to, a select past that: five teams as five
+          * buttons is a control that wraps under the range picker and pushes the page down a line. */}
+        {teams.length > 0 && (
+          <div className="flex items-center gap-1 rounded-lg border-stroke border bg-surface-card p-1">
+            <button
+              type="button"
+              onClick={() => setScope({ kind: 'mine' })}
+              aria-pressed={scope.kind === 'mine'}
+              title="Only what you recorded and ran"
+              className={cn(PRESET, scope.kind === 'mine' ? PRESET_ON : PRESET_OFF)}
+            >
+              Mine
+            </button>
+
+            {teams.length === 1 ? (
+              <button
+                type="button"
+                onClick={() => setScope({ kind: 'team', id: teams[0].id })}
+                aria-pressed={scope.kind === 'team'}
+                title={`Everybody in ${teams[0].name}. Owners and admins only.`}
+                className={cn(PRESET, 'flex items-center gap-1.5 max-w-[14rem]',
+                  scope.kind === 'team' ? PRESET_ON : PRESET_OFF)}
+              >
+                <Users className="size-3.5 shrink-0" />
+                <span className="truncate">{teams[0].name}</span>
+              </button>
+            ) : (
+              <select
+                value={scope.kind === 'team' ? scope.id : ''}
+                onChange={(e) => setScope(e.target.value ? { kind: 'team', id: e.target.value } : { kind: 'mine' })}
+                aria-label="Which team’s numbers"
+                className={cn(PRESET, 'max-w-[14rem] cursor-pointer',
+                  scope.kind === 'team' ? PRESET_ON : PRESET_OFF)}
+              >
+                <option value="">A team…</option>
+                {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            )}
+          </div>
+        )}
 
         {/* The range is a control, not a filter to be found in a menu: it is the first thing anyone changes. */}
         <div className="relative flex items-center gap-1 rounded-lg border-stroke border bg-surface-card p-1">
@@ -805,13 +975,21 @@ export const InsightsView = () => {
           Refresh
         </Button>
 
+        {/* The assistant reads the account of whoever is asking - it has no team scope and inventing one
+          * here would mean a panel answering about your six runs beside a header counting the team's
+          * ninety. So it is not offered on the team view, and the button says why rather than vanishing:
+          * a control that disappears reads as a bug in the page. */}
         <Button
-          variant={assistant ? 'secondary' : 'ghost'}
+          variant={assistant && !teamShown ? 'secondary' : 'ghost'}
           size="sm"
+          disabled={!!teamShown}
+          title={teamShown
+            ? 'The assistant answers about your own account. Switch to Mine to ask it something.'
+            : undefined}
           leftSlot={<MessageSquareText className="size-4" />}
           onClick={() => setAssistant((open) => !open)}
         >
-          {assistant ? 'Hide the assistant' : 'Ask about this'}
+          {assistant && !teamShown ? 'Hide the assistant' : 'Ask about this'}
         </Button>
       </header>
 
@@ -932,6 +1110,90 @@ export const InsightsView = () => {
                   </div>
                 )}
               </section>
+
+              {/* --------------------------------------------------------------- who did what
+                *
+                * Only on the team view, and it is the reason the team view exists: the header says ninety
+                * runs, and the question immediately after it is whose. Sorted busiest first by the
+                * endpoint rather than here, so two readers of the same window see the same order.
+                *
+                * COUNTS AND DATES. Every column here was already on the team roster - there is nothing in
+                * this table that a manager could not see before, and no way from it to what somebody
+                * actually recorded. */}
+              {teamShown && (
+                <Section
+                  title="Who did what"
+                  icon={<Users className="size-4 text-ink-secondary" />}
+                  badge={`${people.length} ${people.length === 1 ? 'person' : 'people'}`}
+                  note="Counts for this window only, so a quiet fortnight shows as noughts rather than as an absence. Nothing here opens a recording: a skill becomes visible to the team only when its owner shares that one skill."
+                >
+                  {people.length === 0 ? (
+                    <Quiet>This team has nobody in it yet.</Quiet>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full min-w-[620px] border-collapse text-[0.85rem]">
+                        <thead>
+                          <tr className="bg-table-header-bg text-ink-secondary">
+                            <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Person</th>
+                            <th className="px-2.5 py-2 text-right font-medium">Recordings</th>
+                            <th className="px-2.5 py-2 text-right font-medium">Skills</th>
+                            <th className="px-2.5 py-2 text-right font-medium">Runs</th>
+                            <th className="px-2.5 py-2 text-left font-medium">Finished</th>
+                            <th className="px-2.5 py-2 text-right font-medium">Agent time</th>
+                            <th className="rounded-r-md px-2.5 py-2 text-right font-medium">Last run</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {people.map((row) => {
+                            const settled = row.ok + row.failed;
+                            const rate = settled > 0 ? row.ok / settled : 0;
+                            return (
+                              <tr key={row.id} className="border-stroke border-b last:border-0">
+                                <td className="px-2.5 py-2">
+                                  <span className="text-ink-primary">
+                                    {row.name || row.email || 'Somebody'}
+                                  </span>
+                                  {row.you && (
+                                    <span className="ms-1.5 text-[0.74rem] text-ink-inactive">you</span>
+                                  )}
+                                  <span className="ms-2 rounded-full bg-state-hover px-1.5 py-0.5 text-[0.7rem] text-ink-secondary">
+                                    {row.role}
+                                  </span>
+                                </td>
+                                <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.recordings}</td>
+                                <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.createdSkills}</td>
+                                <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">{row.runs}</td>
+                                <td className="w-[20%] px-2.5 py-2">
+                                  <div className="flex items-center gap-2">
+                                    <Meter
+                                      fraction={rate}
+                                      fill={row.failed > 0 && rate < 0.8 ? 'bg-fb-attention' : 'bg-fb-green'}
+                                    />
+                                    <span
+                                      className={cn(
+                                        'shrink-0 text-[0.78rem] tabular-nums',
+                                        row.failed > 0 ? 'text-fb-red-text' : 'text-ink-inactive',
+                                      )}
+                                    >
+                                      {settled > 0 ? `${row.ok}/${settled}` : '—'}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
+                                  {row.agentHours > 0 ? `${row.agentHours.toFixed(row.agentHours >= 10 ? 0 : 1)} h` : '—'}
+                                </td>
+                                <td className="px-2.5 py-2 text-right text-ink-secondary">
+                                  {fmtWhen(row.lastRun)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Section>
+              )}
 
               {/* --------------------------------------------------------------- by day */}
               <Section
@@ -1236,6 +1498,7 @@ export const InsightsView = () => {
                       <thead>
                         <tr className="bg-table-header-bg text-ink-secondary">
                           <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Skill</th>
+                          {teamShown && <th className="px-2.5 py-2 text-left font-medium">Whose</th>}
                           <th className="px-2.5 py-2 text-right font-medium">Runs</th>
                           <th className="px-2.5 py-2 text-left font-medium">Finished</th>
                           <th className="px-2.5 py-2 text-right font-medium">Typical</th>
@@ -1247,13 +1510,20 @@ export const InsightsView = () => {
                           const settled = row.ok + row.failed;
                           const rate = settled > 0 ? row.ok / settled : 0;
                           return (
-                            <tr key={row.flowId} className="border-stroke border-b last:border-0">
+                            /* Keyed by owner AND id on the team view: two people can each have a skill
+                             * with the same client id, and React would render one of them. */
+                            <tr key={`${row.ownerId ?? ''}:${row.flowId}`} className="border-stroke border-b last:border-0">
                               <td className="px-2.5 py-2">
                                 <span className="text-ink-primary">{row.name || 'Untitled'}</span>
                                 <span className="ms-2 rounded-full bg-state-hover px-1.5 py-0.5 text-[0.7rem] text-ink-secondary">
                                   {row.kind}
                                 </span>
                               </td>
+                              {teamShown && (
+                                <td className="px-2.5 py-2 text-ink-secondary">
+                                  {whose(row.ownerId, people)}
+                                </td>
+                              )}
                               <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.runs}</td>
                               <td className="w-[24%] px-2.5 py-2">
                                 <div className="flex items-center gap-2">
@@ -1301,7 +1571,7 @@ export const InsightsView = () => {
       {/* The assistant reads the same account this page does, so what it answers about is what is on screen.
         * Rendered inside the page rather than as its own destination: a separate screen would make somebody
         * retype the window and the numbers they are looking at. */}
-      {assistant && wide && (
+      {assistant && !teamShown && wide && (
         <aside
           className="relative flex shrink-0 flex-col border-stroke border-l bg-surface-card2 max-xl:hidden"
           style={{ width: panelWidth }}
@@ -1328,7 +1598,7 @@ export const InsightsView = () => {
       )}
 
       {/* Narrow: the same panel, over the page, because 26rem beside a dashboard leaves neither readable. */}
-      {assistant && !wide && (
+      {assistant && !teamShown && !wide && (
         <div className="fixed inset-0 z-40 flex flex-col bg-surface-page">
           <div className="flex items-center gap-2 border-stroke border-b px-4 py-2.5">
             <Typography variant="span" weight="semibold" className="text-[0.95rem]">Ask about this</Typography>

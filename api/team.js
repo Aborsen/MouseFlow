@@ -4,6 +4,7 @@
  *   GET    /api/team?id=X                 one team: members, their activity, pending invites, shared skills
  *   POST   /api/team                      { name }            make one; I am its owner
  *   POST   /api/team?id=X                 { email, role }     add somebody, or invite an address with no account
+ *   POST   /api/team?id=X&remind=<email>  send a waiting invitation again              (owner, admin)
  *   POST   /api/team?id=X&share=<flow>    show one of MY skills to the team
  *   PATCH  /api/team?id=X                 { userId, role }    change a role                    (owner)
  *   DELETE /api/team?id=X                 leave it
@@ -23,6 +24,13 @@
  * had, and the reason is the same: a membership that retroactively opened everything somebody had ever
  * recorded would be a surprise about other people's screens.
  *
+ * WHAT IS EMAILED, AND WHAT THE EMAIL IS WORTH. Adding somebody sends them one message: who added them,
+ * what a team does and does not open, a link to the Teams page, and a line telling them to delete it if
+ * they do not recognise it. The message carries NO AUTHORITY - the link is a deep link, not a token, and
+ * membership is decided by the address on the account that opens it. So a forwarded message, a shared
+ * inbox or a mail log hands nobody a seat. If this deployment has no mail configured, the invitation still
+ * works exactly as it did before and the answer says so instead of implying a message is on its way.
+ *
  * EVERY QUERY IS SCOPED BY THE CALLER'S OWN MEMBERSHIP, resolved from the credential and never from the
  * request. A team id in a query string is a claim, not a permission: `roleOf` turns it into one or into
  * nothing, and every write says which roles it accepts before it runs.
@@ -31,11 +39,26 @@
 import { neon } from '@neondatabase/serverless';
 import { randomBytes } from 'node:crypto';
 import { whoIsCalling } from './_session.js';
+/* One derivation of "who may see whose work", shared with /api/insights - see api/_team-scope.js. A second
+ * copy of roleOf would be a second place for the rule that decides whether one person sees another's work
+ * to be right. */
+import { manages, peopleFor, roleOf } from './_team-scope.js';
+import { invitationMail, mailProblem, sendMail } from './_mail.js';
 
 const NAME_MAX = 60;
 const TEAMS_PER_PERSON = 20;
 const MEMBERS_MAX = 200;
 const ROLES = ['owner', 'admin', 'member'];
+
+/* This endpoint sends mail to an address the caller types, which is the shape of every open relay ever
+ * built. Three things stand between it and that: only an owner or an admin of an existing team can reach
+ * it, a team is capped at MEMBERS_MAX, and this - a ceiling on how many invitations one account can send
+ * in an hour, counted from the invite rows themselves rather than from memory.
+ *
+ * From the rows on purpose: a serverless instance holds its own memory and a determined caller gets a
+ * fresh one, so an in-process counter is a speed bump. A row was written for every invitation, so counting
+ * them is both exact and free of state. */
+const INVITES_PER_HOUR = 25;
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -50,18 +73,6 @@ function cors(req, res) {
 const fail = (res, status, message) => res.status(status).json({ error: message });
 const text = (value, max) => (value == null ? null : String(value).trim().slice(0, max) || null);
 const newId = () => `t_${randomBytes(8).toString('hex')}`;
-
-/** The caller's role in one team, or null. The only thing that turns a team id into a permission. */
-async function roleOf(sql, teamId, userId) {
-  const rows = await sql`
-    select m.role from team_member m
-    join team t on t.id = m.team_id and t.deleted_at is null
-    where m.team_id = ${teamId} and m.user_id = ${userId}
-  `;
-  return rows.length ? rows[0].role : null;
-}
-
-const manages = (role) => role === 'owner' || role === 'admin';
 
 /* Anybody added by an address before they had an account.
  *
@@ -86,20 +97,6 @@ async function claimInvites(sql, who) {
   }
 }
 
-/** Names and addresses for a set of ids, from the auth service's own table. */
-async function peopleFor(sql, ids) {
-  if (!ids.length) return new Map();
-  const rows = await sql`
-    select u.id::text as id, to_jsonb(u) as who from neon_auth."user" u where u.id::text = any(${ids})
-  `;
-  const out = new Map();
-  for (const row of rows) {
-    const w = row.who || {};
-    out.set(row.id, { name: w.name ?? null, email: w.email ?? null, image: w.image ?? null });
-  }
-  return out;
-}
-
 /* ------------------------------------------------------------------------------- reads */
 
 async function myTeams(sql, who) {
@@ -112,7 +109,11 @@ async function myTeams(sql, who) {
     where m.user_id = ${who.id}
     order by t.created_at
   `;
-  return { teams };
+  /* Whether a message would actually go anywhere, answered before somebody types an address rather than
+   * after. The screen that adds people is the only place this matters, and being told "no email could be
+   * sent" AFTER inviting four colleagues is the wrong minute to find out. */
+  const problem = mailProblem();
+  return { teams, mail: { configured: !problem, problem } };
 }
 
 /** One team. Activity is included only for the roles that may see it; a member gets the roster. */
@@ -232,7 +233,7 @@ async function createTeam(sql, who, body) {
   return { status: 200, body: { ok: true, id, name } };
 }
 
-async function addMember(sql, who, teamId, body) {
+async function addMember(sql, who, teamId, body, origin) {
   const role = await roleOf(sql, teamId, who.id);
   if (!manages(role)) return { status: 404, body: { error: 'not found' } };
 
@@ -248,32 +249,100 @@ async function addMember(sql, who, teamId, body) {
   const [{ n }] = await sql`select count(*)::int as n from team_member where team_id = ${teamId}`;
   if (n >= MEMBERS_MAX) return { status: 400, body: { error: 'this team is full' } };
 
+  const [{ sent }] = await sql`
+    select count(*)::int as sent from team_invite
+    where invited_by = ${who.id} and created_at > now() - interval '1 hour'
+  `;
+  if (sent >= INVITES_PER_HOUR) {
+    return { status: 429, body: { error: `that is ${sent} invitations in an hour, which is the limit. Try later.` } };
+  }
+
+  const [team] = await sql`select name from team where id = ${teamId} and deleted_at is null`;
+
   const found = await sql`
     select u.id::text as id from neon_auth."user" u where lower(to_jsonb(u)->>'email') = lower(${email}) limit 1
   `;
-  if (found.length) {
+  const added = found.length > 0;
+  if (added) {
     await sql`
       insert into team_member (team_id, user_id, role, invited_by)
       values (${teamId}, ${found[0].id}, ${wanted}, ${who.id})
       on conflict (team_id, user_id) do update set role = excluded.role
     `;
-    return { status: 200, body: { ok: true, added: true } };
+  } else {
+    /* The row IS the invitation, and it is written before anything is sent. Membership is decided by the
+     * address on the account when they open the page - so a message that never arrives costs them a
+     * conversation, not a seat. */
+    await sql`
+      insert into team_invite (team_id, email, role, invited_by) values (${teamId}, ${email}, ${wanted}, ${who.id})
+      on conflict (team_id, email) do update set role = excluded.role
+    `;
   }
-  await sql`
-    insert into team_invite (team_id, email, role, invited_by) values (${teamId}, ${email}, ${wanted}, ${who.id})
-    on conflict (team_id, email) do update set role = excluded.role
-  `;
-  /* Said plainly, because nothing is sent. There is no mail from here and an invite that quietly depended on
-   * one would be an invite that never happened. */
+
+  const post = await tellThem(who, email, team && team.name, wanted, added, origin);
+  return { status: 200, body: { ok: true, added, ...post } };
+}
+
+/* Telling somebody they are in a team.
+ *
+ * Separated from the write above because it is a different kind of thing: the write either happened or it
+ * did not, and this either reached somebody or did not. Both outcomes are reported - `mailed`, and `note`
+ * in the words of somebody who has to act on it - because the two failure modes look identical from the
+ * outside and want opposite responses. Mail is not configured on this deployment: go and set two variables.
+ * Mail is configured and bounced: check the address. Silence would leave the person inviting to guess.
+ */
+async function tellThem(who, email, teamName, role, added, origin) {
+  const url = `${origin}/team`;
+  const { subject, text: body, html } = invitationMail({
+    teamName,
+    inviterName: who.name,
+    inviterEmail: who.email,
+    toEmail: email,
+    url,
+    hasAccount: added,
+    role,
+  });
+  const out = await sendMail({ to: email, subject, text: body, html, replyTo: who.email || undefined });
+
+  if (out.sent) {
+    return {
+      mailed: true,
+      note: added
+        ? `${email} is in, and has been emailed a link to the team.`
+        : `${email} has no account here yet. They have been emailed: when they sign up with that address `
+          + 'and open Teams, they are in.',
+    };
+  }
+  /* The old behaviour, word for word, and it is still the true one when nothing can be sent: tell them
+   * yourself. An invitation that quietly depended on a message arriving would be one that silently did
+   * not happen. */
   return {
-    status: 200,
-    body: {
-      ok: true,
-      added: false,
-      note: `${email} has no account here yet. They are on the list: when they sign up with that address and `
-        + 'open their teams, they will be in. Nothing was emailed — tell them yourself.',
-    },
+    mailed: false,
+    mailProblem: out.why || null,
+    note: added
+      ? `${email} is in. No email could be sent (${out.why}) — tell them yourself.`
+      : `${email} has no account here yet. They are on the list: when they sign up with that address and `
+        + `open Teams, they will be in. No email could be sent (${out.why}) — tell them yourself.`,
   };
+}
+
+/* Sending it again, for an invitation that is still waiting.
+ *
+ * Its own verb rather than a repeat of the add, because re-adding somebody who is already on the list reads
+ * as a change to their role when it is not one, and because a person who lost the first message should not
+ * have to be removed and re-invited to get a second. */
+async function remind(sql, who, teamId, email, origin) {
+  const role = await roleOf(sql, teamId, who.id);
+  if (!manages(role)) return { status: 404, body: { error: 'not found' } };
+
+  const [invite] = await sql`
+    select email, role from team_invite where team_id = ${teamId} and lower(email) = lower(${email})
+  `;
+  if (!invite) return { status: 404, body: { error: 'nobody is waiting on that address' } };
+
+  const [team] = await sql`select name from team where id = ${teamId} and deleted_at is null`;
+  const post = await tellThem(who, invite.email, team && team.name, invite.role, false, origin);
+  return { status: post.mailed ? 200 : 502, body: { ok: post.mailed, ...post } };
 }
 
 async function setRole(sql, who, teamId, body) {
@@ -366,6 +435,15 @@ export default async function handler(req, res) {
   const teamId = text(query.id, 64);
   const body = req.body && typeof req.body === 'object' ? req.body : {};
 
+  /* Where the link in an invitation points. Read from the request rather than from a constant, because this
+   * app is served from more than one hostname - a preview deployment, the production one - and a link that
+   * always named production would send somebody testing a preview to the wrong deployment's account. The
+   * forwarded pair is what Vercel sets in front of the function; the plain host is what a local dev server
+   * has. */
+  const proto = String(req.headers['x-forwarded-proto'] || 'https').split(',')[0].trim();
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  const origin = `${proto}://${host}`;
+
   try {
     if (req.method === 'GET') {
       if (!teamId) return res.status(200).json({ ok: true, ...(await myTeams(sql, who)) });
@@ -378,9 +456,11 @@ export default async function handler(req, res) {
 
     if (req.method === 'POST') {
       const flowId = text(query.share, 80);
+      const again = text(query.remind, 200);
       const out = !teamId ? await createTeam(sql, who, body)
         : flowId ? await share(sql, who, teamId, flowId, true)
-          : await addMember(sql, who, teamId, body);
+          : again ? await remind(sql, who, teamId, again, origin)
+            : await addMember(sql, who, teamId, body, origin);
       return res.status(out.status).json(out.body);
     }
 

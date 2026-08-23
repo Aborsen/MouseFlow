@@ -598,6 +598,80 @@ const account = readFileSync(
 check('and it is readable with no account, or it is a door that opens from inside',
   /PUBLIC_PATHS = \['\/mcp'\]/.test(account) && /isPublicPath\(location\.pathname\)/.test(account));
 
+/* ------------------------------------------------------------------------------- teams
+ *
+ * Two rules are worth a test rather than a careful reading, because both are the kind that stay true right
+ * up until somebody edits the file next to them:
+ *
+ *   who may count whose work - one derivation, in api/_team-scope.js, imported by both endpoints that
+ *     turn a team id into a permission. A second copy would be a second place for it to be right.
+ *   what an invitation is worth - a deep link, never a token, so a forwarded message hands nobody a seat.
+ */
+
+group('teams are a module, and the dashboard can be scoped to one');
+const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+const mainTsx = read('../web/src/main.tsx');
+const sidebar = read('../web/src/shell/AppSidebar.tsx');
+const settings = read('../web/src/shell/SettingsDialog.tsx');
+const insights = read('../api/insights.js');
+const teamApi = read('../api/team.js');
+const scopeSrc = read('../api/_team-scope.js');
+
+check('/team is a route of its own', /path: '\/team'/.test(mainTsx));
+check('and it is in the sidebar, not buried in a dialog', /to: '\/team'/.test(sidebar));
+check('the settings dialog no longer keeps a second copy of it',
+  !/TeamScreen/.test(settings) && !existsSync(fileURLToPath(new URL('../web/src/shell/settings/TeamScreen.tsx', import.meta.url))));
+
+check('one derivation of who may see whose work: the team API imports it',
+  /from '\.\/_team-scope\.js'/.test(teamApi) && !/^async function roleOf/m.test(teamApi));
+check('and so does the dashboard endpoint', /from '\.\/_team-scope\.js'/.test(insights));
+check('the team scope is refused to a member by name, not silently answered',
+  /status: 403/.test(scopeSrc) && /Only an owner or an admin/.test(scopeSrc));
+check('and a team the caller is not in is a 404, which does not confirm it exists',
+  /if \(!role\) return \{ error: \{ status: 404/.test(scopeSrc));
+
+check('every count is scoped to the set of accounts, never to one hard-wired id',
+  !/\$\{userId\}/.test(insights) && /any\(\$\{ids\}::uuid\[\]\)/.test(insights));
+check('a run is matched against its OWN owner\'s flows, not the caller\'s',
+  /join user_flow f on f\.user_id = r\.user_id/.test(insights));
+check('and a personal request still sends no team, so an old bookmark asks the old question',
+  /scope\.kind === 'team' \? `&team=/.test(read('../web/src/features/insights/InsightsView.tsx')));
+
+group('an invitation says who sent it, and what to do if it was not for you');
+const mail = await import('../api/_mail.js');
+const waiting = mail.invitationMail({
+  teamName: 'Operations', inviterName: 'Vic', inviterEmail: 'vic@example.dev',
+  toEmail: 'newcomer@example.dev', url: 'https://mouseflowapp.vercel.app/team',
+  hasAccount: false, role: 'member',
+});
+const already = mail.invitationMail({
+  teamName: 'Operations', inviterName: 'Vic', inviterEmail: 'vic@example.dev',
+  toEmail: 'colleague@example.dev', url: 'https://mouseflowapp.vercel.app/team',
+  hasAccount: true, role: 'admin',
+});
+check('it names who did it', /vic@example\.dev/.test(waiting.subject) && /Vic/.test(waiting.text));
+check('somebody with no account is told to make one with THAT address',
+  /newcomer@example\.dev/.test(waiting.text) && /Create one with this address/.test(waiting.text));
+check('and somebody who has one is told they are already in', /you are in/.test(already.text));
+check('the envelope and the first line use the same verb',
+  waiting.subject.includes('invited you to join') && waiting.text.startsWith('Vic (vic@example.dev) invited you to join'));
+check('it says to delete the message if they do not recognise it',
+  /delete this email/i.test(waiting.text) && /delete this email/i.test(waiting.html));
+check('and that nothing of theirs was opened by it', /nothing of yours was/i.test(waiting.text));
+
+/* The security property of the whole feature, in one check: the link is a place, not a key. */
+const links = [...waiting.text.matchAll(/https?:\/\/\S+/g)].map((m) => m[0]);
+check('the link carries no token - it is the Teams page and nothing else',
+  links.length === 1 && links[0] === 'https://mouseflowapp.vercel.app/team', links.join(' '));
+check('the row is written before anything is sent, so a lost message costs a conversation, not a seat',
+  teamApi.indexOf('insert into team_invite') < teamApi.indexOf('const post = await tellThem'));
+
+check('with no mail configured it refuses rather than throwing, and names the variables',
+  /RESEND_API_KEY/.test(String(mail.mailProblem())) && /MAIL_FROM/.test(String(mail.mailProblem())));
+const unsent = await mail.sendMail({ to: 'somebody@example.dev', subject: 'x', text: 'y' });
+check('and the caller is told why', unsent.sent === false && typeof unsent.why === 'string');
+check('the endpoint says so too, before an address is typed', /mail: \{ configured:/.test(teamApi));
+
 /* A picture that 404s is the documentation's version of the same bug. */
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));

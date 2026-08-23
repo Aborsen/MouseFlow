@@ -19,6 +19,7 @@ import {
   LayoutGrid,
   PanelLeft,
   Sparkles,
+  Users,
   Wallet,
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
@@ -40,6 +41,11 @@ const NAV = [
   { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
   // Asking about the numbers happens on the page that shows them, not at its own address.
   { to: '/dashboard', label: 'Dashboard', icon: ChartNoAxesColumn },
+  /* Last, and a place rather than a setting. It was the fourth pane of the settings dialog, which was the
+   * right size for a roster you fill in once and the wrong one for what it now is: several teams, people
+   * being added and moved, invitations to chase, and a dashboard scoped to each. A dialog also cannot be
+   * linked to, and "open Teams" is what an invitation email has to be able to say. */
+  { to: '/team', label: 'Teams', icon: Users },
 ] as const;
 
 /* One row height, one glyph box, one gap - so a lucide glyph that draws lighter than its neighbours still

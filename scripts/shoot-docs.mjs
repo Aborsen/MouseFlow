@@ -294,7 +294,7 @@ async function main() {
       /* A cold Vite transforms the whole module graph on the first request, and the first screenshot was
        * otherwise taken of a page that had not arrived. */
       console.log('warming…');
-      for (const path of ['/record', '/mcp', '/skills', '/create', '/gallery', '/dashboard', '/connect']) {
+      for (const path of ['/record', '/mcp', '/skills', '/create', '/gallery', '/dashboard', '/team', '/connect']) {
         await page.goto(SITE + path, 2500);
       }
 
@@ -385,6 +385,16 @@ async function main() {
        * wrong thing to put in a public document. Its resting state, with the three questions it offers, is
        * in dashboard.png. */
 
+      /* ---- teams, and the dashboard scoped to one ----
+       *
+       * Two pictures because it is two halves of one feature: the roster, where somebody is added, and the
+       * same dashboard counting everybody instead of the reader. The second is taken at ?team=t_dev1 —
+       * the scope lives in the address, which is exactly what makes it linkable and screenshot-able. */
+      await page.goto(SITE + '/team', 2800);
+      await page.shot('team.png');
+      await page.goto(SITE + '/dashboard?team=t_dev1', 3500);
+      await page.shot('dashboard-team.png');
+
       /* ---- the connect guide, both platforms ---- */
       await page.goto(SITE + '/connect', 3000);
       await page.eval("window.__mf.clickText('macOS')");
@@ -414,9 +424,6 @@ async function main() {
       })()`);
       await wait(700);
       await page.shot('settings-connections-mcp.png');
-
-      await openSettings(page, 'Teams');
-      await page.shot('settings-team.png');
 
       await openSettings(page, 'Hours');
       await page.shot('settings-hours.png');
