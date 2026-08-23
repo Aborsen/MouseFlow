@@ -23,6 +23,18 @@ one you have open.
 A team lets the people running it see **that work is happening**: who recorded, when, how runs ended. That
 is the question a team exists to answer, and a team that cannot answer it is a mailing list.
 
+The roster is a **card per person**, not a table — a table is the right answer for forty names and the wrong
+one for four, and it made a team of three read like a database export. Each card carries the counts and, for
+the roles that may see activity, the **shape of that person's fortnight**: fourteen bars, one per day, red
+where runs failed, scaled to their own busiest day rather than to the team's. Two people with eighteen runs
+are not the same colleague if one of them did all eighteen on a Tuesday, and a count cannot tell them apart.
+Scaled to the team instead, somebody steady beside somebody bursty would flatten to a grey line — which is
+the one thing the bars exist to show — so the card prints the run count beside them and the height stays a
+shape rather than a quantity to read off.
+
+Somebody who has been invited but has not signed up is a card **in the same grid**, in the same shape: a
+person who is not here yet, rather than a separate kind of record kept in a list further down the page.
+
 ## What joining one does not do
 
 **Joining a team hands over nothing you have already recorded.** Content — the events, the transcript, the

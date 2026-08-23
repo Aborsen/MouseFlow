@@ -687,6 +687,11 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       });
     }
     if (method === 'GET' && query.get('id') === 't_dev2') {
+      const fortnight2 = (pattern: number[]) => pattern.map((runs, i) => ({
+        day: new Date(now - (pattern.length - 1 - i) * 86400_000).toISOString().slice(0, 10),
+        runs,
+        failed: 0,
+      }));
       return json(res, 200, {
         ok: true,
         team: { id: 't_dev2', name: 'Finance', created: hoursAgo(300), createdBy: 'u_dev2' },
@@ -694,11 +699,17 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         members: [
           {
             id: ACCOUNT.id, role: 'admin', joined: hoursAgo(300), name: ACCOUNT.name, email: ACCOUNT.email,
-            activity: { recordings: 12, skills: 3, runs: 41, lastRecorded: hoursAgo(3), lastRun: hoursAgo(2) },
+            activity: {
+              recordings: 12, skills: 3, runs: 41, lastRecorded: hoursAgo(3), lastRun: hoursAgo(2),
+              days: fortnight2([2, 3, 4, 3, 5, 2, 0, 3, 4, 6, 3, 2, 1, 3]),
+            },
           },
           {
             id: 'u_dev4', role: 'owner', joined: hoursAgo(300), name: 'Iryna B.', email: 'iryna@example.dev',
-            activity: { recordings: 4, skills: 1, runs: 9, lastRecorded: hoursAgo(70), lastRun: hoursAgo(66) },
+            activity: {
+              recordings: 4, skills: 1, runs: 9, lastRecorded: hoursAgo(70), lastRun: hoursAgo(66),
+              days: fortnight2([0, 1, 0, 2, 0, 0, 1, 0, 3, 0, 0, 1, 0, 1]),
+            },
           },
         ],
         invites: [],
@@ -706,6 +717,14 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       });
     }
     if (method === 'GET') {
+      /* Fourteen days of runs per person, because that is what the member cards draw. Three different
+       * RHYTHMS rather than three different totals: somebody steady, somebody bursty, and somebody who
+       * barely appears — which is the whole reason the card shows a shape instead of one more number. */
+      const fortnight = (pattern: number[], fails: number[] = []) => pattern.map((runs, i) => ({
+        day: new Date(now - (pattern.length - 1 - i) * 86400_000).toISOString().slice(0, 10),
+        runs,
+        failed: fails[i] ?? 0,
+      }));
       return json(res, 200, {
         ok: true,
         team: { id: 't_dev1', name: 'Operations', created: hoursAgo(720), createdBy: ACCOUNT.id },
@@ -713,15 +732,27 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         members: [
           {
             id: ACCOUNT.id, role: 'owner', joined: hoursAgo(720), name: ACCOUNT.name, email: ACCOUNT.email,
-            activity: { recordings: 12, skills: 3, runs: 41, lastRecorded: hoursAgo(3), lastRun: hoursAgo(2) },
+            activity: {
+              recordings: 12, skills: 3, runs: 41, lastRecorded: hoursAgo(3), lastRun: hoursAgo(2),
+              // steady, with one bad Thursday
+              days: fortnight([2, 3, 4, 3, 5, 2, 0, 3, 4, 6, 3, 2, 1, 3], [0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0]),
+            },
           },
           {
             id: 'u_dev2', role: 'admin', joined: hoursAgo(400), name: 'Margaryta K.', email: 'margaryta@example.dev',
-            activity: { recordings: 7, skills: 2, runs: 18, lastRecorded: hoursAgo(26), lastRun: hoursAgo(20) },
+            activity: {
+              recordings: 7, skills: 2, runs: 18, lastRecorded: hoursAgo(26), lastRun: hoursAgo(20),
+              // bursty: nothing for days, then a big Tuesday
+              days: fortnight([0, 0, 1, 0, 0, 9, 2, 0, 0, 0, 3, 1, 0, 2], [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]),
+            },
           },
           {
             id: 'u_dev3', role: 'member', joined: hoursAgo(96), name: 'Pavlo D.', email: 'pavlo@example.dev',
-            activity: { recordings: 2, skills: 0, runs: 4, lastRecorded: hoursAgo(50), lastRun: hoursAgo(48) },
+            activity: {
+              recordings: 2, skills: 0, runs: 4, lastRecorded: hoursAgo(50), lastRun: hoursAgo(48),
+              // barely started
+              days: fortnight([0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1]),
+            },
           },
         ],
         invites: [{ email: 'newcomer@example.dev', role: 'member', created: hoursAgo(12) }],

@@ -23,6 +23,13 @@
  * SEVERAL TEAMS IS THE NORMAL CASE, not an edge one — an operations team, a finance team, a client. So the
  * teams are a column of their own rather than a row of pills that wraps at the fourth name, and every
  * write reloads both the list and the open team, since a role change alters what the list may show.
+ *
+ * PEOPLE, NOT ROWS. The roster was a table, and a table is the right answer for forty names and the wrong
+ * one for four: it made a team of three read like a database export. Each person is a card with the SHAPE
+ * of their fortnight on it — fourteen bars, one per day, red where runs failed — because two people with
+ * eighteen runs are not the same colleague if one did all eighteen on a Tuesday, and a count cannot tell
+ * them apart. Somebody who has been invited but has not signed up yet is a card in the same grid, in the
+ * same place, because they are a person who is not here yet rather than a separate kind of record.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from '@tanstack/react-router';
@@ -62,6 +69,8 @@ interface Member {
   activity: {
     recordings: number; skills: number; runs: number;
     lastRecorded: string | null; lastRun: string | null;
+    /** Fourteen days, oldest first, every day present. Only sent to the roles that may see activity. */
+    days?: { day: string; runs: number; failed: number }[];
   } | null;
 }
 
@@ -123,6 +132,48 @@ const ROLE_TONE: Record<Role, 'primary' | 'accent' | 'secondary'> = {
 };
 
 const CARD = 'rounded-xl border border-stroke bg-surface-card p-4';
+
+/* Fourteen bars, scaled to the busiest day THIS PERSON had rather than to the team's busiest.
+ *
+ * Per-person on purpose: scaled to the team, somebody steady at three runs a day next to somebody who did
+ * forty on one Tuesday renders as a flat grey line, and the rhythm — which is the only thing this is for —
+ * disappears. A card says how many runs it is showing beside the bars, so the height is a shape and never
+ * a quantity to be read off. A day with nothing keeps a stub, so the spacing stays honest. */
+const Fortnight = ({ days }: { days: { day: string; runs: number; failed: number }[] }) => {
+  const most = Math.max(1, ...days.map((d) => d.runs));
+  return (
+    <div className="flex h-[30px] items-end gap-[3px]" aria-hidden>
+      {days.map((d) => (
+        <span
+          key={d.day}
+          title={`${d.day}: ${d.runs} run${d.runs === 1 ? '' : 's'}${d.failed ? `, ${d.failed} failed` : ''}`}
+          className="flex flex-1 flex-col-reverse overflow-hidden rounded-[2px]"
+          style={{ height: d.runs === 0 ? '10%' : `${Math.max(18, (d.runs / most) * 100)}%` }}
+        >
+          {/* STACKED, the same way the Dashboard's day chart is: a day with nine runs and one failure is
+            * not a failed day, and colouring the whole bar red for any failure at all said it was. Green
+            * below, red above, in the proportion that actually failed. */}
+          {d.runs === 0 ? (
+            <span className="flex-1 bg-stroke" />
+          ) : (
+            <>
+              <span className="bg-fb-green" style={{ flexGrow: Math.max(0, d.runs - d.failed) }} />
+              {d.failed > 0 && <span className="bg-fb-red" style={{ flexGrow: d.failed }} />}
+            </>
+          )}
+        </span>
+      ))}
+    </div>
+  );
+};
+
+/** One number with its name under it — the three that fit across a card. */
+const Stat = ({ n, label }: { n: number; label: string }) => (
+  <span className="flex flex-col gap-px">
+    <strong className="font-bold text-[1.05rem] text-ink-primary tabular-nums">{n}</strong>
+    <span className="text-[0.66rem] text-ink-inactive uppercase tracking-wide">{label}</span>
+  </span>
+);
 const FIELD = 'h-9 rounded-lg border border-stroke bg-surface-card2 px-3 text-[0.86rem] text-ink-primary '
   + 'placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none';
 
@@ -243,15 +294,28 @@ export const TeamView = () => {
                 type="button"
                 onClick={() => setOpenId(t.id)}
                 className={cn(
-                  'flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[0.88rem] transition-colors duration-fast',
-                  t.id === openId
-                    ? 'bg-state-pressed font-semibold text-ink-primary'
-                    : 'text-ink-body hover:bg-state-hover',
+                  'flex flex-col gap-1.5 rounded-lg px-2.5 py-2 text-left transition-colors duration-fast',
+                  t.id === openId ? 'bg-state-pressed' : 'hover:bg-state-hover',
                 )}
               >
-                <Users className={cn('size-4 shrink-0', t.id === openId && 'text-brand-primary')} />
-                <span className="min-w-0 flex-1 truncate">{t.name}</span>
-                <span className="shrink-0 text-[0.74rem] text-ink-inactive tabular-nums">{t.members}</span>
+                <span className="flex items-center gap-2">
+                  <span className={cn(
+                    'min-w-0 flex-1 truncate text-[0.88rem]',
+                    t.id === openId ? 'font-semibold text-ink-primary' : 'text-ink-body',
+                  )}>
+                    {t.name}
+                  </span>
+                  {/* Your role in THIS team, on the row you pick it from — it differs between teams, and
+                    * finding out which one you own by opening each of them is a question this can answer
+                    * where it is asked. */}
+                  <Badge variant={ROLE_TONE[t.role]} size="xs" rounded="full" className="shrink-0">
+                    {t.role}
+                  </Badge>
+                </span>
+                <span className="flex items-center text-[0.72rem] text-ink-inactive">
+                  <Users className="me-1.5 size-3.5 shrink-0" />
+                  {t.members} {t.members === 1 ? 'person' : 'people'}
+                </span>
               </button>
             ))}
 
@@ -319,91 +383,149 @@ export const TeamView = () => {
                 )}
               </div>
 
-              {/* -------- members */}
-              <div className="mt-3 overflow-x-auto">
-                <table className="w-full min-w-[520px]">
-                  <thead>
-                    <tr>
-                      {['Person', 'Role', ...(manages ? ['Rec.', 'Skills', 'Runs', 'Last run'] : []), ''].map((h, i) => (
-                        <th
-                          key={h || `x${i}`}
-                          className={cn(
-                            'px-2 py-1.5 text-left font-semibold text-[0.7rem] text-ink-inactive uppercase tracking-wide',
-                            i > 1 && 'text-right',
+              {/* -------- the people, as people */}
+              <div className="mt-3.5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {detail.members.map((m) => (
+                  <div key={m.id} className="flex flex-col gap-3 rounded-xl border border-stroke bg-surface-card2 p-3.5">
+                    <div className="flex items-center gap-2.5">
+                      <span
+                        className={cn(
+                          'grid size-9 shrink-0 place-items-center rounded-full font-bold text-[0.95rem]',
+                          m.id === account?.id
+                            ? 'on-accent bg-brand-tertiary'
+                            : 'bg-grey-600 text-ink-primary',
+                        )}
+                      >
+                        {(m.name || m.email || '?').trim()[0]?.toUpperCase()}
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col leading-[1.3]">
+                        <strong className="truncate font-semibold text-[0.88rem] text-ink-primary">
+                          {m.name || m.email || m.id}
+                          {m.id === account?.id && (
+                            <span className="ms-1.5 font-normal text-[0.74rem] text-ink-inactive">you</span>
+                          )}
+                        </strong>
+                        {m.email && <span className="truncate text-[0.74rem] text-ink-inactive">{m.email}</span>}
+                      </span>
+
+                      {/* The role is a control for an owner and a label for everybody else, in the same
+                        * spot either way — a badge that turns into a select when you happen to have the
+                        * rights is one thing that moved, not two things in two places. */}
+                      {detail.you.role === 'owner' && m.id !== account?.id ? (
+                        <select
+                          value={m.role}
+                          disabled={busy}
+                          aria-label={`Role for ${m.name || m.email || 'this member'}`}
+                          onChange={(e) => void act(
+                            () => call(`?id=${encodeURIComponent(detail.team.id)}`, {
+                              method: 'PATCH',
+                              headers: { 'content-type': 'application/json' },
+                              body: JSON.stringify({ userId: m.id, role: e.target.value }),
+                            }),
+                            'Role changed.',
+                          )}
+                          className="h-6 shrink-0 rounded-md border border-stroke bg-surface-card px-1 text-[0.72rem] text-ink-primary focus:border-brand-primary focus:outline-none"
+                        >
+                          {(['owner', 'admin', 'member'] as Role[]).map((r) => (
+                            <option key={r} value={r}>{r}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <Badge variant={ROLE_TONE[m.role]} size="xs" rounded="full" className="shrink-0">
+                          {m.role}
+                        </Badge>
+                      )}
+                    </div>
+
+                    {m.activity ? (
+                      <>
+                        <div className="grid grid-cols-3 gap-2">
+                          <Stat n={m.activity.recordings} label="recordings" />
+                          <Stat n={m.activity.skills} label="skills" />
+                          <Stat n={m.activity.runs} label="runs" />
+                        </div>
+                        {m.activity.days && m.activity.days.length > 0 && (
+                          <Fortnight days={m.activity.days} />
+                        )}
+                        <span className="text-[0.74rem] text-ink-inactive">
+                          Last run {when(m.activity.lastRun)} · last recorded {when(m.activity.lastRecorded)}
+                        </span>
+                      </>
+                    ) : (
+                      /* Absent, not nought. A member may not see a colleague's activity, and zeroes here
+                       * would tell them something untrue about somebody's week. */
+                      <span className="text-[0.78rem] text-ink-inactive leading-relaxed">
+                        Their activity is visible to the people running this team.
+                      </span>
+                    )}
+
+                    {(m.id === account?.id || manages) && (
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        disabled={busy}
+                        className={cn('-mx-1 mt-auto self-start', m.id !== account?.id && 'text-fb-red-text')}
+                        leftSlot={<X className="size-3.5" />}
+                        onClick={() => void act(
+                          () => call(`?id=${encodeURIComponent(detail.team.id)}`
+                            + (m.id === account?.id ? '' : `&user=${encodeURIComponent(m.id)}`),
+                            { method: 'DELETE' }),
+                          m.id === account?.id ? 'You left the team.' : 'Removed.',
+                        )}
+                      >
+                        {m.id === account?.id ? 'Leave this team' : 'Remove'}
+                      </Button>
+                    )}
+                  </div>
+                ))}
+
+                {/* Somebody who is not here yet, in the same grid and the same shape as somebody who is. */}
+                {manages && detail.invites.map((i) => (
+                  <div key={i.email} className="flex flex-col gap-3 rounded-xl border border-stroke border-dashed p-3.5">
+                    <div className="flex items-center gap-2.5">
+                      <span className="grid size-9 shrink-0 place-items-center rounded-full border border-stroke border-dashed text-ink-inactive">
+                        <Mail className="size-4" />
+                      </span>
+                      <span className="flex min-w-0 flex-1 flex-col leading-[1.3]">
+                        <strong title={i.email} className="truncate font-medium text-[0.86rem] text-ink-secondary">
+                          {i.email}
+                        </strong>
+                        <span className="truncate text-[0.74rem] text-ink-inactive">
+                          asked {when(i.created)} · no account yet
+                        </span>
+                      </span>
+                      <Badge variant="attention" size="xs" rounded="full" className="shrink-0">invited</Badge>
+                    </div>
+                    <span className="text-[0.76rem] text-ink-inactive leading-relaxed">
+                      They are in as soon as they sign up with that address and open Teams.
+                    </span>
+                    <span className="mt-auto flex items-center gap-1">
+                      {mail?.configured && (
+                        <Button
+                          variant="ghost" size="xs" disabled={busy} className="-mx-1"
+                          leftSlot={<Send className="size-3.5" />}
+                          onClick={() => void act(
+                            () => call(`?id=${encodeURIComponent(detail.team.id)}`
+                              + `&remind=${encodeURIComponent(i.email)}`, { method: 'POST' }),
+                            `Sent to ${i.email} again.`,
                           )}
                         >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {detail.members.map((m) => (
-                      <tr key={m.id} className="border-stroke border-t">
-                        <td className="px-2 py-2">
-                          <div className="text-[0.88rem] text-ink-primary">
-                            {m.name || m.email || m.id}
-                            {m.id === account?.id && (
-                              <span className="ms-1.5 text-[0.74rem] text-ink-inactive">you</span>
-                            )}
-                          </div>
-                          {m.name && m.email && (
-                            <div className="text-[0.75rem] text-ink-inactive">{m.email}</div>
-                          )}
-                        </td>
-                        <td className="px-2 py-2">
-                          {detail.you.role === 'owner' && m.id !== account?.id ? (
-                            <select
-                              value={m.role}
-                              disabled={busy}
-                              onChange={(e) => void act(
-                                () => call(`?id=${encodeURIComponent(detail.team.id)}`, {
-                                  method: 'PATCH',
-                                  headers: { 'content-type': 'application/json' },
-                                  body: JSON.stringify({ userId: m.id, role: e.target.value }),
-                                }),
-                                'Role changed.',
-                              )}
-                              className="h-7 rounded-md border border-stroke bg-surface-card2 px-1.5 text-[0.8rem] text-ink-primary focus:border-brand-primary focus:outline-none"
-                            >
-                              {(['owner', 'admin', 'member'] as Role[]).map((r) => (
-                                <option key={r} value={r}>{r}</option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span className="text-[0.82rem] text-ink-secondary">{m.role}</span>
-                          )}
-                        </td>
-                        {manages && (
-                          <>
-                            <td className="px-2 py-2 text-right text-[0.85rem] text-ink-body tabular-nums">{m.activity?.recordings ?? '—'}</td>
-                            <td className="px-2 py-2 text-right text-[0.85rem] text-ink-body tabular-nums">{m.activity?.skills ?? '—'}</td>
-                            <td className="px-2 py-2 text-right text-[0.85rem] text-ink-body tabular-nums">{m.activity?.runs ?? '—'}</td>
-                            <td className="px-2 py-2 text-right text-[0.82rem] text-ink-inactive tabular-nums">{when(m.activity?.lastRun)}</td>
-                          </>
+                          Send again
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost" size="xs" disabled={busy} className="-mx-1 text-ink-inactive"
+                        onClick={() => void act(
+                          () => call(`?id=${encodeURIComponent(detail.team.id)}`
+                            + `&invite=${encodeURIComponent(i.email)}`, { method: 'DELETE' }),
+                          'Invitation cancelled.',
                         )}
-                        <td className="px-2 py-2 text-right">
-                          {(m.id === account?.id || manages) && (
-                            <Button
-                              variant="ghost"
-                              size="xs"
-                              disabled={busy}
-                              title={m.id === account?.id ? 'Leave this team' : 'Remove from the team'}
-                              onClick={() => void act(
-                                () => call(`?id=${encodeURIComponent(detail.team.id)}`
-                                  + (m.id === account?.id ? '' : `&user=${encodeURIComponent(m.id)}`),
-                                  { method: 'DELETE' }),
-                                m.id === account?.id ? 'You left the team.' : 'Removed.',
-                              )}
-                            >
-                              <X className="size-3.5" />
-                            </Button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                      >
+                        Cancel
+                      </Button>
+                    </span>
+                  </div>
+                ))}
               </div>
 
               {manages && (
@@ -486,45 +608,6 @@ export const TeamView = () => {
                     </>
                   )}
                 </div>
-
-                {detail.invites.length > 0 && (
-                  <div className="mt-3.5 grid gap-1 border-stroke border-t pt-3">
-                    <span className="text-[0.72rem] text-ink-inactive uppercase tracking-wide">
-                      Waiting for an account
-                    </span>
-                    {detail.invites.map((i) => (
-                      <div key={i.email} className="flex items-center gap-2 text-[0.85rem] text-ink-body">
-                        <span className="min-w-0 truncate">{i.email}</span>
-                        <span className="shrink-0 text-[0.76rem] text-ink-inactive">{i.role}</span>
-                        <span className="shrink-0 text-[0.76rem] text-ink-inactive">asked {when(i.created)}</span>
-                        {mail?.configured && (
-                          <Button
-                            variant="ghost" size="xs" className="ms-auto" disabled={busy}
-                            title="Send that invitation again"
-                            onClick={() => void act(
-                              () => call(`?id=${encodeURIComponent(detail.team.id)}`
-                                + `&remind=${encodeURIComponent(i.email)}`, { method: 'POST' }),
-                              `Sent to ${i.email} again.`,
-                            )}
-                          >
-                            <Send className="size-3.5" />
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost" size="xs" className={cn(!mail?.configured && 'ms-auto')} disabled={busy}
-                          title="Cancel this invitation"
-                          onClick={() => void act(
-                            () => call(`?id=${encodeURIComponent(detail.team.id)}`
-                              + `&invite=${encodeURIComponent(i.email)}`, { method: 'DELETE' }),
-                            'Invitation cancelled.',
-                          )}
-                        >
-                          <X className="size-3.5" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
               </div>
             )}
 

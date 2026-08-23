@@ -159,6 +159,45 @@ async function oneTeam(sql, who, teamId) {
       ) r on r.user_id = u.id
     ` : [];
     activity = new Map(rows.map((r) => [r.id, r]));
+
+    /* The shape of each person's fortnight, not only its total.
+     *
+     * Two people with eighteen runs are not the same team member if one of them did all eighteen on a
+     * Tuesday and the other does three a day — and a count cannot tell them apart. Fourteen days because
+     * that is what fits a card without becoming a chart, and because a week is too short to show a rhythm.
+     *
+     * Same rule as the counts above: only for the roles that run the team, and only how many and how they
+     * ended. There is nothing here that says what any of them was.
+     */
+    const daily = ids.length ? await sql`
+      select user_id::text as id,
+             to_char(date_trunc('day', coalesce(started_at, synced_at)), 'YYYY-MM-DD') as day,
+             count(*)::int                                   as runs,
+             count(*) filter (where outcome = 'failed')::int  as failed
+      from user_run
+      where user_id = any(${ids}::uuid[])
+        and coalesce(started_at, synced_at) > now() - interval '14 days'
+      group by 1, 2
+    ` : [];
+
+    /* Every one of the fourteen days, in order, whether or not anything ran. A series with holes drawn as
+     * a row of bars is a row of bars that lies about its own spacing. */
+    const slots = [];
+    for (let back = 13; back >= 0; back -= 1) {
+      slots.push(new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10));
+    }
+    const byPerson = new Map();
+    for (const row of daily) {
+      if (!byPerson.has(row.id)) byPerson.set(row.id, new Map());
+      byPerson.get(row.id).set(row.day, row);
+    }
+    for (const [id, act] of activity) {
+      const found = byPerson.get(id) || new Map();
+      act.days = slots.map((day) => {
+        const hit = found.get(day);
+        return { day, runs: hit ? hit.runs : 0, failed: hit ? hit.failed : 0 };
+      });
+    }
   }
 
   const invites = manages(role)
@@ -194,6 +233,7 @@ async function oneTeam(sql, who, teamId) {
           ? {
             recordings: act.recordings, skills: act.skills, runs: act.runs,
             lastRecorded: act.last_recorded, lastRun: act.last_run,
+            days: act.days || [],
           }
           : null,
       };

@@ -645,6 +645,18 @@ check('and the roster stays whole while the counting narrows, or the filter is a
   /memberIds: ids/.test(scopeSrc) && /ids: chosen \? \[chosen\] : ids/.test(scopeSrc));
 check('the range presets are Today, 7 days and Custom', /const RANGES = \[7\];/.test(dash));
 
+const teamView = read('../web/src/features/team/TeamView.tsx');
+check('the roster is a card per person, not a table', !/<table/.test(teamView)
+  && /const Fortnight = /.test(teamView));
+check('a fortnight of runs is sent only to the roles that may see activity',
+  /if \(manages\(role\)\)/.test(teamApi) && teamApi.indexOf('const daily') > teamApi.indexOf('if (manages(role))'));
+check('every one of the fourteen days is present, so the bars cannot lie about spacing',
+  /for \(let back = 13; back >= 0; back -= 1\)/.test(teamApi));
+check('bars scale to the person, not the team, or a steady week flattens beside a busy one',
+  /Math\.max\(1, \.\.\.days\.map\(\(d\) => d\.runs\)\)/.test(teamView));
+check('and a failure is a PORTION of the day, not the whole bar turned red',
+  /flexGrow: Math\.max\(0, d\.runs - d\.failed\)/.test(teamView));
+
 /* The bug this covers reached production: a `const people` referenced one line above its own declaration,
  * so every request that filtered the dashboard to one person answered 500. It survived a browser check
  * because the dev fixture answers /api/insights itself — the page was exercised, this file was not. It is
