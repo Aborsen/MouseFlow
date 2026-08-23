@@ -15,7 +15,7 @@ import { Typography } from '@insightis/ui/Typography';
 import { signInWithGoogle } from '@/lib/api';
 import { nextAfterSignIn } from '@/shell/AccountProvider';
 import {
-  AuthCard, Banner, FIELD, GoogleButton, PasswordField, authPost, saySo,
+  AuthCard, Banner, FIELD, GoogleButton, PasswordField, authFailure, authPost, saySo,
 } from './shared';
 
 export const SignInView = () => {
@@ -23,7 +23,9 @@ export const SignInView = () => {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState<'email' | 'google' | 'resend' | 'code' | null>(null);
   const [otp, setOtp] = useState('');
-  const [failed, setFailed] = useState<string | null>(null);
+  /* Seeded from the address, because a Google round trip that failed comes back here carrying its reason
+   * and nothing else on the page would ever say what happened. */
+  const [failed, setFailed] = useState<string | null>(() => authFailure(location.search));
   const [code, setCode] = useState<string>('');
   const [note, setNote] = useState<string | null>(null);
 

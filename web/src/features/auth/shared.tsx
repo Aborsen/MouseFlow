@@ -28,7 +28,7 @@ import { cn } from '@insightis/ui/cn';
  * `/team` is on it because an invitation email names it: the whole point of that message is to land
  * somebody on the team they were added to, and before this it landed them on Record with no idea whether
  * anything had worked. */
-const LANDINGS = ['/record', '/team', '/skills', '/dashboard', '/gallery', '/create', '/connect'];
+export const LANDINGS = ['/record', '/team', '/skills', '/dashboard', '/gallery', '/create', '/connect'];
 
 export function nextFrom(search: string): string {
   try {
@@ -47,6 +47,33 @@ export function emailFrom(search: string): string {
   } catch (_) {
     return '';
   }
+}
+
+/* What a failed Google round trip said, read off the address it came back on.
+ *
+ * It used to live in AccountProvider and render inside the sign-in card that provider drew. Now that being
+ * signed out sends somebody to /sign-in, the message has to travel with them — so the reading of it lives
+ * here, where both the redirect and the page can reach it, rather than being restated in two places and
+ * drifting.
+ *
+ * `why` is the auth service's OWN words, forwarded by /api/auth/finish. Shown rather than summarised: "the
+ * attempt may have expired" was a guess made on the user's behalf, and it is the wrong guess on a phone,
+ * where the usual cause is the sign-in starting in one browser and returning to another. */
+export function authFailure(search: string): string | null {
+  const q = new URLSearchParams(search);
+  const outcome = q.get('auth');
+  if (!outcome || outcome === 'ok') return null;
+  const why = q.get('why');
+  const detail = why ? ` (${why})` : '';
+  if (outcome === 'missing-verifier') {
+    return 'Google came back without a verifier, so sign-in could not be completed.';
+  }
+  if (outcome === 'rejected') {
+    return 'The sign-in service rejected this attempt' + detail + '. This usually means the sign-in '
+      + 'started in one browser and came back in another — on a phone, opening the link in the same '
+      + 'browser you started in is what fixes it. Trying again here is safe.';
+  }
+  return `Sign-in did not complete (${outcome}${detail}).`;
 }
 
 export class AuthError extends Error {

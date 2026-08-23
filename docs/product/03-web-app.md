@@ -77,8 +77,9 @@ gone. See [04 — Record § reconciliation](04-record.md#cross-device-reconcilia
 
 ![The sidebar and top bar](../img/record.png)
 
-`web/src/shell/AppSidebar.tsx`. Six destinations — Record, Create (Beta), Skills, Gallery, Dashboard,
-Teams — then an hours row and the account row.
+`web/src/shell/AppSidebar.tsx`. Six destinations — Record, Create (Beta), Skills, Dashboard, Teams,
+Gallery — then an hours row and the account row. Gallery is last because it is the only one that is not
+*your* work: everything above it is something on this account.
 
 - **Collapse** is remembered (`mouseflow.side.tight`); it is a preference about this screen rather than
   about this visit. Below 820px it collapses itself, because a 236px sidebar and a two-column view do not

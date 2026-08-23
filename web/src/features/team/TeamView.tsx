@@ -11,25 +11,21 @@
  *
  *   activity   who recorded, when, how many runs — owners and admins see it for the whole team, because a
  *              team that cannot see whether it is working is not a team. It is also what the Dashboard's
- *              team view counts, and the button to it is on this page.
+ *              team view counts, and the button to it is in every team's panel.
  *   content    the events, the transcript, the chat — private until its owner shares it, one thing at a
  *              time, exactly as the gallery has always worked.
  *
- * So the roster shows counts and dates and never a payload, and sharing is a separate list with the
- * person's own skills in it. A membership that retroactively opened everything somebody had ever recorded
- * would be a surprise about other people's screens, and this page says so in as many words rather than
- * leaving it to be discovered.
+ * A LIST, THEN A PANEL. Two shapes were tried before this one and both failed the same way: they assumed a
+ * full team. A rail of team names spent a column on two names, and a grid of member cards put two people
+ * into three columns and left most of the page empty — with the per-person activity bars, which were the
+ * whole argument for cards, collapsing into stubs because one person had twenty-three runs and the other
+ * had none. Cards flatter a full team and expose a small one; a table does the opposite, and everybody
+ * starts small.
  *
- * SEVERAL TEAMS IS THE NORMAL CASE, not an edge one — an operations team, a finance team, a client. So the
- * teams are a column of their own rather than a row of pills that wraps at the fourth name, and every
- * write reloads both the list and the open team, since a role change alters what the list may show.
- *
- * PEOPLE, NOT ROWS. The roster was a table, and a table is the right answer for forty names and the wrong
- * one for four: it made a team of three read like a database export. Each person is a card with the SHAPE
- * of their fortnight on it — fourteen bars, one per day, red where runs failed — because two people with
- * eighteen runs are not the same colleague if one did all eighteen on a Tuesday, and a count cannot tell
- * them apart. Somebody who has been invited but has not signed up yet is a card in the same grid, in the
- * same place, because they are a person who is not here yet rather than a separate kind of record.
+ * So the teams are ROWS, in the anatomy the Recordings table already uses — same grid template, same row
+ * border, same column labels — and opening one slides a panel over the list rather than navigating away.
+ * The list staying put is the point: moving between teams is one click each, and adding somebody here and
+ * fixing a role there does not cost two page loads.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from '@tanstack/react-router';
@@ -38,6 +34,7 @@ import {
   Check,
   Mail,
   MailWarning,
+  Pencil,
   Plus,
   Send,
   Share2,
@@ -69,8 +66,6 @@ interface Member {
   activity: {
     recordings: number; skills: number; runs: number;
     lastRecorded: string | null; lastRun: string | null;
-    /** Fourteen days, oldest first, every day present. Only sent to the roles that may see activity. */
-    days?: { day: string; runs: number; failed: number }[];
   } | null;
 }
 
@@ -111,6 +106,15 @@ const when = (iso: string | null | undefined) => {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return '—';
   const two = (n: number) => String(n).padStart(2, '0');
+  return `${two(d.getDate())}.${two(d.getMonth() + 1)}.${d.getFullYear()}`;
+};
+
+/** The same date without its year, for the places a row has no room for one. */
+const short = (iso: string | null | undefined) => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '—';
+  const two = (n: number) => String(n).padStart(2, '0');
   return `${two(d.getDate())}.${two(d.getMonth() + 1)}`;
 };
 
@@ -131,49 +135,15 @@ const ROLE_TONE: Record<Role, 'primary' | 'accent' | 'secondary'> = {
   member: 'secondary',
 };
 
-const CARD = 'rounded-xl border border-stroke bg-surface-card p-4';
-
-/* Fourteen bars, scaled to the busiest day THIS PERSON had rather than to the team's busiest.
- *
- * Per-person on purpose: scaled to the team, somebody steady at three runs a day next to somebody who did
- * forty on one Tuesday renders as a flat grey line, and the rhythm — which is the only thing this is for —
- * disappears. A card says how many runs it is showing beside the bars, so the height is a shape and never
- * a quantity to be read off. A day with nothing keeps a stub, so the spacing stays honest. */
-const Fortnight = ({ days }: { days: { day: string; runs: number; failed: number }[] }) => {
-  const most = Math.max(1, ...days.map((d) => d.runs));
-  return (
-    <div className="flex h-[30px] items-end gap-[3px]" aria-hidden>
-      {days.map((d) => (
-        <span
-          key={d.day}
-          title={`${d.day}: ${d.runs} run${d.runs === 1 ? '' : 's'}${d.failed ? `, ${d.failed} failed` : ''}`}
-          className="flex flex-1 flex-col-reverse overflow-hidden rounded-[2px]"
-          style={{ height: d.runs === 0 ? '10%' : `${Math.max(18, (d.runs / most) * 100)}%` }}
-        >
-          {/* STACKED, the same way the Dashboard's day chart is: a day with nine runs and one failure is
-            * not a failed day, and colouring the whole bar red for any failure at all said it was. Green
-            * below, red above, in the proportion that actually failed. */}
-          {d.runs === 0 ? (
-            <span className="flex-1 bg-stroke" />
-          ) : (
-            <>
-              <span className="bg-fb-green" style={{ flexGrow: Math.max(0, d.runs - d.failed) }} />
-              {d.failed > 0 && <span className="bg-fb-red" style={{ flexGrow: d.failed }} />}
-            </>
-          )}
-        </span>
-      ))}
-    </div>
-  );
-};
-
-/** One number with its name under it — the three that fit across a card. */
-const Stat = ({ n, label }: { n: number; label: string }) => (
-  <span className="flex flex-col gap-px">
-    <strong className="font-bold text-[1.05rem] text-ink-primary tabular-nums">{n}</strong>
-    <span className="text-[0.66rem] text-ink-inactive uppercase tracking-wide">{label}</span>
-  </span>
-);
+/* ONE grid template for the header and every row, which is what makes a label sit over the column it
+ * names. The same rule RecordingsTable records for its own COLUMNS: every track but the name is FIXED,
+ * because an `auto` actions column sizes to its content — and the header's word ACTIONS is narrower than
+ * the buttons beneath it, so the flexible name column absorbs a different amount in each and the two
+ * disagree by exactly that difference. */
+const COLUMNS = 'grid-cols-[minmax(11rem,1fr)_6.5rem_7rem_8rem_7rem_9.5rem]';
+const ROW = 'grid w-full items-center gap-x-3 rounded-lg px-3 py-2.5 border border-stroke/45 '
+  + 'bg-surface-card transition-colors duration-fast hover:border-stroke-hover';
+const LABEL = 'text-[0.7rem] uppercase tracking-wide text-ink-inactive';
 const FIELD = 'h-9 rounded-lg border border-stroke bg-surface-card2 px-3 text-[0.86rem] text-ink-primary '
   + 'placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none';
 
@@ -185,10 +155,12 @@ export const TeamView = () => {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
+  const [making, setMaking] = useState(false);
   const [newName, setNewName] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteRole, setInviteRole] = useState<Role>('member');
   const [sharing, setSharing] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const [armed, setArmed] = useState<string | null>(null);
 
   const loadTeams = useCallback(async () => {
@@ -196,7 +168,6 @@ export const TeamView = () => {
       const body = await call<{ teams: TeamRow[]; mail?: MailState }>('');
       setTeams(body.teams);
       setMail(body.mail ?? null);
-      setOpenId((was) => (was && body.teams.some((t) => t.id === was) ? was : body.teams[0]?.id ?? null));
     } catch (err) {
       setSaid({ text: err instanceof Error ? err.message : 'your teams could not be read', kind: 'bad' });
       setTeams([]);
@@ -213,7 +184,23 @@ export const TeamView = () => {
   }, []);
 
   useEffect(() => { void loadTeams(); }, [loadTeams]);
-  useEffect(() => { if (openId) void loadDetail(openId); else setDetail(null); }, [openId, loadDetail]);
+
+  /* The panel's contents are read when it opens and dropped when it closes, rather than kept for the team
+   * you last looked at. A stale roster under a fresh title is the shape of "I removed them and they are
+   * still there". */
+  useEffect(() => {
+    if (!openId) { setDetail(null); return; }
+    setDetail(null);
+    void loadDetail(openId);
+  }, [openId, loadDetail]);
+
+  /* Escape closes it, because every overlay in every app does and one that does not feels stuck. */
+  useEffect(() => {
+    if (!openId) return undefined;
+    const key = (ev: KeyboardEvent) => { if (ev.key === 'Escape') setOpenId(null); };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [openId]);
 
   const act = async (what: () => Promise<unknown>, done: string) => {
     setBusy(true);
@@ -241,97 +228,68 @@ export const TeamView = () => {
     [flows, detail, account?.id],
   );
 
+  const totals = useMemo(() => {
+    const rows = teams ?? [];
+    return { teams: rows.length, people: rows.reduce((n, t) => n + t.members, 0) };
+  }, [teams]);
+
   return (
-    <div className="mx-auto max-w-[1180px] p-5">
-      <header className="mb-4">
-        <Typography variant="span" className="block text-[0.7rem] text-ink-inactive uppercase tracking-wide">
-          Teams
-        </Typography>
-        <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.5rem] leading-tight tracking-tight">
-          Who may see whose work
-        </Typography>
-        <Typography variant="p" className="mt-1 max-w-[76ch] text-ink-inactive text-[0.85rem] leading-relaxed">
-          A team lets the people running it see <span className="text-ink-body">that</span> work is happening
-          — who recorded, when, how runs ended. It does <span className="text-ink-body">not</span> open what
-          is in a recording: joining a team hands over nothing you have already made, and a skill becomes
-          visible to it only when you share that one skill, here.
-        </Typography>
-      </header>
+    <div className="relative min-h-full">
+      <div className="mx-auto max-w-[1180px] p-5">
 
-      {said && (
-        <div
-          role="status"
-          className={cn(
-            'mb-4 rounded-lg border px-3.5 py-2.5 text-[0.85rem] leading-relaxed',
-            said.kind === 'bad'
-              ? 'border-fb-red/40 bg-fb-red/5 text-fb-red-text'
-              : 'border-fb-green/40 bg-fb-green/5 text-ink-body',
-          )}
-        >
-          {said.text}
-          <button
-            type="button"
-            onClick={() => setSaid(null)}
-            aria-label="Dismiss"
-            className="ms-2 align-middle text-ink-inactive hover:text-ink-primary"
-          >
-            <X className="inline size-3.5" />
-          </button>
-        </div>
-      )}
-
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        {/* ------------------------------------------------------------- the teams you are in */}
-        <div className={cn(CARD, 'h-fit')}>
-          <Typography variant="span" className="text-[0.72rem] text-ink-inactive uppercase tracking-wide">
-            Your teams
-          </Typography>
-
-          <div className="mt-2.5 grid gap-1">
-            {(teams ?? []).map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setOpenId(t.id)}
-                className={cn(
-                  'flex flex-col gap-1.5 rounded-lg px-2.5 py-2 text-left transition-colors duration-fast',
-                  t.id === openId ? 'bg-state-pressed' : 'hover:bg-state-hover',
-                )}
-              >
-                <span className="flex items-center gap-2">
-                  <span className={cn(
-                    'min-w-0 flex-1 truncate text-[0.88rem]',
-                    t.id === openId ? 'font-semibold text-ink-primary' : 'text-ink-body',
-                  )}>
-                    {t.name}
-                  </span>
-                  {/* Your role in THIS team, on the row you pick it from — it differs between teams, and
-                    * finding out which one you own by opening each of them is a question this can answer
-                    * where it is asked. */}
-                  <Badge variant={ROLE_TONE[t.role]} size="xs" rounded="full" className="shrink-0">
-                    {t.role}
-                  </Badge>
-                </span>
-                <span className="flex items-center text-[0.72rem] text-ink-inactive">
-                  <Users className="me-1.5 size-3.5 shrink-0" />
-                  {t.members} {t.members === 1 ? 'person' : 'people'}
-                </span>
-              </button>
-            ))}
-
-            {teams && teams.length === 0 && (
-              <Typography variant="p" className="py-1 text-ink-inactive text-[0.84rem] leading-relaxed">
-                You are not in a team yet. Make one below — you will own it.
-              </Typography>
-            )}
-            {!teams && (
-              <Typography variant="span" className="py-1 text-ink-inactive text-[0.84rem]">Reading…</Typography>
-            )}
+        {/* ------------------------------------------------------------ what this is, and the one act */}
+        <header className="mb-5 flex flex-wrap items-start gap-5">
+          <div className="min-w-[22rem] flex-1">
+            <Typography variant="span" className={cn(LABEL, 'block')}>Teams</Typography>
+            <Typography variant="h2" weight="semibold" className="mt-1 text-[1.7rem] leading-tight tracking-tight">
+              Who may see whose work
+            </Typography>
+            <Typography variant="p" className="mt-1.5 max-w-[74ch] text-ink-inactive text-[0.86rem] leading-relaxed">
+              A team lets the people running it see <span className="font-semibold text-ink-body">that</span>{' '}
+              work is happening — who recorded, when, how runs ended. It does{' '}
+              <span className="font-semibold text-ink-body">not</span> open what is in a recording: joining a
+              team hands over nothing you have already made, and a skill becomes visible to it only when you
+              share that one skill.
+            </Typography>
           </div>
 
-          {/* One person can run several teams, so this is a permanent control rather than an empty state. */}
+          <Button
+            size="lg"
+            className="shrink-0"
+            leftSlot={<Plus className="size-[18px]" />}
+            onClick={() => setMaking((was) => !was)}
+          >
+            Create a team
+          </Button>
+        </header>
+
+        {said && (
+          <div
+            role="status"
+            className={cn(
+              'mb-4 rounded-lg border px-3.5 py-2.5 text-[0.85rem] leading-relaxed',
+              said.kind === 'bad'
+                ? 'border-fb-red/40 bg-fb-red/5 text-fb-red-text'
+                : 'border-fb-green/40 bg-fb-green/5 text-ink-body',
+            )}
+          >
+            {said.text}
+            <button
+              type="button"
+              onClick={() => setSaid(null)}
+              aria-label="Dismiss"
+              className="ms-2 align-middle text-ink-inactive hover:text-ink-primary"
+            >
+              <X className="inline size-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Naming it happens here rather than in a dialog: it is one field, and a dialog for one field is a
+          * second window to open and close for something that takes four seconds. */}
+        {making && (
           <form
-            className="mt-3 grid gap-2 border-stroke border-t pt-3"
+            className="mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-stroke bg-surface-card p-3.5"
             onSubmit={(e) => {
               e.preventDefault();
               const name = newName.trim();
@@ -343,383 +301,524 @@ export const TeamView = () => {
                   body: JSON.stringify({ name }),
                 });
                 setNewName('');
+                setMaking(false);
+                /* Straight into the new team: you made it in order to put somebody in it. */
                 setOpenId(made.id);
               }, 'Team made. You own it.');
             }}
           >
             <input
+              autoFocus
               value={newName}
               onChange={(e) => setNewName(e.target.value.slice(0, 60))}
-              placeholder="Name another team…"
-              className={FIELD}
+              placeholder="Name the team — Operations, Finance, a client…"
+              className={cn(FIELD, 'min-w-[16rem] flex-1')}
             />
-            <Button size="sm" type="submit" disabled={busy || !newName.trim()} leftSlot={<Plus className="size-4" />}>
-              Make a team
+            <Button size="sm" type="submit" disabled={busy || !newName.trim()}>Create</Button>
+            <Button
+              variant="ghost" size="sm" type="button"
+              onClick={() => { setMaking(false); setNewName(''); }}
+            >
+              Cancel
             </Button>
           </form>
-        </div>
+        )}
 
-        {/* ------------------------------------------------------------- one team */}
-        {detail ? (
-          <div className="grid gap-4">
-            <div className={CARD}>
-              <div className="flex flex-wrap items-center gap-2">
-                <Typography variant="h3" weight="semibold" className="text-[1.05rem]">
-                  {detail.team.name}
-                </Typography>
-                <Badge variant={ROLE_TONE[detail.you.role]} size="xs" rounded="full">{detail.you.role}</Badge>
-                <span className="text-[0.8rem] text-ink-inactive">{ROLE_WORDS[detail.you.role]}</span>
-
-                {/* The other half of this feature, and the only place it is discoverable from. */}
-                {manages && (
-                  <Link
-                    to="/dashboard"
-                    search={{ team: detail.team.id } as never}
-                    className="ms-auto inline-flex items-center gap-1.5 rounded-lg border border-stroke px-2.5 py-1.5 text-[0.82rem] text-ink-body hover:border-stroke-hover hover:text-ink-primary"
-                  >
-                    <ChartNoAxesColumn className="size-4" />
-                    This team’s dashboard
-                  </Link>
-                )}
-              </div>
-
-              {/* -------- the people, as people */}
-              <div className="mt-3.5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                {detail.members.map((m) => (
-                  <div key={m.id} className="flex flex-col gap-3 rounded-xl border border-stroke bg-surface-card2 p-3.5">
-                    <div className="flex items-center gap-2.5">
-                      <span
-                        className={cn(
-                          'grid size-9 shrink-0 place-items-center rounded-full font-bold text-[0.95rem]',
-                          m.id === account?.id
-                            ? 'on-accent bg-brand-tertiary'
-                            : 'bg-grey-600 text-ink-primary',
-                        )}
-                      >
-                        {(m.name || m.email || '?').trim()[0]?.toUpperCase()}
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col leading-[1.3]">
-                        <strong className="truncate font-semibold text-[0.88rem] text-ink-primary">
-                          {m.name || m.email || m.id}
-                          {m.id === account?.id && (
-                            <span className="ms-1.5 font-normal text-[0.74rem] text-ink-inactive">you</span>
-                          )}
-                        </strong>
-                        {m.email && <span className="truncate text-[0.74rem] text-ink-inactive">{m.email}</span>}
-                      </span>
-
-                      {/* The role is a control for an owner and a label for everybody else, in the same
-                        * spot either way — a badge that turns into a select when you happen to have the
-                        * rights is one thing that moved, not two things in two places. */}
-                      {detail.you.role === 'owner' && m.id !== account?.id ? (
-                        <select
-                          value={m.role}
-                          disabled={busy}
-                          aria-label={`Role for ${m.name || m.email || 'this member'}`}
-                          onChange={(e) => void act(
-                            () => call(`?id=${encodeURIComponent(detail.team.id)}`, {
-                              method: 'PATCH',
-                              headers: { 'content-type': 'application/json' },
-                              body: JSON.stringify({ userId: m.id, role: e.target.value }),
-                            }),
-                            'Role changed.',
-                          )}
-                          className="h-6 shrink-0 rounded-md border border-stroke bg-surface-card px-1 text-[0.72rem] text-ink-primary focus:border-brand-primary focus:outline-none"
-                        >
-                          {(['owner', 'admin', 'member'] as Role[]).map((r) => (
-                            <option key={r} value={r}>{r}</option>
-                          ))}
-                        </select>
-                      ) : (
-                        <Badge variant={ROLE_TONE[m.role]} size="xs" rounded="full" className="shrink-0">
-                          {m.role}
-                        </Badge>
-                      )}
-                    </div>
-
-                    {m.activity ? (
-                      <>
-                        <div className="grid grid-cols-3 gap-2">
-                          <Stat n={m.activity.recordings} label="recordings" />
-                          <Stat n={m.activity.skills} label="skills" />
-                          <Stat n={m.activity.runs} label="runs" />
-                        </div>
-                        {m.activity.days && m.activity.days.length > 0 && (
-                          <Fortnight days={m.activity.days} />
-                        )}
-                        <span className="text-[0.74rem] text-ink-inactive">
-                          Last run {when(m.activity.lastRun)} · last recorded {when(m.activity.lastRecorded)}
-                        </span>
-                      </>
-                    ) : (
-                      /* Absent, not nought. A member may not see a colleague's activity, and zeroes here
-                       * would tell them something untrue about somebody's week. */
-                      <span className="text-[0.78rem] text-ink-inactive leading-relaxed">
-                        Their activity is visible to the people running this team.
-                      </span>
-                    )}
-
-                    {(m.id === account?.id || manages) && (
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        disabled={busy}
-                        className={cn('-mx-1 mt-auto self-start', m.id !== account?.id && 'text-fb-red-text')}
-                        leftSlot={<X className="size-3.5" />}
-                        onClick={() => void act(
-                          () => call(`?id=${encodeURIComponent(detail.team.id)}`
-                            + (m.id === account?.id ? '' : `&user=${encodeURIComponent(m.id)}`),
-                            { method: 'DELETE' }),
-                          m.id === account?.id ? 'You left the team.' : 'Removed.',
-                        )}
-                      >
-                        {m.id === account?.id ? 'Leave this team' : 'Remove'}
-                      </Button>
-                    )}
-                  </div>
-                ))}
-
-                {/* Somebody who is not here yet, in the same grid and the same shape as somebody who is. */}
-                {manages && detail.invites.map((i) => (
-                  <div key={i.email} className="flex flex-col gap-3 rounded-xl border border-stroke border-dashed p-3.5">
-                    <div className="flex items-center gap-2.5">
-                      <span className="grid size-9 shrink-0 place-items-center rounded-full border border-stroke border-dashed text-ink-inactive">
-                        <Mail className="size-4" />
-                      </span>
-                      <span className="flex min-w-0 flex-1 flex-col leading-[1.3]">
-                        <strong title={i.email} className="truncate font-medium text-[0.86rem] text-ink-secondary">
-                          {i.email}
-                        </strong>
-                        <span className="truncate text-[0.74rem] text-ink-inactive">
-                          asked {when(i.created)} · no account yet
-                        </span>
-                      </span>
-                      <Badge variant="attention" size="xs" rounded="full" className="shrink-0">invited</Badge>
-                    </div>
-                    <span className="text-[0.76rem] text-ink-inactive leading-relaxed">
-                      They are in as soon as they sign up with that address and open Teams.
-                    </span>
-                    <span className="mt-auto flex items-center gap-1">
-                      {mail?.configured && (
-                        <Button
-                          variant="ghost" size="xs" disabled={busy} className="-mx-1"
-                          leftSlot={<Send className="size-3.5" />}
-                          onClick={() => void act(
-                            () => call(`?id=${encodeURIComponent(detail.team.id)}`
-                              + `&remind=${encodeURIComponent(i.email)}`, { method: 'POST' }),
-                            `Sent to ${i.email} again.`,
-                          )}
-                        >
-                          Send again
-                        </Button>
-                      )}
-                      <Button
-                        variant="ghost" size="xs" disabled={busy} className="-mx-1 text-ink-inactive"
-                        onClick={() => void act(
-                          () => call(`?id=${encodeURIComponent(detail.team.id)}`
-                            + `&invite=${encodeURIComponent(i.email)}`, { method: 'DELETE' }),
-                          'Invitation cancelled.',
-                        )}
-                      >
-                        Cancel
-                      </Button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-
-              {manages && (
-                <Typography variant="p" className="mt-2 max-w-[76ch] text-[0.78rem] text-ink-inactive leading-relaxed">
-                  Counts are account-wide and cover everything each person has, not only what they did here —
-                  a recording belongs to an account, and only a share connects one to a team.
-                </Typography>
-              )}
-            </div>
-
-            {/* -------- adding somebody */}
-            {manages && (
-              <div className={CARD}>
-                <Typography variant="span" className="text-[0.72rem] text-ink-inactive uppercase tracking-wide">
-                  Add somebody
-                </Typography>
-
-                <form
-                  className="mt-2.5 flex flex-wrap items-center gap-2"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const email = invite.trim();
-                    if (!email) return;
-                    void act(async () => {
-                      const out = await call<{ added: boolean; note?: string }>(
-                        `?id=${encodeURIComponent(detail.team.id)}`,
-                        {
-                          method: 'POST',
-                          headers: { 'content-type': 'application/json' },
-                          body: JSON.stringify({ email, role: inviteRole }),
-                        },
-                      );
-                      setInvite('');
-                      /* The endpoint's own sentence, which knows whether the message went and why not.
-                       * A generic "done" here would be the app claiming something it did not check. */
-                      if (out.note) setSaid({ text: out.note, kind: 'good' });
-                    }, `${email} is in.`);
-                  }}
-                >
-                  <input
-                    value={invite}
-                    onChange={(e) => setInvite(e.target.value.slice(0, 200))}
-                    placeholder="their email address"
-                    type="email"
-                    className={cn(FIELD, 'min-w-[220px] flex-1')}
-                  />
-                  {detail.you.role === 'owner' && (
-                    <select
-                      value={inviteRole}
-                      onChange={(e) => setInviteRole(e.target.value as Role)}
-                      className="h-9 rounded-lg border border-stroke bg-surface-card2 px-2 text-[0.84rem] text-ink-primary focus:border-brand-primary focus:outline-none"
-                    >
-                      {(['member', 'admin', 'owner'] as Role[]).map((r) => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                  )}
-                  <Button variant="secondary" size="sm" type="submit" disabled={busy || !invite.trim()}>
-                    Add
-                  </Button>
-                </form>
-
-                {/* Whether a message will actually go, said BEFORE an address is typed rather than after
-                  * four colleagues have been added on the assumption that one would. */}
-                <div className="mt-2.5 flex items-start gap-2 text-[0.79rem] leading-relaxed">
-                  {mail?.configured ? (
-                    <>
-                      <Mail className="mt-0.5 size-3.5 shrink-0 text-brand-primary" />
-                      <span className="text-ink-inactive">
-                        They are emailed who added them, what a team does and does not open, and a link to
-                        this page. Somebody with no account yet is told to sign up with that same address.
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <MailWarning className="mt-0.5 size-3.5 shrink-0 text-fb-attention" />
-                      <span className="text-ink-inactive">
-                        No email leaves this deployment yet{mail?.problem ? ` — ${mail.problem}` : ''}.
-                        Somebody added is still in; tell them yourself, and they are in as soon as they sign
-                        up with that address and open this page.
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* -------- shared skills */}
-            <div className={CARD}>
-              <div className="flex items-center gap-2">
-                <span className="text-[0.72rem] text-ink-inactive uppercase tracking-wide">
-                  Shared with this team
-                </span>
-                {shareable.length > 0 && (
-                  <Button
-                    variant="ghost" size="xs" className="ms-auto"
-                    onClick={() => setSharing((was) => !was)}
-                    leftSlot={<Share2 className="size-3.5" />}
-                  >
-                    {sharing ? 'Never mind' : 'Share one of mine'}
-                  </Button>
-                )}
-              </div>
-
-              {sharing && (
-                <div className="mt-2 grid max-h-52 gap-0.5 overflow-auto rounded-lg border border-stroke p-1.5">
-                  {shareable.map((f) => (
-                    <button
-                      key={f.id}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void act(
-                        () => call(`?id=${encodeURIComponent(detail.team.id)}&share=${encodeURIComponent(f.id)}`,
-                          { method: 'POST' }),
-                        `"${f.name}" is visible to ${detail.team.name}.`,
-                      ).then(() => setSharing(false))}
-                      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.85rem] text-ink-body hover:bg-state-hover"
-                    >
-                      <Plus className="size-3.5 shrink-0 text-ink-inactive" />
-                      <span className="truncate">{f.name}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <div className="mt-2 grid gap-1.5">
-                {detail.shared.length === 0 ? (
-                  <Typography variant="span" className="text-[0.84rem] text-ink-inactive">
-                    Nothing yet. Sharing is per skill and always deliberate.
-                  </Typography>
-                ) : (
-                  detail.shared.map((s) => (
-                    <div key={`${s.ownerId}:${s.flowId}`} className="flex items-center gap-2 text-[0.85rem]">
-                      <Check className="size-3.5 shrink-0 text-brand-primary" />
-                      <span className={cn('truncate', s.missing ? 'text-ink-inactive line-through' : 'text-ink-body')}>
-                        {s.name || s.flowId}
-                      </span>
-                      <span className="shrink-0 text-[0.76rem] text-ink-inactive">
-                        {s.ownerId === account?.id ? 'yours' : s.owner || 'someone'}
-                        {s.missing ? ' · since deleted' : ''}
-                      </span>
-                      {s.ownerId === account?.id && (
-                        <Button
-                          variant="ghost" size="xs" className="ms-auto" disabled={busy}
-                          onClick={() => void act(
-                            () => call(`?id=${encodeURIComponent(detail.team.id)}&share=${encodeURIComponent(s.flowId)}`,
-                              { method: 'DELETE' }),
-                            'No longer shared.',
-                          )}
-                        >
-                          <X className="size-3.5" />
-                        </Button>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            {/* -------- the end of a team */}
-            {detail.you.role === 'owner' && (
-              <div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy}
-                  className="text-fb-red-text"
-                  leftSlot={<Trash2 className="size-4" />}
-                  onClick={() => {
-                    if (armed !== detail.team.id) {
-                      setArmed(detail.team.id);
-                      setSaid({ text: 'That cannot be undone. Press again to delete the team.', kind: 'bad' });
-                      return;
-                    }
-                    void act(
-                      () => call(`?id=${encodeURIComponent(detail.team.id)}&team=1`, { method: 'DELETE' }),
-                      'Team deleted. Nobody’s recordings were touched — a team never held any.',
-                    ).then(() => setOpenId(null));
-                  }}
-                >
-                  {armed === detail.team.id ? 'Delete it — press again' : 'Delete this team'}
-                </Button>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className={cn(CARD, 'grid place-items-center py-16 text-center')}>
-            <Users className="size-7 text-ink-inactive" />
-            <Typography variant="p" className="mt-2 max-w-[46ch] text-ink-inactive text-[0.86rem] leading-relaxed">
-              {teams && teams.length === 0
-                ? 'Make a team, then add the people you work with by their email address. You can run as many as you need — one per client, one per department.'
-                : 'Pick a team on the left.'}
-            </Typography>
+        {/* ------------------------------------------------------------ the teams, one per row */}
+        {teams && teams.length > 0 && (
+          <div className="flex items-center gap-2.5 pb-2 text-[0.8rem] text-ink-inactive">
+            <span>{totals.teams} {totals.teams === 1 ? 'team' : 'teams'}</span>
+            <span className="h-3 w-px bg-stroke" />
+            <span>{totals.people} {totals.people === 1 ? 'seat' : 'seats'} in total</span>
           </div>
         )}
+
+        <div className="overflow-x-auto pb-1">
+          <div className="min-w-[52rem]">
+            {teams && teams.length > 0 && (
+              <div className={cn(COLUMNS, 'grid w-full items-center gap-x-3 px-3 pb-1.5', LABEL)}>
+                <span>Team</span>
+                <span>Your role</span>
+                <span>People</span>
+                <span title="Skills members have deliberately shown this team">Shared skills</span>
+                <span>Created</span>
+                <span className="text-right">Actions</span>
+              </div>
+            )}
+
+            <ul className="flex flex-col gap-1.5">
+              {(teams ?? []).map((t) => (
+                <li key={t.id}>
+                  <div className={cn(ROW, COLUMNS, t.id === openId && 'border-brand-primary bg-state-pressed')}>
+                    <span className="flex min-w-0 items-center gap-2.5">
+                      <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-state-pressed font-bold text-[0.75rem] text-brand-primary">
+                        {(t.name || '?').trim()[0]?.toUpperCase()}
+                      </span>
+                      <span className="truncate font-semibold text-[0.9rem] text-ink-primary">{t.name}</span>
+                    </span>
+                    <span>
+                      <Badge variant={ROLE_TONE[t.role]} size="xs" rounded="full">{t.role}</Badge>
+                    </span>
+                    <span className="flex items-center gap-1.5 text-[0.85rem] text-ink-body">
+                      <Users className="size-3.5 shrink-0 text-ink-inactive" />
+                      <span className="tabular-nums">{t.members}</span>
+                    </span>
+                    {/* Only the open team has been read in detail, so only it can say. A number for the
+                      * others would be a number, and invented. */}
+                    <span className="text-[0.84rem] text-ink-inactive">
+                      {t.id === openId && detail ? (detail.shared.length || 'none yet') : '—'}
+                    </span>
+                    <span className="text-[0.82rem] text-ink-inactive tabular-nums">{when(t.created_at)}</span>
+                    <span className="flex items-center justify-end gap-1.5">
+                      {/* No chevron beside the word: the Button lays its children out in a row that wraps,
+                        * and at this column width "Open" and the arrow came out on two lines. The word is
+                        * doing the work anyway. */}
+                      <Button
+                        variant={t.id === openId ? 'secondary' : 'ghost'}
+                        size="sm"
+                        onClick={() => setOpenId(t.id === openId ? null : t.id)}
+                      >
+                        {t.id === openId ? 'Close' : 'Open'}
+                      </Button>
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            {teams && teams.length === 0 && (
+              <div className="grid place-items-center rounded-xl border border-stroke border-dashed py-16 text-center">
+                <Users className="size-7 text-ink-inactive" />
+                <Typography variant="p" className="mt-2 max-w-[46ch] text-ink-inactive text-[0.86rem] leading-relaxed">
+                  You are not in a team yet. Make one, then add the people you work with by their email
+                  address — as many teams as you need, one per client or per department.
+                </Typography>
+              </div>
+            )}
+
+            {!teams && (
+              <Typography variant="span" className="text-ink-inactive text-[0.85rem]">Reading…</Typography>
+            )}
+          </div>
+        </div>
       </div>
+
+      {/* -------------------------------------------------------------- one team, over the list */}
+      {openId && (
+        <>
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={() => setOpenId(null)}
+            className="fixed inset-0 z-40 cursor-default bg-black/45"
+          />
+          <aside
+            role="dialog"
+            aria-label={detail ? detail.team.name : 'Team'}
+            className={cn(
+              'fixed inset-y-0 end-0 z-50 flex w-[min(560px,100vw)] flex-col',
+              'border-stroke border-s bg-surface-card shadow-dropdown',
+            )}
+          >
+            {!detail ? (
+              <div className="grid flex-1 place-items-center text-[0.85rem] text-ink-inactive">Reading…</div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2.5 border-stroke border-b p-4">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-state-pressed font-bold text-[0.85rem] text-brand-primary">
+                    {(detail.team.name || '?').trim()[0]?.toUpperCase()}
+                  </span>
+
+                  {renaming === detail.team.id ? (
+                    <form
+                      className="flex min-w-0 flex-1 items-center gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const name = newName.trim();
+                        if (!name) return;
+                        void act(
+                          () => call(`?id=${encodeURIComponent(detail.team.id)}`, {
+                            method: 'PATCH',
+                            headers: { 'content-type': 'application/json' },
+                            body: JSON.stringify({ name }),
+                          }),
+                          'Renamed.',
+                        ).then(() => { setRenaming(null); setNewName(''); });
+                      }}
+                    >
+                      <input
+                        autoFocus
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value.slice(0, 60))}
+                        className={cn(FIELD, 'min-w-0 flex-1')}
+                      />
+                      <Button size="xs" type="submit" disabled={busy || !newName.trim()}>Save</Button>
+                      <Button variant="ghost" size="xs" type="button" onClick={() => setRenaming(null)}>
+                        Cancel
+                      </Button>
+                    </form>
+                  ) : (
+                    <span className="flex min-w-0 flex-1 flex-col leading-[1.25]">
+                      <strong className="truncate font-bold text-[1.05rem] text-ink-primary">
+                        {detail.team.name}
+                      </strong>
+                      <span className="truncate text-[0.76rem] text-ink-inactive">
+                        {detail.members.length} {detail.members.length === 1 ? 'person' : 'people'}
+                        {detail.invites.length > 0
+                          && ` · ${detail.invites.length} invitation${detail.invites.length === 1 ? '' : 's'} waiting`}
+                        {` · made ${when(detail.team.created)}`}
+                      </span>
+                    </span>
+                  )}
+
+                  <Badge variant={ROLE_TONE[detail.you.role]} size="xs" rounded="full" className="shrink-0">
+                    {detail.you.role}
+                  </Badge>
+                  <button
+                    type="button"
+                    onClick={() => setOpenId(null)}
+                    aria-label="Close"
+                    className="grid size-7 shrink-0 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+
+                <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+                  <Typography variant="p" className="text-[0.8rem] text-ink-inactive leading-relaxed">
+                    {ROLE_WORDS[detail.you.role]}.
+                  </Typography>
+
+                  {manages && (
+                    <Link
+                      to="/dashboard"
+                      search={{ team: detail.team.id } as never}
+                      className="flex items-center justify-center gap-2 rounded-lg border border-stroke px-3 py-2 text-[0.85rem] text-ink-body hover:border-stroke-hover hover:text-ink-primary"
+                    >
+                      <ChartNoAxesColumn className="size-4" />
+                      This team’s dashboard
+                    </Link>
+                  )}
+
+                  {/* -------- adding somebody */}
+                  {manages && (
+                    <div className="grid gap-2">
+                      <span className={LABEL}>Add somebody</span>
+                      <form
+                        className="flex flex-wrap items-center gap-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const email = invite.trim();
+                          if (!email) return;
+                          void act(async () => {
+                            const out = await call<{ added: boolean; note?: string }>(
+                              `?id=${encodeURIComponent(detail.team.id)}`,
+                              {
+                                method: 'POST',
+                                headers: { 'content-type': 'application/json' },
+                                body: JSON.stringify({ email, role: inviteRole }),
+                              },
+                            );
+                            setInvite('');
+                            /* The endpoint's own sentence, which knows whether the message went and why
+                             * not. A generic "done" would be the app claiming something it did not check. */
+                            if (out.note) setSaid({ text: out.note, kind: 'good' });
+                          }, `${email} is in.`);
+                        }}
+                      >
+                        <input
+                          value={invite}
+                          onChange={(e) => setInvite(e.target.value.slice(0, 200))}
+                          placeholder="their email address"
+                          type="email"
+                          className={cn(FIELD, 'min-w-[12rem] flex-1')}
+                        />
+                        {detail.you.role === 'owner' && (
+                          <select
+                            value={inviteRole}
+                            onChange={(e) => setInviteRole(e.target.value as Role)}
+                            aria-label="Their role"
+                            className="h-9 rounded-lg border border-stroke bg-surface-card2 px-2 text-[0.84rem] text-ink-primary focus:border-brand-primary focus:outline-none"
+                          >
+                            {(['member', 'admin', 'owner'] as Role[]).map((r) => (
+                              <option key={r} value={r}>{r}</option>
+                            ))}
+                          </select>
+                        )}
+                        <Button size="sm" type="submit" disabled={busy || !invite.trim()}>Add</Button>
+                      </form>
+
+                      {/* Whether a message will actually go, said BEFORE an address is typed rather than
+                        * after four colleagues have been added on the assumption that one would. */}
+                      <div className="flex items-start gap-2 text-[0.76rem] leading-relaxed">
+                        {mail?.configured ? (
+                          <>
+                            <Mail className="mt-0.5 size-3.5 shrink-0 text-brand-primary" />
+                            <span className="text-ink-inactive">
+                              They are emailed who added them, what a team does and does not open, and a
+                              link. Somebody with no account yet is sent to sign up with that same address.
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <MailWarning className="mt-0.5 size-3.5 shrink-0 text-fb-attention" />
+                            <span className="text-ink-inactive">
+                              No email leaves this deployment yet{mail?.problem ? ` — ${mail.problem}` : ''}.
+                              Somebody added is still in; tell them yourself.
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* -------- who is in it */}
+                  <div className="grid gap-1.5">
+                    <span className={LABEL}>
+                      {detail.members.length} {detail.members.length === 1 ? 'member' : 'members'}
+                    </span>
+
+                    {detail.members.map((m) => (
+                      <div
+                        key={m.id}
+                        className="flex items-center gap-2.5 rounded-lg border border-stroke/45 bg-surface-card2 px-3 py-2.5"
+                      >
+                        <span
+                          className={cn(
+                            'grid size-8 shrink-0 place-items-center rounded-full font-bold text-[0.8rem]',
+                            m.id === account?.id ? 'on-accent bg-brand-tertiary' : 'bg-grey-600 text-ink-primary',
+                          )}
+                        >
+                          {(m.name || m.email || '?').trim()[0]?.toUpperCase()}
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col leading-[1.3]">
+                          <strong className="truncate font-semibold text-[0.86rem] text-ink-primary">
+                            {m.name || m.email || m.id}
+                            {m.id === account?.id && (
+                              <span className="ms-1.5 font-normal text-[0.74rem] text-ink-inactive">you</span>
+                            )}
+                          </strong>
+                          {/* One line, because the panel is 560px wide: the counts read as a sentence
+                            * rather than as five columns each too narrow to label. */}
+                          <span className="truncate text-[0.75rem] text-ink-inactive">
+                            {m.activity
+                              ? `${m.activity.recordings} recording${m.activity.recordings === 1 ? '' : 's'} · `
+                                + `${m.activity.skills} skill${m.activity.skills === 1 ? '' : 's'} · `
+                                + `${m.activity.runs} run${m.activity.runs === 1 ? '' : 's'}`
+                                + (m.activity.lastRun ? ` · ran ${short(m.activity.lastRun)}` : ' · never ran')
+                              : (m.email ?? 'in this team')}
+                          </span>
+                        </span>
+
+                        {detail.you.role === 'owner' && m.id !== account?.id ? (
+                          <select
+                            value={m.role}
+                            disabled={busy}
+                            aria-label={`Role for ${m.name || m.email || 'this member'}`}
+                            onChange={(e) => void act(
+                              () => call(`?id=${encodeURIComponent(detail.team.id)}`, {
+                                method: 'PATCH',
+                                headers: { 'content-type': 'application/json' },
+                                body: JSON.stringify({ userId: m.id, role: e.target.value }),
+                              }),
+                              'Role changed.',
+                            )}
+                            className="h-7 shrink-0 rounded-md border border-stroke bg-surface-card px-1.5 text-[0.76rem] text-ink-primary focus:border-brand-primary focus:outline-none"
+                          >
+                            {(['owner', 'admin', 'member'] as Role[]).map((r) => (
+                              <option key={r} value={r}>{r}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <Badge variant={ROLE_TONE[m.role]} size="xs" rounded="full" className="shrink-0">
+                            {m.role}
+                          </Badge>
+                        )}
+
+                        {(m.id === account?.id || manages) && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            title={m.id === account?.id ? 'Leave this team' : 'Remove from the team'}
+                            aria-label={m.id === account?.id ? 'Leave this team' : `Remove ${m.name || m.email}`}
+                            onClick={() => void act(
+                              () => call(`?id=${encodeURIComponent(detail.team.id)}`
+                                + (m.id === account?.id ? '' : `&user=${encodeURIComponent(m.id)}`),
+                                { method: 'DELETE' }),
+                              m.id === account?.id ? 'You left the team.' : 'Removed.',
+                            )}
+                            className="grid size-7 shrink-0 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-fb-red-text"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* An invitation is a row here, not a section further down: a person who is not here
+                      * yet, in the place people are. */}
+                    {manages && detail.invites.map((i) => (
+                      <div
+                        key={i.email}
+                        className="flex items-center gap-2.5 rounded-lg border border-stroke border-dashed px-3 py-2.5"
+                      >
+                        <span className="grid size-8 shrink-0 place-items-center rounded-full border border-stroke border-dashed text-ink-inactive">
+                          <Mail className="size-3.5" />
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col leading-[1.3]">
+                          <strong title={i.email} className="truncate font-medium text-[0.84rem] text-ink-secondary">
+                            {i.email}
+                          </strong>
+                          <span className="truncate text-[0.75rem] text-ink-inactive">
+                            asked {short(i.created)} · no account yet
+                          </span>
+                        </span>
+                        <Badge variant="attention" size="xs" rounded="full" className="shrink-0">{i.role}</Badge>
+                        {mail?.configured && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            title="Send that invitation again"
+                            aria-label={`Send the invitation to ${i.email} again`}
+                            onClick={() => void act(
+                              () => call(`?id=${encodeURIComponent(detail.team.id)}`
+                                + `&remind=${encodeURIComponent(i.email)}`, { method: 'POST' }),
+                              `Sent to ${i.email} again.`,
+                            )}
+                            className="grid size-7 shrink-0 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+                          >
+                            <Send className="size-3.5" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          title="Cancel this invitation"
+                          aria-label={`Cancel the invitation to ${i.email}`}
+                          onClick={() => void act(
+                            () => call(`?id=${encodeURIComponent(detail.team.id)}`
+                              + `&invite=${encodeURIComponent(i.email)}`, { method: 'DELETE' }),
+                            'Invitation cancelled.',
+                          )}
+                          className="grid size-7 shrink-0 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-fb-red-text"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* -------- shared skills */}
+                  <div className="grid gap-1.5">
+                    <span className="flex items-center gap-2">
+                      <span className={LABEL}>Shared with this team</span>
+                      {shareable.length > 0 && (
+                        <Button
+                          variant="ghost" size="xs" className="ms-auto"
+                          onClick={() => setSharing((was) => !was)}
+                          leftSlot={<Share2 className="size-3.5" />}
+                        >
+                          {sharing ? 'Never mind' : 'Share one of mine'}
+                        </Button>
+                      )}
+                    </span>
+
+                    {sharing && (
+                      <div className="grid max-h-44 gap-0.5 overflow-auto rounded-lg border border-stroke p-1.5">
+                        {shareable.map((f) => (
+                          <button
+                            key={f.id}
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void act(
+                              () => call(`?id=${encodeURIComponent(detail.team.id)}&share=${encodeURIComponent(f.id)}`,
+                                { method: 'POST' }),
+                              `"${f.name}" is visible to ${detail.team.name}.`,
+                            ).then(() => setSharing(false))}
+                            className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.84rem] text-ink-body hover:bg-state-hover"
+                          >
+                            <Plus className="size-3.5 shrink-0 text-ink-inactive" />
+                            <span className="truncate">{f.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {detail.shared.length === 0 ? (
+                      <Typography variant="span" className="text-[0.82rem] text-ink-inactive">
+                        Nothing yet. Sharing is per skill and always deliberate.
+                      </Typography>
+                    ) : (
+                      detail.shared.map((s) => (
+                        <div key={`${s.ownerId}:${s.flowId}`} className="flex items-center gap-2 text-[0.84rem]">
+                          <Check className="size-3.5 shrink-0 text-brand-primary" />
+                          <span className={cn('truncate', s.missing ? 'text-ink-inactive line-through' : 'text-ink-body')}>
+                            {s.name || s.flowId}
+                          </span>
+                          <span className="shrink-0 text-[0.75rem] text-ink-inactive">
+                            {s.ownerId === account?.id ? 'yours' : s.owner || 'someone'}
+                            {s.missing ? ' · since deleted' : ''}
+                          </span>
+                          {s.ownerId === account?.id && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              aria-label={`Stop sharing ${s.name || 'this skill'}`}
+                              onClick={() => void act(
+                                () => call(`?id=${encodeURIComponent(detail.team.id)}&share=${encodeURIComponent(s.flowId)}`,
+                                  { method: 'DELETE' }),
+                                'No longer shared.',
+                              )}
+                              className="ms-auto grid size-6 shrink-0 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-fb-red-text"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* -------- the two things that change the team itself, together and out of the way */}
+                {detail.you.role === 'owner' && (
+                  <div className="flex items-center gap-2 border-stroke border-t p-4">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busy}
+                      leftSlot={<Pencil className="size-3.5" />}
+                      onClick={() => { setRenaming(detail.team.id); setNewName(detail.team.name); }}
+                    >
+                      Rename
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={busy}
+                      className="ms-auto text-fb-red-text"
+                      leftSlot={<Trash2 className="size-3.5" />}
+                      onClick={() => {
+                        if (armed !== detail.team.id) {
+                          setArmed(detail.team.id);
+                          setSaid({ text: 'That cannot be undone. Press again to delete the team.', kind: 'bad' });
+                          return;
+                        }
+                        void act(
+                          () => call(`?id=${encodeURIComponent(detail.team.id)}&team=1`, { method: 'DELETE' }),
+                          'Team deleted. Nobody’s recordings were touched — a team never held any.',
+                        ).then(() => setOpenId(null));
+                      }}
+                    >
+                      {armed === detail.team.id ? 'Delete it — press again' : 'Delete this team'}
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+          </aside>
+        </>
+      )}
     </div>
   );
 };

@@ -7,6 +7,7 @@
  *   POST   /api/team?id=X&remind=<email>  send a waiting invitation again              (owner, admin)
  *   POST   /api/team?id=X&share=<flow>    show one of MY skills to the team
  *   PATCH  /api/team?id=X                 { userId, role }    change a role                    (owner)
+ *   PATCH  /api/team?id=X                 { name }            rename it                        (owner)
  *   DELETE /api/team?id=X                 leave it
  *   DELETE /api/team?id=X&user=<uuid>     remove somebody                                      (owner, admin)
  *   DELETE /api/team?id=X&invite=<email>  cancel an invitation                                 (owner, admin)
@@ -159,45 +160,6 @@ async function oneTeam(sql, who, teamId) {
       ) r on r.user_id = u.id
     ` : [];
     activity = new Map(rows.map((r) => [r.id, r]));
-
-    /* The shape of each person's fortnight, not only its total.
-     *
-     * Two people with eighteen runs are not the same team member if one of them did all eighteen on a
-     * Tuesday and the other does three a day — and a count cannot tell them apart. Fourteen days because
-     * that is what fits a card without becoming a chart, and because a week is too short to show a rhythm.
-     *
-     * Same rule as the counts above: only for the roles that run the team, and only how many and how they
-     * ended. There is nothing here that says what any of them was.
-     */
-    const daily = ids.length ? await sql`
-      select user_id::text as id,
-             to_char(date_trunc('day', coalesce(started_at, synced_at)), 'YYYY-MM-DD') as day,
-             count(*)::int                                   as runs,
-             count(*) filter (where outcome = 'failed')::int  as failed
-      from user_run
-      where user_id = any(${ids}::uuid[])
-        and coalesce(started_at, synced_at) > now() - interval '14 days'
-      group by 1, 2
-    ` : [];
-
-    /* Every one of the fourteen days, in order, whether or not anything ran. A series with holes drawn as
-     * a row of bars is a row of bars that lies about its own spacing. */
-    const slots = [];
-    for (let back = 13; back >= 0; back -= 1) {
-      slots.push(new Date(Date.now() - back * 86_400_000).toISOString().slice(0, 10));
-    }
-    const byPerson = new Map();
-    for (const row of daily) {
-      if (!byPerson.has(row.id)) byPerson.set(row.id, new Map());
-      byPerson.get(row.id).set(row.day, row);
-    }
-    for (const [id, act] of activity) {
-      const found = byPerson.get(id) || new Map();
-      act.days = slots.map((day) => {
-        const hit = found.get(day);
-        return { day, runs: hit ? hit.runs : 0, failed: hit ? hit.failed : 0 };
-      });
-    }
   }
 
   const invites = manages(role)
@@ -233,7 +195,6 @@ async function oneTeam(sql, who, teamId) {
           ? {
             recordings: act.recordings, skills: act.skills, runs: act.runs,
             lastRecorded: act.last_recorded, lastRun: act.last_run,
-            days: act.days || [],
           }
           : null,
       };
@@ -385,6 +346,26 @@ async function remind(sql, who, teamId, email, origin) {
   return { status: post.mailed ? 200 : 502, body: { ok: post.mailed, ...post } };
 }
 
+/* Renaming a team.
+ *
+ * On the same verb as a role change because both are "change something about this team", and both are the
+ * owner's alone. It exists at all because the screen has told every owner "you can rename it, delete it,
+ * and move anybody's role" since the day teams shipped, and two of those three were true: there was no
+ * route that changed a name. A sentence in an interface is a promise, and this is the cheaper half of
+ * keeping it.
+ */
+async function renameTeam(sql, who, teamId, body) {
+  const role = await roleOf(sql, teamId, who.id);
+  if (role !== 'owner') return { status: 404, body: { error: 'not found' } };
+  const name = text(body && body.name, NAME_MAX);
+  if (!name) return { status: 400, body: { error: 'a team needs a name' } };
+  const done = await sql`
+    update team set name = ${name} where id = ${teamId} and deleted_at is null returning id
+  `;
+  if (!done.length) return { status: 404, body: { error: 'not found' } };
+  return { status: 200, body: { ok: true, name } };
+}
+
 async function setRole(sql, who, teamId, body) {
   const role = await roleOf(sql, teamId, who.id);
   if (role !== 'owner') return { status: 404, body: { error: 'not found' } };
@@ -506,7 +487,11 @@ export default async function handler(req, res) {
 
     if (req.method === 'PATCH') {
       if (!teamId) return fail(res, 400, 'which team?');
-      const out = await setRole(sql, who, teamId, body);
+      /* A body carrying a name renames; one carrying a member and a role moves them. Told apart by what
+       * was sent rather than by a mode flag, since the two bodies have no field in common. */
+      const out = body && body.name !== undefined
+        ? await renameTeam(sql, who, teamId, body)
+        : await setRole(sql, who, teamId, body);
       return res.status(out.status).json(out.body);
     }
 

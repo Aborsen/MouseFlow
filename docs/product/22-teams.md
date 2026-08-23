@@ -6,6 +6,11 @@ deliberately does **not** open.
 
 ![Teams](../img/team.png)
 
+Opening one slides a panel over the list rather than navigating away, so moving between teams is one click
+each and adding somebody here while fixing a role there does not cost two page loads.
+
+![One team](../img/team-panel.png)
+
 ## Where it lives
 
 **`/team`, in the sidebar.** It was the fourth pane of the settings dialog, which was the right size while a

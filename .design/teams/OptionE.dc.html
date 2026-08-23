@@ -1,0 +1,214 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap">
+  <style>
+    body { margin: 0; font-family: 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+    a { color: #adff5c; text-decoration: none; } a:hover { color: #c7ff8f; }
+    * { box-sizing: border-box; }
+    .row { display: grid; grid-template-columns: minmax(11rem,1fr) 7rem 6.5rem 7.5rem 7rem 11rem; gap: 12px; align-items: center; }
+    .mrow { display: grid; grid-template-columns: minmax(12rem,1fr) 8rem 6rem 5.5rem 5.5rem 7rem 6rem; gap: 12px; align-items: center; }
+    .pill { padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 600; }
+    .owner { background: rgba(173,255,92,0.13); color: #adff5c; }
+    .muted { background: #192758; color: #ccd8eb; }
+    .warn { background: rgba(255,129,41,0.14); color: #ff8129; }
+    .btn { display: flex; align-items: center; gap: 7px; padding: 8px 13px; border: 1px solid #192758; border-radius: 8px; font-size: 13px; color: #d8e3f3; }
+    .primary { display: flex; align-items: center; gap: 7px; padding: 8px 14px; background: #adff5c; color: #0a1a13; border-radius: 8px; font-size: 13px; font-weight: 600; }
+    .lbl { font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: #aebacb; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; height: 760px; display: flex; background: #0a1126; color: #f0f6ff; font-size: 14px; position: relative;">
+  <aside style="width: 236px; flex-shrink: 0; display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; background: #0f1734; border-right: 1px solid #192758;">
+    <div style="display: flex; align-items: center; gap: 10px; padding: 4px 10px 8px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" style="flex-shrink: 0; color: #adff5c;"><path d="M5 4l14 8-6 1.6L10.5 20z" fill="currentColor"></path></svg>
+      <span style="font-weight: 600; font-size: 15px;">MouseFlow</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"></circle></svg>Record
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 4l1.8 4.8L18.6 10.6l-4.8 1.8L12 17.2l-1.8-4.8L5.4 10.6l4.8-1.8z"></path></svg>
+      <span style="flex-grow: 1;">Create</span>
+      <span style="padding: 1px 7px; border-radius: 999px; background: rgba(255,129,41,0.15); color: #ff8129; font-size: 10.5px; font-weight: 600;">Beta</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7.5A1.5 1.5 0 015.5 6h4l2 2.5h7A1.5 1.5 0 0120 10v7.5A1.5 1.5 0 0118.5 19h-13A1.5 1.5 0 014 17.5z"></path></svg>Skills
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="7" height="7" rx="1.4"></rect><rect x="13" y="4" width="7" height="7" rx="1.4"></rect><rect x="4" y="13" width="7" height="7" rx="1.4"></rect><rect x="13" y="13" width="7" height="7" rx="1.4"></rect></svg>Gallery
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; color: #d8e3f3; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 19V11M12 19V5M19 19v-6"></path></svg>Dashboard
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 6px; background: #192758; color: #f0f6ff; font-weight: 600; font-size: 13.5px;">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#adff5c" stroke-width="1.8"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 19a5.5 5.5 0 0111 0"></path><path d="M16 5.5a3 3 0 010 5.6M17.5 19a5.4 5.4 0 00-2-4.2"></path></svg>Teams
+    </div>
+    <div style="flex-grow: 1;"></div>
+    <div style="display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px; border-top: 1px solid #192758;">
+      <span style="width: 18px; height: 18px; display: grid; place-items: center; border-radius: 999px; background: #c7ff8f; color: #0a1a13; font-size: 10px; font-weight: 700;">V</span>
+      <span style="display: flex; flex-direction: column; line-height: 1.15;">
+        <strong style="font-size: 12px; font-weight: 600;">Vic Gorlenko</strong>
+        <span style="font-size: 10.5px; color: #aebacb;">vicgorlenko@gmail.com</span>
+      </span>
+    </div>
+  </aside>
+
+  <main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+    <div style="display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #192758;">
+      <span style="font-size: 15px; font-weight: 600;">Teams</span>
+      <span style="flex-grow: 1;"></span>
+      <span style="display: flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid rgba(3,174,114,0.4); border-radius: 999px; color: #03ae72; font-size: 12.5px;">
+        <span style="width: 7px; height: 7px; border-radius: 999px; background: #03ae72;"></span>Agent 0.8.2 · 1680×1050
+      </span>
+    </div>
+
+    <div style="padding: 20px; display: flex; flex-direction: column; gap: 18px;">
+      <div style="display: flex; align-items: flex-start; gap: 20px;">
+        <div style="min-width: 0; flex-grow: 1;">
+          <span class="lbl">Teams</span>
+          <h1 style="margin: 3px 0 6px; font-size: 27px; font-weight: 700; letter-spacing: -0.015em;">Who may see whose work</h1>
+          <p style="margin: 0; max-width: 60ch; font-size: 13.5px; line-height: 1.55; color: #aebacb;">
+            A team lets the people running it see <strong style="color:#d8e3f3;font-weight:600;">that</strong> work is
+            happening — who recorded, when, how runs ended. It does <strong style="color:#d8e3f3;font-weight:600;">not</strong>
+            open what is in a recording.
+          </p>
+        </div>
+        <span style="display: flex; align-items: center; gap: 9px; flex-shrink: 0; padding: 12px 20px; background: #adff5c; color: #0a1a13; border-radius: 10px; font-size: 14.5px; font-weight: 700;">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"></path></svg>
+          Create a team
+        </span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div class="row" style="padding: 0 12px 6px;">
+          <span class="lbl">Team</span><span class="lbl">Your role</span><span class="lbl">People</span>
+          <span class="lbl">Shared skills</span><span class="lbl">Created</span><span class="lbl" style="text-align:right;">Actions</span>
+        </div>
+        
+        <div class="row" style="padding: 10px 12px; border: 1px solid #adff5c; border-radius: 8px; background: #142043;">
+          <span style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+            <span style="width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center; border-radius: 8px; background: #192758; color: #adff5c; font-weight: 700; font-size: 12px;">T</span>
+            <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0;">
+              <strong style="font-size: 14px; font-weight: 600;">Test</strong>
+              <span style="font-size: 11.5px; color: #aebacb;">1 invitation waiting</span>
+            </span>
+          </span>
+          <span><span class="pill owner">owner</span></span>
+          <span style="display: flex; align-items: center;"><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:999px;border:2px solid #142043;background:#c7ff8f;color:#0a1a13;font-size:9.5px;font-weight:700;">V</span><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:999px;border:2px solid #142043;background:#2c4263;color:#f0f6ff;font-size:9.5px;font-weight:700;margin-left:-7px;">R</span><span style="margin-left:7px;font-size:12.5px;color:#d8e3f3;">2</span></span>
+          <span style="font-size: 13px; color: #aebacb;">none yet</span>
+          <span style="font-size: 12.5px; color: #aebacb;">21.08.2026</span>
+          <span style="display: flex; align-items: center; justify-content: flex-end; gap: 6px;">
+            <span style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #192758;border-radius:7px;font-size:12.5px;color:#d8e3f3;">Open
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"></path></svg></span>
+            <span style="display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:#aebacb;">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="12" cy="6" r="1.6"></circle><circle cx="12" cy="12" r="1.6"></circle><circle cx="12" cy="18" r="1.6"></circle></svg></span>
+          </span>
+        </div>
+        <div class="row" style="padding: 10px 12px; border: 1px solid rgba(25,39,88,0.45); border-radius: 8px; background: #0f1734;">
+          <span style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+            <span style="width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center; border-radius: 8px; background: #192758; color: #adff5c; font-weight: 700; font-size: 12px;">t</span>
+            <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0;">
+              <strong style="font-size: 14px; font-weight: 600;">trttt</strong>
+              <span style="font-size: 11.5px; color: #aebacb;">only you</span>
+            </span>
+          </span>
+          <span><span class="pill owner">owner</span></span>
+          <span style="display: flex; align-items: center;"><span style="width:22px;height:22px;display:grid;place-items:center;border-radius:999px;border:2px solid #0f1734;background:#c7ff8f;color:#0a1a13;font-size:9.5px;font-weight:700;">V</span><span style="margin-left:7px;font-size:12.5px;color:#d8e3f3;">1</span></span>
+          <span style="font-size: 13px; color: #aebacb;">none yet</span>
+          <span style="font-size: 12.5px; color: #aebacb;">23.08.2026</span>
+          <span style="display: flex; align-items: center; justify-content: flex-end; gap: 6px;">
+            <span style="display:flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #192758;border-radius:7px;font-size:12.5px;color:#d8e3f3;">Open
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6"></path></svg></span>
+            <span style="display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:#aebacb;">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="12" cy="6" r="1.6"></circle><circle cx="12" cy="12" r="1.6"></circle><circle cx="12" cy="18" r="1.6"></circle></svg></span>
+          </span>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <div style="position: absolute; inset: 0; background: rgba(10,17,38,0.55);"></div>
+  <aside style="position: absolute; top: 0; right: 0; bottom: 0; width: 560px; display: flex; flex-direction: column; background: #0f1734; border-left: 1px solid #192758; box-shadow: -24px 0 60px rgba(0,0,0,0.45);">
+    <div style="display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid #192758;">
+      <span style="width: 34px; height: 34px; flex-shrink: 0; display: grid; place-items: center; border-radius: 9px; background: #192758; color: #adff5c; font-weight: 700; font-size: 14px;">T</span>
+      <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+        <strong style="font-size: 17px; font-weight: 700;">Test</strong>
+        <span style="font-size: 12px; color: #aebacb;">2 people · 1 invitation waiting</span>
+      </span>
+      <span class="pill owner">owner</span>
+      <span style="display: grid; place-items: center; width: 30px; height: 30px; border-radius: 7px; color: #aebacb;">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+      </span>
+    </div>
+
+    <div style="flex-grow: 1; padding: 16px 18px; display: flex; flex-direction: column; gap: 16px;">
+      <div style="display: flex; gap: 8px;">
+        <span class="primary" style="flex-grow: 1; justify-content: center;">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"></path></svg>
+          Add somebody
+        </span>
+        <span class="btn"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 19V11M12 19V5M19 19v-6"></path></svg>Dashboard</span>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <span class="lbl">2 members</span>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid rgba(25,39,88,0.45); border-radius: 8px; background: #142043;">
+          <span style="width: 30px; height: 30px; display: grid; place-items: center; border-radius: 999px; background: #c7ff8f; color: #0a1a13; font-weight: 700; font-size: 12.5px;">V</span>
+          <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+            <strong style="font-size: 13.5px; font-weight: 600;">Vic Gorlenko <span style="color:#aebacb;font-weight:400;font-size:11.5px;">you</span></strong>
+            <span style="font-size: 11.5px; color: #aebacb;">7 recordings · 1 skill · 23 runs · ran 21.08</span>
+          </span>
+          <span class="pill owner">owner</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px solid rgba(25,39,88,0.45); border-radius: 8px; background: #142043;">
+          <span style="width: 30px; height: 30px; display: grid; place-items: center; border-radius: 999px; background: #2c4263; font-weight: 700; font-size: 12.5px;">R</span>
+          <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+            <strong style="font-size: 13.5px; font-weight: 600;">Raudar Aborsen</strong>
+            <span style="font-size: 11.5px; color: #aebacb;">1 recording · no skills · never ran</span>
+          </span>
+          <span style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px; border: 1px solid #192758; border-radius: 7px; background: #0f1734; font-size: 12px; color: #d8e3f3;">
+            member <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"></path></svg>
+          </span>
+          <span style="color: #f26363;"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"></path></svg></span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; padding: 9px 11px; border: 1px dashed #2c4263; border-radius: 8px;">
+          <span style="width: 30px; height: 30px; display: grid; place-items: center; border-radius: 999px; border: 1px dashed #2c4263; color: #aebacb;">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="6" width="18" height="12" rx="2"></rect><path d="M3.5 7.5l8.5 6 8.5-6"></path></svg>
+          </span>
+          <span style="display: flex; flex-direction: column; line-height: 1.3; min-width: 0; flex-grow: 1;">
+            <strong style="font-size: 13px; font-weight: 500; color: #ccd8eb;">newcomer@example.dev</strong>
+            <span style="font-size: 11.5px; color: #aebacb;">emailed 23.08 · no account yet</span>
+          </span>
+          <span style="font-size: 12px; color: #aebacb;">Send again</span>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <span class="lbl">Shared with this team</span>
+        <p style="margin: 0; font-size: 12.5px; color: #aebacb;">Nothing yet. Sharing is per skill and always deliberate.</p>
+      </div>
+
+      <div style="margin-top: auto; display: flex; align-items: center; gap: 8px; padding-top: 14px; border-top: 1px solid #192758;">
+        <span class="btn" style="padding: 6px 11px; font-size: 12.5px;">Rename</span>
+        <span class="btn" style="padding: 6px 11px; font-size: 12.5px; border-color: rgba(242,99,99,0.4); color: #f26363;">Delete this team</span>
+      </div>
+    </div>
+  </aside>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

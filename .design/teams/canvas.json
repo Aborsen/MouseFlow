@@ -1,38 +1,61 @@
 {
+  "pages": [
+    { "id": "page-2", "name": "Round 2 — table + detail" },
+    { "id": "page-1", "name": "Round 1 — first set" }
+  ],
   "artboards": [
-    { "file": "Main.dc.html", "title": "Option A — Roster table", "x": 0, "y": 0, "w": 1440, "h": 900 },
-    { "file": "PeopleCards.dc.html", "title": "Option B — People cards", "x": 1560, "y": 0, "w": 1440, "h": 900 },
-    { "file": "Workspace.dc.html", "title": "Option C — Workspace tabs", "x": 3120, "y": 0, "w": 1440, "h": 900 }
+    { "file": "TeamsList.dc.html", "title": "The list — shared by D, E and F", "page": "page-2", "x": 0, "y": 0, "w": 1440, "h": 760 },
+    { "file": "OptionD.dc.html", "title": "Option D — the team gets its own page", "page": "page-2", "x": 1560, "y": 0, "w": 1440, "h": 860 },
+    { "file": "OptionE.dc.html", "title": "Option E — a panel over the list", "page": "page-2", "x": 3120, "y": 0, "w": 1440, "h": 760 },
+    { "file": "OptionF.dc.html", "title": "Option F — the row unfolds in place", "page": "page-2", "x": 4680, "y": 0, "w": 1440, "h": 860 },
+
+    { "file": "Main.dc.html", "title": "Option A — Roster table", "page": "page-1", "x": 0, "y": 0, "w": 1440, "h": 900 },
+    { "file": "PeopleCards.dc.html", "title": "Option B — People cards (built, rejected)", "page": "page-1", "x": 1560, "y": 0, "w": 1440, "h": 900 },
+    { "file": "Workspace.dc.html", "title": "Option C — Workspace tabs", "page": "page-1", "x": 3120, "y": 0, "w": 1440, "h": 900 }
   ],
   "annotations": [
     {
-      "id": "opt-a",
+      "id": "brief",
       "x": 0,
-      "y": -150,
-      "w": 420,
-      "text": "OPTION A — Roster table\n\nOne full-width surface. Teams become a segmented control, so the left column disappears and the table gets the whole page. An invitation is a ROW, not a separate list — somebody who is not here yet.\n\nBest for: teams that keep growing, and anyone who wants to compare people at a glance.\nTradeoff: the most utilitarian of the three. Reads like an admin console, not like your team."
+      "y": -230,
+      "w": 460,
+      "text": "THE BRIEF, from your last note\n\n· keep the page header — eyebrow, title, the description\n· a big Create a team button at the top\n· teams listed one by one in a table, like recordings\n· clicking one opens its members: add, remove, roles, and the rest of the team's options\n\nThis artboard is the LIST, and it is the same in all three options — it is the detail step that differs. The table is the Recordings table's own anatomy: same grid, same row border, same 10.5px column labels."
     },
     {
-      "id": "opt-b",
+      "id": "why-b-failed",
+      "x": 0,
+      "y": 860,
+      "w": 460,
+      "text": "WHY B DIDN'T SURVIVE CONTACT\n\nOn your real data it was two cards in a three-column grid, so most of the page was empty — and the activity bars, which were the whole argument for cards, collapsed into stubs because one person had 23 runs and the other had none.\n\nCards flatter a full team and expose a small one. A table does the opposite, which is the right way round: you start small."
+    },
+    {
+      "id": "opt-d",
       "x": 1560,
-      "y": -150,
-      "w": 420,
-      "text": "OPTION B — People cards\n\nA card per person, with the SHAPE of their fortnight, not just its total — the ten bars are runs per day, red where they failed. Pending invitations are cards in the same grid.\n\nBest for: 3–12 people, where the team is a group of humans rather than rows.\nTradeoff: stops working past ~20 people, and one screen holds far fewer of them."
+      "y": -230,
+      "w": 440,
+      "text": "OPTION D — the team gets its own page\n\n/team/:id, reached from Open. Full width for the members table, room for shared skills and a proper settings block, and Delete sits in that block rather than loose at the bottom of the page.\n\nBest for: teams you actually administer — everything about one team in one place, and it has an address you can link or bookmark.\nTradeoff: a real navigation. Comparing two teams means going back and forth."
     },
     {
-      "id": "opt-c",
+      "id": "opt-e",
       "x": 3120,
-      "y": -150,
-      "w": 420,
-      "text": "OPTION C — Workspace tabs\n\nMembers / Invitations / Shared skills / Settings. The page stops being one long scroll, and deleting a team moves out of the main view into Settings where it belongs.\n\nBest for: several teams, and keeping destructive actions away from everyday ones.\nTradeoff: everything is one click further away, and you can no longer see the whole team at once."
+      "y": -230,
+      "w": 440,
+      "text": "OPTION E — a panel over the list\n\nThe list stays behind, so moving between teams is one click each and you never lose your place.\n\nBest for: several teams and quick edits — add somebody here, fix a role there.\nTradeoff: 560px is narrow, so per-person activity shrinks to one line of text, and it is the least comfortable of the three for a team of twenty."
     },
     {
-      "id": "shared-notes",
-      "x": 0,
-      "y": 980,
+      "id": "opt-f",
+      "x": 4680,
+      "y": -230,
+      "w": 440,
+      "text": "OPTION F — the row unfolds in place\n\nNo navigation and no overlay: the row opens and the team appears underneath it, the same gesture the Recordings table already uses for its replay knobs.\n\nBest for: one page that does everything, and a product that already taught this gesture on another screen.\nTradeoff: the page gets long with several teams open, and there is nowhere obvious to put anything that needs real room later."
+    },
+    {
+      "id": "common",
+      "x": 1560,
+      "y": 900,
       "w": 900,
-      "text": "All three keep what the current page gets right: the privacy line stays visible (a team opens activity, never content), roles stay editable inline for an owner, and the route through to the team dashboard is one click from here.\n\nAll three also fix the same two things: \"ADD SOMEBODY\" is no longer a whole panel for one input, and \"Delete this team\" is no longer a red link sitting loose at the bottom of the page.\n\nMix and match — the picker from B and the table from A is a real option."
+      "text": "In all three: the invitation is a row in the members list, not a separate section — a person who is not here yet. Roles stay editable in place for an owner. Rename and Delete are together, away from everyday actions. And every option keeps the sentence about what a team does not open, because that is the part people are actually uneasy about.\n\nMixing is fine: F's gesture with D's page for teams past a certain size is a real answer."
     }
   ],
-  "launch": { "view": "canvas" }
+  "launch": { "view": "canvas", "page": "page-2" }
 }

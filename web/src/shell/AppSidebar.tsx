@@ -38,14 +38,16 @@ const NAV = [
    * more use than a uniform confidence nobody believes. */
   { to: '/create', label: 'Create', icon: Sparkles, beta: true },
   { to: '/skills', label: 'Skills', icon: FolderOpen },
-  { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
   // Asking about the numbers happens on the page that shows them, not at its own address.
   { to: '/dashboard', label: 'Dashboard', icon: ChartNoAxesColumn },
-  /* Last, and a place rather than a setting. It was the fourth pane of the settings dialog, which was the
-   * right size for a roster you fill in once and the wrong one for what it now is: several teams, people
-   * being added and moved, invitations to chase, and a dashboard scoped to each. A dialog also cannot be
-   * linked to, and "open Teams" is what an invitation email has to be able to say. */
+  /* A place rather than a setting. It was the fourth pane of the settings dialog, which was the right size
+   * for a roster you fill in once and the wrong one for what it now is: several teams, people being added
+   * and moved, invitations to chase, and a dashboard scoped to each. A dialog also cannot be linked to,
+   * and "open Teams" is what an invitation email has to be able to say. */
   { to: '/team', label: 'Teams', icon: Users },
+  /* Last, because it is the only one that is not YOUR work: everything above is something on this account,
+   * and the gallery is other people's skills to browse. */
+  { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
 ] as const;
 
 /* One row height, one glyph box, one gap - so a lucide glyph that draws lighter than its neighbours still

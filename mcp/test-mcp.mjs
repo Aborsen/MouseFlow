@@ -549,8 +549,9 @@ check('and both documents are routed',
   vercel.rewrites.some((r) => r.source === '/.well-known/oauth-authorization-server'),
   JSON.stringify(vercel.rewrites.map((r) => r.source)));
 const provider = readFileSync(fileURLToPath(new URL('../web/src/shell/AccountProvider.tsx', import.meta.url)), 'utf8');
-check('the only place a sign-in may be sent back to is the consent page',
-  /asked\.startsWith\('\/api\/oauth\?'\) \? asked : null/.test(provider));
+check('a sign-in is sent back only to the consent page or to a listed page of this app',
+  /asked\.startsWith\('\/api\/oauth\?'\)\) return asked;/.test(provider)
+  && /LANDINGS\.includes\(asked\) \? asked : null/.test(provider));
 
 group('one derivation, three readers');
 const shim = readFileSync(fileURLToPath(new URL('../web/src/lib/skill-schema.ts', import.meta.url)), 'utf8');
@@ -619,6 +620,9 @@ const scopeSrc = read('../api/_team-scope.js');
 
 check('/team is a route of its own', /path: '\/team'/.test(mainTsx));
 check('and it is in the sidebar, not buried in a dialog', /to: '\/team'/.test(sidebar));
+check('with Gallery last, since it is the only one that is not your own work',
+  [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join() === '/record,/create,/skills,/dashboard,/team,/gallery',
+  [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join());
 check('the settings dialog no longer keeps a second copy of it',
   !/TeamScreen/.test(settings) && !existsSync(fileURLToPath(new URL('../web/src/shell/settings/TeamScreen.tsx', import.meta.url))));
 
@@ -646,16 +650,22 @@ check('and the roster stays whole while the counting narrows, or the filter is a
 check('the range presets are Today, 7 days and Custom', /const RANGES = \[7\];/.test(dash));
 
 const teamView = read('../web/src/features/team/TeamView.tsx');
-check('the roster is a card per person, not a table', !/<table/.test(teamView)
-  && /const Fortnight = /.test(teamView));
-check('a fortnight of runs is sent only to the roles that may see activity',
-  /if \(manages\(role\)\)/.test(teamApi) && teamApi.indexOf('const daily') > teamApi.indexOf('if (manages(role))'));
-check('every one of the fourteen days is present, so the bars cannot lie about spacing',
-  /for \(let back = 13; back >= 0; back -= 1\)/.test(teamApi));
-check('bars scale to the person, not the team, or a steady week flattens beside a busy one',
-  /Math\.max\(1, \.\.\.days\.map\(\(d\) => d\.runs\)\)/.test(teamView));
-check('and a failure is a PORTION of the day, not the whole bar turned red',
-  /flexGrow: Math\.max\(0, d\.runs - d\.failed\)/.test(teamView));
+check('teams are rows, in the anatomy the recordings table already uses',
+  /const COLUMNS = 'grid-cols-\[minmax\(11rem,1fr\)/.test(teamView)
+  && /border border-stroke\/45/.test(teamView));
+check('one grid template for the header and the rows, or the labels sit over nothing',
+  (teamView.match(/cn\(COLUMNS|cn\(ROW, COLUMNS/g) || []).length >= 2);
+check('opening a team is a panel over the list, not a page away from it',
+  /role="dialog"/.test(teamView) && /fixed inset-y-0 end-0/.test(teamView));
+check('and it can be closed with Escape, like every other overlay',
+  /ev\.key === 'Escape'/.test(teamView));
+check('the panel is read when it opens and dropped when it closes, never left stale',
+  /setDetail\(null\);\n    void loadDetail\(openId\)/.test(teamView));
+check('an owner can rename a team, which the screen has always said they could',
+  /async function renameTeam/.test(teamApi) && /update team set name/.test(teamApi)
+  && /JSON\.stringify\(\{ name \}\)/.test(teamView));
+check('and a rename is told from a role change by what the body carries, not by a mode flag',
+  /body && body\.name !== undefined/.test(teamApi));
 
 /* The bug this covers reached production: a `const people` referenced one line above its own declaration,
  * so every request that filtered the dashboard to one person answered 500. It survived a browser check
@@ -765,8 +775,15 @@ check('sign-up lands only on this app\'s own places, never on an arbitrary path'
 check('and /team is one of them, since an invitation names it', /'\/team'/.test(shared));
 check('the sign-up page reads that destination rather than always going to Record',
   /nextFrom\(location\.search\)/.test(read('../web/src/features/auth/SignUpView.tsx')));
-check('and the wall offers a way to create an account at all',
-  /\/sign-up\?next=/.test(read('../web/src/shell/SignInWall.tsx')));
+const wall = read('../web/src/shell/AccountProvider.tsx');
+check('signed out sends somebody to the sign-in PAGE, not a card over the page they asked for',
+  /location\.replace\(`\/sign-in/.test(wall) && !/SignInWall/.test(wall));
+check('carrying where they were trying to get to', /to\.set\('next', location\.pathname\)/.test(wall));
+check('and carrying why a Google round trip failed, or nothing ever says',
+  /for \(const key of \['auth', 'why'\]\)/.test(wall)
+  && /authFailure\(location\.search\)/.test(read('../web/src/features/auth/SignInView.tsx')));
+check('the sign-in page offers a way to create an account',
+  /\/sign-up/.test(read('../web/src/features/auth/SignInView.tsx')));
 check('the row is written before anything is sent, so a lost message costs a conversation, not a seat',
   teamApi.indexOf('insert into team_invite') < teamApi.indexOf('const post = await tellThem'));
 

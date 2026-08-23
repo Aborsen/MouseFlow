@@ -8,8 +8,8 @@
  * request and cannot be talked out of it. A gate in a page is a suggestion; those checks are the rule.
  */
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { type Account, type Flow, type Run, pull, signInWithGoogle, signOut, whoAmI } from '@/lib/api';
-import { SignInWall } from './SignInWall';
+import { type Account, type Flow, type Run, pull, signOut, whoAmI } from '@/lib/api';
+import { LANDINGS } from '@/features/auth/shared';
 
 interface AccountValue {
   account: Account | null;
@@ -59,7 +59,16 @@ export const isPublicPath = (path: string) => PUBLIC_PATHS.includes(path.replace
 export function nextAfterSignIn(search: string): string | null {
   const asked = new URLSearchParams(search).get('next');
   if (!asked) return null;
-  return asked.startsWith('/api/oauth?') ? asked : null;
+  /* Two kinds of destination, and both are allowlisted rather than pattern-matched. The OAuth consent page
+   * is the one thing outside the app that legitimately parks somebody at sign-in and wants them back. The
+   * rest are this app's own pages, listed in one place shared with the sign-up view — the wall used to
+   * render OVER whatever page you asked for, so there was nothing to carry; now that signing out sends you
+   * to /sign-in, the page you were trying to reach has to travel with you or every sign-in ends on Record.
+   *
+   * An allowlist because `next` arrives in links anybody can write — an invitation email, a shared URL —
+   * and "any path starting with a slash" is what an open redirect is built out of. */
+  if (asked.startsWith('/api/oauth?')) return asked;
+  return LANDINGS.includes(asked) ? asked : null;
 }
 
 const AccountContext = createContext<AccountValue | null>(null);
@@ -76,7 +85,6 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   const [runs, setRuns] = useState<Run[]>([]);
   const [checked, setChecked] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
   const [readFailed, setReadFailed] = useState(false);
 
   const reload = useCallback(async () => {
@@ -105,23 +113,6 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     (async () => {
       const outcome = new URLSearchParams(location.search).get('auth');
-      const why = new URLSearchParams(location.search).get('why');
-      if (outcome && outcome !== 'ok') {
-        /* `why` is what the auth service itself said, forwarded by /api/auth/finish. Shown rather than
-         * summarised: "the attempt may have expired" was a guess this code was making on the user's
-         * behalf, and it is the wrong guess on a phone, where the usual cause is the sign-in starting in
-         * one browser and returning to another. */
-        const detail = why ? ` (${why})` : '';
-        setProblem(
-          outcome === 'missing-verifier'
-            ? 'Google came back without a verifier, so sign-in could not be completed.'
-            : outcome === 'rejected'
-              ? 'The sign-in service rejected this attempt' + detail + '. This usually means the sign-in '
-                + 'started in one browser and came back in another - on a phone, opening the link in the '
-                + 'same browser you started in is what fixes it. Trying again here is safe.'
-              : `Sign-in did not complete (${outcome}${detail}).`,
-        );
-      }
       if (outcome) {
         // Cleared so a refresh does not repeat the message; anything else in the query is left alone.
         const rest = new URLSearchParams(location.search);
@@ -222,16 +213,28 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     return null;
   }
 
+  /* Signed out: go to the sign-in PAGE, carrying where you were trying to get to.
+   *
+   * This used to render a sign-in card in place, leaving the address as /record — which meant the product
+   * had two sign-in screens (that card, and /sign-in) with different designs, and the one people actually
+   * met was the one with no address to link to, no way through to sign-up until recently, and a URL that
+   * said "record" while showing a password field. One screen, at its own address, is the whole change.
+   *
+   * `replace` rather than assign, so Back does not bounce between the page and the door. */
   if (!account) {
-    return (
-      <SignInWall
-        problem={problem}
-        onSignIn={async () => {
-          const url = await signInWithGoogle(location.pathname + location.search + location.hash);
-          location.href = url;
-        }}
-      />
-    );
+    const to = new URLSearchParams();
+    if (LANDINGS.includes(location.pathname)) to.set('next', location.pathname);
+    /* A failed Google round trip comes back on whatever page it started from, carrying ?auth= and ?why=.
+     * Those are the only words anybody gets about why it did not work, so they travel to the page that can
+     * show them rather than being dropped on the way. */
+    const asked = new URLSearchParams(location.search);
+    for (const key of ['auth', 'why']) {
+      const value = asked.get(key);
+      if (value) to.set(key, value);
+    }
+    const query = to.toString();
+    if (location.pathname !== '/sign-in') location.replace(`/sign-in${query ? `?${query}` : ''}`);
+    return null;
   }
 
   return <AccountContext.Provider value={value}>{children}</AccountContext.Provider>;

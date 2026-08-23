@@ -1,0 +1,16 @@
+Shared sidebar + top bar markup used by every artboard in this set.
+Kept as a note for the author, not published — each .dc.html inlines it so the
+artboards stay self-contained (a Design Component cannot import a fragment).
+
+sidebar 236px  bg #0f1734  border-right #192758
+rows h36 px10 radius6  glyph 18  gap 10  font 13.5
+active row: bg #192758, weight 600, glyph #adff5c
+footer: Hours row (11px) + account row (avatar 18px #c7ff8f on #0a1a13)
+
+top bar: title 15/600, right pill "Agent 0.8.2 · 1680×1050" green dot #03ae72
+page bg #0a1126, ink #f0f6ff
+
+TABLE (copied from RecordingsTable.tsx):
+  header labels  10.5px uppercase tracking-wide #aebacb, px 12, pb 6, gap-x 12
+  row            radius 8, px 12, py 6, border 1px #192758(45%), bg #0f1734
+  rows list      flex column gap 6

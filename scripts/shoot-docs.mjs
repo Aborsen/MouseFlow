@@ -392,6 +392,12 @@ async function main() {
        * the scope lives in the address, which is exactly what makes it linkable and screenshot-able. */
       await page.goto(SITE + '/team', 2800);
       await page.shot('team.png');
+      /* And a team open, which is where everything actually happens — the list alone shows two rows and
+       * none of the members, roles, invitations or the way through to the dashboard. */
+      if (await page.eval("window.__mf.clickExact('Open')")) {
+        await wait(1400);
+        await page.shot('team-panel.png');
+      }
       await page.goto(SITE + '/dashboard?team=t_dev1', 3500);
       await page.shot('dashboard-team.png');
 
