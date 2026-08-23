@@ -84,6 +84,23 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [runs, setRuns] = useState<Run[]>([]);
   const [checked, setChecked] = useState(false);
+
+  /* What a Google round trip came back saying, read in a STATE INITIALISER — that is, during the first
+   * render, before any effect runs.
+   *
+   * The effect below strips ?auth= and ?why= out of the address so a refresh does not repeat the message,
+   * and it fires while `checked` is still false. The redirect to /sign-in only happens once `checked` is
+   * true, which is afterwards — so reading the address there found nothing, and a failed sign-in bounced
+   * back to a clean sign-in page with no reason on it. Which is precisely what "it reloads the login page
+   * and nothing happens" looks like from the outside. Captured here, before anything can delete it. */
+  const [arrived] = useState(() => {
+    try {
+      const q = new URLSearchParams(location.search);
+      return { auth: q.get('auth'), why: q.get('why') };
+    } catch (_) {
+      return { auth: null as string | null, why: null as string | null };
+    }
+  });
   const [loaded, setLoaded] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
 
@@ -226,11 +243,10 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     if (LANDINGS.includes(location.pathname)) to.set('next', location.pathname);
     /* A failed Google round trip comes back on whatever page it started from, carrying ?auth= and ?why=.
      * Those are the only words anybody gets about why it did not work, so they travel to the page that can
-     * show them rather than being dropped on the way. */
-    const asked = new URLSearchParams(location.search);
-    for (const key of ['auth', 'why']) {
-      const value = asked.get(key);
-      if (value) to.set(key, value);
+     * show them — read from `arrived`, which captured them before the address was cleaned. */
+    if (arrived.auth && arrived.auth !== 'ok') {
+      to.set('auth', arrived.auth);
+      if (arrived.why) to.set('why', arrived.why);
     }
     const query = to.toString();
     if (location.pathname !== '/sign-in') location.replace(`/sign-in${query ? `?${query}` : ''}`);

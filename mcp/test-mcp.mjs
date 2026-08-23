@@ -780,8 +780,13 @@ check('signed out sends somebody to the sign-in PAGE, not a card over the page t
   /location\.replace\(`\/sign-in/.test(wall) && !/SignInWall/.test(wall));
 check('carrying where they were trying to get to', /to\.set\('next', location\.pathname\)/.test(wall));
 check('and carrying why a Google round trip failed, or nothing ever says',
-  /for \(const key of \['auth', 'why'\]\)/.test(wall)
+  /to\.set\('auth', arrived\.auth\)/.test(wall)
   && /authFailure\(location\.search\)/.test(read('../web/src/features/auth/SignInView.tsx')));
+/* The reason is deleted from the address by an effect that runs BEFORE the redirect does, so it has to be
+ * captured during the first render or it is gone by the time anything can forward it. */
+check('the reason is captured before the address is cleaned, not read after',
+  /const \[arrived\] = useState\(\(\) => \{/.test(wall)
+  && wall.indexOf('const [arrived]') < wall.indexOf("rest.delete('auth')"));
 check('the sign-in page offers a way to create an account',
   /\/sign-up/.test(read('../web/src/features/auth/SignInView.tsx')));
 check('the row is written before anything is sent, so a lost message costs a conversation, not a seat',
