@@ -629,12 +629,12 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           { id: 't_dev1', name: 'Operations', role: 'owner', members: 3, created_at: hoursAgo(720) },
           { id: 't_dev2', name: 'Finance', role: 'admin', members: 2, created_at: hoursAgo(300) },
         ],
-        /* UNCONFIGURED, because that is what the deployment is: no domain has been bought yet, so no
-         * sender is verified and nothing is sent. The fixture matches the live app rather than the app we
-         * intend to have — a screenshot is a claim, and one showing "they are emailed" beside a deployment
-         * that emails nothing is the wrong claim to put in a document. Flip this the day the two variables
-         * are set, and retake the pictures. */
-        mail: { configured: false, problem: 'RESEND_API_KEY and MAIL_FROM are not set' },
+        /* CONFIGURED, because that is what the deployment is: kuswise.com is verified with Resend and both
+         * variables are set on production. The fixture tracks the live app rather than the app we intend to
+         * have — a screenshot is a claim, and one showing "no email leaves this deployment" beside a
+         * deployment that emails would be the wrong claim to keep in a document. Flip it back the day the
+         * variables come off, and retake the pictures. */
+        mail: { configured: true, problem: null },
       });
     }
     if (method === 'GET' && query.get('id') === 't_dev2') {

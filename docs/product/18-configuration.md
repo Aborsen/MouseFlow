@@ -12,7 +12,7 @@ Everything that can be set, in one place.
 | `OPENAI_API_KEY` | The OpenAI path of `/api/chat` | Not set on the deployment; that path is written but has never been run from here. |
 | `OPENAI_MODEL` | optional | Default model for the OpenAI provider. Falls back to `gpt-5.6-luna`. |
 | `OPENAI_REASONING_EFFORT` | optional | Default reasoning effort. Falls back to `high`. |
-| `RESEND_API_KEY` | Team invitation emails | From resend.com. **Not set on the deployment** — a verified sender needs a domain, and there is not one yet. Without it an invitation is still written and still works: nothing is sent, and `GET /api/team` says so rather than implying a message is on its way. See [22 — Teams](22-teams.md#configuring-it). |
+| `RESEND_API_KEY` | Team invitation emails | From resend.com; **set on production**, sending from the verified domain `kuswise.com`. Scoped to sending access, not full access. Without it an invitation is still written and still works: nothing is sent, and `GET /api/team` says so rather than implying a message is on its way. See [22 — Teams](22-teams.md#configuring-it). |
 | `MAIL_FROM` | Team invitation emails | A verified sender on a domain you own, e.g. `MouseFlow <team@yourdomain>`. **No default on purpose**: a provider's sandbox address delivers only to the address that owns the provider account, which looks like working in testing and reaches nobody in production. |
 | `MOCK_API` | local development only | `MOCK_API=1` serves the account endpoints from an in-memory fixture. Dev-server middleware; it has **no path into a build**. |
 

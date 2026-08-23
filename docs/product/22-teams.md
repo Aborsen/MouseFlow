@@ -101,12 +101,12 @@ told plainly that nothing was sent, and to say so themselves.
 
 ### Configuring it
 
-**This deployment sends nothing today**, and that is deliberate rather than unfinished: sending to an
-arbitrary address needs a verified sender, a verified sender needs a domain, and there is not one yet. The
-screenshot above is of the app in that state — the panel says plainly that no email leaves the deployment,
-and adding somebody still works exactly as it always has.
+**This deployment sends.** `kuswise.com` is verified with Resend and both variables below are set on
+production, so adding somebody emails them. It ran unconfigured for its first day, and that state is not a
+bug to be embarrassed about — it is the designed fallback, and the app said so on every screen rather than
+implying a message was on its way.
 
-Turning it on is two variables and no code:
+It is two variables and no code:
 
 | | |
 |---|---|
