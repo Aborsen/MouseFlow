@@ -25,6 +25,12 @@ import { AdminUser } from '@/features/admin/AdminUser';
 import { AdminModels } from '@/features/admin/AdminModels';
 import { InsightsView } from '@/features/insights/InsightsView';
 import { TeamView } from '@/features/team/TeamView';
+import { ErrorBoundary, startReporting } from '@/lib/sentry';
+
+/* Before anything else, so a crash while the app is still starting is still reported. Does nothing at all
+ * unless VITE_SENTRY_DSN is set — see lib/sentry.ts, which is mostly about what it deliberately does not
+ * send. */
+startReporting();
 
 // Before the first paint, so the page does not flash the wrong colour on the way in.
 bootTheme();
@@ -109,8 +115,38 @@ if (hash && ['record', 'create', 'skills', 'gallery', 'connect', 'desktop'].incl
   history.replaceState(null, '', `/${to}${location.search}`);
 }
 
+/* What somebody sees when a render throws.
+ *
+ * There was nothing here before, which means the failure mode for any uncaught error in a component was a
+ * WHITE PAGE — no message, no way back, and nothing in the console that a person who is not a developer
+ * would think to look at. That is worse than the error. So: a card that says the truth, a button that
+ * reloads, and the report going out on its own.
+ *
+ * Outside StrictMode on purpose. StrictMode double-invokes render in development to surface side effects,
+ * and a boundary inside it catches each of those twice. */
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <RouterProvider router={router} />
-  </StrictMode>,
+  <ErrorBoundary
+    fallback={({ resetError }) => (
+      <div className="grid min-h-screen place-items-center bg-surface-page p-6 text-center">
+        <div className="max-w-[46ch]">
+          <h1 className="font-semibold text-[1.15rem] text-ink-primary">This screen stopped working</h1>
+          <p className="mt-2 text-[0.9rem] text-ink-secondary leading-relaxed">
+            The problem has been reported. Nothing you recorded is affected — recordings live in this
+            browser and on your account, not in this page.
+          </p>
+          <button
+            type="button"
+            onClick={() => { resetError(); location.reload(); }}
+            className="mt-4 rounded-lg bg-brand-primary px-4 py-2 font-semibold text-[0.9rem] on-accent"
+          >
+            Reload the page
+          </button>
+        </div>
+      </div>
+    )}
+  >
+    <StrictMode>
+      <RouterProvider router={router} />
+    </StrictMode>
+  </ErrorBoundary>,
 );

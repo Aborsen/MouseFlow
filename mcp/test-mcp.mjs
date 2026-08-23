@@ -817,6 +817,26 @@ check('the step list can be taken whole in one click', /const keepAll = useCallb
 check('and emptied in one, so neither direction costs a click per step',
   /const keepNone = useCallback\(\(\) => setKept\(new Set\(\)\)/.test(wizard));
 
+/* A crash reporter on a product that promises not to watch you is worth checking rather than trusting. */
+group('error reporting sends crashes and not people');
+const sentry = read('../web/src/lib/sentry.ts');
+check('no DSN means no reporting at all, so dev and previews are silent by default',
+  /if \(!DSN\) return;/.test(sentry));
+check('Session Replay is not installed — not disabled, absent',
+  !/replayIntegration/.test(sentry.replace(/\/\*[\s\S]*?\*\//g, '')));
+check('and no IP, cookies or headers ride along', /sendDefaultPii: false/.test(sentry));
+check('query values are scrubbed by an ALLOWLIST, so a parameter added later is redacted by default',
+  /const KEEP = new Set\(/.test(sentry) && /\[redacted\]/.test(sentry));
+check('breadcrumbs are scrubbed too, where a URL turns up a second time',
+  /event\.breadcrumbs = event\.breadcrumbs\.map/.test(sentry));
+check('a render crash shows something rather than a white page',
+  /<ErrorBoundary/.test(read('../web/src/main.tsx')));
+const viteConfig = read('../web/vite.config.ts');
+check('source maps are uploaded only when a token is present, and the build never fails for want of one',
+  /const uploadingMaps = Boolean\(/.test(viteConfig) && /uploadingMaps \? 'hidden' : false/.test(viteConfig));
+check('and they are deleted after upload, so they are not served from the CDN',
+  /filesToDeleteAfterUpload/.test(viteConfig));
+
 /* A picture that 404s is the documentation's version of the same bug. */
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));

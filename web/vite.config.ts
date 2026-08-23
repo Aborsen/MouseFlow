@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
+import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { type Plugin, defineConfig } from 'vite';
 import { mockApi } from './src/dev/mock-api';
 
@@ -14,6 +15,19 @@ const mockPlugin = (): Plugin => ({
     server.config.logger.info('  [33m➜[39m  mock API: on (MOCK_API=1)');
   },
 });
+
+/* Uploading source maps needs a Sentry AUTH TOKEN, which is a real secret and therefore lives only in the
+ * deployment's environment — never in this repository and never in a checked-in .env. Absent, the whole
+ * step is skipped: the build succeeds, the app reports errors exactly as before, and the only thing lost
+ * is readable stack traces. A build that FAILED for want of a token would make every contributor without
+ * one unable to build the app at all.
+ *
+ * SENTRY_ORG and SENTRY_PROJECT come from the same place, for the same reason they are not constants: they
+ * name one organisation's project, and this file should not.
+ */
+const uploadingMaps = Boolean(
+  process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT,
+);
 
 /* The same shape as insightis/apps/web: React plugin, an @ alias, and a dev proxy so the app talks to the
  * real /api functions while it is being worked on.
@@ -45,7 +59,21 @@ const DESIGN_SYSTEM = [
 ];
 
 export default defineConfig({
-  plugins: [react(), mockPlugin()],
+  plugins: [
+    react(),
+    mockPlugin(),
+    /* Last, because it reads what the others produced. `filesToDeleteAfterUpload` is the half that keeps
+     * the maps off the CDN: they are written, sent to Sentry, then removed from dist. */
+    ...(uploadingMaps
+      ? [sentryVitePlugin({
+        org: process.env.SENTRY_ORG,
+        project: process.env.SENTRY_PROJECT,
+        authToken: process.env.SENTRY_AUTH_TOKEN,
+        sourcemaps: { filesToDeleteAfterUpload: ['dist/**/*.map'] },
+        telemetry: false,
+      })]
+      : []),
+  ],
   resolve: {
     alias: [...DESIGN_SYSTEM, { find: '@', replacement: here('./src') }],
   },
@@ -67,5 +95,13 @@ export default defineConfig({
     // A screenshot-heavy vision loop and a design system make for a big-ish bundle; this is the point at
     // which it is worth looking rather than a hard limit.
     chunkSizeWarningLimit: 900,
+    /* Built so Sentry can turn a stack trace back into this source. Without maps every frame reads
+     * `index-CtwADd_G.js:1:48210`, which names nothing and cannot be acted on.
+     *
+     * `hidden` rather than `true`: the maps are emitted and uploaded, but no `//# sourceMappingURL=`
+     * comment is left in the bundle, so a browser never fetches them and the source is not served to
+     * visitors. The upload step below deletes them from the output directory afterwards, so they are not
+     * on the CDN either. */
+    sourcemap: uploadingMaps ? 'hidden' : false,
   },
 });

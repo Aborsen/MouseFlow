@@ -14,6 +14,10 @@ Everything that can be set, in one place.
 | `OPENAI_REASONING_EFFORT` | optional | Default reasoning effort. Falls back to `high`. |
 | `RESEND_API_KEY` | Team invitation emails | From resend.com; **set on production**, sending from the verified domain `kuswise.com`. Scoped to sending access, not full access. Without it an invitation is still written and still works: nothing is sent, and `GET /api/team` says so rather than implying a message is on its way. See [22 — Teams](22-teams.md#configuring-it). |
 | `MAIL_FROM` | Team invitation emails | A verified sender on a domain you own, e.g. `MouseFlow <team@yourdomain>`. **No default on purpose**: a provider's sandbox address delivers only to the address that owns the provider account, which looks like working in testing and reaches nobody in production. |
+| `VITE_SENTRY_DSN` | Error reporting, in the browser | The Sentry project's DSN. Not a secret — it ships inside the bundle by design — but a variable all the same, so that reporting is **off wherever it is not set**: a developer's typos do not land in a production issue feed. Absent, `startReporting()` returns immediately and the app behaves as it did before Sentry existed. |
+| `VITE_SENTRY_TRACES` | optional | Trace sample rate, default `0.2`. Traces are the expensive half of Sentry. |
+| `SENTRY_AUTH_TOKEN` | Source-map upload, at build time | A real secret; deployment environment only, never a checked-in file. Without it the upload step is skipped, the build still succeeds, and the only thing lost is readable stack traces. |
+| `SENTRY_ORG`, `SENTRY_PROJECT` | Source-map upload | Which project to upload to. Needed alongside the token; any one of the three missing skips the step. |
 | `MOCK_API` | local development only | `MOCK_API=1` serves the account endpoints from an in-memory fixture. Dev-server middleware; it has **no path into a build**. |
 
 ### The MCP server and worker (`mcp/`, local — not Vercel)
