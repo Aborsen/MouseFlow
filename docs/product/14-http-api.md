@@ -214,6 +214,7 @@ cannot tell you already is.
 ```
 GET /api/insights?days=30
 GET /api/insights?days=30&team=t_ab12
+GET /api/insights?days=30&team=t_ab12&person=<uuid>
 ```
 
 `days` defaults to 30, maximum 365 — a year of runs is a lot of `jsonb` to unroll. One read-only transaction,
@@ -224,8 +225,9 @@ product**.
 `team` counts every member of that team instead of the caller alone, and is accepted **only from an owner or
 an admin of it**: `api/_team-scope.js` turns the id into a set of accounts or into a refusal — `403` with a
 reason for a member of the team, `404` for somebody who is not in it, which does not confirm that it exists.
-Without the parameter the scope is one account, so every existing caller and every bookmark asks exactly the
-question it always asked.
+`person` narrows that to one member of the same team — checked against its membership, so a uuid in the
+query string is no more a permission than a team id is. Without either parameter the scope is one account,
+so every existing caller and every bookmark asks exactly the question it always asked.
 
 Response: `scope`, `window`, `totals`, `byOutcome`, `byDay`, `applications`, `unattributed`, `previous`,
 `repeated`, `slowestSteps`, `failures`, `skills`, `gaps`, `caps`. `scope` says whose the numbers are, and in
@@ -237,13 +239,18 @@ what each means and every cap, and [22 — Teams](22-teams.md#the-teams-dashboar
 ## `/api/chat`
 
 ```
-POST /api/chat  { question, model?, history? }
+POST /api/chat  { question, model?, history?, team?, person? }
   -> { ok, answer, citations, used, usage, provider, model }
 GET  /api/chat
   -> what this deployment can serve, and which providers it holds a key for
 ```
 
 The grounded assistant. Read-only tools, the SQL run here, every lookup listed. Rate: 20/min per account.
+
+`team` and `person` scope it exactly as they scope `/api/insights`, through the same `api/_team-scope.js`
+check, so the panel beside the dashboard can only read what that dashboard was allowed to count. In a team
+scope the tool table is a **whitelist** of aggregate lookups: nothing that reads a transcript, and nothing
+that writes — see [08 — Dashboard](08-dashboard.md#the-assistant-follows-the-scope).
 Full description, tool list, limits and the privacy statement: [08 — Dashboard](08-dashboard.md#the-assistant).
 
 The GET reports the **allowlist** keyed by provider plus which providers are configured — it is not a list of

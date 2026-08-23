@@ -187,21 +187,42 @@ export default async function handler(req, res) {
    * or into a refusal, resolving the caller from the credential every time. */
   let scope;
   try {
-    scope = await scopeFor(sql, who, String((req.query && req.query.team) || '').trim() || null);
+    scope = await scopeFor(
+      sql,
+      who,
+      String((req.query && req.query.team) || '').trim() || null,
+      String((req.query && req.query.person) || '').trim() || null,
+    );
   } catch (err) {
     return fail(res, 500, 'could not check that team: ' + err.message);
   }
   if (scope.error) return fail(res, scope.error.status, scope.error.message);
 
   try {
-    const out = await gather(sql, scope.ids, fromIso, to.toISOString(), scope.kind === 'team');
+    /* Two id sets, and the difference matters. `ids` is what gets COUNTED - one member when the view is
+     * filtered to a person. `memberIds` is the whole team, so the per-person breakdown still lists
+     * everybody and the filter can be changed to somebody else. */
+    const out = await gather(
+      sql, scope.ids, fromIso, to.toISOString(), scope.kind === 'team', scope.memberIds,
+    );
     /* Who the numbers belong to, sent back rather than assumed by the page. A dashboard that says "47 runs"
      * without saying whose is the one screenshot that gets pasted into a chat and misread. */
     const said = { kind: scope.kind, people: [] };
     if (scope.kind === 'team') {
       said.team = scope.team;
       said.role = scope.role;
-      const people = await peopleFor(sql, scope.ids);
+      /* Which one person the numbers are about, if any. Sent as the resolved person rather than as the id
+       * that was asked for, so the page labels its header from the answer and not from its own request. */
+      if (scope.person) {
+        const one = people.get(scope.person) || {};
+        said.person = {
+          id: scope.person,
+          name: one.name ?? null,
+          email: one.email ?? null,
+          you: scope.person === who.id,
+        };
+      }
+      const people = await peopleFor(sql, scope.memberIds);
       const roles = new Map(scope.members.map((m) => [m.id, m.role]));
       said.people = out.people.map((row) => {
         const person = people.get(row.id) || {};
@@ -241,7 +262,7 @@ export default async function handler(req, res) {
 
 /* ------------------------------------------------------------------------ the counting */
 
-async function gather(sql, ids, fromIso, toIso, wantPeople) {
+async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
   /* A run's timestamp is coalesce(started_at, synced_at) throughout. started_at is nullable and some
    * runs arrived without one; those runs happened, so dropping them would quietly undercount, and
    * synced_at is never null. How many needed the fallback is reported in `gaps`. */
@@ -731,15 +752,18 @@ async function gather(sql, ids, fromIso, toIso, wantPeople) {
    *
    * COUNTS AND DATES ONLY, which is the same line the roster on the Teams screen draws. There is no column
    * here that could tell you what somebody was working on. */
+  /* Over the whole team, NOT over `ids`: when the view is filtered to one person this is still the list
+   * every name comes from, and a one-row picker is a filter nobody can leave. */
+  const roster = peopleIds && peopleIds.length ? peopleIds : ids;
   const peopleQ = sql`
-    with ids as (select unnest(${ids}::uuid[]) as id),
+    with ids as (select unnest(${roster}::uuid[]) as id),
     f as (
       select user_id,
              count(*) filter (where kind = 'recorded')::int as recordings,
              count(*) filter (where kind = 'created')::int  as created_skills,
              max(coalesce(created_at, updated_at))          as last_made
       from user_flow
-      where user_id = any(${ids}::uuid[]) and deleted_at is null
+      where user_id = any(${roster}::uuid[]) and deleted_at is null
         and coalesce(created_at, updated_at) >= ${fromIso}
         and coalesce(created_at, updated_at) <= ${toIso}
       group by user_id
@@ -757,7 +781,7 @@ async function gather(sql, ids, fromIso, toIso, wantPeople) {
                then extract(epoch from (finished_at - started_at))::float8 end), 0)::float8 as agent_seconds,
              max(coalesce(started_at, synced_at))            as last_run
       from user_run
-      where user_id = any(${ids}::uuid[]) and coalesce(started_at, synced_at) >= ${fromIso}
+      where user_id = any(${roster}::uuid[]) and coalesce(started_at, synced_at) >= ${fromIso}
         and coalesce(started_at, synced_at) <= ${toIso}
       group by user_id
     )

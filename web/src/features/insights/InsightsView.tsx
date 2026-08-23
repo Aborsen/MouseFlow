@@ -221,6 +221,8 @@ interface ScopeSaid {
   kind: 'personal' | 'team';
   team?: { id: string; name: string };
   role?: 'owner' | 'admin';
+  /** Set when the view is narrowed to one member — everything else on the page is then theirs alone. */
+  person?: { id: string; name: string | null; email: string | null; you: boolean };
   people: PersonRow[];
 }
 
@@ -267,9 +269,14 @@ const asQuery = (w: Window) => (w.kind === 'days'
 
 /* Which account, or which team. `mine` sends nothing, so every existing caller and every bookmark keeps
  * asking exactly the question it always asked. */
-export type Scope = { kind: 'mine' } | { kind: 'team'; id: string };
+export type Scope =
+  | { kind: 'mine' }
+  /** `person` narrows a team view to one of its members; the endpoint checks they are in it. */
+  | { kind: 'team'; id: string; person?: string };
 
-const asScope = (scope: Scope) => (scope.kind === 'team' ? `&team=${encodeURIComponent(scope.id)}` : '');
+const asScope = (scope: Scope) => (scope.kind === 'team'
+  ? `&team=${encodeURIComponent(scope.id)}${scope.person ? `&person=${encodeURIComponent(scope.person)}` : ''}`
+  : '');
 
 async function fetchInsights(window: Window, scope: Scope, signal: AbortSignal): Promise<Insights> {
   const res = await fetch(`/api/insights?${asQuery(window)}${asScope(scope)}`,
@@ -551,7 +558,10 @@ const Meter = ({ fraction, fill }: { fraction: number; fill: string }) => (
 
 /* --------------------------------------------------------------------------- the page */
 
-const RANGES = [7, 30, 90];
+/* Today, 7 days, and a calendar. 30 and 90 were here and are gone: three presets plus Custom is four
+ * controls answering one question, and the two long ones were the least used - a quarter of runs is a
+ * question you ask with real dates, not with a button. Custom still reaches 365, which is the server's cap. */
+const RANGES = [7];
 
 const PRESET = 'rounded-md px-2.5 py-1 text-[0.82rem] font-medium transition-colors duration-fast';
 /* The selected preset sits ON the accent, which is now lime - a light colour - so its label is the
@@ -599,7 +609,9 @@ export const InsightsView = () => {
   const [asked] = useState(() => takeAsk());
   const opening = asked ? openingQuestion(asked) : undefined;
   const navigate = useNavigate();
-  const [window_, setWindow] = useState<Window>({ kind: 'days', days: 30 });
+  /* 7 days, matching the only preset that remains. It was 30, which stopped being a preset and so would
+   * have opened the page on a range no button was showing as selected. */
+  const [window_, setWindow] = useState<Window>({ kind: 'days', days: 7 });
 
   /* WHOSE numbers, kept in the address rather than only in state.
    *
@@ -612,8 +624,10 @@ export const InsightsView = () => {
    * answer - a team the reader has since been removed from is refused, not answered about. */
   const [scope, setScope] = useState<Scope>(() => {
     try {
-      const id = new URLSearchParams(window.location.search).get('team');
-      return id ? { kind: 'team', id } : { kind: 'mine' };
+      const q = new URLSearchParams(window.location.search);
+      const id = q.get('team');
+      const person = q.get('person');
+      return id ? { kind: 'team', id, person: person || undefined } : { kind: 'mine' };
     } catch (_) {
       return { kind: 'mine' };
     }
@@ -624,6 +638,8 @@ export const InsightsView = () => {
       const url = new URL(window.location.href);
       if (scope.kind === 'team') url.searchParams.set('team', scope.id);
       else url.searchParams.delete('team');
+      if (scope.kind === 'team' && scope.person) url.searchParams.set('person', scope.person);
+      else url.searchParams.delete('person');
       window.history.replaceState(null, '', url.toString());
     } catch (_) { /* nothing on this page depends on the address being right */ }
   }, [scope]);
@@ -652,12 +668,24 @@ export const InsightsView = () => {
   const [draft, setDraft] = useState<DateRange | undefined>(undefined);
   /* Open by default on a wide screen: an assistant nobody notices is an assistant nobody uses. Remembered,
    * because whether you want it is a preference about this page rather than about this visit. */
-  const [assistant, setAssistant] = useState(() => {
-    try { return localStorage.getItem(ASSISTANT_KEY) !== '0'; } catch (_) { return true; }
+  /* Three states, not a boolean, now that the panel carries its own controls:
+   *
+   *   open     the column beside the dashboard
+   *   min      a rail on the right edge — out of the way, one click back, conversation intact
+   *   closed   gone, with a small button in the corner to bring it back
+   *
+   * Minimise and close both have to leave a way in, or they are the same control with two labels. The old
+   * '1'/'0' values are still read, so nobody who had it hidden finds it open again. */
+  const [assistant, setAssistant] = useState<'open' | 'min' | 'closed'>(() => {
+    try {
+      const saved = localStorage.getItem(ASSISTANT_KEY);
+      if (saved === 'min' || saved === 'closed' || saved === 'open') return saved;
+      return saved === '0' ? 'closed' : 'open';
+    } catch (_) { return 'open'; }
   });
 
   useEffect(() => {
-    try { localStorage.setItem(ASSISTANT_KEY, assistant ? '1' : '0'); } catch (_) { /* private mode */ }
+    try { localStorage.setItem(ASSISTANT_KEY, assistant); } catch (_) { /* private mode */ }
   }, [assistant]);
 
   const [panelWidth, setPanelWidth] = useState(() => {
@@ -816,6 +844,10 @@ export const InsightsView = () => {
   const showing = data?.scope;
   const teamShown = showing?.kind === 'team' ? showing : null;
   const people = useMemo(() => list(teamShown?.people), [teamShown]);
+  /* One member, when the view is narrowed to them. Read from the ANSWER rather than from `scope`, so the
+   * header never names somebody the endpoint did not actually count. */
+  const personShown = teamShown?.person ?? null;
+  const personName = personShown ? (personShown.name || personShown.email || 'one member') : null;
 
   /* The agent time already spent on goals that ran more than once. Not a saving - see the tile. */
   const repeatCost = useMemo(
@@ -839,7 +871,9 @@ export const InsightsView = () => {
          * was there to do. */}
         <div className="min-w-[20rem] flex-1">
           <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
-            {teamShown ? `${teamShown.team?.name ?? 'Team'} · everybody` : 'Work pulse'}
+            {teamShown
+              ? `${teamShown.team?.name ?? 'Team'} · ${personName ?? 'everybody'}`
+              : 'Work pulse'}
           </Typography>
           <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.5rem] leading-tight tracking-tight">
             What happened, and where the leverage is
@@ -847,7 +881,9 @@ export const InsightsView = () => {
           <Typography variant="p" className="mt-1 max-w-[76ch] text-ink-inactive text-[0.85rem]">
             Activity, reliability and repeated work, read from{' '}
             {teamShown
-              ? `every member’s recordings and runs — ${people.length} ${people.length === 1 ? 'person' : 'people'}.`
+              ? (personName
+                ? `${personName}’s recordings and runs — one member of ${teamShown.team?.name ?? 'the team'}.`
+                : `every member’s recordings and runs — ${people.length} ${people.length === 1 ? 'person' : 'people'}.`)
               : 'your own recordings and runs.'}{' '}
             {data
               ? `${new Date(data.window.from).toLocaleDateString()} to ${new Date(data.window.to).toLocaleDateString()}.`
@@ -897,6 +933,31 @@ export const InsightsView = () => {
               >
                 <option value="">A team…</option>
                 {teams.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            )}
+
+            {/* And which member, once a team is being shown.
+              *
+              * Its options come from the ANSWER's roster, which the endpoint keeps whole even while the
+              * counting is narrowed to one person — otherwise choosing somebody would leave a picker with
+              * only them in it, and no way back to anybody else. */}
+            {teamShown && people.length > 0 && (
+              <select
+                value={scope.kind === 'team' ? (scope.person ?? '') : ''}
+                onChange={(e) => setScope((was) => (was.kind === 'team'
+                  ? { kind: 'team', id: was.id, person: e.target.value || undefined }
+                  : was))}
+                aria-label="Which member’s numbers"
+                title="Narrow every number on this page to one member of the team"
+                className={cn(PRESET, 'max-w-[13rem] cursor-pointer border-stroke border-s ps-2',
+                  personShown ? PRESET_ON : PRESET_OFF)}
+              >
+                <option value="">Everybody</option>
+                {people.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.name || row.email || 'somebody'}{row.you ? ' (you)' : ''}
+                  </option>
+                ))}
               </select>
             )}
           </div>
@@ -975,22 +1036,21 @@ export const InsightsView = () => {
           Refresh
         </Button>
 
-        {/* The assistant reads the account of whoever is asking - it has no team scope and inventing one
-          * here would mean a panel answering about your six runs beside a header counting the team's
-          * ninety. So it is not offered on the team view, and the button says why rather than vanishing:
-          * a control that disappears reads as a bug in the page. */}
-        <Button
-          variant={assistant && !teamShown ? 'secondary' : 'ghost'}
-          size="sm"
-          disabled={!!teamShown}
-          title={teamShown
-            ? 'The assistant answers about your own account. Switch to Mine to ask it something.'
-            : undefined}
-          leftSlot={<MessageSquareText className="size-4" />}
-          onClick={() => setAssistant((open) => !open)}
-        >
-          {assistant && !teamShown ? 'Hide the assistant' : 'Ask about this'}
-        </Button>
+        {/* No "Hide the assistant" here any more: a control for the panel, living outside the panel, on a
+          * header row that already carries the scope switch, the member picker and the range. It closes
+          * and minimises from its own title bar now, and this button only brings it back. */}
+        {/* Only when there is no other way back. Minimised on a wide screen there IS one — the rail on the
+          * right edge — and showing both put two "Ask about this" affordances on screen at once. */}
+        {(assistant === 'closed' || (assistant === 'min' && !wide)) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            leftSlot={<MessageSquareText className="size-4" />}
+            onClick={() => setAssistant('open')}
+          >
+            Ask about this
+          </Button>
+        )}
       </header>
 
       {/* A real failure, in the endpoint's own words. It knows what went wrong; repeating "something went
@@ -1120,7 +1180,10 @@ export const InsightsView = () => {
                 * COUNTS AND DATES. Every column here was already on the team roster - there is nothing in
                 * this table that a manager could not see before, and no way from it to what somebody
                 * actually recorded. */}
-              {teamShown && (
+              {/* Not while the page is narrowed to one member: a one-row "who did what" under a header
+                * that already names them is noise, and a table still summing the whole team under a
+                * header counting one person is a contradiction. The picker above holds the roster. */}
+              {teamShown && !personShown && (
                 <Section
                   title="Who did what"
                   icon={<Users className="size-4 text-ink-secondary" />}
@@ -1498,7 +1561,9 @@ export const InsightsView = () => {
                       <thead>
                         <tr className="bg-table-header-bg text-ink-secondary">
                           <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Skill</th>
-                          {teamShown && <th className="px-2.5 py-2 text-left font-medium">Whose</th>}
+                          {teamShown && !personShown && (
+                            <th className="px-2.5 py-2 text-left font-medium">Whose</th>
+                          )}
                           <th className="px-2.5 py-2 text-right font-medium">Runs</th>
                           <th className="px-2.5 py-2 text-left font-medium">Finished</th>
                           <th className="px-2.5 py-2 text-right font-medium">Typical</th>
@@ -1519,7 +1584,7 @@ export const InsightsView = () => {
                                   {row.kind}
                                 </span>
                               </td>
-                              {teamShown && (
+                              {teamShown && !personShown && (
                                 <td className="px-2.5 py-2 text-ink-secondary">
                                   {whose(row.ownerId, people)}
                                 </td>
@@ -1571,7 +1636,7 @@ export const InsightsView = () => {
       {/* The assistant reads the same account this page does, so what it answers about is what is on screen.
         * Rendered inside the page rather than as its own destination: a separate screen would make somebody
         * retype the window and the numbers they are looking at. */}
-      {assistant && !teamShown && wide && (
+      {assistant === 'open' && wide && (
         <aside
           className="relative flex shrink-0 flex-col border-stroke border-l bg-surface-card2 max-xl:hidden"
           style={{ width: panelWidth }}
@@ -1593,18 +1658,51 @@ export const InsightsView = () => {
               'hover:after:bg-brand-primary',
             )}
           />
-          <ChatView embedded opening={opening} />
+          <ChatView
+            /* Remounted when the scope changes, which starts a fresh thread. One conversation holding
+             * answers about your own account and then about a whole team is a transcript whose numbers
+             * cannot be placed later, by the reader or by the model reading its own history back. */
+            key={`${teamShown?.team?.id ?? 'mine'}:${personShown?.id ?? 'all'}`}
+            embedded
+            opening={opening}
+            team={teamShown?.team ?? null}
+            person={personShown}
+            onMinimize={() => setAssistant('min')}
+            onClose={() => setAssistant('closed')}
+          />
         </aside>
       )}
 
+      {/* Minimised: a rail, so it is still on screen and one click wide. */}
+      {assistant === 'min' && wide && (
+        <button
+          type="button"
+          onClick={() => setAssistant('open')}
+          title="Open the assistant"
+          className={cn(
+            'flex w-10 shrink-0 flex-col items-center gap-3 border-stroke border-l bg-surface-card2 py-3',
+            'text-ink-inactive hover:text-ink-primary',
+          )}
+        >
+          <MessageSquareText className="size-4 shrink-0" />
+          <span className="text-[0.72rem] tracking-wide [writing-mode:vertical-rl]">Ask about this</span>
+        </button>
+      )}
+
       {/* Narrow: the same panel, over the page, because 26rem beside a dashboard leaves neither readable. */}
-      {assistant && !teamShown && !wide && (
+      {assistant === 'open' && !wide && (
         <div className="fixed inset-0 z-40 flex flex-col bg-surface-page">
           <div className="flex items-center gap-2 border-stroke border-b px-4 py-2.5">
             <Typography variant="span" weight="semibold" className="text-[0.95rem]">Ask about this</Typography>
-            <Button variant="ghost" size="sm" className="ms-auto" onClick={() => setAssistant(false)}>Close</Button>
+            <Button variant="ghost" size="sm" className="ms-auto" onClick={() => setAssistant('closed')}>Close</Button>
           </div>
-          <ChatView embedded opening={opening} />
+          <ChatView
+            key={`${teamShown?.team?.id ?? 'mine'}:${personShown?.id ?? 'all'}`}
+            embedded
+            opening={opening}
+            team={teamShown?.team ?? null}
+            person={personShown}
+          />
         </div>
       )}
     </div>

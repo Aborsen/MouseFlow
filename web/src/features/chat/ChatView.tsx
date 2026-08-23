@@ -23,7 +23,7 @@
  *                     A plain <a> keeps this file from depending on the typed route table existing yet.
  */
 import {
-  Ban, ExternalLink, History, Plus, Quote, Send, Sparkles, Trash2, TriangleAlert, Wrench,
+  Ban, ExternalLink, History, Minus, Plus, Quote, Send, Sparkles, Trash2, TriangleAlert, Wrench, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@insightis/ui/Badge';
@@ -122,6 +122,16 @@ const SUGGESTIONS = [
   'Where did my time go last week?',
   'Which flow do I repeat most?',
   'Why did my last run fail?',
+];
+
+/* The same three questions, asked of a team. Not the personal list reused: "my time" beside a header
+ * counting nine people is the panel disagreeing with the page it sits in. Each of these is answerable from
+ * the team whitelist in api/chat.js — who did what, what repeats, what fails — and none of them needs a
+ * transcript, which the assistant cannot read in this scope anyway. */
+const TEAM_SUGGESTIONS = [
+  'Who ran the most this week?',
+  'What work is repeated across the team?',
+  'What keeps failing, and for whom?',
 ];
 
 /** Only the last few turns travel. The server caps its own history; this keeps a long afternoon from
@@ -225,8 +235,22 @@ const OUTCOME_TONE: Record<Run['outcome'], string> = {
 /* `embedded` is the same screen in a 26rem column beside the Insights dashboard - which is where it
  * actually lives now. The page form is kept because /chat still resolves for anyone who bookmarked it, and
  * because a panel is a bad place to read a long answer. */
-export const ChatView = ({ embedded = false, opening }: {
+export const ChatView = ({ embedded = false, opening, team, person, onMinimize, onClose }: {
   embedded?: boolean;
+  /* The panel's own window controls, rather than a toggle on the page behind it.
+   *
+   * They were one button in the dashboard's header — "Hide the assistant" — which is the wrong place for
+   * them twice over: it is a control for the panel sitting outside the panel, and it grew the header row
+   * that already carries the scope switch and the range picker. Optional, because the /chat page is a whole
+   * screen and has nothing to minimise into. */
+  onMinimize?: () => void;
+  onClose?: () => void;
+  /* Whose history to ask about. Absent means the reader's own, which is what every other caller wants.
+   * Passing a team makes the panel read that team — and api/chat.js checks the role again before it
+   * answers, so this is which question to ask, never permission to ask it. */
+  team?: { id: string; name: string } | null;
+  /** One member of that team, when the page beside it is filtered to them. */
+  person?: { id: string; name: string | null } | null;
   /** A question to ask on mount, once - how the Dashboard opens a conversation about one recording. */
   opening?: string;
 } = {}) => {
@@ -483,7 +507,13 @@ export const ChatView = ({ embedded = false, opening }: {
       const body = await callChat<Reply>({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ question: asked, model, history }),
+        body: JSON.stringify({
+          question: asked,
+          model,
+          history,
+          ...(team ? { team: team.id } : {}),
+          ...(team && person ? { person: person.id } : {}),
+        }),
       });
       setTurns((prev) => [...prev, {
         n: nextN.current++,
@@ -545,6 +575,19 @@ export const ChatView = ({ embedded = false, opening }: {
             Insightis agent
           </Typography>
 
+          {/* Whose history this panel is reading, beside its name. Without it the same three sentences of
+              interface answer about one person or about nine, and nothing on screen says which. */}
+          {team && (
+            <span
+              title={person
+                ? `Answering about ${person.name || 'one member'} in ${team.name}`
+                : `Answering about everybody in ${team.name}`}
+              className="max-w-[12rem] truncate rounded-full bg-state-hover px-2 py-0.5 text-[0.72rem] text-ink-secondary"
+            >
+              {person ? (person.name || 'one member') : team.name}
+            </span>
+          )}
+
           {!embedded && (
             <label className="flex items-center gap-1.5 text-[0.78rem] text-ink-secondary">
               Model
@@ -597,6 +640,36 @@ export const ChatView = ({ embedded = false, opening }: {
               <span className="ms-1 text-ink-inactive tabular-nums">{history.length}</span>
             )}
           </Button>
+
+          {/* The panel's own window controls, last in the row where a window's controls belong. Icon-only
+              and labelled for screen readers: at 416px wide, two more worded buttons would wrap the row
+              onto a second line and eat the conversation's height. */}
+          {(onMinimize || onClose) && (
+            <span className="ms-1 flex items-center gap-0.5 border-stroke border-s ps-1.5">
+              {onMinimize && (
+                <button
+                  type="button"
+                  onClick={onMinimize}
+                  title="Minimise — keeps this conversation, one click to bring it back"
+                  aria-label="Minimise the assistant"
+                  className="grid size-7 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+                >
+                  <Minus className="size-4" />
+                </button>
+              )}
+              {onClose && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  title="Close the assistant"
+                  aria-label="Close the assistant"
+                  className="grid size-7 place-items-center rounded-md text-ink-inactive hover:bg-state-hover hover:text-ink-primary"
+                >
+                  <X className="size-4" />
+                </button>
+              )}
+            </span>
+          )}
         </div>
 
         {showHistory && (
@@ -680,7 +753,7 @@ export const ChatView = ({ embedded = false, opening }: {
               flow it ran, and how it ended.
             </Typography>
             <div className="mt-3 flex flex-wrap gap-1.5">
-              {SUGGESTIONS.map((s) => (
+              {(team ? TEAM_SUGGESTIONS : SUGGESTIONS).map((s) => (
                 <Button key={s} variant="outline" size="sm" disabled={!model || asking} onClick={() => void ask(s)}>
                   {s}
                 </Button>
@@ -909,7 +982,9 @@ export const ChatView = ({ embedded = false, opening }: {
             disabled={asking || !model}
             aria-label="Your question"
             rows={2}
-            placeholder="where did my time go last week?"
+            /* The first starter for whichever scope this is. Hard-coded to the personal one, it invited
+             * "my time" of a panel counting nine people. */
+            placeholder={(team ? TEAM_SUGGESTIONS : SUGGESTIONS)[0].toLowerCase()}
             onKeyDown={(ev) => {
               // Enter sends, Shift+Enter starts a line. A chat box that needs a mouse to send is a worse one.
               if (ev.key === 'Enter' && !ev.shiftKey) {

@@ -25,10 +25,11 @@ derived in the browser.*
 
 | Control | Behaviour |
 |---|---|
-| **7 / 30 / 90 days** | The range. A control, not a filter buried in a menu — it is the first thing anyone changes. Server cap is 365. |
+| **Today / 7 days / Custom** | The range. A control, not a filter buried in a menu — it is the first thing anyone changes. 30 and 90 were presets and were removed: three presets plus a calendar is four controls answering one question, and a quarter of runs is a range you pick with real dates. Custom still reaches the server cap of 365. |
 | **Refresh** | Re-reads the window. |
-| **Ask about this** | Opens the assistant panel beside the page. Remembered (`mouseflow.insights.assistant`), and so is its width. Not offered on the team view — see below. |
+| **Ask about this** | Brings the assistant panel back. It is only shown when there is no other way in: the panel carries its own minimise and close, and minimised it leaves a rail on the right edge. The state is remembered (`mouseflow.insights.assistant`: `open`, `min` or `closed`), and so is its width. |
 | **Mine / a team** | Whose numbers. Only shown to somebody who owns or administers a team; see [Whose numbers](#whose-numbers). |
+| **Everybody / one member** | Narrows a team view to a single person. Appears once a team is being shown. |
 
 ## Whose numbers
 
@@ -41,18 +42,52 @@ where one person's screen adds up somebody else's work, so three things hold it 
   is refused by name, and a team they are not in at all answers `404` — which does not confirm it exists.
 - **The scope is in the address** (`/dashboard?team=t_ab12`), so a link opens what the sender was looking at
   and a screenshot of "47 runs" can be traced back to whose.
-- **Nothing on the team view is content.** Counts, durations, application names, skill names — all of them
-  were already on the team roster. No query in `api/insights.js` returns an event, a transcript, a goal or a
-  chat, so "the team's dashboard" cannot become a way to read a colleague's screen.
+- **The team view shows work, not screens.** Precisely — because a vaguer claim was made here first and it
+  was too strong. Visible to a team's owners and admins: counts, durations and outcomes; application and
+  process names, and for older desktop recordings the *window title* where that is the only thing naming
+  one; skill and recording names; the **goal wording** of runs that happened more than once; and the
+  **reason text** of failures. Not visible in any scope: the events inside a recording, its transcript, its
+  chat, or per-step detail of what was clicked. Nothing anybody typed exists anywhere in this product to be
+  shown. The line is *work product a manager can already see on the roster*, not *only numbers*.
 
 The team view adds a **Who did what** table — one row per member, over the window on screen — and gives the
 skills table a *Whose* column. Everybody gets a row, including the people with nothing in the window, since
 a table that silently omits a quiet fortnight reads as a roster with somebody missing.
 
-**The assistant is not offered there.** It reads the account of whoever is asking and has no team scope, so
-a panel answering about your six runs beside a header counting the team's ninety would be two different
-questions on one screen. The button stays visible and says why, because a control that disappears reads as a
-bug in the page.
+### One member at a time
+
+A second control narrows the team view to a single person (`&person=<uuid>`), which is how a manager asks
+"and how is one person getting on" without reading nine people's numbers as one. The permission does not
+change — it selects a subset of accounts the caller could already count, and `api/_team-scope.js` checks the
+id is actually in that team, because a uuid in a query string is no more a permission than a team id is.
+
+Two details that keep it honest. The **roster stays whole** while the counting narrows, so the picker still
+offers everybody — a filter you cannot get out of is a dead end. And the **Who did what** table disappears
+while one person is selected: a one-row table under a header that already names them is noise, and a table
+still summing the whole team under a header counting one person is a contradiction.
+
+### The assistant follows the scope
+
+It used to be switched off on the team view, because it reads one account and would have answered about your
+six runs beside a header counting the team's ninety. It now takes the same scope the page does — team, or
+one member of it — resolved through the same `api/_team-scope.js` check, so the panel can only ever read
+what the page beside it was allowed to count.
+
+What it may reach in a team scope is a **whitelist**, not the personal tool set with the dangerous parts
+removed: `summarize_time`, `list_skills`, `find_repeated`, `search_runs` and `team_people`. Three things are
+deliberately absent, and each would be a real breach rather than an untidiness:
+
+| Absent | Why |
+|---|---|
+| `get_run` | returns a run's steps — per-moment detail of a colleague's screen |
+| `get_transcript`, `list_recordings` | the transcript of a recording, and window titles out of its payload — the content half of the line `db/008_team.sql` draws |
+| `remove_steps`, `undo_edit` | **writes**. An owner editing a colleague's recording from a chat panel is not a reporting feature |
+
+A whitelist because the failure modes are not symmetrical: a tool wrongly left out makes an answer worse, a
+tool wrongly left in hands somebody another person's work. New tools are personal-only until somebody adds
+them to that list on purpose. The panel also labels whose history it is reading, and its three starter
+questions change with the scope — "Where did my time go last week?" is the wrong question to offer beside a
+header counting nine people.
 
 The full account of the roles is in [22 — Teams](22-teams.md#the-teams-dashboard).
 

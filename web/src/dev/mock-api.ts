@@ -492,32 +492,99 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         agentHours: 0.52, lastRun: hoursAgo(48), lastMade: hoursAgo(50),
       },
     ];
+    /* Narrowing to one member. The roster stays WHOLE while the counting narrows, exactly as the endpoint
+     * does it — a picker holding only the person already chosen is a filter with no way out. */
+    const wantsPerson = asked.get('person');
+    const roster = wantsTeam === 't_dev2' ? people.slice(0, 2) : people;
+    const chosen = wantsPerson ? roster.find((row) => row.id === wantsPerson) : null;
     const scope = wantsTeam
       ? {
         kind: 'team',
         team: { id: wantsTeam, name: wantsTeam === 't_dev2' ? 'Finance' : 'Operations' },
         role: wantsTeam === 't_dev2' ? 'admin' : 'owner',
-        people: wantsTeam === 't_dev2' ? people.slice(0, 2) : people,
+        people: roster,
+        ...(chosen
+          ? { person: { id: chosen.id, name: chosen.name, email: chosen.email, you: chosen.you } }
+          : {}),
       }
       : { kind: 'personal', people: [] };
-    const totals = {
+    const teamTotals = {
       runs: 47, ok: 39, failed: 5, stopped: 2, running: 1,
       recordings: 18, createdSkills: 6, agentHours: 3.42,
     };
+    /* Filtered to one member, the header must be THEIR numbers, not the team's. Without this the fixture
+     * renders "Margaryta K." above the whole team's 47 runs, which teaches the page that the filter is
+     * cosmetic — and the real endpoint narrows the accounts it counts, so it never would. */
+    const totals = chosen
+      ? {
+        runs: chosen.runs,
+        ok: chosen.ok,
+        failed: chosen.failed,
+        stopped: chosen.stopped,
+        running: Math.max(0, chosen.runs - chosen.ok - chosen.failed - chosen.stopped),
+        recordings: chosen.recordings,
+        createdSkills: chosen.createdSkills,
+        agentHours: chosen.agentHours,
+      }
+      : teamTotals;
     const share = (n: number, of: number) => (of ? Math.round((n / of) * 1000) / 1000 : 0);
-    /* Nine days with something on them, summing to the 47 above. */
-    const dayRuns = [3, 6, 2, 8, 5, 4, 9, 6, 4];
-    const dayOk = [3, 5, 2, 7, 4, 3, 8, 5, 2];
-    const dayFailed = [0, 1, 0, 1, 0, 1, 1, 0, 1];
+    /* Nine days with something on them, summing to the team's 47. */
+    const teamDayRuns = [3, 6, 2, 8, 5, 4, 9, 6, 4];
+    const teamDayOk = [3, 5, 2, 7, 4, 3, 8, 5, 2];
+    const teamDayFailed = [0, 1, 0, 1, 0, 1, 1, 0, 1];
+    /* Spread a smaller total over the same nine days, with the rounding remainder landing on the busiest
+     * day, so the columns still sum to the header exactly. */
+    const spread = (want: number, from: number[]) => {
+      const of = from.reduce((a, b) => a + b, 0);
+      if (!of || want === of) return from;
+      const out = from.map((n) => Math.floor((n * want) / of));
+      // Whatever rounding down left over goes to the busiest days first, so the shape stays recognisable.
+      const busiest = from.map((_, i) => i).sort((a, b) => from[b] - from[a]);
+      let left = want - out.reduce((a, b) => a + b, 0);
+      for (let i = 0; left > 0; i = (i + 1) % busiest.length, left -= 1) out[busiest[i]] += 1;
+      return out;
+    };
+    const dayRuns = chosen ? spread(totals.runs, teamDayRuns) : teamDayRuns;
+    const dayOk = chosen ? spread(totals.ok, teamDayOk) : teamDayOk;
+    const dayFailed = chosen ? spread(totals.failed, teamDayFailed) : teamDayFailed;
+    /* ownerId on every row, in both scopes: the endpoint sends it either way, and a fixture that only had
+     * it under `team` would let the personal view drift into depending on its absence. Filtered to one
+     * member, only their own rows survive — the real query counts their runs and nobody else's. */
+    const skillRows = [
+        {
+          flowId: 'wf_dev_1', ownerId: ACCOUNT.id,
+          name: 'Reply that the invoice is approved', kind: 'created', source: 'web',
+          runs: 11, ok: 10, failed: 1, medianSeconds: 122.0, lastRunAt: hoursAgo(4),
+        },
+        {
+          flowId: 'dr_dev_1', ownerId: wantsTeam ? 'u_dev2' : ACCOUNT.id,
+          name: 'Outlook (PWA) · 6 clicks', kind: 'recorded', source: 'desktop',
+          runs: 7, ok: 6, failed: 1, medianSeconds: 140.9, lastRunAt: hoursAgo(27),
+        },
+        {
+          flowId: 'ronly_account_1', ownerId: wantsTeam ? 'u_dev3' : ACCOUNT.id,
+          name: 'Neon Console · 4 clicks', kind: 'recorded', source: 'desktop',
+          runs: 3, ok: 3, failed: 0, medianSeconds: 9.1, lastRunAt: hoursAgo(50),
+        },
+      ];
+
     return json(res, 200, {
       ok: true,
       scope,
       window: { days, from, to: new Date(now).toISOString(), timeZone: 'UTC' },
       totals,
-      previous: {
-        from: new Date(now - days * 2 * 86400_000).toISOString(), to: from,
-        had: true, runs: 31, ok: 24, failed: 6, stopped: 1, agentHours: 2.15,
-      },
+      previous: chosen
+        ? {
+          from: new Date(now - days * 2 * 86400_000).toISOString(), to: from,
+          had: true,
+          runs: Math.round(totals.runs * 0.66), ok: Math.round(totals.ok * 0.62),
+          failed: Math.max(0, totals.failed - 1), stopped: 0,
+          agentHours: Math.round(totals.agentHours * 0.63 * 100) / 100,
+        }
+        : {
+          from: new Date(now - days * 2 * 86400_000).toISOString(), to: from,
+          had: true, runs: 31, ok: 24, failed: 6, stopped: 1, agentHours: 2.15,
+        },
       byOutcome: (['ok', 'failed', 'stopped', 'running'] as const).map((outcome) => ({
         outcome, runs: totals[outcome], share: share(totals[outcome], totals.runs),
       })),
@@ -569,25 +636,7 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           example: { runId: 'r_dev_4', error: 'checkpoint "send the reply" timed out after 10m' },
         },
       ],
-      /* ownerId on every row, in both scopes: the endpoint sends it either way, and a fixture that only
-       * had it under `team` would let the personal view drift into depending on its absence. */
-      skills: [
-        {
-          flowId: 'wf_dev_1', ownerId: ACCOUNT.id,
-          name: 'Reply that the invoice is approved', kind: 'created', source: 'web',
-          runs: 11, ok: 10, failed: 1, medianSeconds: 122.0, lastRunAt: hoursAgo(4),
-        },
-        {
-          flowId: 'dr_dev_1', ownerId: wantsTeam ? 'u_dev2' : ACCOUNT.id,
-          name: 'Outlook (PWA) · 6 clicks', kind: 'recorded', source: 'desktop',
-          runs: 7, ok: 6, failed: 1, medianSeconds: 140.9, lastRunAt: hoursAgo(27),
-        },
-        {
-          flowId: 'ronly_account_1', ownerId: wantsTeam ? 'u_dev3' : ACCOUNT.id,
-          name: 'Neon Console · 4 clicks', kind: 'recorded', source: 'desktop',
-          runs: 3, ok: 3, failed: 0, medianSeconds: 9.1, lastRunAt: hoursAgo(50),
-        },
-      ],
+      skills: chosen ? skillRows.filter((r) => r.ownerId === chosen.id) : skillRows,
       gaps: [
         {
           question: 'How much time did this save me?',

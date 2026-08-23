@@ -634,8 +634,36 @@ check('every count is scoped to the set of accounts, never to one hard-wired id'
   !/\$\{userId\}/.test(insights) && /any\(\$\{ids\}::uuid\[\]\)/.test(insights));
 check('a run is matched against its OWN owner\'s flows, not the caller\'s',
   /join user_flow f on f\.user_id = r\.user_id/.test(insights));
+const dash = read('../web/src/features/insights/InsightsView.tsx');
 check('and a personal request still sends no team, so an old bookmark asks the old question',
-  /scope\.kind === 'team' \? `&team=/.test(read('../web/src/features/insights/InsightsView.tsx')));
+  /scope\.kind === 'team'\s*\n?\s*\? `&team=/.test(dash));
+check('one member can be picked out of a team, and it travels in the address',
+  /&person=\$\{encodeURIComponent\(scope\.person\)\}/.test(dash));
+check('the member id is checked against that team rather than trusted',
+  /if \(!ids\.includes\(personId\)\)/.test(scopeSrc));
+check('and the roster stays whole while the counting narrows, or the filter is a dead end',
+  /memberIds: ids/.test(scopeSrc) && /ids: chosen \? \[chosen\] : ids/.test(scopeSrc));
+check('the range presets are Today, 7 days and Custom', /const RANGES = \[7\];/.test(dash));
+
+/* The assistant's team scope is the one place in this product where one person's question reads another
+ * person's rows, so what it may reach is checked rather than reviewed. */
+group('the assistant on a team can count, and cannot read or write');
+const chatSrc = read('../api/chat.js');
+const listed = (chatSrc.match(/const TEAM_TOOL_NAMES = \[([^\]]*)\]/) || [])[1] || '';
+const allowed = [...listed.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+check('it is a whitelist, and these five are on it',
+  allowed.length === 5 && ['summarize_time', 'list_skills', 'find_repeated', 'search_runs', 'team_people']
+    .every((n) => allowed.includes(n)), allowed.join(', '));
+for (const forbidden of ['get_run', 'get_transcript', 'list_recordings', 'remove_steps', 'undo_edit']) {
+  check(`${forbidden} is NOT reachable about a colleague`, !allowed.includes(forbidden));
+}
+check('the recording tools are not even registered in a team scope',
+  /if \(ctx\.team\) \{[\s\S]{0,400}?return table;/.test(chatSrc)
+  && chatSrc.indexOf('if (ctx.team)') < chatSrc.indexOf('recordingTools({ sql: ctx.sql'));
+check('and the chat resolves the team through the same one derivation',
+  /from '\.\/_team-scope\.js'/.test(chatSrc) && /scopeFor\(sql, who, text\(body\.team/.test(chatSrc));
+check('a filtered panel is told it is reading one person, not the team',
+  /filtered to ONE member of the team/.test(chatSrc));
 
 group('an invitation says who sent it, and what to do if it was not for you');
 const mail = await import('../api/_mail.js');

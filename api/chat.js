@@ -59,6 +59,9 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+/* The same file /api/team and /api/insights use to turn a team id into a permission. One derivation of
+ * who may see whose work - see api/_team-scope.js. */
+import { peopleFor, scopeFor } from './_team-scope.js';
 import { whoIsCalling } from './_session.js';
 import { ask, MODELS, DEFAULT_MODEL, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
 import { recordingTools } from './_recording-tools.js';
@@ -280,7 +283,7 @@ const TOOLS = {
         limit: { type: 'integer', description: 'How many runs to return. Default 20, max 50.' },
       },
     },
-    async run(input, { sql, userId }) {
+    async run(input, { sql, ids }) {
       const days = clamp(input.days, 1, 365, 30);
       const limit = clamp(input.limit, 1, ROWS_MAX, 20);
       const outcome = ['ok', 'failed', 'stopped', 'running'].includes(input.outcome) ? input.outcome : null;
@@ -296,7 +299,7 @@ const TOOLS = {
                started_at, finished_at, extension,
                case when jsonb_typeof(steps) = 'array' then jsonb_array_length(steps) else 0 end as step_count
         from user_run
-        where user_id = ${userId}
+        where user_id = any(${ids}::uuid[])
           and coalesce(started_at, synced_at) > now() - make_interval(days => ${days}::int)
           and (${outcome}::text is null or outcome = ${outcome}::text)
           and (${flowId}::text is null or flow_id = ${flowId}::text)
@@ -350,7 +353,7 @@ const TOOLS = {
       },
       required: ['runId'],
     },
-    async run(input, { sql, userId }) {
+    async run(input, { sql, ids }) {
       const runId = text(input.runId, 80);
       if (!runId) {
         return { data: { error: 'runId is required - use an id search_runs returned.' }, runIds: [] };
@@ -361,7 +364,7 @@ const TOOLS = {
                extension, started_at, finished_at, synced_at,
                case when jsonb_typeof(said) = 'array' then jsonb_array_length(said) else 0 end as said_count
         from user_run
-        where user_id = ${userId} and client_id = ${runId}
+        where user_id = any(${ids}::uuid[]) and client_id = ${runId}
         limit 1
       `;
       if (!rows.length) {
@@ -458,7 +461,7 @@ const TOOLS = {
       },
       required: ['groupBy'],
     },
-    async run(input, { sql, userId }) {
+    async run(input, { sql, ids }) {
       const days = clamp(input.days, 1, 365, 30);
       const groupBy = ['day', 'application', 'skill'].includes(input.groupBy) ? input.groupBy : 'day';
 
@@ -477,7 +480,7 @@ const TOOLS = {
                           then extract(epoch from (finished_at - started_at)) end) as seconds,
                  (array_agg(client_id order by coalesce(started_at, synced_at) desc))[1:5] as examples
           from user_run
-          where user_id = ${userId}
+          where user_id = any(${ids}::uuid[])
             and coalesce(started_at, synced_at) > now() - make_interval(days => ${days}::int)
           group by 1
           order by 1 desc
@@ -518,7 +521,7 @@ const TOOLS = {
                  (array_agg(r.client_id order by coalesce(r.started_at, r.synced_at) desc))[1:5] as examples
           from user_run r
           left join user_flow f on f.user_id = r.user_id and f.client_id = r.flow_id
-          where r.user_id = ${userId}
+          where r.user_id = any(${ids}::uuid[])
             and coalesce(r.started_at, r.synced_at) > now() - make_interval(days => ${days}::int)
           group by r.flow_id, f.name, f.kind, f.source
           order by count(*) desc
@@ -590,7 +593,7 @@ const TOOLS = {
            * take out the whole breakdown. A run with no usable steps simply contributes no rows. */
           cross join lateral jsonb_array_elements(
             case when jsonb_typeof(r.steps) = 'array' then r.steps else '[]'::jsonb end) s
-        where r.user_id = ${userId}
+        where r.user_id = any(${ids}::uuid[])
           and coalesce(r.started_at, r.synced_at) > now() - make_interval(days => ${days}::int)
         group by 1
         order by ms desc nulls last, steps desc
@@ -643,7 +646,7 @@ const TOOLS = {
         limit: { type: 'integer', description: 'How many to return. Default 30, max 50.' },
       },
     },
-    async run(input, { sql, userId }) {
+    async run(input, { sql, ids }) {
       const kind = ['recorded', 'created'].includes(input.kind) ? input.kind : null;
       const limit = clamp(input.limit, 1, ROWS_MAX, 30);
 
@@ -656,7 +659,7 @@ const TOOLS = {
                case when jsonb_typeof(payload->'windows') = 'array'
                     then jsonb_array_length(payload->'windows') end as windows
         from user_flow
-        where user_id = ${userId}
+        where user_id = any(${ids}::uuid[])
           and deleted_at is null
           and (${kind}::text is null or kind = ${kind}::text)
         order by updated_at desc
@@ -698,7 +701,7 @@ const TOOLS = {
         days: { type: 'integer', description: 'How far back to look, in days. Default 90, max 365.' },
       },
     },
-    async run(input, { sql, userId }) {
+    async run(input, { sql, ids }) {
       const days = clamp(input.days, 1, 365, 90);
 
       /* Grouped on the goal with whitespace collapsed and case dropped, which catches "the same thing
@@ -717,7 +720,7 @@ const TOOLS = {
                         then extract(epoch from (finished_at - started_at)) end) as seconds,
                (array_agg(client_id order by coalesce(started_at, synced_at) desc))[1:5] as examples
         from user_run
-        where user_id = ${userId}
+        where user_id = any(${ids}::uuid[])
           and goal is not null and btrim(goal) <> ''
           and coalesce(started_at, synced_at) > now() - make_interval(days => ${days}::int)
         group by 1
@@ -740,7 +743,7 @@ const TOOLS = {
                (array_agg(r.client_id order by coalesce(r.started_at, r.synced_at) desc))[1:5] as examples
         from user_run r
           left join user_flow f on f.user_id = r.user_id and f.client_id = r.flow_id
-        where r.user_id = ${userId}
+        where r.user_id = any(${ids}::uuid[])
           and r.flow_id is not null
           and coalesce(r.started_at, r.synced_at) > now() - make_interval(days => ${days}::int)
         group by r.flow_id, f.name, f.source
@@ -795,6 +798,110 @@ const TOOLS = {
   },
 };
 
+/* One row per person, for the team scope only - the same table the Dashboard's "Who did what" shows.
+ *
+ * It exists because the first question anybody asks a team dashboard is "whose", and without this the model
+ * can only answer it by guessing from the aggregate. Counts and dates, exactly as the roster and the table
+ * already show; there is no column here that says what anybody was working on.
+ */
+const TEAM_TOOLS = {
+  team_people: {
+    description: 'Who is in this team and how much each person did in a window: recordings, skills, runs, '
+      + 'how those runs ended, measured agent time and when they last ran something. Counts and dates only '
+      + '- it cannot say what anybody recorded. Use it for any question about who, or about comparing '
+      + 'people.',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        days: { type: 'integer', description: 'How far back to look, in days. Default 30, max 365.' },
+      },
+    },
+    async run(input, { sql, ids, people }) {
+      const days = clamp(input.days, 1, 365, 30);
+      const rows = await sql`
+        with ids as (select unnest(${ids}::uuid[]) as id),
+        f as (
+          select user_id,
+                 count(*) filter (where kind = 'recorded')::int as recordings,
+                 count(*) filter (where kind = 'created')::int  as skills
+          from user_flow
+          where user_id = any(${ids}::uuid[]) and deleted_at is null
+            and coalesce(created_at, updated_at) > now() - make_interval(days => ${days}::int)
+          group by user_id
+        ),
+        r as (
+          select user_id,
+                 count(*)::int                                  as runs,
+                 count(*) filter (where outcome = 'ok')::int     as ok,
+                 count(*) filter (where outcome = 'failed')::int as failed,
+                 coalesce(sum(case when started_at is not null and finished_at is not null
+                   and extract(epoch from (finished_at - started_at)) > 0
+                   and extract(epoch from (finished_at - started_at)) < 43200
+                   then extract(epoch from (finished_at - started_at))::float8 end), 0)::float8 as secs,
+                 max(coalesce(started_at, synced_at))           as last_run
+          from user_run
+          where user_id = any(${ids}::uuid[])
+            and coalesce(started_at, synced_at) > now() - make_interval(days => ${days}::int)
+          group by user_id
+        )
+        select ids.id::text as id,
+               coalesce(f.recordings, 0)::int as recordings, coalesce(f.skills, 0)::int as skills,
+               coalesce(r.runs, 0)::int as runs, coalesce(r.ok, 0)::int as ok,
+               coalesce(r.failed, 0)::int as failed,
+               coalesce(r.secs, 0)::float8 as secs, r.last_run
+        from ids left join f on f.user_id = ids.id left join r on r.user_id = ids.id
+        order by runs desc
+      `;
+      return {
+        data: {
+          days,
+          people: rows.map((row) => {
+            /* Named from the roster the route already read, not from a join here: this file has no
+             * business querying the auth table, and the names were fetched once already. */
+            const person = (people && people.get(row.id)) || {};
+            return {
+              person: person.name || person.email || 'somebody',
+              role: person.role || 'member',
+              recordings: row.recordings,
+              skills: row.skills,
+              runs: row.runs,
+              finished: row.ok,
+              failed: row.failed,
+              agentMinutes: Math.round(Number(row.secs) / 60),
+              lastRun: row.last_run ? new Date(row.last_run).toISOString() : null,
+            };
+          }),
+        },
+        runIds: [],
+      };
+    },
+  },
+};
+
+/* WHAT THE ASSISTANT MAY REACH WHEN IT IS ANSWERING ABOUT A TEAM, as a whitelist and never a blacklist.
+ *
+ * The team view of the Dashboard shows aggregates, application and skill names, the goal wording of
+ * repeated runs and the reason text of failures. The assistant is allowed exactly that material and no
+ * more, so the panel cannot answer a question the page beside it could not.
+ *
+ * Three tools are deliberately absent, and each would be a real breach rather than an untidiness:
+ *
+ *   get_run          returns a run's STEPS - what was clicked, what each step acted on. Per-moment detail
+ *                    of a colleague's screen, which no team role opens.
+ *   get_transcript   and list_recordings, from api/_recording-tools.js: the transcript of a recording, and
+ *                    window titles out of its payload. That is the content half of the line db/008_team.sql
+ *                    draws, and it is opened one shared skill at a time by its owner - never by a role.
+ *   remove_steps     with undo_edit: WRITES. An owner editing a colleague's recording from a chat panel is
+ *                    not a reporting feature, and there is no interface anywhere else in this product that
+ *                    would let them.
+ *
+ * A whitelist because the failure modes differ: a tool wrongly left out makes an answer worse, a tool
+ * wrongly left in hands somebody another person's screen. New tools are personal-only until somebody adds
+ * them here on purpose.
+ */
+const TEAM_TOOL_NAMES = ['summarize_time', 'list_skills', 'find_repeated', 'search_runs', 'team_people'];
+
 /* The lookups above are the same for everybody, so they live at module scope. The recording tools are not:
  * recordingTools() takes the caller's own sql and user id and closes over them, and throws if either is
  * missing - a tool bound to nobody cannot be called by accident, which is a better guarantee than passing an
@@ -803,6 +910,17 @@ const TOOLS = {
  * Names and specs are derived from the ASSEMBLED table, not from the static half. Deriving them from the
  * static half is exactly how a tool gets registered and then never offered to the model. */
 function toolsFor(ctx) {
+  /* A team question gets the whitelist above and stops there - no recording tools, so nothing that reads a
+   * transcript or writes to one is even registered. Absent rather than guarded inside a tool: a tool that
+   * exists and refuses is one refactor away from a tool that exists and does not. */
+  if (ctx.team) {
+    const table = {};
+    for (const name of TEAM_TOOL_NAMES) {
+      const tool = TOOLS[name] || TEAM_TOOLS[name];
+      if (tool) table[name] = tool;
+    }
+    return table;
+  }
   const table = { ...TOOLS };
   for (const tool of recordingTools({ sql: ctx.sql, userId: ctx.userId })) {
     table[tool.name] = tool;
@@ -822,10 +940,32 @@ const TOOL_NAMES = Object.keys(TOOLS);
 
 /* --------------------------------------------------------------------------- the prompt */
 
-function systemPrompt(today) {
+function systemPrompt(today, team, person) {
   return [
-    'You answer questions about ONE person\'s own MouseFlow history: the recordings they captured, the',
-    'skills they built, and the runs of both. You are not a general assistant in this conversation.',
+    /* First line of all, when it applies: the tools are already narrowed to this one member, so without
+     * being told the model would read one person's rows and describe them as the team's. */
+    person
+      ? 'Every tool in this conversation is filtered to ONE member of the team: ' + person + '. Everything '
+        + 'you read is theirs alone. Say "' + person + '", never "the team", and never present these '
+        + 'numbers as a total.'
+      : '',
+    team
+      ? 'You answer questions about the MouseFlow history of ONE TEAM — "' + team.name + '" — across every '
+        + 'member of it: the recordings they captured, the skills they built, and the runs of both, added '
+        + 'up. You are not a general assistant in this conversation.'
+      : 'You answer questions about ONE person\'s own MouseFlow history: the recordings they captured, the',
+    team
+      /* Said to the model as a limit on what it may CLAIM, not only on what it can fetch. The tools already
+       * make a transcript unreachable; this stops it narrating one it thinks it can infer. */
+      ? 'You can see counts, durations, application and skill names, the wording of goals that ran more '
+        + 'than once, and the reasons runs failed. You CANNOT see what is inside anybody\'s recording — no '
+        + 'transcript, no steps, no clicks — and you must never claim to. Nothing anybody typed is recorded '
+        + 'anywhere in this product, so it is not that you are being kept from it: it does not exist.'
+      : 'skills they built, and the runs of both. You are not a general assistant in this conversation.',
+    team
+      ? 'Name people when it answers the question — team_people gives you who did what. Attribute plainly '
+        + 'and without praise or criticism: report the numbers, do not rank the humans.'
+      : '',
     '',
     'How to answer:',
     '- Look it up first. Every number, date, name, id and outcome you state must have come from a tool',
@@ -858,7 +998,9 @@ function systemPrompt(today) {
     '- find_repeated matches identical goal text. It is a floor on repeated work, not a survey of it.',
     '',
     'If a question is not about this account\'s history, say that is not what you can see here, and stop.',
-  ].join('\n');
+  /* The scope lines above are conditional, and an unused one is an empty string. Dropped rather than
+   * joined, or the prompt gains blank lines wherever a branch did not apply. */
+  ].filter(Boolean).join('\n');
 }
 
 /* The seventh call. The model has spent its lookups and still wants more, so it is asked to answer with
@@ -876,13 +1018,13 @@ const CEILING_NOTE = [
 
 /* ------------------------------------------------------------------------------ the loop */
 
-async function answerQuestion({ sql, userId, model, question, history }) {
+async function answerQuestion({ sql, ids, userId, team, person, people, model, question, history }) {
   /* The table is built here, once, and travels in the context - so the tools the model is OFFERED and the
    * tools that can be RUN are the same object. Two lists derived separately is how a model comes to call
    * something that no longer exists. */
-  const tools = toolsFor({ sql, userId });
-  const ctx = { sql, userId, tools, specs: spec(tools) };
-  const system = systemPrompt(new Date().toISOString().slice(0, 10));
+  const tools = toolsFor({ sql, userId, team });
+  const ctx = { sql, ids, userId, team, people, tools, specs: spec(tools) };
+  const system = systemPrompt(new Date().toISOString().slice(0, 10), team, person);
   const messages = buildTranscript(history, question);
 
   const used = [];
@@ -1122,6 +1264,38 @@ export default async function handler(req, res) {
   const question = (text(body.question, QUESTION_MAX) || '').trim();
   if (!question) return fail(res, 400, 'ask a question - `question` was empty');
 
+  /* Whose history the question is about. `team` is a CLAIM, turned into a set of accounts or into a
+   * refusal by the same file /api/team and /api/insights use - so the panel beside the team dashboard can
+   * only ever read what that dashboard was allowed to count. Without it, one account: the caller's, which
+   * is what every existing client sends and gets. */
+  let scope;
+  try {
+    scope = await scopeFor(sql, who, text(body.team, 64) || null, text(body.person, 64) || null);
+  } catch (err) {
+    return fail(res, 500, 'could not check that team: ' + err.message);
+  }
+  if (scope.error) return fail(res, scope.error.status, scope.error.message);
+
+  const team = scope.kind === 'team' ? scope.team : null;
+  /* When the page is filtered to one member, the panel beside it answers about that member. Skipping this
+   * would put the whole team's numbers in the panel next to one person's on the page — the exact
+   * disagreement the assistant was kept off the team view to avoid in the first place. */
+  const only = scope.person || null;
+  /* Names for team_people, read once here rather than joined inside a tool: the auth table is this route's
+   * business, not a tool's, and the roles come from the membership rows scopeFor already resolved. */
+  let people = null;
+  let person = null;
+  if (team) {
+    const named = await peopleFor(sql, scope.memberIds);
+    const roles = new Map(scope.members.map((m) => [m.id, m.role]));
+    people = new Map(scope.memberIds.map((id) =>
+      [id, { ...(named.get(id) || {}), role: roles.get(id) || 'member' }]));
+    if (only) {
+      const one = people.get(only) || {};
+      person = one.name || one.email || 'that person';
+    }
+  }
+
   /* An allowlist, not a passthrough, for the same reason api/claude.js has one: an unbounded model
    * name is an unbounded price. _provider.js owns the list, and it owns the wording for a provider
    * this deployment has no key for, so neither is restated here. */
@@ -1144,9 +1318,14 @@ export default async function handler(req, res) {
   const history = Array.isArray(body.history) ? body.history.slice(-HISTORY_MAX) : [];
 
   try {
-    const out = await answerQuestion({ sql, userId: who.id, model, question, history });
+    const out = await answerQuestion({
+      sql, ids: scope.ids, userId: who.id, team, person, people, model, question, history,
+    });
     return res.status(200).json({
       ok: true,
+      /* Whose history was read, echoed back rather than assumed by the caller. A saved conversation that
+       * does not say which scope produced it is a set of numbers nobody can place later. */
+      scope: team ? { kind: 'team', team, ...(person ? { person } : {}) } : { kind: 'personal' },
       answer: out.answer,
       citations: out.citations,
       used: out.used,

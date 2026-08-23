@@ -59,7 +59,7 @@ export async function peopleFor(sql, ids) {
  * A member who IS in the team gets 403 with a reason: they already know the team exists - they are in it -
  * so the useful answer is which roles may look, not a false "no such thing".
  */
-export async function scopeFor(sql, who, teamId) {
+export async function scopeFor(sql, who, teamId, personId) {
   if (!teamId) return { kind: 'personal', ids: [who.id], memberIds: [who.id] };
 
   const role = await roleOf(sql, teamId, who.id);
@@ -80,12 +80,31 @@ export async function scopeFor(sql, who, teamId) {
   /* The caller is a member of their own team, so this already contains them; said explicitly because a
    * scope that quietly dropped the person asking would show a manager everybody's work except their own. */
   const ids = members.map((m) => m.id);
+
+  /* Narrowing to ONE member - what a manager does to ask "and how is Margaryta getting on".
+   *
+   * The permission is unchanged and is still the team's: this only picks a subset of the accounts the
+   * caller was already allowed to count. Which is exactly why it is checked against `ids` rather than
+   * trusted - a uuid in a query string is no more a permission here than a team id is, and without this
+   * line it would be a way to count any account on the deployment.
+   *
+   * `memberIds` deliberately keeps the WHOLE team even when narrowed, because the caller still has to be
+   * able to offer the other names: a filter you cannot get out of is a dead end. */
+  let chosen = null;
+  if (personId) {
+    if (!ids.includes(personId)) {
+      return { error: { status: 404, message: 'nobody with that id is in this team' } };
+    }
+    chosen = personId;
+  }
+
   return {
     kind: 'team',
     role,
-    ids,
+    ids: chosen ? [chosen] : ids,
     memberIds: ids,
     members,
+    person: chosen,
     team: { id: team.id, name: team.name },
   };
 }

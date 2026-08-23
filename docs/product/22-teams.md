@@ -153,16 +153,27 @@ It adds one section, **Who did what**: one row per member — recordings, skills
 agent time and the last run, over the window on screen. Everybody gets a row, including the people with
 nothing in it, because a table that silently omits a quiet fortnight reads as a roster with somebody missing.
 
+A second control narrows it to **one member** (`&person=<uuid>`), for the times the question is about one
+person rather than the shape of the team. That is not a wider permission: it selects a subset of the
+accounts the caller could already count, and the id is checked against the team's own membership. The picker
+keeps every name while the counting narrows, because a filter with only the chosen person left in it is a
+dead end.
+
 Three things keep it honest:
 
 - **The switch is only offered to somebody who owns or administers a team**, and `api/_team-scope.js` checks
   the role again on every request. A control that is merely hidden is not a rule.
-- **Nothing on it is content.** Counts, durations, application names, skill names — every one of them was
-  already on the roster above. There is no path from the team view to a colleague's transcript, and no query
-  in `api/insights.js` that returns an event, a goal or a chat.
-- **The assistant is not offered on the team view.** It reads the account of whoever is asking and has no
-  team scope, so a panel answering about your six runs beside a header counting the team's ninety would be
-  two different questions on one screen. The button says why rather than disappearing.
+- **It shows work, not screens** — and this is worth stating precisely, because a looser version of it was
+  written here first and claimed too much. An owner or admin sees counts, durations and outcomes;
+  application and process names, and for older desktop recordings the *window title* where nothing else
+  names one; skill and recording names; the **goal wording** of repeated runs; and the **reason text** of
+  failures. They do not see the events inside a recording, its transcript, its chat, or what any single step
+  clicked — in any scope, filtered to one person or not. Nothing anybody typed exists anywhere to be shown.
+- **The assistant follows the same scope**, through the same check. In a team scope it is given a
+  *whitelist* of aggregate tools and never the ones that read a transcript or write to a recording — an
+  owner editing a colleague's recording from a chat panel is not a reporting feature. The full list, and why
+  it is a whitelist rather than a blacklist, is in
+  [08 — Dashboard](08-dashboard.md#the-assistant-follows-the-scope).
 
 A member who asks for the team scope — by editing the address, say — is refused **by name**: *"Only an owner
 or an admin sees a team's numbers. Yours are on the personal view."* A team the caller is not in at all
