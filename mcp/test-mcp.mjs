@@ -764,6 +764,25 @@ const unsent = await mail.sendMail({ to: 'somebody@example.dev', subject: 'x', t
 check('and the caller is told why', unsent.sent === false && typeof unsent.why === 'string');
 check('the endpoint says so too, before an address is typed', /mail: \{ configured:/.test(teamApi));
 
+group('making a skill lands where the skill will be');
+const recordView = read('../web/src/features/record/RecordView.tsx');
+const skillsView = read('../web/src/features/skills/SkillsView.tsx');
+const wizard = read('../web/src/features/record/SkillWizard.tsx');
+check('the Record page hands the recording to /skills rather than opening over itself',
+  /to: '\/skills', search: \{ make: rec\.id \}/.test(recordView));
+check('and Skills opens the wizard for the id in the address',
+  /get\('make'\)/.test(skillsView) && /if \(found\) setWizardFor\(found\)/.test(skillsView));
+check('waiting for the recordings to arrive, not reading them once',
+  /\}, \[asked, local\.recordings\]\);/.test(skillsView));
+check('dropping the parameter once used, so the wizard does not reopen later',
+  /searchParams\.delete\('make'\)/.test(skillsView));
+check('and saying so when this browser does not have that recording',
+  /not in this browser/.test(skillsView));
+check('the step list can be taken whole in one click', /const keepAll = useCallback/.test(wizard)
+  && /lines \?\? \[\]\)\.map\(\(line\) => line\.n\)/.test(wizard));
+check('and emptied in one, so neither direction costs a click per step',
+  /const keepNone = useCallback\(\(\) => setKept\(new Set\(\)\)/.test(wizard));
+
 /* A picture that 404s is the documentation's version of the same bug. */
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));

@@ -277,6 +277,27 @@ export const SkillsView = () => {
    * сохраняется одним нажатием, а этот путь - разговор, и пока он идёт список должен жить дальше. */
   const [wizardFor, setWizardFor] = useState<typeof local.recordings[number] | null>(null);
 
+  /* Arriving here from the Record page's Skill button, which sends `?make=<recording id>`.
+   *
+   * Waits for the recordings to load rather than reading them once: they come out of the local console
+   * asynchronously, so on the first render after a navigation the list is usually still empty and a
+   * one-shot lookup would silently find nothing. The parameter is dropped as soon as it is used, so going
+   * back to this page later does not reopen a wizard nobody asked for.
+   *
+   * An id this browser does not have is SAID rather than ignored — a recording lives in the browser that
+   * made it, so following the link on a second machine finds nothing, and silence would read as a broken
+   * button. */
+  /* Read here, ACTED ON below `said` — the effect that consumes it calls setSaid, and putting the two
+   * beside each other keeps a reader from having to know that a closure defers the lookup. */
+  const [asked, setAsked] = useState<string | null>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('make');
+    } catch (_) {
+      return null;
+    }
+  });
+
+
   const convert = useCallback(async (rec: typeof local.recordings[number]) => {
     setMaking(rec.id);
     setSaid(null);
@@ -308,6 +329,25 @@ export const SkillsView = () => {
   const navigate = useNavigate();
   const [bridge, setBridge] = useState({ present: false, paired: false, version: null as string | null });
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
+
+  useEffect(() => {
+    if (!asked || !local.recordings.length) return;
+    const found = local.recordings.find((rec) => rec.id === asked);
+    setAsked(null);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('make');
+      window.history.replaceState(null, '', url.toString());
+    } catch (_) { /* the address is a convenience here, not the state */ }
+    if (found) setWizardFor(found);
+    else {
+      setSaid({
+        text: 'That recording is not in this browser. A recording stays on the machine that made it, so '
+          + 'open the link there — or record it again here.',
+        kind: 'bad',
+      });
+    }
+  }, [asked, local.recordings]);
   /* Which delete is cocked. One at a time, and it disarms itself: a destructive button left ready is one
    * stray click from being pressed, which is the reasoning MyAccountScreen already carries. */
   const [armed, setArmed] = useState<string | null>(null);

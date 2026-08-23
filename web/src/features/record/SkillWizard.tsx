@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Check, Keyboard, Loader2, X } from 'lucide-react';
+import { Check, CheckCheck, Keyboard, Loader2, X } from 'lucide-react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
@@ -278,6 +278,21 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
     });
   }, []);
 
+  /* Keep everything, or keep nothing, in one click.
+   *
+   * The list opens with only the steps that could be described ticked, which is the right default and the
+   * wrong amount of work for the commonest case there is: repeat what I just did, all of it. Fourteen
+   * checkboxes to say "yes" is a form standing between somebody and a replay of their own recording — and
+   * a long recording makes it thirty.
+   *
+   * "None" is here because the pair is what makes either one safe to press: having taken everything, the
+   * way back to a considered selection should not be fourteen clicks either. */
+  const allKept = !!lines && lines.length > 0 && lines.every((line) => kept.has(line.n));
+  const keepAll = useCallback(() => {
+    setKept(new Set((lines ?? []).map((line) => line.n)));
+  }, [lines]);
+  const keepNone = useCallback(() => setKept(new Set()), []);
+
   const edit = useCallback((n: number, patch: Partial<Blank>) => {
     setBlanks((was) => was.map((b) => (b.n === n ? { ...b, ...patch } : b)));
   }, []);
@@ -379,6 +394,30 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     what you typed was never stored, so the next screen asks.</>
                   )}
                 </Typography>
+                {/* Above the list, where the eye lands before it starts ticking. */}
+                <div className="mb-2 flex items-center gap-2">
+                  <Button
+                    variant={allKept ? 'secondary' : 'ghost'}
+                    size="xs"
+                    onClick={keepAll}
+                    title="Keep every step — repeat the recording exactly as it was"
+                    leftSlot={<CheckCheck className="size-3.5" />}
+                  >
+                    Select all
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="xs"
+                    onClick={keepNone}
+                    disabled={kept.size === 0}
+                    title="Untick everything and start from nothing"
+                  >
+                    None
+                  </Button>
+                  <Typography variant="span" className="ms-auto text-[0.76rem] text-ink-inactive">
+                    {kept.size} of {lines.length} kept
+                  </Typography>
+                </div>
                 <ul className="grid gap-1">
                   {lines.map((line) => {
                     const isTyping = line.action === 'type';

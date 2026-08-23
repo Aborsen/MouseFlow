@@ -1073,7 +1073,15 @@ export const RecordView = () => {
         onAdopt={(flow) => adoptOrphan(flow)}
         onImport={(files) => { void importFiles(files); }}
         onSaveAsSkill={(rec) => { void keepAsSkill(rec); }}
-        onMakeSkill={(rec) => setWizardFor(rec)}
+        /* Over on the Skills page, not here.
+         *
+         * The wizard makes a SKILL, and the place skills live is where somebody expects to end up holding
+         * one — opening it over the recordings list left people on Record with a new skill they could not
+         * see, and the only sign it had worked was a toast. The recording travels as an id in the address,
+         * so the page can be reloaded, linked and gone back from. */
+        onMakeSkill={(rec) => {
+          void navigate({ to: '/skills', search: { make: rec.id } as never });
+        }}
         onView={(rec) => setViewing((open) => (open === rec.id ? null : rec.id))}
         onPlay={(rec) => { void playOne(rec); }}
       />
