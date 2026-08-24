@@ -695,6 +695,17 @@ async function syncToken() {
   return typeof token === 'string' && token.startsWith('mf_') ? token : null;
 }
 
+/* What to do with what the bridge minted. Shared by both halves of `auth/auto` so the tab it opened is
+ * closed on every path out, including the ones that failed. */
+async function finishAuto(res, closeTabId) {
+  if (closeTabId != null) await chrome.tabs.remove(closeTabId).catch(() => {});
+  if (res.signedOut) return { ok: false, signedOut: true };
+  if (!res.ok || !res.token) return { ok: false, error: res.error || 'the app would not mint a token' };
+  const paired = await syncPair(res.token);
+  const synced = await syncNow().catch(() => null);
+  return { ok: true, who: paired.who, synced: synced ? synced.pushed : null };
+}
+
 async function syncStatus() {
   const token = await syncToken();
   const { syncedAt, syncWho } = await chrome.storage.local.get(['syncedAt', 'syncWho']);
@@ -1461,7 +1472,7 @@ function agentStatus() {
  * Everything else - recording, replay, the agent, skills, the gallery - needs an account.
  */
 const OPEN_WITHOUT_ACCOUNT = new Set([
-  'ping', 'auth/start', 'auth/paired', 'auth/who',
+  'ping', 'auth/start', 'auth/paired', 'auth/who', 'auth/auto',
   'sync/status', 'sync/pair', 'sync/unpair',
   'settings/get', 'settings/set',
   'capture/event', 'capture/moves',
@@ -1553,6 +1564,51 @@ const ROUTES = {
   'auth/who': () => syncStatus(),
   /* The handover. Only from the app's own origin: a token is a credential, and this is the one
    * route that accepts one from a web page. */
+  /* PAIRING WITHOUT A BUTTON, from this side.
+   *
+   * The panel opens, finds itself unattached, and asks for this. It looks for a tab already on the app's
+   * origin and asks the bridge script there to mint a token with the session that is already in the
+   * browser; if there is no such tab it opens one in the background, uses it and closes it again, so the
+   * whole thing is a spinner rather than a detour.
+   *
+   * WHY THIS IS NOT A NEW POWER. bridge.js already mints and hands over a token when somebody presses
+   * "Connect extension" on that page, and the file's own header explains why that is safe: anything
+   * running on the app's origin holds the session and could mint one anyway. What changes here is who
+   * starts it - the extension the person installed, instead of the person clicking a second time.
+   *
+   * NOT SIGNED IN IS NOT AN ERROR. It is the one answer the panel has something to do about, so it comes
+   * back as a flag and the panel offers a sign-in rather than a failure. */
+  'auth/auto': async () => {
+    if (await syncToken()) return { ok: true, already: true };
+
+    /* EVERY app tab, then a fresh one, and the order matters.
+     *
+     * A tab that was open before this extension was loaded carries an ORPHANED content script - it belongs
+     * to a generation that no longer exists, and sendMessage into it fails. That is the ordinary case right
+     * after installing, so it cannot be the case that ends in "reload the page and try again": the answer
+     * is to open a tab of our own, which is guaranteed to have a live script in it.
+     */
+    const tabs = await chrome.tabs.query({ url: APP_URL + '/*' });
+    for (const tab of tabs) {
+      const res = await chrome.tabs.sendMessage(tab.id, { mf: 'bridge/mint' }).catch(() => null);
+      if (res) return finishAuto(res, null);
+    }
+
+    /* Background, and closed again afterwards, so this is a spinner rather than a detour through a tab
+     * somebody has to find and shut. */
+    const fresh = await chrome.tabs.create({ url: APP_URL + '/skills', active: false }).catch(() => null);
+    if (!fresh) return { ok: false, error: 'could not open the app to connect' };
+    /* The content script runs at document_idle, so there is nothing to talk to until the page has loaded.
+     * Waited for by asking rather than by sleeping a guessed number of milliseconds. */
+    for (let i = 0; i < 40; i++) {
+      await sleep(250);
+      const res = await chrome.tabs.sendMessage(fresh.id, { mf: 'bridge/mint' }).catch(() => null);
+      if (res) return finishAuto(res, fresh.id);
+    }
+    await chrome.tabs.remove(fresh.id).catch(() => {});
+    return { ok: false, error: 'the app did not load in time' };
+  },
+
   'auth/paired': async (msg, sender) => {
     if (!fromBridge(sender)) throw new Error('not available to this page');
     const res = await syncPair(msg.token);

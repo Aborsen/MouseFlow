@@ -61,6 +61,48 @@ async function announce() {
  * halves ask and both halves answer. */
 announce();
 
+/* PAIRING WITHOUT A BUTTON.
+ *
+ * The handover used to need somebody to press "Connect extension" on the app's page. That is one click too
+ * many for a thing the person has already decided: they installed the extension, they are signed in here,
+ * and the only thing standing between the two is a token nobody ever sees.
+ *
+ * So the worker asks this script directly - `chrome.tabs.sendMessage` into this tab - and this mints the
+ * token with the session that is already in the browser and hands it back. Same endpoint, same session,
+ * same trust boundary the file's header describes: script on this origin could already mint one.
+ *
+ * The button stays. This runs when the panel opens and there is a tab on this origin; the button is what
+ * somebody presses when they want to see it happen, and what answers when the automatic path is refused.
+ */
+chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
+  if (!msg || msg.mf !== 'bridge/mint') return false;
+  (async () => {
+    try {
+      const res = await fetch('/api/sync?issue=1', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ label: 'This browser' }),
+      });
+      const body = await res.json().catch(() => null);
+      if (res.status === 401 || res.status === 403) {
+        /* Not signed in on this origin. Named as its own answer rather than an error string, because the
+         * panel's reply to it is a sign-in prompt and not a failure message. */
+        respond({ ok: false, signedOut: true });
+        return;
+      }
+      if (!res.ok || !body || !body.token) {
+        respond({ ok: false, error: (body && body.error) || ('the app answered ' + res.status) });
+        return;
+      }
+      respond({ ok: true, token: body.token });
+    } catch (err) {
+      respond({ ok: false, error: err && err.message ? err.message : 'the app did not answer' });
+    }
+  })();
+  return true;   // answering asynchronously
+});
+
 window.addEventListener('message', async (event) => {
   // Same window, same origin: not another frame, not another site embedding this one.
   if (event.source !== window || event.origin !== location.origin) return;

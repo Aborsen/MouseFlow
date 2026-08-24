@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Typography } from '@insightis/ui/Typography';
 import { Button } from '@insightis/ui/Button';
+import { Loader2 } from 'lucide-react';
 import { Rail, type Screen } from './Rail';
 import { RecordScreen } from './RecordScreen';
 import { CreateScreen } from './CreateScreen';
@@ -32,10 +33,28 @@ export const Panel = () => {
     localStorage.setItem(LAST, next);
   }, []);
 
+  const [connecting, setConnecting] = useState(false);
+  const [why, setWhy] = useState<string | null>(null);
+
+  /* Attached, or attach it - without asking anybody to press anything.
+   *
+   * The old flow needed a click on the app's page to hand a token across, which is a step somebody has
+   * already decided by installing this: they are signed in over there, and the token is a thing nobody
+   * ever sees. So the panel asks the worker to do it (see `auth/auto`), and only says something when the
+   * answer is one a person can act on - not signed in, or the app would not answer. */
   const check = useCallback(async () => {
     if (!inExtension) { setSignedIn(true); return; }   // opened as a page, to be looked at
-    const res = await ask('sync/status');
-    setSignedIn(!!res.ok && res.paired === true);
+    const status = await ask('sync/status');
+    if (status.ok && status.paired === true) { setSignedIn(true); return; }
+
+    setConnecting(true);
+    const auto = await ask('auth/auto');
+    setConnecting(false);
+    if (auto.ok) { setSignedIn(true); setWhy(null); return; }
+    setSignedIn(false);
+    setWhy(auto.signedOut
+      ? 'Sign in to MouseFlow in this browser and this connects itself.'
+      : auto.error ?? null);
   }, []);
 
   useEffect(() => { void check(); }, [check]);
@@ -45,7 +64,14 @@ export const Panel = () => {
       <Rail screen={screen} onGo={go} />
 
       <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-        {signedIn === false ? (
+        {signedIn === null || connecting ? (
+          <div className="m-auto flex flex-col items-center gap-2 text-center">
+            <Loader2 className="size-5 animate-spin text-brand-primary" />
+            <Typography variant="p" className="text-ink-inactive text-[0.8rem]">
+              {connecting ? 'Connecting this browser…' : 'Reading…'}
+            </Typography>
+          </div>
+        ) : signedIn === false ? (
           /* The wall. The same sentence the popup used, and the same one act: this extension cannot sign
            * in with Google - that needs an OAuth client tied to an id an unpacked build does not have - so
            * the app signs in and hands a token across. See extension/bridge.js. */
@@ -54,11 +80,10 @@ export const Panel = () => {
               Connect this browser
             </Typography>
             <Typography variant="p" className="text-ink-inactive text-[0.82rem] leading-relaxed">
-              Sign in to the app once and press “Connect extension” there. It hands this a token — nothing
-              to copy, nothing to type.
+              {why ?? 'This browser is not attached to a MouseFlow account yet.'}
             </Typography>
-            <Button onClick={() => openApp('/skills')}>Open the app</Button>
-            <Button variant="ghost" size="sm" onClick={() => void check()}>I have done that</Button>
+            <Button onClick={() => openApp('/skills')}>Sign in</Button>
+            <Button variant="ghost" size="sm" onClick={() => void check()}>Try again</Button>
           </div>
         ) : (
           <>

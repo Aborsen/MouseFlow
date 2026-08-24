@@ -38,6 +38,25 @@ The service worker and the content scripts stay hand-written: they run in worlds
 liability, and they have no UI. `web/vite.extension.config.ts` is the whole arrangement, with the reasoning
 in its header.
 
+### Connecting, without a button
+
+The panel attaches itself. When it opens unattached it asks the worker (`auth/auto`), which finds a tab on
+the app's origin - or opens one in the background and closes it again - and has `bridge.js` mint a device
+token **with the session already in this browser**. Nothing to copy, nothing to press, and no second login:
+it is the same MouseFlow account you are signed in to over there.
+
+The only case that needs a person is not being signed in at all, and then the panel says so and offers the
+sign-in rather than reporting a failure.
+
+Two things worth knowing:
+
+- **A tab opened before the extension was loaded cannot answer.** Its content script belongs to a generation
+  that no longer exists. That is the ordinary case right after installing, so it is not treated as an error:
+  the worker opens a fresh tab, which is guaranteed to have a live script in it.
+- **This is not a new power.** `bridge.js` already minted and handed over a token when somebody pressed
+  "Connect extension"; what changed is who starts it. Anything running on the app's origin holds the session
+  and could mint one anyway - which is the trust boundary that file's header describes.
+
 ### The panel, not the popup
 
 A popup closes the moment you click the page — and recording a flow, or describing one while looking at it,
