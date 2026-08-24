@@ -812,6 +812,17 @@ check('dropping the parameter once used, so the wizard does not reopen later',
   /searchParams\.delete\('make'\)/.test(skillsView));
 check('and saying so when this browser does not have that recording',
   /not in this browser/.test(skillsView));
+check('step two is about instructions, not only recorded typing',
+  /STAGES = \['What it did', 'Instructions', 'Name it'\]/.test(wizard));
+check('and it always offers a field, so it is never a dead end',
+  /const \[notes, setNotes\]/.test(wizard) && /Anything else it should know/.test(wizard));
+/* The point of the field: it is EXECUTED. A skill made here is a goal skill, and the goal is the sentence
+ * a model reads and carries out — text in a field nobody executes would be a note to self. */
+check('what somebody writes goes into the goal, which is what actually runs',
+  /function withNotes/.test(wizard) && /withNotes\(buildGoal\(lines, kept, blanks\), notes\)/.test(wizard));
+check('the save button carries no icon, which wrapped it onto two lines',
+  !/<Check className/.test(wizard));
+
 check('the step list can be taken whole in one click', /const keepAll = useCallback/.test(wizard)
   && /lines \?\? \[\]\)\.map\(\(line\) => line\.n\)/.test(wizard));
 check('and emptied in one, so neither direction costs a click per step',

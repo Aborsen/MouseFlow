@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { Check, CheckCheck, Keyboard, Loader2, X } from 'lucide-react';
+import { CheckCheck, Keyboard, Loader2, X } from 'lucide-react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
@@ -178,9 +178,28 @@ function buildGoal(lines: Line[], kept: Set<number>, blanks: Blank[]): string {
   return `${opening}\n${steps.map((s, i) => `${i + 1}. ${s[0].toUpperCase()}${s.slice(1)}.`).join('\n')}`;
 }
 
+/* Whatever the person added in their own words, on the end of the derived steps.
+ *
+ * It goes into the GOAL rather than into a field of its own, and that is the whole reason this is worth
+ * anything: a skill made here is a goal skill — the sentence is what a model reads and carries out, one
+ * action at a time. So "then press Save", or "type today's date in the reference box", is executed, not
+ * decoration. Text in a field nobody executes would be a note to self dressed up as a feature.
+ *
+ * Appended rather than woven in, because the steps above are derived and this is not: keeping them apart
+ * means the derived half can be rebuilt when a checkbox moves without touching what somebody wrote. */
+function withNotes(base: string, notes: string): string {
+  const said = notes.trim();
+  if (!said) return base;
+  if (!base) return said;
+  return `${base}\n\nAlso:\n${said}`;
+}
+
 /* ------------------------------------------------------------------ the wizard */
 
-const STAGES = ['What it did', 'What to type', 'Name it'] as const;
+/* "What to type" was the name while the step could only ever be about the recorded typing — and when a
+ * recording had none, it was a screen with a sentence on it and nothing to do. It takes instructions in
+ * general now, of which "type this here" is one. */
+const STAGES = ['What it did', 'Instructions', 'Name it'] as const;
 
 interface Props {
   rec: Recording;
@@ -196,6 +215,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   const [blanks, setBlanks] = useState<Blank[]>([]);
   const [name, setName] = useState(rec.name);
   const [goal, setGoal] = useState('');
+  /* Anything the recording could not say. Free text, in the person's own words, appended to the goal. */
+  const [notes, setNotes] = useState('');
   const [touchedGoal, setTouchedGoal] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -262,8 +283,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   const typing = useMemo(() => blanks.filter((b) => kept.has(b.n)), [blanks, kept]);
 
   const derived = useMemo(
-    () => (lines ? buildGoal(lines, kept, blanks) : ''),
-    [lines, kept, blanks],
+    () => (lines ? withNotes(buildGoal(lines, kept, blanks), notes) : ''),
+    [lines, kept, blanks, notes],
   );
 
   /* The goal follows the choices until somebody edits it, and then it is theirs. Overwriting a sentence
@@ -461,12 +482,11 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
             )}
 
             {lines && stage === 1 && (
-              typing.length === 0 ? (
-                <Typography variant="p" className="text-ink-body text-[0.88rem] leading-relaxed">
-                  Nothing was typed in the steps you kept, so there is nothing to fill in. The skill will
-                  click its way through on its own.
-                </Typography>
-              ) : (
+              <>
+                {/* The recorded typing, when there was any. A blank is a place the recording KNOWS
+                  * something was typed and cannot know what; it is a different thing from the free text
+                  * below, which is anything the recording could not know at all. */}
+                {typing.length > 0 && (
                 <>
                   <Typography variant="p" className="mb-3 text-ink-inactive text-[0.85rem] leading-relaxed">
                     MouseFlow records that a key was pressed and when, never which key — so what you typed is
@@ -543,7 +563,41 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     ))}
                   </div>
                 </>
-              )
+                )}
+
+                {/* Anything the recording could not say, in the person's own words.
+                  *
+                  * This step used to be a dead end whenever nothing had been typed: one sentence explaining
+                  * that there was nothing to fill in, and no field at all. But a recording is coordinates
+                  * and timings — it cannot know that the second box wants today's date, that the dialog is
+                  * skipped when a row already exists, or which button ends the job. That knowledge only
+                  * exists in the head of the person who just did it, and this is the moment they are here.
+                  *
+                  * It goes into the goal, which for a skill made here is the sentence a model reads and
+                  * carries out. So this is executed rather than filed. */}
+                <div className={cn('grid gap-1.5', typing.length > 0 && 'mt-5 border-stroke border-t pt-4')}>
+                  <Typography variant="span" weight="semibold" className="text-[0.86rem]">
+                    Anything else it should know
+                  </Typography>
+                  <Typography variant="p" className="text-ink-inactive text-[0.82rem] leading-relaxed">
+                    Optional. The recording has the clicks; this is for what it cannot see.
+                  </Typography>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value.slice(0, 2000))}
+                    rows={6}
+                    placeholder={'Add instructions in your own words — including any text it should type.\n\n'
+                      + 'For example:\n'
+                      + '• Type today’s date in the reference box\n'
+                      + '• If a row for this client already exists, stop and say so\n'
+                      + '• Finish by pressing Save, not Send'}
+                    className="w-full resize-y rounded-lg border border-stroke bg-surface-card2 px-3 py-2 text-[0.86rem] text-ink-primary leading-relaxed placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
+                  />
+                  <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
+                    This is added to the skill’s instructions, which you can read and edit on the next step.
+                  </Typography>
+                </div>
+              </>
             )}
 
             {lines && stage === 2 && (
@@ -588,17 +642,27 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
           <footer className="flex items-center gap-2 border-stroke border-t px-4 py-3">
             <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
               {stage === 0 && lines ? `${kept.size} of ${lines.length} steps kept` : ''}
-              {stage === 1 && typing.length > 0 ? `${typing.filter((b) => b.fill === 'ask').length} will be asked for` : ''}
+              {stage === 1 && typing.length > 0
+                ? `${typing.filter((b) => b.fill === 'ask').length} will be asked for`
+                : ''}
+              {/* The step can now be used with no blanks at all, so the footer had nothing to say on the
+                * commonest path through it. */}
+              {stage === 1 && typing.length === 0
+                ? (notes.trim() ? 'Your instructions will be added' : 'Optional — you can go straight on')
+                : ''}
             </Typography>
             <div className="ms-auto flex items-center gap-2">
               {stage > 0 && (
                 <Button variant="ghost" size="sm" onClick={() => setStage(stage - 1)}>Back</Button>
               )}
+              {/* Save carries NO icon. The Button lays its children out in a row that wraps, and at this
+                * width the tick came out on a line of its own above the words — a two-line button that
+                * reads as a rendering fault. The word is doing the work. */}
               {stage < STAGES.length - 1 ? (
                 <Button size="sm" disabled={!canGo} onClick={() => setStage(stage + 1)}>Next</Button>
               ) : (
                 <Button size="sm" disabled={!canGo} isLoading={saving} onClick={() => void save()}>
-                  <Check className="size-4" /> Save the skill
+                  Save the skill
                 </Button>
               )}
             </div>
