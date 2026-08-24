@@ -2416,6 +2416,43 @@ enum Crash {
         return home.isEmpty ? line : line.replacingOccurrences(of: home, with: "~")
     }
 
+    /* The same event, sent and WAITED FOR, for /crash-test only.
+     *
+     * Fire-and-forget is right for a real fault and useless for a test: the whole question a test asks is
+     * whether the thing arrived, and the deployment's answer carries `reported` - which is true only when
+     * Sentry itself took it. Without this, checking the pipe means somebody opening a dashboard and
+     * deciding how long to keep refreshing. */
+    static func test() -> Bool {
+        guard let link = Account.link, let url = URL(string: link.base + "/api/mcp?worker=crash"),
+              let data = try? JSONSerialization.data(withJSONObject: [
+                  "type": "AgentError",
+                  "message": "crash reporting test from this Mac",
+                  "where": "crash-test",
+                  "level": "warning",
+                  "platform": "macos",
+                  "version": VERSION,
+              ]) else { return false }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer " + link.token, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        req.timeoutInterval = 15
+
+        let done = DispatchSemaphore(value: 0)
+        var reported = false
+        URLSession.shared.dataTask(with: req) { body, response, _ in
+            if let http = response as? HTTPURLResponse, http.statusCode == 200, let body = body,
+               let raw = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] {
+                reported = raw["reported"] as? Bool == true
+            }
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 20)
+        return reported
+    }
+
     static func say(_ message: String, at where_: String, level: String = "error", trace: Bool = true) {
         /* Not linked: there is nowhere to send it and nobody to attach it to. The log still has it. */
         guard let link = Account.link, let url = URL(string: link.base + "/api/mcp?worker=crash") else { return }
@@ -3306,8 +3343,10 @@ func route(method: String, path: String, query: String, body: String) -> Respons
             return Response(status: 409, body: "{\"ok\":false,\"error\":\"this Mac is not attached to an "
                 + "account, so there is nowhere to report a crash to\"}")
         }
-        Crash.say("crash reporting test from this Mac", at: "crash-test", level: "warning")
-        return Response(body: "{\"ok\":true,\"sent\":true}")
+        /* `reported` is the deployment's own answer, and it is true only if Sentry took the event. A test
+         * that said "sent" and meant "handed to a socket" is the test that lets a silent reporter live. */
+        let reported = Crash.test()
+        return Response(body: "{\"ok\":true,\"reported\":\(jsonBool(reported))}")
 
     case "/record/start":
         if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }

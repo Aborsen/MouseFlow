@@ -2575,8 +2575,12 @@ namespace MouseFlow
                         + "attached to an account, so there is nowhere to report a crash to\"}", origin);
                     return;
                 }
-                Crash.Say("crash reporting test from this PC", "crash-test", "warning");
-                Respond(stream, 200, "application/json", "{\"ok\":true,\"sent\":true}", origin);
+                /* `reported` is the deployment's own answer, and it is true only if Sentry took the event.
+                   A test that said "sent" and meant "handed to a socket" is the test that lets a silent
+                   reporter live. */
+                bool reported = Crash.Test();
+                Respond(stream, 200, "application/json",
+                    "{\"ok\":true,\"reported\":" + (reported ? "true" : "false") + "}", origin);
                 return;
             }
 
@@ -3114,6 +3118,26 @@ namespace MouseFlow
             Say(message, where, "error");
         }
 
+        /* The same event, sent and WAITED FOR, for /crash-test only.
+
+           Fire-and-forget is right for a real fault and useless for a test: the whole question a test asks
+           is whether the thing arrived, and the deployment's answer carries `reported` - which is true only
+           when Sentry itself took it. Without this, checking the pipe means somebody opening a dashboard
+           and deciding how long to keep refreshing. */
+        public static bool Test()
+        {
+            string token = Account.Token;
+            string root = Account.Base;
+            if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(root)) return false;
+
+            string body = "{\"type\":\"AgentError\",\"message\":\"crash reporting test from this PC\""
+                + ",\"where\":\"crash-test\",\"level\":\"warning\",\"platform\":\"windows\",\"version\":\""
+                + Agent.JsonText(Agent.Version) + "\"}";
+            string answer = Send(root + "/api/mcp?worker=crash", token, body, true);
+            if (answer == null) return false;
+            return Json.Truth(Json.Parse(answer), "reported", false);
+        }
+
         public static void Say(string message, string where, string level)
         {
             string token = Account.Token;
@@ -3145,7 +3169,7 @@ namespace MouseFlow
 
             /* Fire and forget, off whatever thread noticed. Nothing waits for this and nothing reads the
                answer: there is no useful thing to do about a crash report that did not arrive. */
-            Thread t = new Thread(delegate() { Send(root + "/api/mcp?worker=crash", token, body); });
+            Thread t = new Thread(delegate() { Send(root + "/api/mcp?worker=crash", token, body, false); });
             t.IsBackground = true;
             t.Start();
         }
@@ -3164,7 +3188,7 @@ namespace MouseFlow
 
         /* Its own sender rather than the courier's. That one waits ninety seconds because it long-polls;
            a crash report that held a thread for a minute and a half would be a second fault. */
-        static void Send(string url, string token, string body)
+        static string Send(string url, string token, string body, bool wantAnswer)
         {
             try
             {
@@ -3178,9 +3202,15 @@ namespace MouseFlow
                 byte[] payload = Encoding.UTF8.GetBytes(body);
                 req.ContentLength = payload.Length;
                 using (Stream s = req.GetRequestStream()) s.Write(payload, 0, payload.Length);
-                using (HttpWebResponse res = (HttpWebResponse)req.GetResponse()) { }
+                using (HttpWebResponse res = (HttpWebResponse)req.GetResponse())
+                {
+                    if (!wantAnswer) return null;
+                    using (StreamReader r = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                        return r.ReadToEnd();
+                }
             }
             catch { /* Nothing to do about it, and nothing worth saying twice. */ }
+            return null;
         }
     }
 

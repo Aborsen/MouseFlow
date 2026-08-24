@@ -404,6 +404,10 @@ check('у обоих есть способ проверить трубу нар�
   /case "\/crash-test"/.test(swift) && /path == "\/crash-test"/.test(ps));
 check('и он отказывается, когда докладывать некуда',
   /nowhere to report a crash to/.test(swift) && /nowhere to report a crash to/.test(ps));
+/* «Отправлено» значит «отдано сокету». Вопрос теста ровно один: дошло ли. Ответ деплоя несёт `reported`,
+ * и он true только если событие взял сам Sentry. */
+check('и проверка ждёт ответа, а не рапортует об отправке',
+  /raw\["reported"\] as\? Bool == true/.test(swift) && /Json\.Truth\(Json\.Parse\(answer\), "reported"/.test(ps));
 /* Хук - главная причина, по которой этот репортер существует: без него запись не пишет ничего. */
 check('оба докладывают о невставшем хуке ввода',
   /at: "installTap"/.test(swift) && /"hook\.mouse"/.test(ps));

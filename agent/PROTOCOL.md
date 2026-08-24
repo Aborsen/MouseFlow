@@ -191,8 +191,10 @@ Three rules, both implementations:
 What cannot travel this way is a failure whose cause is *cannot reach the deployment*. That stays in the
 agent's own log, and saying so is part of the contract.
 
-`POST /crash-test` sends one event on purpose and answers `{ ok, sent }`, or 409 when the machine is not
-attached to an account. It exists because a real fault cannot be arranged on demand, and "we would have
+`POST /crash-test` sends one event on purpose and WAITS for the answer: `{ ok, reported }`, where
+`reported` is true only if Sentry itself took the event. 409 when the machine is not attached to an
+account. Fire-and-forget is right for a real fault and useless for a test — "sent" would mean "handed
+to a socket", which is exactly the answer that lets a silent reporter live. It exists because a real fault cannot be arranged on demand, and "we would have
 heard about it" is exactly the assumption that lets a silent reporter survive for months.
 
 ### The capability flags
