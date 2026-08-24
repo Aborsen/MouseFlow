@@ -39,6 +39,9 @@ import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import type { Recording } from '@/lib/store';
 import { saveAsGoalSkill } from './save-as-skill';
+/* Which typing runs are fields and which are somebody pressing Enter. Lives beside the API rather than here
+ * because the suite runs it for real against measured recordings, and a .tsx cannot be imported by Node. */
+import { classifyTyping, type TypingVerdict } from './typing';
 
 /* ------------------------------------------------------------------ what the transcript sends */
 
@@ -50,6 +53,9 @@ interface TStep {
   /** Typing only, and null when the resolver could not read the field. Absent means "not known". */
   control?: string | null;
   controlType?: string | null;
+  /** The UNLOCALISED accessibility role. `controlType` is the same thing in the reader's own language and
+   *  is useless to classify on - see api/_typing.mjs. Absent on Windows, whose agent writes no role. */
+  role?: string | null;
   keys?: number;
 }
 
@@ -73,6 +79,7 @@ interface Line {
   target: string | null;
   control: string | null;
   controlType: string | null;
+  role: string | null;
   keys: number;
   where: string | null;
 }
@@ -85,7 +92,10 @@ interface Blank {
   /** The step this belongs to, so a dropped step drops its blank. */
   n: number;
   control: string | null;
+  role: string | null;
   keys: number;
+  /** Is this a place a skill could type, and was that read or guessed? From classifyTyping(). */
+  verdict: TypingVerdict;
   fill: Fill;
   /** For `ask`: the parameter's name and type. For `fixed`: the text to type. */
   param: string;
@@ -218,6 +228,9 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   /* Anything the recording could not say. Free text, in the person's own words, appended to the goal. */
   const [notes, setNotes] = useState('');
   const [touchedGoal, setTouchedGoal] = useState(false);
+  /* The folded-away keypresses, shut by default. Open is the exception - it exists so a wrong classification
+   * is correctable, not so everybody reads a list of Enters. */
+  const [showAside, setShowAside] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -247,6 +260,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
               target: step.target ?? null,
               control: step.control ?? null,
               controlType: step.controlType ?? null,
+              role: step.role ?? null,
               keys: step.keys ?? 0,
               where,
             });
@@ -260,14 +274,24 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
 
         const taken = new Set<string>();
         setBlanks(flat.filter((l) => l.action === 'type').map((l) => {
-          const param = paramFromControl(l.control, taken);
-          taken.add(param);
+          /* Is this a field, or is it Enter? See api/_typing.mjs - on a measured 6,617-event recording nine
+           * of thirteen typing runs were one text box and the other four were keys pressed at a dialog. */
+          const verdict = classifyTyping(l, l.where);
+          /* A parameter name is only spent on something that could take one. Numbering them from the whole
+           * list would give the first real field a name like `text4`, counted off three keypresses. */
+          const param = verdict.field ? paramFromControl(l.control, taken) : '';
+          if (param) taken.add(param);
           return {
             n: l.n,
             control: l.control,
+            role: l.role,
             keys: l.keys,
-            /* Asking is the default, because that is what makes this a tool rather than a macro. */
-            fill: 'ask' as Fill,
+            verdict,
+            /* Asking is the default for a FIELD, because that is what makes this a tool rather than a macro.
+             * For everything else it is `skip`, and the screen says so in one line rather than in a card:
+             * offering to parameterise an Enter keypress is how nineteen questions happened. That default is
+             * stated, never silent - the objection to it was always the silence, not the choice. */
+            fill: (verdict.field ? 'ask' : 'skip') as Fill,
             param,
             type: typeFromControl(l.control),
             fixed: '',
@@ -281,6 +305,13 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   }, [rec.id]);
 
   const typing = useMemo(() => blanks.filter((b) => kept.has(b.n)), [blanks, kept]);
+  /* The two halves of step 2. `fields` get a card each and a real question; `aside` gets one line saying how
+   * many there were and that nothing will be typed at them, with a way in for the rare case the classifier
+   * was wrong. Splitting on the STORED verdict rather than re-running the classifier keeps the card a person
+   * is looking at from moving underneath them when they rename a control. */
+  const fields = useMemo(() => typing.filter((b) => b.verdict.field), [typing]);
+  const aside = useMemo(() => typing.filter((b) => !b.verdict.field), [typing]);
+  const asked = useMemo(() => typing.filter((b) => b.fill === 'ask'), [typing]);
 
   const derived = useMemo(
     () => (lines ? withNotes(buildGoal(lines, kept, blanks), notes) : ''),
@@ -315,7 +346,19 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   const keepNone = useCallback(() => setKept(new Set()), []);
 
   const edit = useCallback((n: number, patch: Partial<Blank>) => {
-    setBlanks((was) => was.map((b) => (b.n === n ? { ...b, ...patch } : b)));
+    setBlanks((was) => was.map((b) => {
+      if (b.n !== n) return b;
+      const next = { ...b, ...patch };
+      /* Anything switched to "ask" needs a name, and a blank the classifier folded away was never given one -
+       * spending parameter names on keypresses is what this change exists to stop. Derived at the moment it
+       * becomes needed, against the names already taken, so overriding the classifier does not hand somebody
+       * an empty box and a disabled Next button with no explanation. */
+      if (next.fill === 'ask' && !next.param.trim()) {
+        const taken = new Set(was.filter((o) => o.n !== n && o.param).map((o) => o.param));
+        next.param = paramFromControl(next.control, taken);
+      }
+      return next;
+    }));
   }, []);
 
   const unnamed = typing.some((b) => b.fill === 'ask' && !b.param.trim());
@@ -486,7 +529,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                 {/* The recorded typing, when there was any. A blank is a place the recording KNOWS
                   * something was typed and cannot know what; it is a different thing from the free text
                   * below, which is anything the recording could not know at all. */}
-                {typing.length > 0 && (
+                {fields.length > 0 && (
                 <>
                   <Typography variant="p" className="mb-2 text-ink-inactive text-[0.85rem] leading-relaxed">
                     MouseFlow records that a key was pressed and when, never which key — so what you typed is
@@ -509,13 +552,17 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     * what a long recording produces. A skill that asks for eighteen inputs before it will
                     * run is a skill nobody calls, so the way out of that has to be one click. */}
                   <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-stroke bg-surface-card2 px-3 py-2">
-                    <span className="text-[0.8rem] text-ink-secondary">Set all {typing.length}:</span>
+                    <span className="text-[0.8rem] text-ink-secondary">Set all {fields.length}:</span>
                     {(['ask', 'fixed', 'skip'] as Fill[]).map((f) => (
                       <Button
                         key={f}
                         variant="ghost"
                         size="xs"
-                        onClick={() => setBlanks((was) => was.map((b) => (kept.has(b.n) ? { ...b, fill: f } : b)))}
+                        /* Fields only. Sweeping the folded-away keypresses into "ask" alongside them would
+                         * undo the split in one click and put the nineteen questions straight back. */
+                        onClick={() => setBlanks((was) => was.map(
+                          (b) => (kept.has(b.n) && b.verdict.field ? { ...b, fill: f } : b),
+                        ))}
                       >
                         {f === 'ask' ? 'Ask each time' : f === 'fixed' ? 'Always the same' : 'Type nothing'}
                       </Button>
@@ -525,17 +572,17 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   {/* The number that decides whether this skill is usable, said where it is still cheap to
                     * change. The footer counts it too, but by then somebody has scrolled past nineteen
                     * cards. */}
-                  {typing.filter((b) => b.fill === 'ask').length > 4 && (
+                  {asked.length > 4 && (
                     <Typography variant="p" className="mb-3 rounded-lg border border-fb-attention/40 bg-fb-attention/5 px-3 py-2 text-[0.82rem] text-ink-body leading-relaxed">
                       This skill will ask for{' '}
-                      <strong>{typing.filter((b) => b.fill === 'ask').length} separate inputs</strong> every
+                      <strong>{asked.length} separate inputs</strong> every
                       time it runs, which is a lot to fill in. Keep <em>Ask each time</em> for the one or two
                       that really change, and set the rest to <em>Always the same</em> or <em>Type nothing</em>.
                     </Typography>
                   )}
 
                   <div className="grid gap-2.5">
-                    {typing.map((b) => (
+                    {fields.map((b) => (
                       <div key={b.n} className="rounded-lg border border-stroke p-3">
                         <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                           {/* A long name is a WINDOW TITLE, not a field: the recorder names the only thing
@@ -614,6 +661,66 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                 </>
                 )}
 
+                {/* What was NOT a field, in one line instead of one card each.
+                  *
+                  * This is the whole point of api/_typing.mjs. On the recording that prompted this, four of
+                  * thirteen typing runs were Enter and Escape pressed at a dialog - and the old screen asked
+                  * a three-way question about each of them, naming the dialog's own title as though it were a
+                  * text box. They are stated rather than hidden, because a skill that quietly declined to
+                  * type somewhere is a skill that looks broken on its first run, and one click opens them. */}
+                {aside.length > 0 && (
+                  <div className={cn('rounded-lg border border-stroke bg-surface-card2 px-3 py-2.5',
+                    fields.length > 0 && 'mt-3')}
+                  >
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <Keyboard aria-hidden className="size-4 shrink-0 text-ink-inactive" />
+                      <Typography variant="span" className="text-[0.83rem] text-ink-body">
+                        {aside.length} other place{aside.length === 1 ? '' : 's'} where keys were pressed —
+                        Enter, Tab, shortcuts. The skill leaves {aside.length === 1 ? 'it' : 'them'} alone.
+                      </Typography>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="ms-auto"
+                        onClick={() => setShowAside((was) => !was)}
+                      >
+                        {showAside ? 'Hide' : 'Show'}
+                      </Button>
+                    </div>
+                    {showAside && (
+                      <ul className="mt-2 grid gap-1 border-stroke border-t pt-2">
+                        {aside.map((b) => (
+                          <li key={b.n} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                            <span className="text-[0.78rem] text-ink-inactive tabular-nums">step {b.n}</span>
+                            <span
+                              title={b.control || undefined}
+                              className="max-w-[22rem] truncate text-[0.82rem] text-ink-secondary"
+                            >
+                              {b.control || 'no name'}
+                            </span>
+                            <span className="text-[0.76rem] text-ink-inactive">
+                              {b.keys} keystroke{b.keys === 1 ? '' : 's'} · {b.verdict.why}
+                              {/* Read off the role, or guessed from the shape of the run. The difference
+                                * matters to somebody deciding whether to override it, so it is shown. */}
+                              {b.verdict.sure ? '' : ' (a guess)'}
+                            </span>
+                            <button
+                              type="button"
+                              /* The verdict moves with it. Setting only `fill` would leave the blank on this
+                                * list, asked for on every run and with nowhere to name it - a required
+                                * parameter with no card is a Next button that will not light up. */
+                              onClick={() => edit(b.n, { fill: 'ask', verdict: { ...b.verdict, field: true } })}
+                              className="ms-auto rounded-md px-2 py-0.5 text-[0.78rem] text-ink-secondary hover:bg-state-hover"
+                            >
+                              It is a field →
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+
                 {/* Anything the recording could not say, in the person's own words.
                   *
                   * This step used to be a dead end whenever nothing had been typed: one sentence explaining
@@ -671,11 +778,11 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   />
                 </label>
                 <Typography variant="p" className="text-ink-inactive text-[0.8rem] leading-relaxed">
-                  {typing.filter((b) => b.fill === 'ask').length > 0 ? (
+                  {asked.length > 0 ? (
                     <>
                       It will ask for{' '}
                       <span className="font-mono text-ink-body">
-                        {typing.filter((b) => b.fill === 'ask').map((b) => b.param).join(', ')}
+                        {asked.map((b) => b.param).join(', ')}
                       </span>
                       {' '}every time it runs — including when an AI calls it, where those become required
                       arguments.{' '}
@@ -691,12 +798,10 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
           <footer className="flex items-center gap-2 border-stroke border-t px-4 py-3">
             <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
               {stage === 0 && lines ? `${kept.size} of ${lines.length} steps kept` : ''}
-              {stage === 1 && typing.length > 0
-                ? `${typing.filter((b) => b.fill === 'ask').length} will be asked for`
-                : ''}
+              {stage === 1 && fields.length > 0 ? `${asked.length} will be asked for` : ''}
               {/* The step can now be used with no blanks at all, so the footer had nothing to say on the
                 * commonest path through it. */}
-              {stage === 1 && typing.length === 0
+              {stage === 1 && fields.length === 0
                 ? (notes.trim() ? 'Your instructions will be added' : 'Optional — you can go straight on')
                 : ''}
             </Typography>

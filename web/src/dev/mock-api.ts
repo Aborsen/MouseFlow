@@ -415,18 +415,23 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           // where the work happened.
           n: 1, where: { kind: 'app', label: 'Inbox — victorg — Outlook', detail: 'OUTLOOK' }, startMs: 0, seconds: 41,
           steps: [
-            { n: 1, at: 0, ms: 0, action: 'click', what: 'clicked the "New mail" button in OUTLOOK', target: '1030,1053', note: null, control: 'New mail', controlType: 'button', keys: 0 },
-            { n: 2, at: 4100, ms: 210, action: 'click', what: 'clicked the "To" edit box in OUTLOOK', target: '158,271', note: null, control: 'To', controlType: 'edit box', keys: 0 },
+            { n: 1, at: 0, ms: 0, action: 'click', what: 'clicked the "New mail" button in OUTLOOK', target: '1030,1053', note: null, control: 'New mail', controlType: 'button', role: 'AXButton', keys: 0 },
+            { n: 2, at: 4100, ms: 210, action: 'click', what: 'clicked the "To" edit box in OUTLOOK', target: '158,271', note: null, control: 'To', controlType: 'edit box', role: 'AXTextField', keys: 0 },
             { n: 3, at: 9400, ms: 180, action: 'click', what: 'clicked at 980,612 in OUTLOOK', target: '980,612', note: 'OUTLOOK was under the pointer, but nothing there had a name the agent could read', control: null, controlType: null, keys: 0 },
-            { n: 4, at: 11000, ms: 47200, action: 'type', what: 'typed for 47.2s - 132 keystrokes into the "Message body" edit box in OUTLOOK', target: null, note: 'which keys is not recorded, deliberately: the agent reads that a key was pressed and when, never which one, so nothing here can carry text - and a replay cannot reproduce it', control: 'Message body', controlType: 'edit box', keys: 132 },
+            { n: 4, at: 11000, ms: 47200, action: 'type', what: 'typed for 47.2s - 132 keystrokes into the "Message body" edit box in OUTLOOK', target: null, note: 'which keys is not recorded, deliberately: the agent reads that a key was pressed and when, never which one, so nothing here can carry text - and a replay cannot reproduce it', control: 'Message body', controlType: 'edit box', role: 'AXTextArea', keys: 132 },
           ],
           note: null,
         },
         {
           n: 2, where: { kind: 'app', label: 'Book1 - Excel', detail: 'EXCEL' }, startMs: 41000, seconds: 33,
           steps: [
-            { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null, control: 'B4', controlType: 'cell', keys: 0 },
-            { n: 6, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches in EXCEL', target: null, note: null, control: null, controlType: null, keys: 0 },
+            { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null, control: 'B4', controlType: 'cell', role: 'AXCell', keys: 0 },
+            { n: 6, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches in EXCEL', target: null, note: null, control: null, controlType: null, role: null, keys: 0 },
+            /* Two typing runs that are NOT fields - Enter and Escape at a dialog, which the hit-test names
+             * after the dialog. Measured on a real recording (see api/_typing.mjs); here so that the folded
+             * -away half of the wizard's second step is reachable in dev without a real machine. */
+            { n: 7, at: 58000, ms: 400, action: 'type', what: 'pressed a key into the "Save as" dialog in EXCEL', target: null, note: null, control: 'Save as', controlType: 'диалоговое окно', role: 'AXGroup', keys: 2 },
+            { n: 8, at: 61000, ms: 300, action: 'type', what: 'pressed a key into the "Save as" dialog in EXCEL', target: null, note: null, control: 'Save as', controlType: 'диалоговое окно', role: 'AXGroup', keys: 1 },
           ],
           note: null,
         },

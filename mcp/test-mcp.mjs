@@ -823,12 +823,87 @@ check('what somebody writes goes into the goal, which is what actually runs',
 check('the three choices are explained, not left as unlabelled buttons repeated N times',
   /becomes an input on the skill/.test(wizard) && /leaves that field\s*\n?\s*alone/.test(wizard));
 check('and they can be set for all of them at once, since a long recording makes nineteen',
-  /Set all \{typing\.length\}/.test(wizard));
+  /Set all \{fields\.length\}/.test(wizard));
 check('a skill about to demand a pile of inputs says so while it is still cheap to change',
   /separate inputs<\/strong> every/.test(wizard));
 check('a window title used as a field name is cut rather than wrapped over three lines',
   /max-w-\[26rem\] truncate/.test(wizard));
 check('and one keystroke is not "1 keystrokes"', /keystroke\$\{b\.keys === 1 \? '' : 's'\}/.test(wizard));
+
+/* The classifier, run for real rather than checked by regex.
+ *
+ * The cases below are not invented. They are the thirteen typing runs of a 6,617-event recording on this
+ * account, read out of the database: nine into one AXTextArea named "Prompt", four into the AXGroup of a
+ * dialog, which is what Enter and Escape look like when the hit-test finds the container. The old wizard
+ * asked a three-way question about all thirteen. */
+group('a typing run is a field, or it is somebody pressing Enter');
+const { classifyTyping, splitTyping } = await import('../api/_typing.mjs');
+
+const MEASURED = [
+  { keys: 60, role: 'AXTextArea', control: 'Prompt' },
+  { keys: 7, role: 'AXGroup', control: 'Make a skill from “MouseFlow 22/08 13:10:16”' },
+  { keys: 6, role: 'AXGroup', control: 'Make a skill from “MouseFlow 22/08 13:10:16”' },
+  { keys: 70, role: 'AXTextArea', control: 'Prompt' },
+  { keys: 53, role: 'AXTextArea', control: 'Prompt' },
+  { keys: 116, role: 'AXTextArea', control: 'Prompt' },
+  { keys: 3, role: 'AXTextArea', control: 'Prompt' },
+  { keys: 2, role: 'AXGroup', control: 'Make a skill from “MouseFlow 22/08 13:10:16”' },
+  { keys: 1, role: 'AXGroup', control: 'Make a skill from “MouseFlow 22/08 13:10:16”' },
+  { keys: 261, role: 'AXTextArea', control: 'Prompt' },
+  { keys: 15, role: 'AXTextArea', control: 'Prompt' },
+  { keys: 1, role: 'AXTextArea', control: 'What it will do — edit it freely, this is what the skill carries out' },
+  { keys: 61, role: 'AXTextArea', control: 'Prompt' },
+];
+const split = splitTyping(MEASURED);
+check('the measured recording splits nine fields from four keypresses',
+  split.fields.length === 9 && split.aside.length === 4,
+  `${split.fields.length} fields, ${split.aside.length} aside`);
+check('and every one of those verdicts was read off the role, not guessed',
+  [...split.fields, ...split.aside].every((b) => b.verdict.sure));
+/* Run 7 is three keystrokes into a genuine text box and run 12 is one. A rule that ranked keystroke count
+ * above the role would have thrown both away - which is why the count is only consulted without a role. */
+check('a three-keystroke run in a real text box is still a field',
+  classifyTyping({ keys: 3, role: 'AXTextArea', control: 'Prompt' }).field);
+check('and a one-keystroke run in one is too',
+  classifyTyping({ keys: 1, role: 'AXTextArea', control: 'x' }).field);
+
+/* `type` is the platform's word in the READER's language. This account alone produced Russian and Ukrainian
+ * for it, so anything matching English control-type words would classify a Ukrainian machine as unknown. */
+check('the localised control type is never what decides it',
+  !/область|кнопка|edit box|text area/i.test(read('../api/_typing.mjs').split('const TEXT_ROLES')[1] || ''));
+
+/* Windows writes no role at all, so everything below is the guess path. */
+check('with no role, a name that is the window’s own name is not a field',
+  classifyTyping({ keys: 9, control: 'Untitled — Notepad' }, 'Untitled — Notepad').field === false);
+check('and that verdict admits it is a guess',
+  classifyTyping({ keys: 9, control: 'Untitled — Notepad' }, 'Untitled — Notepad').sure === false);
+check('with no role and no name there is nothing to aim at, so nothing to ask about',
+  classifyTyping({ keys: 40, control: null }).field === false);
+check('with no role, one keystroke is a shortcut',
+  classifyTyping({ keys: 1, control: 'Subject' }).field === false);
+check('with no role, a long run into a named control is taken as a field',
+  classifyTyping({ keys: 40, control: 'Subject' }, 'Untitled - Message').field === true);
+check('an unknown role falls through to the guess rather than to a confident no',
+  classifyTyping({ keys: 40, role: 'AXSomethingNew', control: 'Subject' }).sure === false);
+/* A password box is a text box. Hiding it would leave a skill that silently types nothing there. */
+check('a secure field is reported as a field, so the skill does not quietly skip it',
+  classifyTyping({ keys: 12, role: 'AXSecureTextField', control: 'Password' }).field);
+
+group('and the wizard folds the rest away instead of asking about them');
+check('what is not a field defaults to typing nothing, rather than to a required input',
+  /fill: \(verdict\.field \? 'ask' : 'skip'\) as Fill/.test(wizard));
+check('and that default is stated on screen, not silent',
+  /other place\{aside\.length === 1 \? '' : 's'\} where keys were pressed/.test(wizard));
+check('a wrong verdict is one click to overturn',
+  /It is a field →/.test(wizard) && /fill: 'ask', verdict: \{ \.\.\.b\.verdict, field: true \}/.test(wizard));
+check('a guess is labelled as one, since that is what decides whether to overturn it',
+  /b\.verdict\.sure \? '' : ' \(a guess\)'/.test(wizard));
+check('parameter names are spent on fields only, so the first real one is not called text4',
+  /verdict\.field \? paramFromControl\(l\.control, taken\) : ''/.test(wizard));
+check('overturning one names it, so Next is never disabled with an empty box and no reason',
+  /next\.fill === 'ask' && !next\.param\.trim\(\)/.test(wizard));
+check('the transcript sends the unlocalised role, which is what any of this rests on',
+  /role: ctx && ctx\.role \? ctx\.role : null/.test(read('../api/_transcript.js')));
 
 check('the save button carries no icon, which wrapped it onto two lines',
   !/<Check className/.test(wizard));
