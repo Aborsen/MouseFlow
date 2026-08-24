@@ -170,6 +170,31 @@ export const pulse = (port: number) => agentCall<{ ok: true; grid: string }>(por
 export const doAction = (port: number, body: string) =>
   agentCall<{ ok: true }>(port, '/do', { method: 'POST', body, contentType: 'text/plain' });
 
+/* ------------------------------------------------------------------ a machine, whichever one it is
+
+ * The four things the decision loop does to a computer, as an interface rather than a port number.
+ *
+ * The loop never needed to be on the machine it drives - its model call already goes out over the network -
+ * and the only reason it was is these four calls to 127.0.0.1. Named, they can be answered another way: by
+ * an agent that asked the deployment for work and is holding a request open, waiting to be told what to do
+ * next. The loop cannot tell the two apart, which is the whole point of writing it down like this. */
+export interface Machine {
+  windows(): Promise<{ ok: true; windows: AgentWindow[] }>;
+  pulse(): Promise<{ ok: true; grid: string }>;
+  shot(width?: number): Promise<Shot>;
+  do(body: string): Promise<{ ok: true }>;
+}
+
+/** This computer, over loopback - exactly what every caller did before there was an interface. */
+export function localMachine(port: number): Machine {
+  return {
+    windows: () => windows(port),
+    pulse: () => pulse(port),
+    shot: (width) => shot(port, width),
+    do: (body) => doAction(port, body),
+  };
+}
+
 /* `moveMs` thins the pointer path for a session meant to last hours - see features/record/long-session.ts
  * for the arithmetic. Omitted for an ordinary recording, and then the agent keeps the default it was started
  * with, so nothing about a short recording changes. */

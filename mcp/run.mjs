@@ -194,7 +194,7 @@ export function makeRunner({ lib, port, base, token, say }) {
     try {
       result = await lib.engine.runOnDesktop({
         goal: text,
-        port,
+        machine: lib.agent.localMachine(port),
         onEvent: (event) => {
           if (event.type === 'tool' && event.name) seen.push(event.name);
           if (event.type === 'error') say(`run: ${event.message || 'error'}`);

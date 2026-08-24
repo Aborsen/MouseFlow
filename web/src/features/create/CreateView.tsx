@@ -32,7 +32,7 @@ import {
   Thread,
   UserTurn,
 } from '@/components/chat';
-import { AGENT_WANTS, shot, windows } from '@/lib/agent';
+import { AGENT_WANTS, localMachine, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
 import { push } from '@/lib/api';
 import {
@@ -351,7 +351,7 @@ export const CreateView = () => {
             + 'activate or switch to anything else. If what this needs is not on that window, call finish '
             + 'and say so rather than going to look for it.'
           : text,
-        port: state.port,
+        machine: localMachine(state.port),
         onEvent: (event) => updateLive((t) => ({ ...t, feed: [...t.feed, event] })),
         isAborted: () => abort.current,
       })

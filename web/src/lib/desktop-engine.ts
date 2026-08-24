@@ -19,7 +19,8 @@
  *   finish must claim success   ok is required; anything else is a failure, because a run that gave up
  *                 used to report as green.
  */
-import { AgentError, doAction, pulse, shot, windows } from './agent';
+import { AgentError } from './agent';
+import type { Machine } from './agent';
 import { desktopModel } from './model-config';
 
 export const WAVE_TURNS = 24;
@@ -274,9 +275,9 @@ export function actionBody(name: string, input: Record<string, any>, frame: Shot
 }
 
 /** What is already open, in one line each - the mistake a picture cannot prevent. */
-export async function openWindows(port: number): Promise<string | null> {
+export async function openWindows(machine: Machine): Promise<string | null> {
   try {
-    const body = await windows(port);
+    const body = await machine.windows();
     if (!body.windows.length) return null;
     return body.windows.slice(0, 24).map((w) => {
       const state = w.active ? 'in front' : w.minimized ? 'minimised' : 'open behind';
@@ -326,7 +327,7 @@ async function fingerprintPng(png: string): Promise<Uint8Array | null> {
   }
 }
 
-async function settle(port: number, limitMs: number, aborted: () => boolean, onTick: (ms: number) => void) {
+async function settle(machine: Machine, limitMs: number, aborted: () => boolean, onTick: (ms: number) => void) {
   const started = Date.now();
   let last: Uint8Array | null = null;
   let quietSince: number | null = null;
@@ -337,13 +338,13 @@ async function settle(port: number, limitMs: number, aborted: () => boolean, onT
 
     let now: Uint8Array | null = null;
     try {
-      now = decodeGrid((await pulse(port)).grid);
+      now = decodeGrid((await machine.pulse()).grid);
     } catch (_) {
       /* An agent too old to fingerprint for us - /pulse arrived in 0.4.0 - so fall back to a small picture
        * and do the same reduction here. Slower and heavier, but a wait that works is worth more than a wait
        * that returns instantly and leaves the model to guess. */
       try {
-        const frame = await shot(port, 640);
+        const frame = await machine.shot(640);
         now = await fingerprintPng(frame.png);
       } catch (_) {
         break;                            // the agent went away; the next turn's shot reports it properly
@@ -423,7 +424,8 @@ async function ask(body: unknown, signal?: AbortSignal) {
 
 interface Options {
   goal: string;
-  port: number;
+  /** Какой компьютер вести. Раньше здесь стоял номер порта - см. Machine в agent.ts. */
+  machine: Machine;
   onEvent: (event: RunEvent) => void;
   isAborted: () => boolean;
   /** Чекпоинты, которые модель обещала пройти. Передаются - значит цикл о них знает и объявляет их; не
@@ -435,7 +437,7 @@ interface Options {
 }
 
 export async function runOnDesktop({
-  goal, port, onEvent, isAborted, checkpoints, onCheckpoint,
+  goal, machine, onEvent, isAborted, checkpoints, onCheckpoint,
 }: Options): Promise<RunResult> {
   /* Шлюз работает только когда есть и план, и кто-то, кто ответит. Одно без другого - это либо инструмент,
    * объявляющий чекпоинты, которых нет, либо пауза, из которой никто не выпустит. */
@@ -471,7 +473,7 @@ export async function runOnDesktop({
     if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
 
     const outcome = await runWave({
-      messages, gate, plan, port, onEvent, isAborted, steps, wave, stepFrom: stepNo,
+      messages, gate, plan, machine, onEvent, isAborted, steps, wave, stepFrom: stepNo,
     });
     stepNo = outcome.stepNo;
     if (outcome.result) return outcome.result;
@@ -502,14 +504,14 @@ async function runWave(o: {
   messages: unknown[];
   gate?: Options['onCheckpoint'];
   plan?: Options['checkpoints'];
-  port: number;
+  machine: Machine;
   onEvent: (event: RunEvent) => void;
   isAborted: () => boolean;
   steps: RunResult['steps'];
   wave: number;
   stepFrom: number;
 }): Promise<{ stepNo: number; result?: RunResult }> {
-  const { messages, port, onEvent, isAborted, steps, wave } = o;
+  const { messages, machine, onEvent, isAborted, steps, wave } = o;
   let stepNo = o.stepFrom;
   let shotWidth = DEFAULT_SHOT_W;
 
@@ -518,7 +520,7 @@ async function runWave(o: {
 
     let frame;
     try {
-      frame = await shot(port, shotWidth === DEFAULT_SHOT_W ? undefined : shotWidth);
+      frame = await machine.shot(shotWidth === DEFAULT_SHOT_W ? undefined : shotWidth);
     } catch (err) {
       const offline = err instanceof AgentError && err.offline;
       return {
@@ -557,7 +559,7 @@ async function runWave(o: {
       }
     }
 
-    const open = await openWindows(port);
+    const open = await openWindows(machine);
     messages.push({
       role: 'user',
       content: [
@@ -723,7 +725,7 @@ async function runWave(o: {
 
       if (use.name === 'wait') {
         const limit = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input?.ms) || 2000));
-        const outcome = await settle(port, limit, isAborted, (waited) =>
+        const outcome = await settle(machine, limit, isAborted, (waited) =>
           onEvent({ type: 'waiting', ms: waited, limit, reason: String(use.input?.reason ?? '') }));
         results.push({
           type: 'tool_result',
@@ -747,7 +749,7 @@ async function runWave(o: {
       }
 
       try {
-        await doAction(port, body);
+        await machine.do(body);
         results.push({ type: 'tool_result', tool_use_id: use.id, content: 'done' });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'failed';
