@@ -820,6 +820,16 @@ check('and it always offers a field, so it is never a dead end',
  * a model reads and carries out — text in a field nobody executes would be a note to self. */
 check('what somebody writes goes into the goal, which is what actually runs',
   /function withNotes/.test(wizard) && /withNotes\(buildGoal\(lines, kept, blanks\), notes\)/.test(wizard));
+check('the three choices are explained, not left as unlabelled buttons repeated N times',
+  /becomes an input on the skill/.test(wizard) && /leaves that field\s*\n?\s*alone/.test(wizard));
+check('and they can be set for all of them at once, since a long recording makes nineteen',
+  /Set all \{typing\.length\}/.test(wizard));
+check('a skill about to demand a pile of inputs says so while it is still cheap to change',
+  /separate inputs<\/strong> every/.test(wizard));
+check('a window title used as a field name is cut rather than wrapped over three lines',
+  /max-w-\[26rem\] truncate/.test(wizard));
+check('and one keystroke is not "1 keystrokes"', /keystroke\$\{b\.keys === 1 \? '' : 's'\}/.test(wizard));
+
 check('the save button carries no icon, which wrapped it onto two lines',
   !/<Check className/.test(wizard));
 

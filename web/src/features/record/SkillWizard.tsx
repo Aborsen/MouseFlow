@@ -488,19 +488,68 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   * below, which is anything the recording could not know at all. */}
                 {typing.length > 0 && (
                 <>
-                  <Typography variant="p" className="mb-3 text-ink-inactive text-[0.85rem] leading-relaxed">
+                  <Typography variant="p" className="mb-2 text-ink-inactive text-[0.85rem] leading-relaxed">
                     MouseFlow records that a key was pressed and when, never which key — so what you typed is
-                    not in the recording and cannot be. Say what the skill should type instead.
+                    not in the recording and cannot be. Each card below is one place the recording knows you
+                    typed something and cannot know what.
                   </Typography>
+                  {/* What the three buttons MEAN for the finished skill. Without this the screen is three
+                    * unlabelled choices repeated N times, and the only way to find out what they do is to
+                    * save and run it. */}
+                  <ul className="mb-3 grid gap-0.5 text-[0.82rem] text-ink-inactive leading-relaxed">
+                    <li><span className="text-ink-body">Ask each time</span> — becomes an input on the skill;
+                      whoever runs it has to supply the text.</li>
+                    <li><span className="text-ink-body">Always the same</span> — you write it once here and
+                      the skill types that on every run.</li>
+                    <li><span className="text-ink-body">Type nothing</span> — the skill leaves that field
+                      alone.</li>
+                  </ul>
+
+                  {/* Setting them one at a time is fine for two and absurd for nineteen — and nineteen is
+                    * what a long recording produces. A skill that asks for eighteen inputs before it will
+                    * run is a skill nobody calls, so the way out of that has to be one click. */}
+                  <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-stroke bg-surface-card2 px-3 py-2">
+                    <span className="text-[0.8rem] text-ink-secondary">Set all {typing.length}:</span>
+                    {(['ask', 'fixed', 'skip'] as Fill[]).map((f) => (
+                      <Button
+                        key={f}
+                        variant="ghost"
+                        size="xs"
+                        onClick={() => setBlanks((was) => was.map((b) => (kept.has(b.n) ? { ...b, fill: f } : b)))}
+                      >
+                        {f === 'ask' ? 'Ask each time' : f === 'fixed' ? 'Always the same' : 'Type nothing'}
+                      </Button>
+                    ))}
+                  </div>
+
+                  {/* The number that decides whether this skill is usable, said where it is still cheap to
+                    * change. The footer counts it too, but by then somebody has scrolled past nineteen
+                    * cards. */}
+                  {typing.filter((b) => b.fill === 'ask').length > 4 && (
+                    <Typography variant="p" className="mb-3 rounded-lg border border-fb-attention/40 bg-fb-attention/5 px-3 py-2 text-[0.82rem] text-ink-body leading-relaxed">
+                      This skill will ask for{' '}
+                      <strong>{typing.filter((b) => b.fill === 'ask').length} separate inputs</strong> every
+                      time it runs, which is a lot to fill in. Keep <em>Ask each time</em> for the one or two
+                      that really change, and set the rest to <em>Always the same</em> or <em>Type nothing</em>.
+                    </Typography>
+                  )}
+
                   <div className="grid gap-2.5">
                     {typing.map((b) => (
                       <div key={b.n} className="rounded-lg border border-stroke p-3">
                         <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                          <span className="font-medium text-[0.9rem] text-ink-primary">
+                          {/* A long name is a WINDOW TITLE, not a field: the recorder names the only thing
+                            * it could see, and on a screen with no named control that is the window. Cut
+                            * rather than wrapped, because three lines of somebody else's window title is
+                            * worse than an ellipsis. */}
+                          <span
+                            title={b.control || undefined}
+                            className="max-w-[26rem] truncate font-medium text-[0.9rem] text-ink-primary"
+                          >
                             {b.control ? `Into “${b.control}”` : 'Into a field it could not name'}
                           </span>
                           <span className="text-[0.76rem] text-ink-inactive">
-                            step {b.n}{b.keys ? ` · ${b.keys} keystrokes` : ''}
+                            step {b.n}{b.keys ? ` · ${b.keys} keystroke${b.keys === 1 ? '' : 's'}` : ''}
                           </span>
                         </div>
 
