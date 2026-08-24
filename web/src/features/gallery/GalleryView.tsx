@@ -14,11 +14,15 @@
  * gallery routed in a different style from every other screen.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { ArrowLeft, ArrowRight, Search, Share2, Sparkles } from 'lucide-react';
+import {
+  ArrowLeft, ArrowRight, Share2, Sparkles,
+} from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { Said } from '@/components/Said';
+import { SearchField } from '@/components/SearchField';
 import { type GallerySkill, galleryGet, galleryList, push } from '@/lib/api';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
@@ -275,15 +279,12 @@ export const GalleryView = () => {
             ))}
           </div>
 
-          <label className="relative min-w-[14rem] flex-1">
-            <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-ink-inactive" />
-            <input
-              value={inner}
-              onChange={(ev) => { setInner(ev.target.value); setPage(1); }}
-              placeholder="Search this collection"
-              className="w-full rounded-md border-stroke border bg-surface-card2 py-2 pl-8 pr-3 text-[0.88rem] text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
-            />
-          </label>
+          <SearchField
+            className="min-w-0 flex-1"
+            value={inner}
+            onChange={(next) => { setInner(next); setPage(1); }}
+            placeholder="Search this collection"
+          />
 
           {apps.length > 0 && (
             <select
@@ -307,14 +308,7 @@ export const GalleryView = () => {
           </select>
         </div>
 
-        {said && (
-          <Typography
-            variant="p"
-            className={cn('mb-3 text-[0.86rem]', said.kind === 'bad' ? 'text-fb-red-text' : 'text-fb-green')}
-          >
-            {said.text}
-          </Typography>
-        )}
+        <Said note={said} className="mb-3" />
 
         {shown.length === 0 ? (
           <Typography variant="p" className="text-ink-inactive">
@@ -387,15 +381,13 @@ export const GalleryView = () => {
           </Typography>
         </div>
 
-        <label className="relative block min-w-0">
-          <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-ink-inactive" />
-          <input
-            value={term}
-            onChange={(ev) => setTerm(ev.target.value)}
-            placeholder="Search every published flow"
-            className="w-full rounded-lg border-stroke border bg-surface-card2 py-2.5 pl-9 pr-3 text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
-          />
-        </label>
+        <SearchField
+          className="min-w-0"
+          size="lg"
+          value={term}
+          onChange={setTerm}
+          placeholder="Search every published flow"
+        />
       </div>
 
       <div className="mb-5 flex flex-wrap items-center gap-2">
@@ -445,14 +437,7 @@ export const GalleryView = () => {
         </Button>
       </div>
 
-      {said && (
-        <Typography
-          variant="p"
-          className={cn('mb-3 text-[0.86rem]', said.kind === 'bad' ? 'text-fb-red-text' : 'text-fb-green')}
-        >
-          {said.text}
-        </Typography>
-      )}
+      <Said note={said} className="mb-3" />
 
       {skills === null ? (
         <Typography variant="p" className="text-ink-inactive">Loading…</Typography>

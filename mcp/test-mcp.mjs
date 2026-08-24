@@ -938,9 +938,12 @@ check('it sits in a card like the block under it, not loose on the page',
 check('its columns sort, which is the one thing a table of anything has to do',
   /const SORTABLE: \{ key: SortKey; label: string \}\[\]/.test(skillsView)
     && /onClick=\{\(\) => sortBy\(key\)\}/.test(skillsView));
-/* A second click on the same column reverses; a first click on a new one starts the way that column reads. */
+/* A second click on the same column reverses; a first click on a new one starts the way that column reads.
+ * The arrow itself moved into components/SortButton.tsx when the two tables stopped keeping a copy each -
+ * so the page is checked for USING it, and the arrow is checked where the arrow is. */
 check('and the direction is shown rather than left to be guessed',
-  /sort\.by === key && \(/.test(skillsView) && /!sort\.asc && 'rotate-180'/.test(skillsView));
+  /<SortButton[\s\S]{0,400}active=\{sort\.by === key\}[\s\S]{0,80}asc=\{sort\.asc\}/.test(skillsView)
+    && /!asc && 'rotate-180'/.test(read('../web/src/components/SortButton.tsx')));
 check('names sort numerically, since every one of them ends in a date or a number',
   /numeric: true, sensitivity: 'base'/.test(skillsView));
 /* Structure was a phrase assembled per row, so sorting it ordered rows by their own wording. Dropped. */
@@ -981,7 +984,8 @@ check('its columns are buttons too',
   /const SORTABLE: \{ key: SortKey; label: string; title\?: string \}\[\]/.test(recTable)
     && /onClick=\{\(\) => sortBy\(key\)\}/.test(recTable));
 check('and it shows which column is deciding, and which way',
-  /!sort\.asc && 'rotate-180'/.test(recTable));
+  /<SortButton[\s\S]{0,240}active=\{sort\.by === key\}[\s\S]{0,80}asc=\{sort\.asc\}/.test(recTable)
+    && /!asc && 'rotate-180'/.test(read('../web/src/components/SortButton.tsx')));
 /* A sparkline has nothing alphabetical about it; what somebody reads off that column is how much is in the
  * recording, so that is what it sorts on. */
 check('the sparkline column sorts on how much was recorded',

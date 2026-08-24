@@ -47,6 +47,8 @@ import { Button } from '@insightis/ui/Button';
 import { Checkbox } from '@insightis/ui/Checkbox';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { ArmedButton } from '@/components/ArmedButton';
+import { Said } from '@/components/Said';
 import { SelectionBar } from '@/components/SelectionBar';
 import { useAccount } from '@/shell/AccountProvider';
 import { roleOf, SKILL_ROLE } from '@/lib/flow-role';
@@ -404,27 +406,7 @@ export const TeamView = () => {
           </Button>
         </header>
 
-        {said && (
-          <div
-            role="status"
-            className={cn(
-              'mb-4 rounded-lg border px-3.5 py-2.5 text-[0.85rem] leading-relaxed',
-              said.kind === 'bad'
-                ? 'border-fb-red/40 bg-fb-red/5 text-fb-red-text'
-                : 'border-fb-green/40 bg-fb-green/5 text-ink-body',
-            )}
-          >
-            {said.text}
-            <button
-              type="button"
-              onClick={() => setSaid(null)}
-              aria-label="Dismiss"
-              className="ms-2 align-middle text-ink-inactive hover:text-ink-primary"
-            >
-              <X className="inline size-3.5" />
-            </button>
-          </div>
-        )}
+        <Said note={said} onDismiss={() => setSaid(null)} className="mb-4" />
 
         {/* Naming it happens here rather than in a dialog: it is one field, and a dialog for one field is a
           * second window to open and close for something that takes four seconds. */}
@@ -1027,26 +1009,26 @@ export const TeamView = () => {
                     >
                       Rename
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy}
+                    <ArmedButton
+                      label="Delete this team"
+                      armedLabel="Delete it — press again"
                       className="ms-auto text-fb-red-text"
-                      leftSlot={<Trash2 className="size-3.5" />}
-                      onClick={() => {
-                        if (armed !== detail.team.id) {
-                          setArmed(detail.team.id);
-                          setSaid({ text: 'That cannot be undone. Press again to delete the team.', kind: 'bad' });
-                          return;
-                        }
-                        void act(
-                          () => call(`?id=${encodeURIComponent(detail.team.id)}&team=1`, { method: 'DELETE' }),
-                          'Team deleted. Nobody’s recordings were touched — a team never held any.',
-                        ).then(() => setOpenId(null));
+                      restingVariant="ghost"
+                      icon={<Trash2 className="size-3.5" />}
+                      armed={armed === detail.team.id}
+                      /* The warning is part of the first press here, because a team is not a row somebody
+                       * can make again: it is other people's access. */
+                      onArm={() => {
+                        setArmed(detail.team.id);
+                        setSaid({ text: 'That cannot be undone. Press again to delete the team.', kind: 'bad' });
                       }}
-                    >
-                      {armed === detail.team.id ? 'Delete it — press again' : 'Delete this team'}
-                    </Button>
+                      onDisarm={() => setArmed(null)}
+                      onConfirm={() => void act(
+                        () => call(`?id=${encodeURIComponent(detail.team.id)}&team=1`, { method: 'DELETE' }),
+                        'Team deleted. Nobody’s recordings were touched — a team never held any.',
+                      ).then(() => setOpenId(null))}
+                      busy={busy}
+                    />
                   </div>
                 )}
               </>

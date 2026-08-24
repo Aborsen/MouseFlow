@@ -38,6 +38,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { Said } from '@/components/Said';
 import { pull, push } from '@/lib/api';
 import { SKILL_ROLE } from '@/lib/flow-role';
 
@@ -801,17 +802,9 @@ export const TranscriptPanel = ({
         {/* Under the actions, where it belongs: at the bottom it pushed up the text somebody was reading at
           * the exact moment it appeared. Transient, so it may change the header's height - which a header can
           * afford and a footer over a scrolling body cannot. */}
-        {note && (
-          <Typography
-            variant="p"
-            className={cn(
-              'mt-1.5 break-words text-[0.78rem]',
-              note.kind === 'good' ? 'text-fb-green' : 'text-fb-red-text',
-            )}
-          >
-            {note.text}
-          </Typography>
-        )}
+        {/* Inline rather than a box: this sits inside a panel whose footer cannot afford one. Announced
+            all the same - see the note in Said. */}
+        <Said note={note} variant="inline" className="mt-1.5" />
 
         {data && (
           <>

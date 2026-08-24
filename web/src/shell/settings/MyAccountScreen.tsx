@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { cn } from '@insightis/ui/cn';
+import { ArmedButton } from '@/components/ArmedButton';
 import { type Device, devices, mintDeviceToken, eraseAccount, revokeDevice, signOut } from '@/lib/api';
 import { useAccount } from '../AccountProvider';
 import { Row, type Say } from '../SettingsDialog';
@@ -253,16 +254,20 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
         label="Delete my data"
         note="Every flow, every run and every paired device. Anything you published is withdrawn. Your Google account is not ours to delete."
       >
-        <Button
-          variant={armed ? 'destructive' : 'destructiveOutline'}
-          size="sm"
-          isLoading={busy}
-          onClick={async () => {
-            if (!armed) {
-              setArmed(true);
-              say({ text: 'This cannot be undone. Press again to go ahead.', kind: 'bad' });
-              return;
-            }
+        <ArmedButton
+          label="Delete my data"
+          armedLabel="Delete everything — press again"
+          restingVariant="destructiveOutline"
+          armed={armed}
+          /* The warning belongs to the FIRST press here: everything on the account goes, and there is no
+           * row left afterwards to explain it. */
+          onArm={() => {
+            setArmed(true);
+            say({ text: 'This cannot be undone. Press again to go ahead.', kind: 'bad' });
+          }}
+          onDisarm={() => setArmed(false)}
+          busy={busy}
+          onConfirm={async () => {
             setBusy(true);
             try {
               const body = await eraseAccount();
@@ -298,9 +303,7 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
               });
             }
           }}
-        >
-          {armed ? 'Delete everything — press again' : 'Delete my data'}
-        </Button>
+        />
       </Row>
 
     </div>

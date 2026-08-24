@@ -25,6 +25,7 @@ import { type ReactNode, useCallback, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { Said } from '@/components/Said';
 import {
   AGENT_WANTS, MAC_STOP_COMMAND, MAC_TOOLS_COMMAND, autostartEnable, localFileCommand, macInstallCommand,
   macRestartCommand, olderThan, startCommand,
@@ -395,14 +396,7 @@ export const ConnectView = () => {
           ))}
         </ol>
 
-        {said && (
-          <Typography
-            variant="p"
-            className={cn('mt-4 text-[0.86rem]', said.kind === 'bad' ? 'text-fb-red-text' : 'text-fb-green')}
-          >
-            {said.text}
-          </Typography>
-        )}
+        <Said note={said} className="mt-4" />
 
         <details className="mt-5">
           <summary className="cursor-pointer text-ink-secondary text-[0.85rem]">Advanced</summary>

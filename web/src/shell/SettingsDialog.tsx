@@ -31,6 +31,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { Said } from '@/components/Said';
 import { useAccount } from './AccountProvider';
 import { MyAccountScreen } from './settings/MyAccountScreen';
 import { ConnectionsScreen } from './settings/ConnectionsScreen';
@@ -181,17 +182,7 @@ export const SettingsDialog = ({ open, screen, onScreen, onClose }: Props) => {
               {screen === 'connections' && <ConnectionsScreen say={setSaid} onClose={onClose} />}
               {screen === 'hours' && <HoursScreen />}
 
-              {said && (
-                <Typography
-                  variant="p"
-                  className={cn(
-                    'mt-3.5 text-sm',
-                    said.kind === 'bad' ? 'text-fb-red-text' : 'text-fb-green',
-                  )}
-                >
-                  {said.text}
-                </Typography>
-              )}
+              <Said note={said} className="mt-3.5" />
             </div>
           </div>
         </Dialog.Content>

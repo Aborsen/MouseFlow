@@ -6,18 +6,22 @@
  */
 import { useNavigate } from '@tanstack/react-router';
 import {
-  ArrowRight, Braces, ChevronUp, CircleDot, Copy, Download, Ellipsis, FileText, Globe, Link2, Loader2,
-  Lock, Monitor, MousePointerClick, Pencil, Puzzle, RefreshCw, Search, Share2, Sparkles, Trash2, Upload,
-  Wand2,
+  ArrowRight, Braces, CircleDot, Copy, Download, Ellipsis, FileText, Globe, Link2, Loader2,
+  Lock, Monitor, MousePointerClick, Pencil, Puzzle, RefreshCw, Share2, Sparkles, Upload, Wand2,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Checkbox } from '@insightis/ui/Checkbox';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { Pill } from '@/components/Pill';
+import { ArmedButton } from '@/components/ArmedButton';
+import { SortButton } from '@/components/SortButton';
+import { Said } from '@/components/Said';
 import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { listedInSkills } from '@/lib/flow-role';
+import { SearchField } from '@/components/SearchField';
 import { SelectionBar } from '@/components/SelectionBar';
 import { Signal } from '@/components/Signal';
 import { useConsole } from '@/lib/store';
@@ -957,17 +961,7 @@ export const SkillsView = () => {
       )}
 
       {/* Чем кончилось последнее действие. Без этого «Save as skill» и «Publish» молчат. */}
-      {said && (
-        <Typography
-          variant="p"
-          className={cn(
-            'mb-4 max-w-[86ch] break-words text-[0.85rem]',
-            said.kind === 'good' ? 'text-fb-green' : 'text-fb-red-text',
-          )}
-        >
-          {said.text}
-        </Typography>
-      )}
+      <Said note={said} onDismiss={() => setSaid(null)} className="mb-4 max-w-[86ch]" />
 
       {/* The library, in a card of its own.
         *
@@ -1018,20 +1012,12 @@ export const SkillsView = () => {
             </Typography>
           </div>
 
-          <label className="relative min-w-[12rem] flex-1 sm:max-w-[22rem]">
-            <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-ink-inactive" />
-            <input
-              value={term}
-              onChange={(ev) => setTerm(ev.target.value)}
-              placeholder="Search skills…"
-              aria-label="Search skills"
-              className={cn(
-                'h-9 w-full rounded-md border-stroke border bg-surface-card2 pr-3 pl-8',
-                'text-ink-primary placeholder:text-ink-inactive',
-                'focus:border-input-focus focus:outline-none',
-              )}
-            />
-          </label>
+          <SearchField
+            className="min-w-[12rem] flex-1 sm:max-w-[22rem]"
+            value={term}
+            onChange={setTerm}
+            placeholder="Search skills…"
+          />
 
           {/* Counted, so choosing one is not a guess about whether it will be empty. */}
           <div className="flex shrink-0 items-center gap-0.5 rounded-md border-stroke border bg-surface-card2 p-0.5">
@@ -1094,24 +1080,15 @@ export const SkillsView = () => {
               * order, and "sort by name" was the one thing this table could not do. The arrow shows WHICH
               * column is deciding and which way - a highlight alone leaves the direction to be guessed. */}
             {SORTABLE.map(({ key, label }) => (
-              <button
+              <SortButton
                 key={key}
-                type="button"
-                onClick={() => sortBy(key)}
+                label={label}
                 title={key === 'kind' ? 'Sort by what kind of skill it is'
-                  : key === 'source' ? 'Sort by which half can run it'
-                    : `Sort by ${label.toLowerCase()}`}
-                className={cn(
-                  'flex items-center gap-1 text-left uppercase tracking-wide',
-                  'transition-colors duration-base hover:text-ink-secondary',
-                  sort.by === key && 'text-brand-primary',
-                )}
-              >
-                {label}
-                {sort.by === key && (
-                  <ChevronUp className={cn('size-3 shrink-0', !sort.asc && 'rotate-180')} />
-                )}
-              </button>
+                  : key === 'source' ? 'Sort by which half can run it' : undefined}
+                active={sort.by === key}
+                asc={sort.asc}
+                onClick={() => sortBy(key)}
+              />
             ))}
             <span className="text-right">Actions</span>
           </div>
@@ -1139,10 +1116,18 @@ export const SkillsView = () => {
 
               return (
                 <li key={flow.id}>
+                  {/* The whole row opens what the "..." opens. See the note on the same handler in
+                    * TeamView: not a <button> around a row that contains controls, and anything that IS a
+                    * control has already done its own job - so ticking the box does not also unfold the
+                    * panel underneath it. */}
                   <div
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest('button,input,select,a,[role="checkbox"]')) return;
+                      setOpenRow((open) => (open === flow.id ? null : flow.id));
+                    }}
                     className={cn(
                       SKILL_COLUMNS,
-                      'grid w-full items-center gap-x-3 rounded-lg px-3 py-2',
+                      'grid w-full cursor-pointer items-center gap-x-3 rounded-lg px-3 py-2',
                       'border border-stroke/45 bg-surface-card shadow-rest transition-colors duration-fast',
                       'hover:border-card-border-hover',
                       isSelected && 'border-brand-primary bg-state-pressed',
@@ -1174,8 +1159,7 @@ export const SkillsView = () => {
                     </span>
 
                     <span>
-                      <span
-                        className="inline-flex items-center gap-1 rounded-full bg-state-hover px-2 py-0.5 text-[0.74rem] text-ink-secondary"
+                      <Pill
                         title={flow.source === 'desktop'
                           ? 'Points at screen coordinates — the local agent replays it'
                           : 'Points at page elements — the extension replays it'}
@@ -1183,7 +1167,7 @@ export const SkillsView = () => {
                         {flow.source === 'desktop'
                           ? <><Monitor className="size-3" />Desktop</>
                           : <><Puzzle className="size-3" />Extension</>}
-                      </span>
+                      </Pill>
                     </span>
 
                     <span className="text-[0.76rem] text-ink-secondary tabular-nums">
@@ -1196,21 +1180,18 @@ export const SkillsView = () => {
                         skill that runs and is simply not shared is not unfinished. */}
                     <span>
                       {listing ? (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full bg-fb-green/12 px-2 py-0.5 text-[0.72rem] font-semibold text-fb-green"
-                          title={`In the gallery as ${listing}`}
-                        >
+                        <Pill tone="good" title={`In the gallery as ${listing}`}>
                           <Globe className="size-3" />
                           Published
-                        </span>
+                        </Pill>
                       ) : (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full bg-state-hover px-2 py-0.5 text-[0.72rem] font-semibold text-ink-secondary"
+                        <Pill
+                          className="font-semibold"
                           title="Not in the gallery, as far as this app knows. A skill published before this app started recording that will read as private until it is published again."
                         >
                           <Lock className="size-3" />
                           Private
-                        </span>
+                        </Pill>
                       )}
                     </span>
 
@@ -1333,19 +1314,15 @@ export const SkillsView = () => {
                           Copy the payload
                         </Button>
 
-                        <Button
-                          variant={armed === flow.id ? 'destructive' : 'destructiveTertiary'}
-                          size="sm"
+                        <ArmedButton
+                          label="Delete"
                           className="ms-auto"
-                          isLoading={removing === flow.id}
-                          leftSlot={<Trash2 className="size-4" />}
-                          onClick={() => {
-                            if (armed !== flow.id) { setArmed(flow.id); return; }
-                            void remove(flow);
-                          }}
-                        >
-                          {armed === flow.id ? 'Delete — press again' : 'Delete'}
-                        </Button>
+                          armed={armed === flow.id}
+                          onArm={() => setArmed(flow.id)}
+                          onDisarm={() => setArmed(null)}
+                          onConfirm={() => void remove(flow)}
+                          busy={removing === flow.id}
+                        />
                       </div>
 
                       {/* Only when it is cocked, and only what is true. Three separate facts, and the first
@@ -1406,9 +1383,9 @@ export const SkillsView = () => {
             <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
               Ready to become a skill
             </Typography>
-            <span className="ms-auto shrink-0 rounded-full bg-brand-primary/12 px-2 py-0.5 text-[0.74rem] font-semibold text-brand-primary tabular-nums">
+            <Pill tone="count" className="ms-auto shrink-0">
               {convertible.length} recording{convertible.length === 1 ? '' : 's'}
-            </span>
+            </Pill>
           </div>
 
           {/* One line, and no measure on it.

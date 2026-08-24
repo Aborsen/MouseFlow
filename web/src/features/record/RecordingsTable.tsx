@@ -18,22 +18,15 @@
  */
 import { Button } from '@insightis/ui/Button';
 import { Checkbox } from '@insightis/ui/Checkbox';
+import { Pill } from '@/components/Pill';
+import { SearchField } from '@/components/SearchField';
 import { SelectionBar } from '@/components/SelectionBar';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { ArmedButton } from '@/components/ArmedButton';
+import { SortButton } from '@/components/SortButton';
 import {
-  Download,
-  Eye,
-  Play,
-  Repeat,
-  Search,
-  Trash2,
-  Check,
-  ChevronUp,
-  Ellipsis,
-  Sparkles,
-  Upload,
-  X,
+  Download, Eye, Play, Repeat, Check, Ellipsis, Sparkles, Upload, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { exportMacro, fmtMs, summarize } from '@/lib/macro';
@@ -330,20 +323,17 @@ export const RecordingsTable = ({
                   </Button>
                 )}
 
-                <Button
-                  variant={clearing ? 'destructive' : 'destructiveTertiary'}
-                  size="sm"
-                  leftSlot={<Trash2 className="size-4" />}
-                  onClick={() => {
-                    if (!clearing) { setClearing(true); return; }
+                <ArmedButton
+                  label="Remove from the account"
+                  armedLabel={`Remove ${orphans.length} from the account — press again`}
+                  armed={clearing}
+                  onArm={() => setClearing(true)}
+                  onDisarm={() => setClearing(false)}
+                  onConfirm={() => {
                     setClearing(false);
                     void remove(orphans.map((f) => f.id));
                   }}
-                >
-                  {clearing
-                    ? `Remove ${orphans.length} from the account — press again`
-                    : 'Remove from the account'}
-                </Button>
+                />
               </div>
             </div>
           )}
@@ -354,20 +344,12 @@ export const RecordingsTable = ({
             </Typography>
           )}
 
-          <label className="relative mb-2.5 block">
-            <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-ink-inactive" />
-            <input
-              value={term}
-              onChange={(ev) => { setTerm(ev.target.value); setShown(PAGE); }}
-              placeholder="Search recordings…"
-              aria-label="Search recordings"
-              className={cn(
-                'h-9 w-full rounded-md border-stroke border bg-surface-card2 pr-3 pl-8',
-                'text-ink-primary placeholder:text-ink-inactive',
-                'focus:border-input-focus focus:outline-none',
-              )}
-            />
-          </label>
+          <SearchField
+            className="mb-2.5 block"
+            value={term}
+            onChange={(next) => { setTerm(next); setShown(PAGE); }}
+            placeholder="Search recordings…"
+          />
 
           <SelectionBar
             className="mb-2"
@@ -416,22 +398,14 @@ export const RecordingsTable = ({
               >
                 <span />
                 {SORTABLE.map(({ key, label, title }) => (
-                  <button
+                  <SortButton
                     key={key}
-                    type="button"
+                    label={label}
+                    title={title}
+                    active={sort.by === key}
+                    asc={sort.asc}
                     onClick={() => sortBy(key)}
-                    title={title ?? `Sort by ${label.toLowerCase()}`}
-                    className={cn(
-                      'flex items-center gap-1 text-left uppercase tracking-wide',
-                      'transition-colors duration-base hover:text-ink-secondary',
-                      sort.by === key && 'text-brand-primary',
-                    )}
-                  >
-                    {label}
-                    {sort.by === key && (
-                      <ChevronUp className={cn('size-3 shrink-0', !sort.asc && 'rotate-180')} />
-                    )}
-                  </button>
+                  />
                 ))}
                 <span className="text-right">Actions</span>
               </div>
@@ -449,13 +423,21 @@ export const RecordingsTable = ({
 
                 return (
                   <li key={rec.id}>
-                    {/* Their row's look without their row's behaviour: no cursor-pointer, no press-scale, no
-                        whole-row click. A chat row navigates when you click it; this one does not, and
-                        pretending otherwise made it bounce under the pointer. View is the way in. */}
+                    {/* The row opens what the "..." opens, and nothing more.
+                        This used to say "no whole-row click", and what had actually been rejected was the
+                        CHAT row's whole treatment: a press-scale that made the row bounce under the pointer,
+                        and a click that navigated away. Neither is here. The click unfolds the panel this
+                        row already has, View is still the way to the transcript, and anything that is
+                        itself a control - the name field, the tick, every button - has already done its own
+                        job before this handler is reached. */}
                     <div
+                      onClick={(e) => {
+                        if ((e.target as HTMLElement).closest('button,input,select,a,[role="checkbox"]')) return;
+                        setOpenRow((open) => (open === rec.id ? null : rec.id));
+                      }}
                       className={cn(
                         COLUMNS,
-                        'grid w-full items-center gap-x-3 rounded-lg px-3 py-1.5',
+                        'grid w-full cursor-pointer items-center gap-x-3 rounded-lg px-3 py-1.5',
                         'border border-stroke/45 bg-surface-card shadow-rest transition-colors duration-fast',
                         'hover:border-card-border-hover',
                         isSelected && 'border-brand-primary bg-state-pressed',
@@ -506,15 +488,15 @@ export const RecordingsTable = ({
                           and under-reporting is a smaller error than claiming a skill that may not be there. */}
                       <span>
                         {hasSkill?.(rec) ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-brand-tertiary/15 px-2 py-0.5 text-[0.72rem] font-semibold text-brand-tertiary">
+                          <Pill tone="skill">
                             <Sparkles className="size-3" />
                             Skill saved
-                          </span>
+                          </Pill>
                         ) : (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-fb-green/12 px-2 py-0.5 text-[0.72rem] font-semibold text-fb-green">
+                          <Pill tone="good">
                             <Check className="size-3" />
                             Ready
-                          </span>
+                          </Pill>
                         )}
                       </span>
 
@@ -627,9 +609,10 @@ export const RecordingsTable = ({
                             : `${replay.repeat}×`} at {replay.speed}×
                         </Button>
 
-                        {/* The way out of a cocked delete. There is no timer on `armed` here, so without this
-                            the only ways back were pressing the destructive button or leaving the page -
-                            which is not a choice, it is a corner. */}
+                        {/* The way out of a cocked delete, said out loud rather than waited for. There IS a
+                            timer now - ArmedButton owns it, which is how the four copies of this stopped
+                            disagreeing about whether one exists - but six seconds of a cocked destructive
+                            button is still six seconds, and "press Cancel" beats "wait and it will pass". */}
                         {armed === rec.id && (
                           <Button
                             variant="secondary"
@@ -643,18 +626,14 @@ export const RecordingsTable = ({
 
                         {/* Behind one deliberate click, and armed in the button rather than a confirm() -
                             the pattern the rest of the app settled on. */}
-                        <Button
-                          variant={armed === rec.id ? 'destructive' : 'destructiveTertiary'}
-                          size="sm"
+                        <ArmedButton
+                          label="Delete"
                           className={cn(armed !== rec.id && 'ms-auto')}
-                          leftSlot={<Trash2 className="size-4" />}
-                          onClick={() => {
-                            if (armed !== rec.id) { setArmed(rec.id); return; }
-                            void remove([rec.id]);
-                          }}
-                        >
-                          {armed === rec.id ? 'Delete — press again' : 'Delete'}
-                        </Button>
+                          armed={armed === rec.id}
+                          onArm={() => setArmed(rec.id)}
+                          onDisarm={() => setArmed(null)}
+                          onConfirm={() => void remove([rec.id])}
+                        />
 
                         {/* Closing disarms. A panel that reopened with its delete still cocked would be one
                             click from deleting something, with nothing on screen saying so. */}
