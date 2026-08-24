@@ -102,7 +102,7 @@ for (const [who, text] of [['windows', ps], ['macos', swift]]) {
 }
 /* И клиент нормализует всё равно: чужое значение не должно уметь ронять функцию целиком. */
 check('клиент не передаёт чужое значение в API как есть',
-  /media_type: mediaType\(frame\.format\)/.test(read('web/src/lib/desktop-engine.ts')));
+  /media_type: mediaType\(frame\.format\)/.test(read('api/_brain.mjs')));
 
 check('permissions — только у macOS, где это ответ, а не константа',
   swift.includes('\\"permissions\\"') && !ps.includes('\\"permissions\\"'));
@@ -241,7 +241,9 @@ group('повтор целится в имя, а координата - запа
    * /api/mcp, который разбирает остановленную запись, когда браузера нигде не открыто. web/src/lib/macro.ts
    * теперь тонкая обёртка, и проверять в ней нечего. */
   const macro = read('api/_macro.mjs');
-  const engine = read('web/src/lib/desktop-engine.ts');
+  /* Промпт, схемы инструментов и кодирование действия переехали в api/_brain.mjs: драйверов теперь два -
+   * страница и облачный шаг, - и то, что модель видит, обязано быть одним. Проверяется там, где оно живёт. */
+  const engine = read('api/_brain.mjs');
 
   /* Отчёт был «промахнулись на пару пикселей - открылась не та вкладка», и пиксели тут ни при чём: полоса
    * вкладок перекладывается при изменении их числа. Лечит имя, и оно в записи есть - но flowBody его не
