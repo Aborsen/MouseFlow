@@ -824,6 +824,96 @@ check('the library stands above the builder, not behind it',
  * Nothing sits below it now, and with one recording the reserve drew 374px of empty card. */
 check('and the builder no longer reserves height for rows that are not there',
   !/minHeight: READY_MIN/.test(skillsView) && !/const READY_MIN/.test(skillsView));
+
+/* The page a person comes to for their skills, made to look and behave like a table of them. */
+group('the skills library is a section, sortable, and says how to use a skill');
+check('it sits in a card like the block under it, not loose on the page',
+  /<section className="mb-4 rounded-xl border-stroke border bg-surface-card p-4">/.test(skillsView));
+check('its columns sort, which is the one thing a table of anything has to do',
+  /const SORTABLE: \{ key: SortKey; label: string \}\[\]/.test(skillsView)
+    && /onClick=\{\(\) => sortBy\(key\)\}/.test(skillsView));
+/* A second click on the same column reverses; a first click on a new one starts the way that column reads. */
+check('and the direction is shown rather than left to be guessed',
+  /sort\.by === key && \(/.test(skillsView) && /!sort\.asc && 'rotate-180'/.test(skillsView));
+check('names sort numerically, since every one of them ends in a date or a number',
+  /numeric: true, sensitivity: 'base'/.test(skillsView));
+/* Structure was a phrase assembled per row, so sorting it ordered rows by their own wording. Dropped. */
+check('the column whose values were a phrase is gone, and its sort key with it',
+  !/label: 'Structure'/.test(skillsView) && !/const events = eventsOf\(flow\)/.test(skillsView));
+
+/* Everything that makes a skill usable BY a model lived behind an unlabelled "..." beside Delete. */
+check('the way into an AI system is on the row, in words',
+  /Use in AI/.test(skillsView) && /Its tool definition, and a SKILL\.md an agent can be given/.test(skillsView));
+check('and arriving there does not land on a second closed box',
+  /<details open className=/.test(skillsView));
+
+check('a skill can be renamed, which the account always allowed and the page never offered',
+  /const rename = useCallback\(async \(flow: Flow, next: string\)/.test(skillsView));
+/* payload.name is written by saveAsGoalSkill; left behind it is the name a restored copy comes back under. */
+check('and the payload name moves with it, or the rename undoes itself on the next sync',
+  /payload: \{ \.\.\.\(flow\.payload as Record<string, unknown>\), name \}/.test(skillsView));
+check('and the person is told the tool name an AI calls changed too',
+  /pointed at the old name will need the new one/.test(skillsView));
+
+/* Five rows on a 13" laptop and up to ten on a big monitor: a height in rem alone is the same 316px on a
+ * 1440-tall screen as on a 700-tall one. */
+check('both lists are one height, and it follows the window',
+  /const LIST_HEIGHT = `clamp\(\$\{rowsToRem\(5\)\}rem, 32vh, \$\{rowsToRem\(10\)\}rem\)`/.test(skillsView));
+check('and the row height it is built from was measured, not chosen',
+  /58\.3px measured/.test(skillsView));
+check('anything past that scrolls inside its own block',
+  (skillsView.match(/overflow-y-auto/g) || []).length === 2);
+/* With a scroller everything is reachable, so the truncation - and its apology - had nothing left to do. */
+check('and the "N older ones are on the Record page" truncation is gone',
+  !/older\{' '\}/.test(skillsView) && !/const READY_SHOWN/.test(skillsView));
+
+group('a skill can be handed to an agent as a file');
+const skillMd = await import('../api/_skill-md.mjs');
+const MD_STRUCTURE = {
+  kind: 'created',
+  toolName: 'reply_wf1',
+  runsHow: 'the local agent, which re-runs the goal',
+  goalTemplate: 'In Outlook, do this:\n1. Click "New mail".\n2. Type {{subject}} into "Subject".',
+  description: 'Carries out: In Outlook, do this:',
+  params: [{ name: 'subject', type: 'quoted', example: null }],
+  origins: ['Outlook (PWA) - Mail'],
+};
+const md = skillMd.skillMarkdown(MD_STRUCTURE, { name: 'Reply that the invoice is approved' });
+check('it opens with frontmatter an agent can read',
+  md.startsWith('---\nname: reply-that-the-invoice-is-approved\ndescription: '));
+/* A description is written by a model or a person, so it can hold a colon, a quote or a newline - each of
+ * which breaks a YAML block in its own way. */
+check('and the description is quoted, so a colon in it cannot break the block',
+  skillMd.skillMarkdown({ ...MD_STRUCTURE, description: "it's here: really" }, { name: 'x' })
+    .includes("description: 'it''s here: really'"));
+check('it names the tool to call, which is the only thing that makes anything happen',
+  /Call the MCP tool `reply_wf1` with `subject`\./.test(md));
+/* The rule the whole file rests on: an agent with computer-use handed a list of clicks and no tool will try
+ * to carry them out itself, on a real machine, against coordinates from a different screen. */
+check('and it says to stop rather than attempt the steps another way',
+  /If that tool is not available, stop and tell the user/.test(md)
+    && !/without MouseFlow/i.test(md));
+check('the prerequisites are a table of things to go and check',
+  /\| \*\*The MouseFlow agent, running\*\* \|/.test(md)
+    && /\| Applications \| Outlook \(PWA\) - Mail/.test(md));
+/* A goal skill needs the worker as well as the agent; a recorded one does not. Saying it either way would
+ * send somebody to install something they do not need, or leave a run queued with nobody claiming it. */
+check('a goal skill asks for the worker and a recorded one does not',
+  /The MouseFlow worker, running/.test(md)
+    && !/worker, running/.test(skillMd.skillMarkdown({ ...MD_STRUCTURE, kind: 'recorded' }, { name: 'x' })));
+check('a required input is marked required, and the file forbids inventing one',
+  /\| `subject` \| text \| yes \|/.test(md) && /Never invent a value/.test(md));
+check('the file is named after the skill', skillMd.skillFileName('Reply that it is approved')
+  === 'reply-that-it-is-approved-SKILL.md');
+/* The row on the account is the authority; this browser holds a copy that can be a sync behind. */
+check('the route builds it from the row rather than from the browser’s copy',
+  /where user_id = \$\{who\.id\} and client_id = \$\{id\}/.test(read('../api/skill-md.js')));
+check('and a flow that is not the caller’s is a 404, not a 403',
+  /no skill with that id on this account/.test(read('../api/skill-md.js')));
+check('the model is optional — no key still produces the file',
+  /let written = \{\};/.test(read('../api/skill-md.js')));
+check('and the panel says when the description was derived rather than written',
+  /Its description was derived rather than written/.test(skillsView));
 check('step two is about instructions, not only recorded typing',
   /STAGES = \['What it did', 'Instructions', 'Name it'\]/.test(wizard));
 check('and it always offers a field, so it is never a dead end',

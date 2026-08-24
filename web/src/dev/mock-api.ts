@@ -374,6 +374,55 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     });
   }
 
+  /* One skill as an Agent Skill file.
+   *
+   * The REAL generator and the real structureOf, from the same modules production uses; only the two prose
+   * fields a model would write are faked, and one request in three pretends it had no model at all so the
+   * derived fallback is reachable without turning a key off. */
+  if (url.startsWith('/api/skill-md')) {
+    if (method !== 'POST') {
+      return json(res, 405, { error: { type: 'skill_md_error', message: 'POST a skill id' } });
+    }
+    let text = '';
+    req.on('data', (chunk) => { text += chunk; });
+    req.on('end', () => {
+      void (async () => {
+        let body: { flow?: string } = {};
+        try { body = text ? JSON.parse(text) : {}; } catch (_) { /* handled below */ }
+        const id = String(body.flow || '');
+        const flow = [...FLOWS, ...pushedFlows.values()]
+          .find((f) => (f as { id?: string }).id === id) as
+            { id: string; name: string; kind?: string; source?: string; payload?: unknown } | undefined;
+        if (!flow) {
+          return json(res, 404, {
+            error: { type: 'skill_md_error', message: 'no skill with that id on this account' },
+          });
+        }
+        const [{ structureOf }, { skillMarkdown, skillFileName }] = await Promise.all([
+          import('../../../api/_skill-schema.mjs'),
+          import('../../../api/_skill-md.mjs'),
+        ]);
+        const structure = structureOf(flow);
+        const row = flow;
+        /* What a model would have written, for a fixture. Deliberately in the voice the tool asks for. */
+        const written = id.endsWith('1') ? {
+          description: `Use this when the user asks to run "${row.name}" on their own computer. `
+            + 'Drives the real pointer through the MouseFlow agent on a paired machine.',
+          whenToUse: 'Use it when somebody asks for this work to be actually done, not described. It acts '
+            + 'on a real computer, so it is never the answer to a question. If no MouseFlow tool is '
+            + 'available, say so rather than attempting the steps another way.',
+        } : {};
+        return json(res, 200, {
+          ok: true,
+          filename: skillFileName(row.name),
+          written: !!written.description,
+          text: skillMarkdown(structure, flow, written),
+        });
+      })();
+    });
+    return undefined;
+  }
+
   /* Placing what somebody wrote onto the steps they recorded.
    *
    * Only the MODEL is faked. The plan below is handed to the REAL applyPlan from api/_compose.mjs, because

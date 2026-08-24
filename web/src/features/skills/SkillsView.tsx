@@ -6,8 +6,9 @@
  */
 import { useNavigate } from '@tanstack/react-router';
 import {
-  ArrowRight, Braces, CircleDot, Copy, Ellipsis, Globe, Link2, Lock, Monitor,
-  MousePointerClick, Puzzle, RefreshCw, Search, Share2, Sparkles, Trash2, Upload, Wand2,
+  ArrowRight, Braces, ChevronUp, CircleDot, Copy, Download, Ellipsis, FileText, Globe, Link2, Loader2,
+  Lock, Monitor, MousePointerClick, Pencil, Puzzle, RefreshCw, Search, Share2, Sparkles, Trash2, Upload,
+  Wand2,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
@@ -17,7 +18,7 @@ import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { listedInSkills } from '@/lib/flow-role';
 import { Signal } from '@/components/Signal';
-import { type RecordedEvent, useConsole } from '@/lib/store';
+import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
 import { describeRecording, hasSkillFor, saveAsSkill } from '@/features/record/save-as-skill';
@@ -34,24 +35,41 @@ import {
 /* Same shape as the recordings table, and its last column is a FIXED width for the reason that one learned
  * the hard way: `auto` sizes to content, so a header word narrower than the buttons under it puts the whole
  * row out by hundreds of pixels. */
-const SKILL_COLUMNS = 'grid-cols-[2rem_minmax(12rem,1fr)_7.5rem_7rem_6rem_6.5rem_15rem]';
+const SKILL_COLUMNS = 'grid-cols-[2rem_minmax(12rem,1fr)_7rem_6rem_6.5rem_20rem]';
 
-/* Блок «Ready to become a skill» - не больше шести записей: остальные на Record, и страница про скиллы не
- * должна превращаться во второй список записей.
+/* Both lists are one height, and it fits five.
  *
- * ЗДЕСЬ БЫЛ РЕЗЕРВ ВЫСОТЫ - minHeight на шесть строк, чтобы блок не менял размер, когда запись превращают в
- * скилл и строка исчезает. Он существовал ради того, что стояло ПОД блоком: страница подпрыгивала под
- * курсором ровно в тот момент, когда человек тянулся к следующей кнопке.
+ * MEASURED, NOT CHOSEN, which is the only way a number like this survives: a row in either list is 58.3px
+ * and the gap between them is 6px (gap-1.5), read off the rendered page rather than added up from padding.
+ * Five rows and four gaps is 315.5px. Written as one arithmetic expression so the two halves cannot drift -
+ * a literal for the row and a hand-totalled literal for the list is the pair that goes wrong silently, and
+ * it already did once here.
  *
- * Под блоком больше ничего не стоит - он последний на странице. А с одной записью резерв на шесть рисовал
- * 374px пустоты внутри рамки, что читалось как незагрузившийся список. Причина исчезла раньше следствия, и
- * убрано именно следствие, а не подогнано число.
+ * Fixed rather than capped, so the two sections are the same size whether they hold one row or twenty and
+ * the page does not change shape as skills are made. Anything past five scrolls inside its own block, which
+ * is also what replaced the old "N older ones are on the Record page" - with a scroller they are all
+ * reachable, so there is nothing left to apologise for.
  */
-const READY_SHOWN = 6;
-/* Измеренная высота строки, а не выбранная: две строки текста (0.88rem и 0.76rem) плюс py-2 дают ровно
- * 57px = 3.5625rem. Осталась на САМОЙ строке, а не на списке: она держит ряд одной высоты независимо от того,
- * перенеслась ли кнопка на второй ряд в узком окне. minHeight, а не height, по той же причине - строке надо
- * дать вырасти, а не спрятать кнопку под краем. */
+const LIST_ROW = 3.644;   // rem — 58.3px measured
+const LIST_GAP = 0.375;   // rem — gap-1.5
+const rowsToRem = (n: number) => n * LIST_ROW + (n - 1) * LIST_GAP;
+
+/* Five rows on a 13" laptop, up to ten on a big monitor, and the window decides.
+ *
+ * A height in rem alone is the same 316px on a 1440-tall screen as on a 700-tall one - five rows on the
+ * laptop it was measured on, and a postage stamp with two thirds of the page empty below it on a 27". So the
+ * middle term is a share of the viewport and the two ends are row counts: clamp takes the floor when 32vh
+ * is smaller than five rows, which is what happens on the small screen, and the ceiling past about 2,150px
+ * of viewport. In between it grows a row at a time.
+ *
+ * 32vh rather than something bigger because there are TWO of these on the page: at 32vh each they take
+ * under two thirds of the window between them, which leaves the headings, the search and the page's own
+ * chrome somewhere to be. */
+const LIST_HEIGHT = `clamp(${rowsToRem(5)}rem, 32vh, ${rowsToRem(10)}rem)`;
+
+/* Kept on the ROW, not the list: it holds a row at one height whether or not its button wrapped to a
+ * second line in a narrow window. minHeight rather than height for the same reason - a wrapped row has to
+ * grow, not hide the button under its edge. */
 const READY_ROW = 3.583;
 
 /* Когда запись сделана. Нечитаемое значение - 0, чтобы оно тонуло в конец списка, а не тасовало его: NaN в
@@ -63,6 +81,20 @@ const madeAt = (rec: { created?: string }) => {
 
 /* Filters over the library. `all` is not a state a skill is in - it is the absence of a filter - so it sits
  * beside them rather than being one of them in the data. */
+/* Sortable columns, and only the ones a value can be READ off.
+ *
+ * `Structure` is a phrase assembled per row ("a goal · 9 inputs", "2 steps · 2 inputs"), so sorting on the
+ * text would order it alphabetically by its own wording - which is not an order anybody means. Sorted on
+ * `kind` instead: goals together, replays together, which is what somebody scanning that column wants. */
+type SortKey = 'name' | 'kind' | 'source' | 'updated' | 'status';
+
+const SORTABLE: { key: SortKey; label: string }[] = [
+  { key: 'name', label: 'Skill' },
+  { key: 'source', label: 'Source' },
+  { key: 'updated', label: 'Updated' },
+  { key: 'status', label: 'Status' },
+];
+
 const FILTERS = [
   { id: 'all', label: 'All' },
   { id: 'published', label: 'Published' },
@@ -81,26 +113,71 @@ const publishedAs = (flow: Flow): string | null => {
   return id || null;
 };
 
-/* The events a skill carries, for the bars. A created skill has none - it holds a goal - and an empty list
- * draws an empty meter rather than nothing, which is the honest picture of "there are no events here". */
-const eventsOf = (flow: Flow): RecordedEvent[] => {
-  const raw = (flow.payload as Record<string, unknown> | undefined)?.events;
-  return Array.isArray(raw) ? (raw as RecordedEvent[]) : [];
-};
-
 /* ------------------------------------------------------------------ what a skill is, spelled out
  *
  * A skill already has the shape of a tool: a name, a description, and the variable parts lifted out of the
  * goal by parameterise(). This is that shape made visible, and then written the three ways the APIs want it
  * - which differ by one key each, and seeing that is most of the value.
  */
-const Structure = ({ skill, wire, onWire }: {
+const Structure = ({ skill, flowId, wire, onWire }: {
   skill: SkillStructure;
+  /** The row's own id. The file is built server-side FROM THE ROW, so this is what identifies it. */
+  flowId: string;
   wire: WireFormat;
   onWire: (next: WireFormat) => void;
 }) => {
   const json = useMemo(() => JSON.stringify(wireFor(wire, skill), null, 2), [wire, skill]);
   const [copied, setCopied] = useState(false);
+
+  /* The same skill as an AGENT SKILL - a SKILL.md, not a fourth wire format.
+   *
+   * The three above are TOOL DEFINITIONS: a name, a description, a JSON schema, which is what a model is
+   * handed so it can CALL something. This is a DOCUMENT: frontmatter and prose an agent is given so it
+   * knows when to reach for the tool, what has to be true first, and what to do when it comes back wrong.
+   * Putting it in the same row of tabs would have said they were alternatives; they are not, and a file
+   * that replaced the tool definition would describe a skill nothing could invoke.
+   *
+   * Fetched rather than built here, and that is not laziness: the row on the account is the authority on
+   * what a skill is, and this browser holds a copy that can be a sync behind. A file somebody downloads,
+   * hands to an agent and forgets about has to describe the skill as it IS. */
+  const [md, setMd] = useState<null | { text: string; filename: string; written: boolean }>(null);
+  const [mdBusy, setMdBusy] = useState(false);
+  const [mdProblem, setMdProblem] = useState<string | null>(null);
+
+  const makeMd = useCallback(async () => {
+    setMdBusy(true);
+    setMdProblem(null);
+    try {
+      const res = await fetch('/api/skill-md', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ flow: flowId }),
+      });
+      const body = await res.json();
+      if (!res.ok || !body || !body.ok) {
+        throw new Error(body?.error?.message || 'the file could not be built');
+      }
+      setMd({ text: body.text, filename: body.filename, written: !!body.written });
+    } catch (err) {
+      setMdProblem(err instanceof Error ? err.message : 'the file could not be built');
+    }
+    setMdBusy(false);
+  }, [flowId]);
+
+  /* An object URL rather than a data: one, revoked straight after. A long file in a data URL is a long
+   * string in the address bar's history, and this one carries the person's own goal text. */
+  const download = useCallback(() => {
+    if (!md) return;
+    const url = URL.createObjectURL(new Blob([md.text], { type: 'text/markdown;charset=utf-8' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = md.filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, [md]);
 
   const copy = useCallback(async () => {
     try {
@@ -114,7 +191,10 @@ const Structure = ({ skill, wire, onWire }: {
   }, [json]);
 
   return (
-    <details className="group mt-3 rounded-lg border-stroke border bg-surface-card2">
+    /* Open. The panel is reached by pressing "Use in AI", and arriving at a closed box labelled Structure
+      * is the same burial one level down — the thing asked for should be the thing on screen. Still a
+      * <details>, so it can be shut once read. */
+    <details open className="group mt-3 rounded-lg border-stroke border bg-surface-card2">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2">
         <Braces className="size-4 shrink-0 text-ink-inactive" />
         <Typography variant="span" weight="semibold" className="text-[0.82rem] text-ink-secondary">
@@ -212,6 +292,64 @@ const Structure = ({ skill, wire, onWire }: {
           <pre className="max-h-72 overflow-auto rounded-md border-stroke border bg-surface-chips p-2.5 font-mono text-[0.72rem] leading-relaxed text-ink-secondary">
             {json}
           </pre>
+
+          {/* ------------------------------------------------- and the same skill as an agent skill */}
+          <div className="mt-3 border-stroke/60 border-t pt-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <FileText className="size-4 shrink-0 text-ink-inactive" />
+              <Typography variant="span" weight="semibold" className="text-[0.8rem] text-ink-secondary">
+                As an agent skill
+              </Typography>
+              <Typography variant="span" className="min-w-0 flex-1 text-[0.74rem] text-ink-inactive">
+                A SKILL.md that tells an agent when to call the tool above.
+              </Typography>
+              {md ? (
+                <Button
+                  variant="tertiary"
+                  size="sm"
+                  leftSlot={<Download className="size-3.5" />}
+                  onClick={download}
+                >
+                  {md.filename}
+                </Button>
+              ) : (
+                <Button
+                  variant="tertiary"
+                  size="sm"
+                  disabled={mdBusy}
+                  leftSlot={mdBusy
+                    ? <Loader2 className="size-3.5 animate-spin" />
+                    : <FileText className="size-3.5" />}
+                  onClick={() => { void makeMd(); }}
+                >
+                  {mdBusy ? 'Writing' : 'Build it'}
+                </Button>
+              )}
+            </div>
+
+            {mdProblem && (
+              <Typography variant="p" className="mt-1.5 text-[0.74rem] text-fb-red-text">
+                {mdProblem}
+              </Typography>
+            )}
+
+            {md && (
+              <>
+                {/* Whether the trigger line was written or derived. A description that came out of the
+                  * fallback reads "Carries out: In Outlook, do this:" — true, and a poor reason for an
+                  * agent to reach for the file. Worth knowing before it is handed to one. */}
+                {!md.written && (
+                  <Typography variant="p" className="mt-1.5 text-[0.74rem] text-ink-inactive">
+                    Its description was derived rather than written — no model was reachable. The file works;
+                    an agent is just less likely to reach for it. Build it again later for a better one.
+                  </Typography>
+                )}
+                <pre className="mt-2 max-h-72 overflow-auto rounded-md border-stroke border bg-surface-chips p-2.5 font-mono text-[0.72rem] leading-relaxed text-ink-secondary">
+                  {md.text}
+                </pre>
+              </>
+            )}
+          </div>
           <Typography variant="p" className="mt-1.5 text-ink-inactive text-[0.74rem]">
             {wire === 'openai'
               ? 'Responses API shape — name and parameters sit on the tool itself, not under a function key.'
@@ -312,9 +450,60 @@ export const SkillsView = () => {
     }
   }, [reload]);
 
+  /* Newest first to begin with, which is the order the list already arrived in and the one somebody wants
+   * without asking. Clicking a column takes over from there. */
+  const [sort, setSort] = useState<{ by: SortKey; asc: boolean }>({ by: 'updated', asc: false });
+  const sortBy = useCallback((by: SortKey) => {
+    /* A second click on the same column reverses it; a first click on a different one starts from the
+     * direction that column is usually read in - names from A, dates from newest. */
+    setSort((was) => (was.by === by ? { by, asc: !was.asc } : { by, asc: by !== 'updated' }));
+  }, []);
+
+  /* Renaming, which the plumbing has always supported and the page never offered: /api/sync upserts with
+   * `name = excluded.name`, so a push with a new name IS a rename. Held per row, and closed after. */
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState('');
+  const [savingName, setSavingName] = useState(false);
+
+  const rename = useCallback(async (flow: Flow, next: string) => {
+    const name = next.trim().slice(0, 80);
+    if (!name || name === flow.name) { setRenaming(null); return; }
+    setSavingName(true);
+    try {
+      const saved = await push({
+        flows: [{
+          id: flow.id,
+          source: flow.source,
+          kind: flow.kind,
+          name,
+          description: flow.description,
+          origins: flow.origins,
+          created: flow.created,
+          /* The payload carries a name of its own - saveAsGoalSkill writes one - and the two have to move
+           * together. Left behind, it would be the name a restored copy came back under, which is a rename
+           * that undoes itself the next time somebody syncs. */
+          payload: { ...(flow.payload as Record<string, unknown>), name },
+        }],
+      });
+      if (saved.problems.length) throw new Error(saved.problems.join('; '));
+      await reload();
+      setRenaming(null);
+      /* Said, because it is not cosmetic: toolNameFor() derives the tool name an AI calls FROM this name,
+       * so anything already configured against the old one stops finding it. */
+      setSaid({
+        text: `Renamed to "${name}". The tool name an AI calls is derived from it, so anything already `
+          + 'pointed at the old name will need the new one.',
+        kind: 'good',
+      });
+    } catch (err) {
+      setSaid({ text: err instanceof Error ? err.message : 'It could not be renamed.', kind: 'bad' });
+    }
+    setSavingName(false);
+  }, [reload]);
+
   const shownSkills = useMemo(() => {
     const needle = term.trim().toLowerCase();
-    return skills.filter((flow) => {
+    const kept = skills.filter((flow) => {
       if (filter === 'published' && !publishedAs(flow)) return false;
       if (filter === 'private' && publishedAs(flow)) return false;
       if (!needle) return true;
@@ -322,7 +511,26 @@ export const SkillsView = () => {
        * looks for a skill they named something else. */
       return `${flow.name} ${flow.description} ${flow.origins.join(' ')}`.toLowerCase().includes(needle);
     });
-  }, [skills, term, filter]);
+
+    /* localeCompare with numeric, so "Skill 2" sorts before "Skill 10" rather than after it - every one of
+     * these names ends in a date or a number. A copy, so the filtered array is not reordered in place -
+     * `toSorted` would say that better and is past this project's TS lib target. */
+    const cmp = (a: Flow, b: Flow) => {
+      switch (sort.by) {
+        case 'name':
+          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        case 'kind':
+          return String(a.kind).localeCompare(String(b.kind));
+        case 'source':
+          return String(a.source).localeCompare(String(b.source));
+        case 'status':
+          return Number(!!publishedAs(a)) - Number(!!publishedAs(b));
+        default:
+          return Date.parse(a.updated ?? '') - Date.parse(b.updated ?? '') || 0;
+      }
+    };
+    return [...kept].sort((a, b) => (sort.asc ? cmp(a, b) : cmp(b, a)));
+  }, [skills, term, filter, sort]);
   const navigate = useNavigate();
   const [bridge, setBridge] = useState({ present: false, paired: false, version: null as string | null });
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
@@ -647,9 +855,42 @@ export const SkillsView = () => {
         </Typography>
       )}
 
-      {/* The library's own heading, under the builder rather than inside it: what a skill is and what you
-        * have are two different statements, and one card saying both said neither clearly. */}
-      {skills.length > 0 && (
+      {/* The library, in a card of its own.
+        *
+        * It had no border, so on a page whose other block IS a bordered card the table read as loose page
+        * furniture rather than a section - the heading, the search and the rows all floating at the same
+        * depth as the background. Same rounded-xl, same border, same surface as "Ready to become a skill",
+        * because they are two things of the same kind and the page should say so.
+        *
+        * Only when there is a library to frame: at zero skills the bar below is already a card, and a card
+        * inside a card is a border nobody meant to draw. */}
+      {skills.length === 0 ? (
+        /* На всю ширину, а не колонкой слева.
+         *
+         * Это место, где на странице стоит ТАБЛИЦА, и текст, занимающий шестую часть той же строки, читается
+         * как обрывок, а не как ответ на «где мои скиллы». Полоса во всю ширину занимает ровно то место,
+         * которое займёт библиотека, когда первый скилл появится. */
+        <div className="rounded-xl border-stroke border bg-surface-card px-4 py-3.5">
+        <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
+          {/* Two different emptinesses, and saying the first over the second would be a worse lie than the
+            * bug this replaced: an account holding four recordings is not an empty account. */}
+          {flows.length === 0 ? (
+            <>
+              Nothing on your account yet. Record something and press <strong>Save as skill</strong>, or
+              connect the extension above and press <strong>Sync now</strong> in it.
+            </>
+          ) : (
+            <>
+              No skills yet — your {flows.length} recording{flows.length === 1 ? '' : 's'}{' '}
+              {flows.length === 1 ? 'is' : 'are'} on the <strong>Record</strong> page. Press{' '}
+              <strong>Save as skill</strong> on one there to make a skill from it, which is a separate copy:
+              deleting the skill afterwards leaves the recording alone.
+            </>
+          )}
+        </Typography>
+        </div>
+      ) : (
+        <section className="mb-4 rounded-xl border-stroke border bg-surface-card p-4">
         <div className="mb-3 flex flex-wrap items-end gap-x-4 gap-y-3">
           <div className="min-w-0 flex-1">
             <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
@@ -703,36 +944,8 @@ export const SkillsView = () => {
             })}
           </div>
         </div>
-      )}
-
-      {skills.length === 0 ? (
-        /* На всю ширину, а не колонкой слева.
-         *
-         * Это место, где на странице стоит ТАБЛИЦА, и текст, занимающий шестую часть той же строки, читается
-         * как обрывок, а не как ответ на «где мои скиллы». Полоса во всю ширину занимает ровно то место,
-         * которое займёт библиотека, когда первый скилл появится. */
-        <div className="rounded-xl border-stroke border bg-surface-card px-4 py-3.5">
-        <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
-          {/* Two different emptinesses, and saying the first over the second would be a worse lie than the
-            * bug this replaced: an account holding four recordings is not an empty account. */}
-          {flows.length === 0 ? (
-            <>
-              Nothing on your account yet. Record something and press <strong>Save as skill</strong>, or
-              connect the extension above and press <strong>Sync now</strong> in it.
-            </>
-          ) : (
-            <>
-              No skills yet — your {flows.length} recording{flows.length === 1 ? '' : 's'}{' '}
-              {flows.length === 1 ? 'is' : 'are'} on the <strong>Record</strong> page. Press{' '}
-              <strong>Save as skill</strong> on one there to make a skill from it, which is a separate copy:
-              deleting the skill afterwards leaves the recording alone.
-            </>
-          )}
-        </Typography>
-        </div>
-      ) : (
         <div className="overflow-x-auto pb-1">
-          <div className="min-w-[56rem]">
+          <div className="min-w-[61rem]">
           {/* Same template as the rows, so the labels line up rather than approximately line up - the lesson
               the recordings table learned when its last column was `auto` and the header sat 280px off. */}
           <div
@@ -743,11 +956,29 @@ export const SkillsView = () => {
             )}
           >
             <span />
-            <span>Skill</span>
-            <span title="When its events happened, and what it takes as input">Structure</span>
-            <span title="Which half can run it">Source</span>
-            <span>Updated</span>
-            <span>Status</span>
+            {/* Buttons, not labels. A column of values a person can see is a column they will want in an
+              * order, and "sort by name" was the one thing this table could not do. The arrow shows WHICH
+              * column is deciding and which way - a highlight alone leaves the direction to be guessed. */}
+            {SORTABLE.map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => sortBy(key)}
+                title={key === 'kind' ? 'Sort by what kind of skill it is'
+                  : key === 'source' ? 'Sort by which half can run it'
+                    : `Sort by ${label.toLowerCase()}`}
+                className={cn(
+                  'flex items-center gap-1 text-left uppercase tracking-wide',
+                  'transition-colors duration-base hover:text-ink-secondary',
+                  sort.by === key && 'text-brand-primary',
+                )}
+              >
+                {label}
+                {sort.by === key && (
+                  <ChevronUp className={cn('size-3 shrink-0', !sort.asc && 'rotate-180')} />
+                )}
+              </button>
+            ))}
             <span className="text-right">Actions</span>
           </div>
 
@@ -759,12 +990,17 @@ export const SkillsView = () => {
             </Typography>
           )}
 
-          <ul className="flex flex-col gap-1.5">
+          {/* Five rows, then a scroller — except while a row is open. An expanded row carries its whole
+            * structure, the wire definitions and the agent-skill file; squeezing that into 315px would make
+            * the one thing somebody deliberately opened the hardest thing on the page to read. Expanding is
+            * an act, and a section that grows when you act on it is not a section that shifts under you. */}
+          <ul
+            className="flex flex-col gap-1.5 overflow-y-auto"
+            style={{ height: openRow ? undefined : LIST_HEIGHT }}
+          >
             {shownSkills.map((flow) => {
               const structure = structureOf(flow);
               const listing = publishedAs(flow);
-              const events = eventsOf(flow);
-              const inputs = Object.keys(structure.schema.properties).length;
 
               return (
                 <li key={flow.id}>
@@ -790,20 +1026,6 @@ export const SkillsView = () => {
                       <span className="truncate text-[0.78rem] text-ink-inactive">
                         {flow.description
                           || (flow.origins.length ? `In ${flow.origins.slice(0, 3).join(', ')}.` : 'No description.')}
-                      </span>
-                    </span>
-
-                    {/* The bars from its own events, and the counts from its schema. A created skill has no
-                        events - it holds a goal - so the meter is empty and says so rather than being hidden,
-                        which would make the column look broken for half the rows. */}
-                    <span className="flex min-w-0 flex-col gap-0.5">
-                      <Signal events={events} bars={10} className="h-4" />
-                      <span className="text-[0.74rem] text-ink-inactive tabular-nums">
-                        {events.length
-                          ? `${events.length} step${events.length === 1 ? '' : 's'}`
-                          : 'a goal'}
-                        {' · '}
-                        {inputs} input{inputs === 1 ? '' : 's'}
                       </span>
                     </span>
 
@@ -849,6 +1071,22 @@ export const SkillsView = () => {
                     </span>
 
                     <span className="flex items-center justify-end gap-1">
+                      {/* The way into an AI system, on the row.
+                        *
+                        * Everything that makes a skill usable BY a model - the tool definition in three
+                        * shapes, and the SKILL.md an agent can be handed - lived behind an unlabelled "..."
+                        * next to Delete. That is the product's whole point filed under "more", and nobody
+                        * who did not already know it was there would find it. Same panel, said out loud. */}
+                      <Button
+                        variant={openRow === flow.id ? 'secondary' : 'ghost'}
+                        size="sm"
+                        leftSlot={<Braces className="size-4" />}
+                        title="Its tool definition, and a SKILL.md an agent can be given"
+                        onClick={() => setOpenRow((open) => (open === flow.id ? null : flow.id))}
+                      >
+                        Use in AI
+                      </Button>
+
                       {flow.source === 'desktop' ? (
                         <Button
                           variant="ghost"
@@ -895,9 +1133,46 @@ export const SkillsView = () => {
 
                   {openRow === flow.id && (
                     <div className="mt-1 rounded-lg border-stroke/45 border bg-surface-card2 p-3">
-                      <Structure skill={structure} wire={wire} onWire={setWire} />
+                      <Structure skill={structure} flowId={flow.id} wire={wire} onWire={setWire} />
 
                       <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                        {/* Renaming, which the account has always allowed and this page never offered:
+                          * /api/sync upserts with `name = excluded.name`, so a push under a new name IS the
+                          * rename. Inline rather than a dialog - it is one field, and a dialog for one field
+                          * is a dialog somebody has to dismiss. */}
+                        {renaming === flow.id ? (
+                          <>
+                            <input
+                              autoFocus
+                              value={draftName}
+                              onChange={(e) => setDraftName(e.target.value.slice(0, 80))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void rename(flow, draftName);
+                                if (e.key === 'Escape') setRenaming(null);
+                              }}
+                              className="h-8 w-[16rem] rounded-md border-stroke border bg-surface-card px-2.5 text-[0.85rem] text-ink-primary focus:border-input-focus focus:outline-none"
+                            />
+                            <Button
+                              size="sm"
+                              isLoading={savingName}
+                              disabled={!draftName.trim() || draftName.trim() === flow.name}
+                              onClick={() => void rename(flow, draftName)}
+                            >
+                              Save
+                            </Button>
+                            <Button variant="ghost" size="sm" onClick={() => setRenaming(null)}>Cancel</Button>
+                          </>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            leftSlot={<Pencil className="size-4" />}
+                            onClick={() => { setDraftName(flow.name); setRenaming(flow.id); }}
+                          >
+                            Rename
+                          </Button>
+                        )}
+
                         <Button
                           variant="ghost"
                           size="sm"
@@ -955,6 +1230,7 @@ export const SkillsView = () => {
           </ul>
           </div>
         </div>
+        </section>
       )}
 
       {/* Ниже библиотеки, а не над ней.
@@ -973,7 +1249,12 @@ export const SkillsView = () => {
         * Раньше за этим надо было идти на Record - при том что вся страница про скиллы и человек пришёл сюда
         * именно за этим. Показываются только те, у которых скилла ещё нет: id скилла выведен из id записи,
         * так что второе нажатие перезаписало бы существующий, а список, приглашающий к этому, - ловушка. */}
-      <div className={cn('mb-4 grid gap-4', skills.length === 0 && convertible.length > 0 && 'xl:grid-cols-2')}>
+      {/* mt-8 rather than the mb-4 of everything else: this is the seam between two different claims - what
+        * you HAVE and what could become one - and at the old spacing the second block read as another row of
+        * the first. */}
+      <div className={cn('mb-4 grid gap-4', skills.length > 0 && 'mt-8',
+        skills.length === 0 && convertible.length > 0 && 'xl:grid-cols-2')}
+      >
       {convertible.length > 0 && (
         <section className="rounded-xl border-stroke border bg-surface-card p-4">
           <div className="mb-2.5 flex flex-wrap items-center gap-2">
@@ -986,13 +1267,18 @@ export const SkillsView = () => {
             </span>
           </div>
 
-          <Typography variant="p" className="mb-2.5 max-w-[74ch] text-ink-inactive text-[0.82rem]">
-            Recordings in this browser that have no skill yet. Making one is a separate copy — the recording
-            stays exactly as it is, and deleting the skill later leaves it alone.
+          {/* One line, and no measure on it.
+            *
+            * The long version said the same thing three times - that a skill is a separate copy, that the
+            * recording stays as it is, and that deleting the skill leaves it alone - and `max-w-[74ch]`
+            * folded it onto two lines above a list whose whole job is to be scanned. The promise worth
+            * keeping is that making a skill costs the recording nothing; one clause carries it. */}
+          <Typography variant="p" className="mb-2.5 text-ink-inactive text-[0.82rem]">
+            Recordings with no skill yet. Making one is a separate copy — the recording is left alone.
           </Typography>
 
-          <ul className="flex flex-col gap-1.5">
-            {convertible.slice(0, READY_SHOWN).map((rec) => (
+          <ul className="flex flex-col gap-1.5 overflow-y-auto" style={{ height: LIST_HEIGHT }}>
+            {convertible.map((rec) => (
               <li
                 key={rec.id}
                 className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2"
@@ -1037,16 +1323,6 @@ export const SkillsView = () => {
 
           {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
             * остальные, а не оставить человека считать. */}
-          {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
-            * остальные, а не оставить человека считать. Показаны при этом САМЫЕ СВЕЖИЕ - что и делает
-            * усечение приемлемым: спрятано старое, а не только что записанное. */}
-          {convertible.length > READY_SHOWN && (
-            <Typography variant="p" className="mt-2 text-ink-inactive text-[0.78rem]">
-              {convertible.length - READY_SHOWN} older{' '}
-              {convertible.length - READY_SHOWN === 1 ? 'one is' : 'ones are'} on the{' '}
-              <strong>Record</strong> page.
-            </Typography>
-          )}
         </section>
       )}
 
