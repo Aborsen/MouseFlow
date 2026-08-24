@@ -562,6 +562,22 @@ group('a goal can be carried out by an agent with no worker behind it');
     /await sql`update run_queue set loop = null where id = \$\{id\}/.test(route));
   /* And a run stopped part-way is still work that happened on somebody's computer. The worker path always
    * logged it; this one used to let a cancelled run vanish from the Hours screen entirely. */
+  /* THIS ONE COST A LIVE RUN. `const logRun = …` was declared after the branch that calls it, so cancelling
+   * a run answered the machine with a 500 instead of "stop", and the agent abandoned the job. `node --check`
+   * does not catch a temporal dead zone - it is a runtime error - and every check here is a regex over
+   * source, which is the standing gap this file already admits to. This is the narrowest guard for the
+   * class: inside the step route, a helper must be declared before anything calls it. */
+  {
+    const step = route.slice(route.indexOf("if (action === 'step')"), route.indexOf("if (action === 'report')"));
+    const helpers = [...step.matchAll(/const (\w+) = async/g)].map((m) => m[1]);
+    const early = helpers.filter((name) => {
+      const declared = step.indexOf(`const ${name} = async`);
+      const called = step.indexOf(`${name}(`);
+      return called >= 0 && called < declared;
+    });
+    check('every helper in the step route is declared before it is called',
+      helpers.length > 0 && early.length === 0, early.join(', '));
+  }
   check('a stopped run is logged rather than dropped',
     /await logRun\(job\.loop, 'stopped'/.test(route));
   check('and there is ONE writer for the account log, so the two paths cannot drift',

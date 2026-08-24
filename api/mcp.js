@@ -948,23 +948,6 @@ async function workerRoute(action, req, res, sql, who) {
       select id, flow_id, tool_name, args, state, loop, claimed_at
       from run_queue where id = ${id} and user_id = ${who.id}
     `;
-    /* Gone, or cancelled while it ran. Not an error: the cancellation is what somebody asked for, and the
-     * machine's job is to stop, which it cannot do unless it is told. */
-    if (!job) return res.status(200).json({ ok: true, done: true, stop: 'gone' });
-    if (job.state !== 'claimed') {
-      /* Cancelled, or finished by something else. Told to stop AND tidied up: the conversation is only
-       * worth keeping while there is a next step to take, and a cancelled job that kept one would leave
-       * tens of kilobytes in the queue for as long as the row lives. */
-      /* Cancelled part-way is still work that was done on somebody's computer, and the log is what the
-       * Hours screen and the assistant read. The worker path has always recorded it; this one used to let
-       * a stopped run vanish. */
-      if (job.loop) {
-        await logRun(job.loop, 'stopped', null, `stopped after ${job.loop.stepNo || 0} steps`);
-        await sql`update run_queue set loop = null where id = ${id} and user_id = ${who.id}`;
-      }
-      return res.status(200).json({ ok: true, done: true, stop: job.state });
-    }
-
     const fail = async (why) => {
       await sql`
         update run_queue set state = 'failed', ok = false, said = ${why}, finished_at = now(), loop = null
@@ -1000,6 +983,22 @@ async function workerRoute(action, req, res, sql, who) {
         await report(err, req, { route: 'mcp:step:log' });
       }
     };
+
+    /* Gone, or cancelled while it ran. Not an error: the cancellation is what somebody asked for, and the
+     * machine's job is to stop, which it cannot do unless it is told. */
+    if (!job) return res.status(200).json({ ok: true, done: true, stop: 'gone' });
+    if (job.state !== 'claimed') {
+      /* Told to stop, tidied up, and RECORDED. The conversation is only worth keeping while there is a next
+       * step to take - a cancelled job that kept one would leave tens of kilobytes in the queue for as long
+       * as the row lives - but a run somebody stopped part-way is still work that happened on their
+       * computer, and the Hours screen and the assistant are built from those rows. The worker path has
+       * always logged it; this one used to let a cancelled run vanish. */
+      if (job.loop) {
+        await logRun(job.loop, 'stopped', null, `stopped after ${job.loop.stepNo || 0} steps`);
+        await sql`update run_queue set loop = null where id = ${id} and user_id = ${who.id}`;
+      }
+      return res.status(200).json({ ok: true, done: true, stop: job.state });
+    }
 
     let loop = job.loop;
     if (!loop) {
