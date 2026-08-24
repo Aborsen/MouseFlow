@@ -8,6 +8,7 @@
     "predev": "node scripts/copy-agent.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:extension": "tsc --noEmit && vite build --config vite.extension.config.ts",
     "preview": "vite preview",
     "check-types": "tsc --noEmit",
     "dev:mock": "node scripts/copy-agent.mjs && node scripts/dev-mock.mjs",

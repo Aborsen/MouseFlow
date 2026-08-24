@@ -9,9 +9,40 @@ flow** takes a written goal and does it for you, text included.
 
 ## Load it
 
+The panel is built from the app's own components, so there is a build step now — and what Chrome loads is
+the OUTPUT, not this folder.
+
+```bash
+cd web && npm install && npm run build:extension
+```
+
 1. `chrome://extensions` → enable **Developer mode**
-2. **Load unpacked** → select this `extension/` folder
-3. Pin it, open any site, click the icon → **Start recording**
+2. **Load unpacked** → select `extension/dist`
+3. Pin it, open any site, click the icon → the **side panel** opens
+
+### Why a build, and why dist
+
+The panel renders the same Button, Pill, Said, SearchField and SelectionBar the web app does — literally the
+same files, from `web/src` — on the same palette. The alternative was a second copy of the design, and a
+second copy is one that drifts: the app had four search boxes that had quietly stopped agreeing about their
+focus ring, their height and whether they had an accessible name at all.
+
+What is bundled and what is not:
+
+| | |
+|---|---|
+| bundled | `sidepanel.html`, `popup.html` and everything they import — React, the design system, the palette |
+| copied whole | `manifest.json`, `background.js`, `content.js`, `bridge.js`, `agent.js`, `skills.js`, `icons/` |
+
+The service worker and the content scripts stay hand-written: they run in worlds where a module graph is a
+liability, and they have no UI. `web/vite.extension.config.ts` is the whole arrangement, with the reasoning
+in its header.
+
+### The panel, not the popup
+
+A popup closes the moment you click the page — and recording a flow, or describing one while looking at it,
+IS clicking the page. Both live in the side panel now, which stays open while you work. The toolbar icon
+still opens a popup; its one job is to open the panel.
 
 ## Motion, not just clicks
 

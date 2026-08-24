@@ -756,7 +756,7 @@ export const SkillsView = () => {
   const publish = useCallback(async (flow: Flow) => {
     if (!confirm(`Publish "${flow.name}" to the gallery? Anyone signed in can install it.`)) return;
     try {
-      const body = await galleryPublish(flow.payload);
+      const body = await galleryPublish(flow.payload, flow.source === 'desktop' ? 'desktop' : 'extension');
       /* Written down, because nothing else can answer it later. gallery_skill has no back-reference to the
        * flow it came from, and the listing does not carry the payload, so reading the gallery to find out
        * whether THIS skill is in it would be a fetch per skill. This is knowledge we have at the moment we

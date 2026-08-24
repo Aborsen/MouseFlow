@@ -100,6 +100,9 @@ const listed = (row) => ({
   name: row.name,
   description: row.description,
   kind: row.kind,
+  /* 'extension' | 'desktop' | null. Null is a row published before the gallery recorded this, and a
+   * reader that can only run one half has to decide what to do with unknown - see the migration. */
+  source: row.source || null,
   author: { name: row.author_name, image: row.author_image },
   origins: row.origins || [],
   installs: row.installs,
@@ -260,6 +263,19 @@ async function publish(req, res, sql) {
     ? payload.origins.filter((o) => typeof o === 'string').slice(0, 12)
     : [];
 
+  /* WHICH HALF MADE IT, recorded rather than inferred later.
+   *
+   * A desktop skill aims at screen coordinates and a browser skill at page elements; neither can run where
+   * the other does. The publisher knows which it is and every caller has it to hand - the app sends the
+   * flow's own `source`, the extension is by definition the browser half - so it is asked for here rather
+   * than guessed from `origins` afterwards, which is a heuristic that would call every goal with no
+   * origins a desktop skill.
+   *
+   * Anything else is stored as null: unknown is a real answer for the rows published before this column
+   * existed, and it is the reader's to interpret. */
+  const half = String(body.source || payload.source || '');
+  const source = half === 'extension' || half === 'desktop' ? half : null;
+
   /* The gallery mints the id. A client-supplied id would let one publisher overwrite another's
    * entry, and the id the extension carries is only meaningful on the machine that made it. */
   const id = 'sk_' + Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
@@ -273,10 +289,10 @@ async function publish(req, res, sql) {
 
   await sql`
     insert into gallery_skill
-      (id, author_id, author_name, author_image, name, description, kind, payload, origins)
+      (id, author_id, author_name, author_image, name, description, kind, payload, origins, source)
     values
       (${id}, ${who.id}, ${who.name}, ${who.image}, ${name}, ${description}, ${kind},
-       ${JSON.stringify(stored)}, ${origins})
+       ${JSON.stringify(stored)}, ${origins}, ${source})
   `;
 
   const rows = await sql`select * from gallery_skill where id = ${id}`;

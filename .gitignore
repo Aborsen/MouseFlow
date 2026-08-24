@@ -11,3 +11,6 @@ Thumbs.db
 # source of truth at agent/mouseflow-agent.ps1 which the build copies in.
 web/dist/
 web/public/agent/
+
+# Built by web/vite.extension.config.ts — Chrome loads this, git does not carry it.
+extension/dist/

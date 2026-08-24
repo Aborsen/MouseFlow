@@ -1605,6 +1605,36 @@ const ROUTES = {
     }
     return { ok: true };
   },
+  /* Reading the account's own screens, for the panel.
+   *
+   * The panel shows a dashboard and the teams somebody is in, and both are the app's endpoints answered
+   * with this browser's device token. The token stays HERE: a panel is an ordinary page and a page that
+   * held the token could hand it to anything it later imported. So the panel asks, and this fetches.
+   *
+   * AN ALLOWLIST, not a proxy. Anything reachable from the panel is reachable from every page of the
+   * panel, and a generic "fetch this path with my token" is a hole the moment one of those pages renders
+   * something it did not write. Three paths, named. */
+  'app/read': async (msg) => {
+    const ALLOWED = {
+      insights: (m) => '/api/insights?days=' + (Number(m.days) === 30 ? 30 : 7),
+      teams: () => '/api/team',
+      runs: () => '/api/sync?runs=1',
+    };
+    const build = ALLOWED[String(msg.what || '')];
+    if (!build) throw new Error('nothing here reads that');
+    const token = await syncToken();
+    if (!token) throw new Error('this browser is not attached to an account');
+    const res = await fetch(APP_URL + build(msg), {
+      headers: { accept: 'application/json', authorization: 'Bearer ' + token },
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((body && body.error && (body.error.message || body.error)) ||
+        'the account is not answering (HTTP ' + res.status + ')');
+    }
+    return { ok: true, body };
+  },
+
   /* Browsing the gallery from inside the extension.
    *
    * Reading the gallery needs no session - it is public - so the extension can fetch it directly and

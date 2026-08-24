@@ -272,11 +272,14 @@ export const galleryList = (q?: string) =>
 export const galleryGet = (id: string) =>
   call<{ ok: true; skill: GallerySkill }>(`/api/gallery?id=${encodeURIComponent(id)}`);
 
-export const galleryPublish = (skill: unknown) =>
+/* `source` travels beside the payload rather than inside it: a flow's own row carries which half made it,
+ * the payload does not, and the gallery has to know - a desktop skill cannot run in a browser and the
+ * extension now lists only what it can actually install. */
+export const galleryPublish = (skill: unknown, source?: 'extension' | 'desktop') =>
   call<{ ok: true; skill: GallerySkill }>('/api/gallery', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ skill }),
+    body: JSON.stringify({ skill, source }),
   });
 
 /* ---------------------------------------------------------------------------- hours */

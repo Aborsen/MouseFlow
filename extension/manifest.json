@@ -5,6 +5,7 @@
   "description": "Record a flow and repeat it, or describe what you need and have it done for you.",
   "minimum_chrome_version": "127",
   "permissions": [
+    "sidePanel",
     "scripting",
     "tabs",
     "storage",
@@ -19,6 +20,9 @@
   "background": {
     "service_worker": "background.js",
     "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "action": {
     "default_popup": "popup.html",
