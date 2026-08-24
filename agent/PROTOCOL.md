@@ -167,6 +167,15 @@ thinking, not a stall.
   a run it drove, or it overwrites what the run said. It reports only when it gives up part-way.
 - A claimer is given goal jobs only if it says it can take them: `steps: true` in the `?worker=claim` body.
   An older agent goes on not being offered them, which is why the declaration is on the claimer.
+- **When a worker and a step-capable agent are both listening, the agent gets the goal.** There is one
+  mouse, and both long-poll the same endpoint, so the queue decides rather than the race: a worker is not
+  offered a goal while an agent has asked for work in the last 90 seconds, and starts taking them again by
+  itself if that agent stops. A machine with only a worker is unaffected.
+- **A stop is noticed inside a wait.** A wait can last two minutes, which is far too long for "cancelled" to
+  mean nothing, so every third look at the screen the agent also asks `?worker=state&id=`. If the job is no
+  longer `claimed` it abandons the rest of the turn and posts what it has; the deployment answers `done`,
+  writes the run to the account and clears the row. No answer to that question is not an answer — the next
+  step finds out anyway.
 
 Waiting is done at the agent, with the same numbers the app's own loop uses: the 64×36 fingerprint from
 `/pulse`, 1.5s between looks, two still frames, and a mean difference above 3/255 counting as movement.

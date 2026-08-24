@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
 # The worker, as a login item, so nobody has to keep a terminal open.
 #
-# The worker is the half that lets a decider anywhere - Claude on a phone, in a browser, in a connector - run
-# something on THIS machine: it asks the account for work, does it through the local agent, and reports back.
-# The direction never reverses, which is why there is no inbound path to this computer at all.
+# NOBODY NEEDS THIS ANY MORE, and that is the first thing to say. Until agent 0.9.0 a goal skill could only
+# run on a machine that also ran this, because the decision loop talked to 127.0.0.1. It does not any more:
+# the agent posts the screen to the deployment, the deployment decides, the agent acts. One install, done.
+#
+# WHAT IS LEFT IS ONE REASON, and it is a real one: with this running, the loop runs on YOUR machine, so the
+# screenshots never leave it. The deployment sees the outcome and not the screen. If that matters to you,
+# install this; if it does not, do not.
+#
+# The worker asks the account for work, does it through the local agent, and reports back. The direction
+# never reverses, which is why there is no inbound path to this computer at all. While it is running the
+# queue still prefers the agent for goals - see the note about both being listening in docs/product/21-mcp.md
+# - so the two cannot end up driving one mouse at once.
 #
 # The objection to it was never the process, it was babysitting a terminal. launchd removes that: this
 # registers the same login item the agent uses, with the same KeepAlive, so it starts when you sign in and

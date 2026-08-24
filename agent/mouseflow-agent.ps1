@@ -398,7 +398,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.1";
+        public const string Version = "0.9.2";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -3334,6 +3334,12 @@ namespace MouseFlow
         const int StepFirstWidth = 1280;
         const int SettlePollMs = 1500;
         const int SettleQuietFrames = 2;
+        /* Every third screen look, so a cancellation lands inside four and a half seconds of a wait that
+           may run for two minutes. Anything asked for while this end sits still is worth one small
+           request. */
+        const int StopEveryPolls = 3;
+        /* Whether a stop arrived while this end was busy. Set by the wait, read by the driver. */
+        static bool _stopSeen = false;
 
         static void Drive(string root, string token, string id)
         {
@@ -3411,14 +3417,23 @@ namespace MouseFlow
                 List<string> got = new List<string>();
                 if (actions != null)
                 {
-                    foreach (object action in actions) got.Add(Perform(action));
+                    foreach (object action in actions)
+                    {
+                        got.Add(Perform(action, root, token, id));
+                        /* A stop that arrived while this was waiting. The rest of the turn is abandoned and
+                           the results so far are posted anyway: the deployment answers "done", writes the
+                           run to the account and clears the row, which is tidier than this end deciding
+                           any of that. */
+                        if (_stopSeen) break;
+                    }
                 }
+                if (_stopSeen) _stopSeen = false;
                 results = string.Join(",", got.ToArray());
             }
         }
 
         /// One instruction from the deployment, and what to say came of it.
-        static string Perform(object action)
+        static string Perform(object action, string root, string token, string job)
         {
             string id = Json.Text(action, "id");
             if (id == null) id = "";
@@ -3428,7 +3443,7 @@ namespace MouseFlow
                 int ms = Math.Min(120000, Math.Max(200, Json.Int(action, "ms", 2000)));
                 int waited;
                 int quietFor;
-                bool quiet = Settle(ms, out waited, out quietFor);
+                bool quiet = Settle(ms, root, token, job, out waited, out quietFor);
                 /* Numbers, not a sentence. What the model is told about a wait is one of the things both
                    ends have to say identically, so the wording is composed at the deployment from these. */
                 return "{\"id\":\"" + Agent.JsonText(id) + "\",\"quiet\":" + (quiet ? "true" : "false")
@@ -3459,17 +3474,27 @@ namespace MouseFlow
            the run needed to finish it. The 64x36 fingerprint is 3KB and costs nothing, and the numbers here
            are the ones the app's own loop uses - 1.5s between looks, two still frames, a mean difference of
            3 out of 255 being the line between dither and movement. They agree on purpose. */
-        static bool Settle(int limitMs, out int waited, out int quietFor)
+        static bool Settle(int limitMs, string root, string token, string job, out int waited, out int quietFor)
         {
             DateTime started = DateTime.UtcNow;
             byte[] last = null;
             DateTime quietSince = DateTime.MinValue;
+            int polls = 0;
             waited = 0;
             quietFor = 0;
 
             while ((int)(DateTime.UtcNow - started).TotalMilliseconds < limitMs)
             {
                 Thread.Sleep(SettlePollMs);
+                /* Every third look, so a stop is noticed inside a long wait rather than two minutes after
+                   it. Not every look: this one is a request to the account, and the screen check is not. */
+                polls++;
+                if (polls % StopEveryPolls == 0 && Cancelled(root, token, job))
+                {
+                    _stopSeen = true;
+                    waited = (int)(DateTime.UtcNow - started).TotalMilliseconds;
+                    return false;
+                }
                 byte[] now = null;
                 try { now = Agent.Grid(); }
                 catch { now = null; }
@@ -3496,6 +3521,29 @@ namespace MouseFlow
 
             waited = (int)(DateTime.UtcNow - started).TotalMilliseconds;
             return false;
+        }
+
+        /* Has this job been called off? The queue already answers exactly this, for the worker, and a wait
+           is the one place where the next step is too far away to find out. */
+        static bool Cancelled(string root, string token, string job)
+        {
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
+                    root + "/api/mcp?worker=state&id=" + Uri.EscapeDataString(job));
+                req.Method = "GET";
+                req.Headers.Add("Authorization", "Bearer " + token);
+                req.Timeout = 8000;
+                req.ReadWriteTimeout = 8000;
+                req.KeepAlive = false;
+                using (HttpWebResponse res = (HttpWebResponse)req.GetResponse())
+                using (StreamReader r = new StreamReader(res.GetResponseStream(), Encoding.UTF8))
+                {
+                    string state = Json.Text(Json.Parse(r.ReadToEnd()), "state");
+                    return state != null && state != "claimed";
+                }
+            }
+            catch { return false; }   // no answer is not an answer; the next step will find out
         }
 
         static bool Moved(byte[] a, byte[] b)

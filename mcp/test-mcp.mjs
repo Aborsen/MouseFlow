@@ -1530,13 +1530,28 @@ group('the queue hands a job only to something that can do it');
 const mcpApi = read('../api/mcp.js');
 check('the claim asks what the claimer is',
   /const claimerIsWorker = String\(\(req\.body && req\.body\.kind\) \|\| ''\) === 'worker'/.test(mcpApi));
-/* Two things now qualify, and both DECLARE it: a worker, which runs the loop on the machine, and an agent
- * that can carry a goal one turn at a time against ?worker=step. Neither is assumed - an old binary and an
- * old worker go on not being given goal jobs, which is the whole reason the declaration is on the claimer. */
+/* Two things qualify, and both DECLARE it: a worker, which runs the loop on the machine, and an agent that
+ * can carry a goal one turn at a time against ?worker=step. Neither is assumed - an old binary and an old
+ * worker go on not being given goal jobs, which is the whole reason the declaration is on the claimer. */
 check('and a created skill goes only to something that declared it has the model path',
   /and f\.deleted_at is null and f\.kind = 'created'/.test(mcpApi)
     && /\$\{claimerSteps\}/.test(mcpApi)
-    && /claimerSteps = claimerIsWorker \|\| \(req\.body && req\.body\.steps === true\)/.test(mcpApi));
+    && /claimerSaysSteps = !!\(req\.body && req\.body\.steps === true\)/.test(mcpApi));
+/* There is one mouse, and both claimers long-poll the same endpoint: whichever asked first used to take
+ * the job. The agent wins now - a reversal of the plan, on the grounds that the worker is the install step
+ * this whole change removes, and leaving it in front means the new path never runs on a machine that has
+ * one. A worker alone is unaffected, and takes goals again by itself if the agent stops asking. */
+check('when both are listening, the worker is not offered a goal',
+  /const claimerSteps = claimerIsWorker \? !stepperListening : claimerSaysSteps/.test(mcpApi));
+check('and "listening" means it asked recently, not that it once existed',
+  /AGENT_LISTENING_MS = 90_000/.test(mcpApi)
+    && /Date\.now\(\) - new Date\(rows\[0\]\.value\)\.getTime\(\) < AGENT_LISTENING_MS/.test(mcpApi));
+check('a stepping agent stamps itself, or nothing could know it is there',
+  /stampWorker\(sql, who\.id, 'agent\.steps\.seen'\)/.test(mcpApi));
+/* A precedence rule must never be the thing that stops work happening: if the stamp cannot be read, the
+ * answer is "no agent", which is the behaviour that existed before any of this. */
+check('and an unreadable stamp leaves the worker able to work',
+  /catch \(_\) \{[\s\S]{0,220}return false;\n {2}\}/.test(mcpApi));
 check('and the worker is what declares it',
   /kind: 'worker'/.test(read('../mcp/worker.mjs')));
 /* A command is `#`-prefixed and both kinds can do it — the flow lookup is only for actual skills. */

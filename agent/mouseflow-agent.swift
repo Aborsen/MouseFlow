@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.1"
+let VERSION = "0.9.2"
 
 // ---------------------------------------------------------------- arguments
 
@@ -2738,6 +2738,9 @@ enum Courier {
     private static let stepFirstWidth = 1280
     private static let settlePollMs = 1500
     private static let settleQuietFrames = 2
+    /* Every third screen look, so a cancellation lands inside four and a half seconds of a wait that may
+     * run for two minutes. Anything asked for while this end sits still is worth one small request. */
+    private static let stopEveryPolls = 3
 
     private static func drive(_ link: Account.Link, id: String) {
         guard let url = URL(string: link.base + "/api/mcp?worker=step") else { return }
@@ -2810,16 +2813,29 @@ enum Courier {
             }
 
             let actions = (raw["actions"] as? [[String: Any]]) ?? []
-            results = actions.map { perform($0) }
+            var out: [String] = []
+            for action in actions {
+                out.append(perform(action, link: link, id: id))
+                /* A stop that arrived while this was waiting. The rest of the turn is abandoned and the
+                 * results so far are posted anyway: the deployment answers "done", writes the run to the
+                 * account and clears the row, which is tidier than this end deciding any of that. */
+                if stopSeen { break }
+            }
+            results = out
+            if stopSeen { stopSeen = false }
         }
     }
 
+    /* Whether a stop arrived while this end was busy. Set by the wait, read by the driver: a wait can last
+     * two minutes, and "cancelled" has to mean something inside that. */
+    private static var stopSeen = false
+
     /// One instruction from the deployment, and what to say came of it.
-    private static func perform(_ action: [String: Any]) -> String {
+    private static func perform(_ action: [String: Any], link: Account.Link, id job: String) -> String {
         let id = (action["id"] as? String) ?? ""
         if (action["kind"] as? String) == "wait" {
             let ms = min(120_000, max(200, (action["ms"] as? Int) ?? 2000))
-            let outcome = settle(ms)
+            let outcome = settle(ms) { cancelled(link, id: job) }
             /* Numbers, not a sentence. What the model is told about a wait is one of the things both ends
                have to say identically, so the wording is composed at the deployment from these. */
             return "{\"id\":\(jsonString(id)),\"quiet\":\(jsonBool(outcome.quiet))"
@@ -2845,14 +2861,23 @@ enum Courier {
      * run needed to finish it. The 64x36 fingerprint is 3KB and costs nothing, and the numbers below are
      * the ones the app's own loop uses - 1.5s between looks, two still frames, a mean difference of 3 out
      * of 255 being the line between dither and movement. They agree on purpose. */
-    private static func settle(_ limitMs: Int) -> (quiet: Bool, waited: Int, quietFor: Int) {
+    private static func settle(_ limitMs: Int,
+                              stopped: () -> Bool = { false }) -> (quiet: Bool, waited: Int, quietFor: Int) {
         let started = Date()
         var last: [UInt8]?
         var quietSince: Date?
+        var polls = 0
         let since = { (from: Date) in Int(Date().timeIntervalSince(from) * 1000) }
 
         while since(started) < limitMs {
             Thread.sleep(forTimeInterval: Double(settlePollMs) / 1000)
+            /* Every third look, so a stop is noticed inside a long wait rather than two minutes after it.
+             * Not every look: this one is a request to the account, and the screen check is not. */
+            polls += 1
+            if polls % stopEveryPolls == 0, stopped() {
+                stopSeen = true
+                return (false, since(started), 0)
+            }
             guard let now = Screen.grid() else { break }   // no screen to watch; the next picture reports it
             if let was = last, !moved(was, now) {
                 if quietSince == nil { quietSince = Date() }
@@ -2866,6 +2891,18 @@ enum Courier {
             last = now
         }
         return (false, since(started), 0)
+    }
+
+    /* Has this job been called off? The queue already answers exactly this, for the worker, and a wait is
+     * the one place where the next step is too far away to find out. */
+    private static func cancelled(_ link: Account.Link, id: String) -> Bool {
+        guard let escaped = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+              let url = URL(string: link.base + "/api/mcp?worker=state&id=" + escaped),
+              let (status, data) = request(url, token: link.token, body: nil), status == 200,
+              let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return false                    // no answer is not an answer; the next step will find out
+        }
+        return (raw["state"] as? String) != "claimed"
     }
 
     private static func moved(_ a: [UInt8], _ b: [UInt8]) -> Bool {

@@ -13,7 +13,9 @@ through the local agent.
 The HTTPS half cannot reach into your computer, and nothing on the internet should be able to. So the
 computer dials out: a call becomes a queued job, the **agent** claims it, runs it, and reports back. A
 machine that is not taking work claims nothing, and the caller is told exactly that rather than left
-waiting. Only a *created* skill — a goal, which needs a model in the loop — still wants `mcp/worker.mjs`.
+waiting. Since agent **0.9.0** that covers *created* skills too — a goal, one action a turn — because the
+decision loop moved to the deployment and the agent is the hands. `mcp/worker.mjs` is now optional: see
+below.
 
 The full account of all this, with pictures of every step, is
 [`docs/product/21-mcp.md`](../docs/product/21-mcp.md), and the page people are sent to is

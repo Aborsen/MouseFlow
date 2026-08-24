@@ -379,8 +379,24 @@ check('оба дают экрану те же 350мс среагировать',
 check('оба повторяют шаг ровно один раз - и только на 5xx или обрыве',
   /attempt == 0 && \(status == 0 \|\| status >= 500\)/.test(swift)
     && /attempt == 0 && \(status == 0 \|\| status >= 500\)/.test(ps));
+const version = (text, re) => (text.match(re) || [])[1];
+const swiftVersion = version(swift, /let VERSION = "([\d.]+)"/);
 check('и обе версии совпадают',
-  /let VERSION = "0\.9\.1"/.test(swift) && /public const string Version = "0\.9\.1";/.test(ps));
+  swiftVersion && swiftVersion === version(ps, /public const string Version = "([\d.]+)";/),
+  `${swiftVersion} vs ${version(ps, /public const string Version = "([\d.]+)";/)}`);
+/* Приложение зовёт обновиться до той сборки, которой уже не нужен воркер рядом. Разъезд этих двух чисел -
+ * это либо «обнови до того, чего нет», либо молчание о том, что установочный шаг больше не нужен. */
+check('и приложение просит ровно её',
+  new RegExp(`AGENT_WANTS = '${swiftVersion.replace(/\./g, '\\.')}'`).test(read('web/src/lib/agent.ts')));
+
+/* Отмена приходит, пока агент СТОИТ в ожидании - до двух минут. Оба спрашивают у очереди, не отменили ли. */
+check('оба замечают отмену внутри долгого ожидания',
+  /worker=state&id=/.test(swift) && /worker=state&id=/.test(ps));
+check('и спрашивают не на каждом взгляде на экран, а на каждом третьем',
+  /stopEveryPolls = 3/.test(swift) && /StopEveryPolls = 3/.test(ps));
+check('молчание в ответ не считается отменой',
+  /return false {20}\/\/ no answer is not an answer/.test(swift)
+    && /catch \{ return false; \} {3}\/\/ no answer is not an answer/.test(ps));
 check('оба уступают, если на машине уже что-то воспроизводится',
   /if Replayer\.shared\.isPlaying \{/.test(swift) && /if \(Agent\.IsPlaying\)/.test(ps));
 

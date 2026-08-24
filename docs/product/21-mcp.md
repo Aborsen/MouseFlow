@@ -388,13 +388,18 @@ reason: a replay is coordinates and has no idea what is under them. Then the bod
 server polls `/replay/status` until it finishes. The answer reports what was sent, what could not be played,
 and how many clicks `#ctx` re-aimed.
 
-**A created skill** fills its goal and hands it to `runOnDesktop` — screenshot, decide, act, one action a
-turn, in waves. That path types, and adapts to a window that has moved, at the cost of a model call per
-step. The agent has no model in it, so a created skill still needs `mcp/worker.mjs` on the machine; the
-claim says which kind a job is rather than leaving the claimer to guess.
+**A created skill** is a goal: screenshot, decide, act, one action a turn, in waves. That path types, and
+adapts to a window that has moved, at the cost of a model call per step. The claim says which kind a job is
+rather than leaving the claimer to guess.
 
-There is an installer for each platform, so the worker is a login item rather than a terminal somebody has
-to keep open:
+**Since agent 0.9.0 nobody has to install anything else for it.** The decision loop needed to be on the
+machine for one reason — it talked to `127.0.0.1` — and it does not any more: the agent posts the screen to
+`?worker=step`, the deployment decides, the agent does the action and posts the next screen. One request per
+step. See `agent/PROTOCOL.md`.
+
+`mcp/worker.mjs` still exists and still works. It is now a choice, not a requirement, and there is exactly
+one reason to want it: the decision loop runs on your own machine, so the screenshot never leaves it. Every
+other reason it used to have is gone.
 
 | | |
 |---|---|
@@ -405,6 +410,11 @@ Both take the token without echoing it, refuse anything that is not a `mf_` devi
 older than 22.18, and answer `--status` / `-Status` and `--uninstall` / `-Uninstall`. They differ in one way
 that is a platform fact rather than an omission: launchd restarts a job that dies and the Startup folder does
 not, so the Windows one says so and `-Status` is how you find out.
+
+**When both are running, the agent takes the goal.** They both long-poll the same endpoint and there is one
+mouse, so the queue decides rather than the race: a worker is not offered a goal while a step-capable agent
+has asked for work in the last 90 seconds, and starts taking them again by itself if that agent stops
+asking. A machine with only a worker is unaffected.
 
 Either way the run is logged to the account (`kind: 'replay'` or `'agent'`, with `flowId`), so the dashboard
 and the assistant see it like any other.

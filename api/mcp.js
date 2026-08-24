@@ -372,13 +372,34 @@ async function workerSeen(sql, userId) {
   }
 }
 
-async function stampWorker(sql, userId) {
+async function stampWorker(sql, userId, key = 'worker.seen') {
   try {
     await sql`
-      insert into user_pref (user_id, key, value) values (${userId}, 'worker.seen', ${new Date().toISOString()})
+      insert into user_pref (user_id, key, value) values (${userId}, ${key}, ${new Date().toISOString()})
       on conflict (user_id, key) do update set value = excluded.value, updated_at = now()
     `;
   } catch (_) { /* the stamp is a convenience, never a precondition */ }
+}
+
+/* How recently a step-capable agent has to have asked for work to count as listening.
+ *
+ * Longer than the claim's own long poll (25s), so an agent that is polling normally is always inside it,
+ * and short enough that a machine whose agent has gone away starts using its worker again within a minute
+ * and a half rather than never. */
+const AGENT_LISTENING_MS = 90_000;
+
+async function agentIsListening(sql, userId) {
+  try {
+    const rows = await sql`
+      select value from user_pref where user_id = ${userId} and key = 'agent.steps.seen'
+    `;
+    if (!rows.length) return false;
+    return Date.now() - new Date(rows[0].value).getTime() < AGENT_LISTENING_MS;
+  } catch (_) {
+    /* Unknown means "no", which leaves the worker able to take goals - the behaviour that existed before
+     * any of this. A precedence rule must not be the thing that stops work happening. */
+    return false;
+  }
 }
 
 /* ------------------------------------------------------------------------------- the tools */
@@ -811,7 +832,23 @@ async function workerRoute(action, req, res, sql, who) {
     /* An agent that can carry a goal one turn at a time (see ?worker=step) may take those jobs as well.
      * It DECLARES it, exactly as the worker does, and for the same reason: the ones that cannot must go on
      * not being given them, and no deploy here can tell an old binary apart from a new one. */
-    const claimerSteps = claimerIsWorker || (req.body && req.body.steps === true);
+    const claimerSaysSteps = !!(req.body && req.body.steps === true);
+    if (claimerSaysSteps && !claimerIsWorker) await stampWorker(sql, who.id, 'agent.steps.seen');
+
+    /* WHEN BOTH ARE LISTENING, THE AGENT WINS - and this is a reversal, so it is worth the paragraph.
+     *
+     * There is one mouse. A worker and a step-capable agent on the same machine both long-poll here, and
+     * whichever asked first used to take the job; on an unlucky pair of polls that is two loops driving one
+     * pointer. The plan that started this work said the WORKER should win, on the grounds that it was the
+     * proven path. It is not the right answer any more: the worker is the install step this whole change
+     * exists to remove, and leaving it in front means the new path never runs on any machine that still has
+     * one - which is every machine that could tell us it is broken.
+     *
+     * So: a worker is not offered a goal while an agent that can do goals is listening. It keeps everything
+     * else, and it takes goals again by itself if that agent stops asking. A machine with only a worker is
+     * unaffected. */
+    const stepperListening = claimerIsWorker ? await agentIsListening(sql, who.id) : false;
+    const claimerSteps = claimerIsWorker ? !stepperListening : claimerSaysSteps;
     const wait = Math.min(CLAIM_WAIT_MAX_MS, Math.max(0, Number((req.body && req.body.wait) || 0) * 1000));
     const until = Date.now() + wait;
 

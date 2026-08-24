@@ -218,11 +218,22 @@ silently on somebody else's machine, and the Windows agent has still never been 
 What cannot travel this way, and is written into the protocol: a failure whose cause is "cannot reach the
 deployment".
 
-### Step 4 — make the worker optional in the product
+### Step 4 — make the worker optional in the product  ✅
 
-- Connections screen and docs stop telling people to install it.
-- `mouseflow_status` stops implying a worker is needed when the agent can serve steps.
-- `mcp/install-worker-*.{sh,ps1}` stay, documented as "only if you want the local path".
+- **D5 is reversed, deliberately.** The plan said the worker should win when both are listening, on the
+  grounds that it was the proven path. It is not the right answer once the cloud path works: the worker is
+  the install step this whole change removes, and leaving it in front means the new path never runs on any
+  machine that still has one — which is every machine that could report it broken. So a worker is not
+  offered a goal while a step-capable agent has asked for work in the last 90 seconds, and takes them again
+  by itself if that agent stops asking. A machine with only a worker is unaffected, and an unreadable stamp
+  means "no agent", so a precedence rule can never be the thing that stops work happening.
+- `docs/product/21-mcp.md` said a created skill "still needs `mcp/worker.mjs` on the machine". It does not.
+- Both installers and `mcp/README.md` now open with *nobody needs this any more*, and keep the one real
+  reason to want it: with a worker, the loop runs on your machine and the screenshots never leave it.
+- `AGENT_WANTS` moved to the build that no longer needs a worker beside it — the update nudge is the only
+  way somebody on 0.8.x learns the install step is gone.
+
+The Connections screen never did tell anybody to install a worker, so there was nothing to remove there.
 
 ---
 

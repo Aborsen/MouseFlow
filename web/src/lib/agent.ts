@@ -252,11 +252,18 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.7.0 is the build that records what a recording is FOR: what each click landed on (0.6.0), plus that a
- * key was pressed and when, plus the foreground window changing. An older one records the same coordinates
- * and none of it, so its transcripts read as a list of positions - a real difference in what the product
- * does, not an internal one, and worth telling somebody to close that PowerShell window for. */
-export const AGENT_WANTS = '0.8.0';
+/* 0.9.2 is the build that no longer needs a second program installed beside it.
+ *
+ * Before it, a goal skill - the kind the wizard makes - could only run on a machine that also had
+ * mcp/worker.mjs running, because the decision loop talked to 127.0.0.1. From 0.9.0 the agent carries the
+ * goal itself, one action per request against the deployment, and it reports its own crashes rather than
+ * writing them to a log nobody opens. 0.9.2 notices a stop while it is waiting.
+ *
+ * That is why this moved: the nudge to update is the only way somebody on 0.8.x finds out that the install
+ * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
+ * is the build that records what a recording is FOR - what each click landed on, plus that a key was
+ * pressed and when - and an older one produces transcripts that read as a list of positions. */
+export const AGENT_WANTS = '0.9.2';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

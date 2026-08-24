@@ -1,11 +1,17 @@
 <#
   The worker, as a startup item, so nobody has to keep a PowerShell window open.
 
-  The worker is the half that lets a decider anywhere - Claude on a phone, in a browser, in a connector - run
-  a GOAL skill on THIS machine. A recorded skill is a body of coordinates and the agent replays it by itself;
-  a created skill needs a model in the loop, one action a turn, and the agent has no model in it. So that
-  path goes through here. It asks the account for work, does it through the local agent, and reports back.
-  The direction never reverses, which is why there is no inbound path to this computer at all.
+  NOBODY NEEDS THIS ANY MORE, and that is the first thing to say. Until agent 0.9.0 a goal skill could only
+  run on a machine that also ran this, because the decision loop talked to 127.0.0.1. It does not any more:
+  the agent posts the screen to the deployment, the deployment decides, the agent acts. One install, done.
+
+  WHAT IS LEFT IS ONE REASON, and it is a real one: with this running, the loop runs on YOUR machine, so the
+  screenshots never leave it. The deployment sees the outcome and not the screen. If that matters to you,
+  install this; if it does not, do not.
+
+  The worker asks the account for work, does it through the local agent, and reports back. The direction
+  never reverses, which is why there is no inbound path to this computer at all. While it is running the
+  queue still prefers the agent for goals, so the two cannot end up driving one mouse at once.
 
   This mirrors mcp/install-worker-mac.sh, which is the reference. Where the two differ it is because the
   platforms do: launchd has KeepAlive and a plist, Windows has the Startup folder and a .cmd, and a
