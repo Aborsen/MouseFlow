@@ -39,7 +39,7 @@
 import { neon } from '@neondatabase/serverless';
 import { randomUUID } from 'node:crypto';
 import { whoIsCalling } from './_session.js';
-import { structureOf, wireFor } from './_skill-schema.mjs';
+import { structureOf } from './_skill-schema.mjs';
 import { flowBody, parseMacro, summarize } from './_macro.mjs';
 import { flowFor } from './_flow-for.mjs';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
