@@ -8,7 +8,7 @@ import { useNavigate } from '@tanstack/react-router';
 import {
   ArrowRight, Braces, ChevronUp, CircleDot, Copy, Download, Ellipsis, FileText, Globe, Link2, Loader2,
   Lock, Monitor, MousePointerClick, Pencil, Puzzle, RefreshCw, Search, Share2, Sparkles, Trash2, Upload,
-  Wand2, X,
+  Wand2,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
@@ -18,6 +18,7 @@ import { cn } from '@insightis/ui/cn';
 import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { listedInSkills } from '@/lib/flow-role';
+import { SelectionBar } from '@/components/SelectionBar';
 import { Signal } from '@/components/Signal';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
@@ -1057,60 +1058,16 @@ export const SkillsView = () => {
             })}
           </div>
         </div>
-        {/* Ticking, and what there is to do with several at once. A fixed height, because the selection
-            controls appear inside this line: without one, ticking a box grew it and pushed the list down -
-            exactly what the recordings table had to fix. */}
-        <div className="mb-2 flex h-8 flex-wrap items-center gap-3 text-[0.8rem]">
-          {shownSkills.length > 0 && (
-            <button
-              type="button"
-              className="text-brand-primary hover:underline"
-              onClick={() => setSelected(live.size === shownSkills.length
-                ? new Set()
-                : new Set(shownSkills.map((flow) => flow.id)))}
-            >
-              {live.size === shownSkills.length ? 'Clear selection' : 'Select all'}
-            </button>
-          )}
-
-          {live.size > 0 && (
-            <span className="ms-auto flex flex-wrap items-center gap-1.5">
-              <Typography variant="span" className="text-ink-secondary">
-                {live.size} selected
-              </Typography>
-              {/* Armed in the button rather than behind a confirm(): a dialog is easy to click through, and
-                  this one takes several skills off the account at once. It disarms itself after six
-                  seconds, like every other destructive button here. */}
-              <Button
-                variant={armed === 'selection' ? 'destructive' : 'destructiveTertiary'}
-                size="sm"
-                disabled={removing === 'selection'}
-                leftSlot={removing === 'selection'
-                  ? <Loader2 className="size-4 animate-spin" />
-                  : <Trash2 className="size-4" />}
-                onClick={() => {
-                  if (armed !== 'selection') { setArmed('selection'); return; }
-                  void removeMany(shownSkills.filter((flow) => live.has(flow.id)));
-                }}
-              >
-                {removing === 'selection'
-                  ? 'Deleting…'
-                  : armed === 'selection' ? `Delete ${live.size} — press again` : 'Delete'}
-              </Button>
-              {/* Disarms as well as clears. Clearing hides this bar, and `armed` used to stay at 'selection'
-                  behind it - so selecting again brought Delete back already cocked, one click from deleting
-                  several skills with nothing on screen to say so. */}
-              <Button
-                variant="ghost"
-                size="sm"
-                leftSlot={<X className="size-4" />}
-                onClick={() => { setArmed(null); setSelected(new Set()); }}
-              >
-                Clear
-              </Button>
-            </span>
-          )}
-        </div>
+        <SelectionBar
+          className="mb-2"
+          total={shownSkills.length}
+          selected={live.size}
+          onSelectAll={(all) => setSelected(all ? new Set(shownSkills.map((flow) => flow.id)) : new Set())}
+          onClear={() => setSelected(new Set())}
+          onConfirm={() => void removeMany(shownSkills.filter((flow) => live.has(flow.id)))}
+          busy={removing === 'selection'}
+          busyLabel="Deleting…"
+        />
 
         <div className="overflow-x-auto pb-1">
           <div className="min-w-[63rem]">

@@ -18,6 +18,7 @@
  */
 import { Button } from '@insightis/ui/Button';
 import { Checkbox } from '@insightis/ui/Checkbox';
+import { SelectionBar } from '@/components/SelectionBar';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
@@ -368,65 +369,31 @@ export const RecordingsTable = ({
             />
           </label>
 
-          {/* Their count line, with Select all beside it. A fixed height because the selection controls
-              appear inside it: without one, ticking a box grew this line and pushed the whole list down. */}
-          <div className="mb-2 flex h-8 flex-wrap items-center gap-3 text-[0.8rem]">
-            <Typography variant="span" className="text-ink-secondary">
-              {rows.length} recording{rows.length === 1 ? '' : 's'}
-              {term && state.recordings.length !== rows.length ? ` of ${state.recordings.length}` : ''}
-            </Typography>
-
-            {rows.length > 0 && (
-              <button
-                type="button"
-                className="text-brand-primary hover:underline"
-                onClick={() => setSelected(live.size === rows.length
-                  ? new Set()
-                  : new Set(rows.map((r) => r.id)))}
-              >
-                {live.size === rows.length ? 'Clear selection' : 'Select all'}
-              </button>
+          <SelectionBar
+            className="mb-2"
+            total={rows.length}
+            selected={live.size}
+            onSelectAll={(all) => setSelected(all ? new Set(rows.map((r) => r.id)) : new Set())}
+            onClear={() => setSelected(new Set())}
+            onConfirm={() => void remove([...live])}
+            busyLabel="Deleting…"
+            label={(
+              <Typography variant="span" className="text-ink-secondary">
+                {rows.length} recording{rows.length === 1 ? '' : 's'}
+                {term && state.recordings.length !== rows.length ? ` of ${state.recordings.length}` : ''}
+              </Typography>
             )}
-
-            {live.size > 0 && (
-              /* Their selection bar, reduced to what there is to do with several recordings at once. */
-              <span className="ms-auto flex flex-wrap items-center gap-1.5">
-                <Typography variant="span" className="text-ink-secondary">
-                  {live.size} selected
-                </Typography>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  leftSlot={<Download className="size-4" />}
-                  onClick={() => rows.filter((r) => live.has(r.id)).forEach(exportOne)}
-                >
-                  Export
-                </Button>
-                <Button
-                  variant={armed === 'selection' ? 'destructive' : 'destructiveTertiary'}
-                  size="sm"
-                  leftSlot={<Trash2 className="size-4" />}
-                  onClick={() => {
-                    if (armed !== 'selection') { setArmed('selection'); return; }
-                    void remove([...live]);
-                  }}
-                >
-                  {armed === 'selection' ? `Delete ${live.size} — press again` : 'Delete'}
-                </Button>
-                {/* Disarms as well as clears. Clearing the selection hides this bar, and `armed` used to stay
-                    at 'selection' behind it - so selecting something again brought Delete back already
-                    cocked, one click from deleting several recordings, with nothing on screen to say it. */}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  leftSlot={<X className="size-4" />}
-                  onClick={() => { setArmed(null); setSelected(new Set()); }}
-                >
-                  Clear
-                </Button>
-              </span>
-            )}
-          </div>
+          >
+            {/* The one action a list has that the other two do not: several recordings as several files. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              leftSlot={<Download className="size-4" />}
+              onClick={() => rows.filter((r) => live.has(r.id)).forEach(exportOne)}
+            >
+              Export
+            </Button>
+          </SelectionBar>
 
           {rows.length === 0 ? (
             <Typography variant="p" className="py-6 text-center text-ink-inactive text-[0.88rem]">

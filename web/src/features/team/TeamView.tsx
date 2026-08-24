@@ -44,8 +44,10 @@ import {
 } from 'lucide-react';
 import { Badge } from '@insightis/ui/Badge';
 import { Button } from '@insightis/ui/Button';
+import { Checkbox } from '@insightis/ui/Checkbox';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
+import { SelectionBar } from '@/components/SelectionBar';
 import { useAccount } from '@/shell/AccountProvider';
 import { roleOf, SKILL_ROLE } from '@/lib/flow-role';
 
@@ -219,6 +221,96 @@ export const TeamView = () => {
 
   const mine = detail?.you.role;
   const manages = mine === 'owner' || mine === 'admin';
+
+  /* Who is ticked, across both lists in the roster.
+   *
+   * ONE SELECTION FOR PEOPLE AND INVITATIONS, because from the outside they are one thing: somebody
+   * offboarding a project wants these five off the team, and whether a given one has an account yet is our
+   * problem rather than theirs. The key says which is which - `m:<id>` for a member, `i:<email>` for an
+   * invitation - and what happens to each is different underneath.
+   *
+   * YOU CANNOT TICK YOURSELF. Leaving a team is not the same act as removing somebody from it: it is
+   * irreversible for the person doing it and it is the one row where "remove" would take away the ability
+   * to undo the rest. Leaving stays its own button. */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const memberKey = (id: string) => `m:${id}`;
+  const inviteKey = (email: string) => `i:${email}`;
+
+  /* A tick only counts while the row it is on is still there. Somebody else can remove a person while this
+   * panel is open, and a selection that outlived its row is how you remove somebody you cannot see. */
+  const pickable = useMemo(() => {
+    if (!detail || !manages) return [] as string[];
+    return [
+      ...detail.members.filter((m) => m.id !== account?.id).map((m) => memberKey(m.id)),
+      ...detail.invites.map((i) => inviteKey(i.email)),
+    ];
+  }, [detail, manages, account?.id]);
+  const live = useMemo(
+    () => new Set([...picked].filter((key) => pickable.includes(key))),
+    [picked, pickable],
+  );
+  const tick = useCallback((key: string) => setPicked((was) => {
+    const next = new Set(was);
+    if (!next.delete(key)) next.add(key);
+    return next;
+  }), []);
+
+  /* Nothing stays ticked across teams. Opening another panel with three ticks carried over from the last
+   * one is a selection nobody made. */
+  useEffect(() => { setPicked(new Set()); }, [openId]);
+
+  /* Taking several people off at once.
+   *
+   * ONE REQUEST PER PERSON, and this is the one place in the app where that is the right answer rather
+   * than the lazy one: /api/team's DELETE removes one member, and each removal is a separate permission
+   * decision on the server - an owner may not be removed by an admin, the last owner may not be removed at
+   * all. A list parameter would have to re-decide all of that in a second place. The roster is a handful of
+   * people, so the cost is a handful of requests.
+   *
+   * WHAT IT COSTS IS HONESTY ABOUT PARTIAL FAILURE, which is paid below: every one is awaited on its own,
+   * failures are collected, and the report names them. "Removed 3 of 4" is a sentence somebody can act on;
+   * "that did not work" after three of them already happened is not. */
+  const removePicked = useCallback(async () => {
+    if (!detail || !live.size) return;
+    setBusy(true);
+    setSaid(null);
+    const team = encodeURIComponent(detail.team.id);
+    let members = 0;
+    let invites = 0;
+    const failed: string[] = [];
+
+    for (const key of live) {
+      const isMember = key.startsWith('m:');
+      const value = key.slice(2);
+      const who = isMember
+        ? (detail.members.find((m) => m.id === value)?.name
+          || detail.members.find((m) => m.id === value)?.email || 'somebody')
+        : value;
+      try {
+        await call(isMember
+          ? `?id=${team}&user=${encodeURIComponent(value)}`
+          : `?id=${team}&invite=${encodeURIComponent(value)}`, { method: 'DELETE' });
+        if (isMember) members += 1; else invites += 1;
+      } catch (err) {
+        failed.push(`${who} (${err instanceof Error ? err.message : 'refused'})`);
+      }
+    }
+
+    await loadTeams();
+    if (openId) await loadDetail(openId);
+    setPicked(new Set());
+    setBusy(false);
+
+    /* Said as two counts rather than one, because they are two different things that happened: a person
+     * lost access, an invitation that was never accepted is simply gone. */
+    const done = [
+      members ? `Removed ${members} ${members === 1 ? 'person' : 'people'}` : '',
+      invites ? `cancelled ${invites} invitation${invites === 1 ? '' : 's'}` : '',
+    ].filter(Boolean).join(', ');
+    setSaid(failed.length
+      ? { text: `${done || 'Nothing was removed'}. Could not remove ${failed.join('; ')}.`, kind: 'bad' }
+      : { text: `${done}.`, kind: 'good' });
+  }, [detail, live, openId, loadTeams, loadDetail]);
 
   /* Only skills, and only mine. Sharing a raw recording would put a payload in front of a team without the
    * step that turns it into something meant to be handed over. */
@@ -574,15 +666,46 @@ export const TeamView = () => {
 
                   {/* -------- who is in it */}
                   <div className="grid gap-1.5">
-                    <span className={LABEL}>
-                      {detail.members.length} {detail.members.length === 1 ? 'member' : 'members'}
-                    </span>
+                    <SelectionBar
+                      total={pickable.length}
+                      selected={live.size}
+                      onSelectAll={(all) => setPicked(all ? new Set(pickable) : new Set())}
+                      onClear={() => setPicked(new Set())}
+                      onConfirm={() => void removePicked()}
+                      verb="Remove"
+                      busy={busy}
+                      busyLabel="Removing…"
+                      size="xs"
+                      label={(
+                        <span className={LABEL}>
+                          {detail.members.length} {detail.members.length === 1 ? 'member' : 'members'}
+                        </span>
+                      )}
+                    />
 
-                    {detail.members.map((m) => (
+                    {detail.members.map((m) => {
+                      const key = memberKey(m.id);
+                      const yours = m.id === account?.id;
+                      const ticked = live.has(key);
+                      return (
                       <div
                         key={m.id}
-                        className="flex items-center gap-2.5 rounded-lg border border-stroke/45 bg-surface-card2 px-3 py-2.5"
+                        className={cn(
+                          'flex items-center gap-2.5 rounded-lg border border-stroke/45 bg-surface-card2 px-3 py-2.5',
+                          ticked && 'border-brand-primary bg-state-pressed',
+                        )}
                       >
+                        {manages && (yours
+                          /* Your own row cannot be ticked - see the note by `picked` - but it keeps the
+                             space, or every name below it sits a checkbox further left than yours. */
+                          ? <span className="size-4 shrink-0" aria-hidden />
+                          : (
+                            <Checkbox
+                              checked={ticked}
+                              aria-label={`Select ${m.name || m.email || 'this member'}`}
+                              onCheckedChange={() => tick(key)}
+                            />
+                          ))}
                         <span
                           className={cn(
                             'grid size-8 shrink-0 place-items-center rounded-full font-bold text-[0.8rem]',
@@ -653,15 +776,27 @@ export const TeamView = () => {
                           </button>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
 
                     {/* An invitation is a row here, not a section further down: a person who is not here
                       * yet, in the place people are. */}
-                    {manages && detail.invites.map((i) => (
+                    {manages && detail.invites.map((i) => {
+                      const key = inviteKey(i.email);
+                      const ticked = live.has(key);
+                      return (
                       <div
                         key={i.email}
-                        className="flex items-center gap-2.5 rounded-lg border border-stroke border-dashed px-3 py-2.5"
+                        className={cn(
+                          'flex items-center gap-2.5 rounded-lg border border-stroke border-dashed px-3 py-2.5',
+                          ticked && 'border-brand-primary bg-state-pressed',
+                        )}
                       >
+                        <Checkbox
+                          checked={ticked}
+                          aria-label={`Select the invitation to ${i.email}`}
+                          onCheckedChange={() => tick(key)}
+                        />
                         <span className="grid size-8 shrink-0 place-items-center rounded-full border border-stroke border-dashed text-ink-inactive">
                           <Mail className="size-3.5" />
                         </span>
@@ -705,7 +840,8 @@ export const TeamView = () => {
                           <X className="size-3.5" />
                         </button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   {/* -------- shared skills */}
