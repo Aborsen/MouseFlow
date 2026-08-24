@@ -901,6 +901,36 @@ check('an unknown role falls through to the guess rather than to a confident no'
 check('a secure field is reported as a field, so the skill does not quietly skip it',
   classifyTyping({ keys: 12, role: 'AXSecureTextField', control: 'Password' }).field);
 
+/* Saying what was typed on the step it happened, rather than on a screen of cards away from it. */
+group('the text can be given beside the step it belongs to');
+check('a typing row carries a control that opens a popover',
+  /const WhatWasTyped = /.test(wizard) && /<PopoverTrigger asChild>/.test(wizard));
+check('and it asks in words anybody has, not in the vocabulary of parameters',
+  /What did you type here\?/.test(wizard));
+/* The box first, the three choices under it. The old screen led with the choices, which is a question about
+ * parameters put to somebody who has never met one. */
+check('the text box is the primary control and comes before the choices',
+  wizard.indexOf('placeholder="the text"') < wizard.indexOf("['fixed', 'Type this every time']"));
+check('typing picks "always this text" without anybody having to know that is what it is called',
+  /const first = blank\.fill === 'ask' && !blank\.fixed;/.test(wizard));
+/* ...but only from the untouched state, or a deliberate "ask" would be silently taken back. */
+check('and it never overrides a choice somebody made on purpose',
+  /\.\.\.\(first && value \? \{ fill: 'fixed' as Fill \} : \{\}\)/.test(wizard));
+check('the chip shows the current answer, so nothing is set without saying so',
+  /function chipOf\(b: Blank\)/.test(wizard) && /will ask each time/.test(wizard)
+    && /types nothing/.test(wizard));
+/* A button inside the row's <label> would toggle the checkbox on every click: the step would drop out of
+ * the skill at the moment somebody opened the popover to say what it types. */
+check('the control sits outside the label, so opening it does not untick the step',
+  /The chip sits OUTSIDE the label/.test(wizard)
+    && /<label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2\.5">/.test(wizard));
+check('only a field gets one — an Enter keypress is not asked about twice',
+  /blank\.verdict\.field && on/.test(wizard));
+check('a 546-step list does not scan the blanks once per row',
+  /const blankOf = useMemo\(\(\) => new Map/.test(wizard));
+check('and both screens edit the same blank, so they cannot disagree',
+  /onEdit=\{\(patch\) => edit\(line\.n, patch\)\}/.test(wizard));
+
 group('and the wizard folds the rest away instead of asking about them');
 check('what is not a field defaults to typing nothing, rather than to a required input',
   /fill: \(verdict\.field \? 'ask' : 'skip'\) as Fill/.test(wizard));

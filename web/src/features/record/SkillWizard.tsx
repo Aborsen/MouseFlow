@@ -33,6 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
+import { Popover, PopoverContent, PopoverTrigger } from '@insightis/ui/Popover';
 import { CheckCheck, Keyboard, Loader2, X } from 'lucide-react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
@@ -206,6 +207,128 @@ function withNotes(base: string, notes: string): string {
 
 /* ------------------------------------------------------------------ the wizard */
 
+/* Saying what was typed, on the step it happened, in a popover.
+ *
+ * WHY HERE AND NOT ONLY ON STEP 2. Step 2 is a screen of cards away from the thing each card is about: a
+ * card says Into "Prompt" and the recording said `typed for 31.5s - 136 keystrokes into "Prompt" in Claude`,
+ * and the second one is the sentence somebody recognises. Answering beside the sentence is answering a
+ * question you can still see the context of.
+ *
+ * THE TEXT BOX IS THE PRIMARY CONTROL, and that is the whole point of the shape. The old screen led with
+ * three abstract choices - ask / always the same / nothing - which is a question about parameters asked of
+ * somebody who has never met one. Here the first thing is a box and the question above it is "what did you
+ * type here?", which anybody can answer. The three choices are underneath, and typing into the box picks
+ * one of them for you.
+ *
+ * Step 2 keeps its cards. This is not a replacement for it - somebody who wants to see every blank at once,
+ * or set all of them together, still has that - and both edit the same Blank, so the two screens can never
+ * disagree.
+ */
+const CHIP_TEXT_MAX = 22;
+
+function chipOf(b: Blank): { label: string; set: boolean } {
+  if (b.fill === 'skip') return { label: 'types nothing', set: true };
+  if (b.fill === 'fixed') {
+    const said = b.fixed.trim();
+    if (!said) return { label: 'what was typed?', set: false };
+    const short = said.length > CHIP_TEXT_MAX ? `${said.slice(0, CHIP_TEXT_MAX - 1)}…` : said;
+    return { label: `“${short}”`, set: true };
+  }
+  return { label: 'will ask each time', set: true };
+}
+
+const WhatWasTyped = ({ blank, onEdit }: {
+  blank: Blank;
+  onEdit: (patch: Partial<Blank>) => void;
+}) => {
+  const chip = chipOf(blank);
+  /* Typing picks "always this text" for you - but only from the untouched state. Somebody who deliberately
+   * chose "ask" and then types a note to themselves must not have that choice taken back off them, so the
+   * switch fires on the first keystroke into an empty box and never again. */
+  const write = (value: string) => {
+    const first = blank.fill === 'ask' && !blank.fixed;
+    onEdit({ fixed: value, ...(first && value ? { fill: 'fixed' as Fill } : {}) });
+  };
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'shrink-0 rounded-md border px-2 py-0.5 text-[0.76rem] transition-colors duration-fast',
+            'max-w-[13rem] truncate',
+            chip.set
+              ? 'border-stroke bg-surface-card2 text-ink-secondary hover:bg-state-hover'
+              : 'border-brand-primary/45 bg-brand-primary/10 text-brand-primary hover:bg-brand-primary/20',
+          )}
+        >
+          {chip.label}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[19rem]">
+        <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
+          What did you type here?
+        </Typography>
+        <Typography variant="p" className="mt-0.5 mb-2 truncate text-[0.78rem] text-ink-inactive">
+          {blank.control ? `into “${blank.control}”` : 'the field could not be named'}
+          {blank.keys ? ` · ${blank.keys} keystroke${blank.keys === 1 ? '' : 's'}` : ''}
+        </Typography>
+
+        <input
+          autoFocus
+          value={blank.fixed}
+          onChange={(e) => write(e.target.value)}
+          placeholder="the text"
+          className={cn(
+            'h-9 w-full rounded-md border border-stroke bg-surface-card2 px-2.5 text-[0.85rem]',
+            'text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none',
+            blank.fill !== 'fixed' && 'opacity-60',
+          )}
+        />
+
+        <div className="mt-2.5 grid gap-1.5">
+          {([
+            ['fixed', 'Type this every time'],
+            ['ask', 'Ask each time it runs'],
+            ['skip', 'Type nothing'],
+          ] as [Fill, string][]).map(([f, label]) => (
+            <label key={f} className="flex cursor-pointer items-center gap-2 text-[0.82rem] text-ink-body">
+              <input
+                type="radio"
+                name={`fill-${blank.n}`}
+                checked={blank.fill === f}
+                onChange={() => onEdit({ fill: f })}
+                className="size-3.5 shrink-0 accent-brand-primary"
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+
+        {/* Only under the choice it belongs to. A parameter name shown next to "type nothing" is a control
+          * for something that is not happening. */}
+        {blank.fill === 'ask' && (
+          <div className="mt-2 border-stroke/60 border-t pt-2">
+            <Typography variant="span" className="block text-[0.76rem] text-ink-inactive">
+              It becomes an input on the skill, called:
+            </Typography>
+            <input
+              value={blank.param}
+              onChange={(e) => onEdit({ param: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') })}
+              placeholder="what to call it"
+              className={cn(
+                'mt-1 h-8 w-full rounded-md border border-stroke bg-surface-card2 px-2',
+                'font-mono text-[0.8rem] text-ink-primary focus:border-brand-primary focus:outline-none',
+              )}
+            />
+          </div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+};
+
 /* "What to type" was the name while the step could only ever be about the recorded typing — and when a
  * recording had none, it was a screen with a sentence on it and nothing to do. It takes instructions in
  * general now, of which "type this here" is one. */
@@ -309,6 +432,9 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
    * many there were and that nothing will be typed at them, with a way in for the rare case the classifier
    * was wrong. Splitting on the STORED verdict rather than re-running the classifier keeps the card a person
    * is looking at from moving underneath them when they rename a control. */
+  /* Step 1 asks each row for its blank. A Map rather than a find() per row: a 546-step recording renders
+   * 546 rows, and a linear scan inside each of them is the kind of thing that turns a list into a stutter. */
+  const blankOf = useMemo(() => new Map(blanks.map((b) => [b.n, b])), [blanks]);
   const fields = useMemo(() => typing.filter((b) => b.verdict.field), [typing]);
   const aside = useMemo(() => typing.filter((b) => !b.verdict.field), [typing]);
   const asked = useMemo(() => typing.filter((b) => b.fill === 'ask'), [typing]);
@@ -453,9 +579,9 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
               <>
                 <Typography variant="p" className="mb-3 text-ink-inactive text-[0.85rem] leading-relaxed">
                   This is the recording, step by step. Leave out anything the skill should not do — a stray
-                  click, a scroll that was only looking. {typing.length > 0 && (
-                    <>The <span className="text-ink-body">highlighted</span> rows are where you typed;
-                    what you typed was never stored, so the next screen asks.</>
+                  click, a scroll that was only looking. {fields.length > 0 && (
+                    <>The <span className="text-ink-body">highlighted</span> rows are where you typed — what
+                    you typed was never recorded, so say it here.</>
                   )}
                 </Typography>
                 {/* Above the list, where the eye lands before it starts ticking. */}
@@ -486,16 +612,24 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   {lines.map((line) => {
                     const isTyping = line.action === 'type';
                     const on = kept.has(line.n);
+                    /* Only a FIELD gets the chip. Offering "what did you type here?" beside an Enter keypress
+                     * is the same nineteen questions the folding on step 2 exists to remove, just moved. */
+                    const blank = blankOf.get(line.n);
+                    const askable = !!blank && blank.verdict.field && on;
                     return (
-                      <li key={line.n}>
-                        <label
-                          className={cn(
-                            'flex cursor-pointer items-start gap-2.5 rounded-lg px-2.5 py-1.5',
-                            'hover:bg-state-hover',
-                            isTyping && 'bg-brand-primary/10',
-                            !on && 'opacity-45',
-                          )}
-                        >
+                      /* The chip sits OUTSIDE the label. Inside it, every click on it would also reach the
+                       * label and toggle the checkbox — the row would drop out of the skill at the exact
+                       * moment somebody opened the popover to say what it types. */
+                      <li
+                        key={line.n}
+                        className={cn(
+                          'flex items-start gap-2 rounded-lg px-2.5 py-1.5',
+                          'hover:bg-state-hover',
+                          isTyping && 'bg-brand-primary/10',
+                          !on && 'opacity-45',
+                        )}
+                      >
+                        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5">
                           <input
                             type="checkbox"
                             checked={on}
@@ -515,8 +649,12 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                               </span>
                             )}
                           </span>
-                          {isTyping && <Keyboard aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-primary" />}
                         </label>
+                        {askable
+                          ? <WhatWasTyped blank={blank} onEdit={(patch) => edit(line.n, patch)} />
+                          : isTyping
+                            ? <Keyboard aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-primary" />
+                            : null}
                       </li>
                     );
                   })}
