@@ -540,6 +540,43 @@ check('the queue row still says which errand is running',
 check('an unstamped row is not offered as a tool', /if \(role !== 'skill'\) \{ unstamped\+\+; continue; \}/.test(route));
 check('and a call with no worker listening is refused rather than left to hang',
   /No machine has ever asked this account for work/.test(route));
+group('a goal can be carried out by an agent with no worker behind it');
+{
+  /* The loop itself is driven and tested in api/test-step.mjs, which needs neither a database nor a key.
+   * What can only be checked here is the ROUTE around it: that the state goes to the row rather than to
+   * this function's memory, that a picture never lands in the queue, and that the machine is told to stop
+   * when the job it is holding has been cancelled. */
+  check('the endpoint exists and takes one turn per request',
+    /if \(action === 'step'\)/.test(route) && /await advance\(\{ loop, shot: body\.shot/.test(route));
+  check('the loop lives in the row, not in the instance',
+    /update run_queue set loop = \$\{JSON\.stringify\(out\.loop\)\}/.test(route));
+  check('and is cleared when the run ends, so no queue row keeps a conversation',
+    (route.match(/loop = null/g) || []).length >= 2);
+  check('every step moves the claim on, so staleness means "not heard from"',
+    /loop = \$\{JSON\.stringify\(out\.loop\)\}, claimed_at = now\(\)/.test(route));
+  check('a job cancelled while it ran tells the machine to stop rather than to carry on',
+    /job\.state !== 'claimed'[\s\S]{0,80}done: true, stop: job\.state/.test(route));
+  check('the goal comes from the one implementation of what a parameter does',
+    /from '\.\.\/extension\/skills\.js'/.test(route) && /fillGoal\(skill, args\)/.test(route));
+  check('and a missing parameter fails the job instead of running a sentence with a hole in it',
+    /const missing = missingParams\(skill, args\)/.test(route));
+  check('the model is resolved once per run, not per step',
+    /startLoop\(\{ goal, model \}\)/.test(route) && /settings\['model\.desktop'\]/.test(route));
+  check('the run reaches the account log like any other',
+    /insert into user_run/.test(route));
+  check('only a claimer that says it can step is given a goal',
+    /req\.body\.steps === true/.test(route) && /\$\{claimerSteps\}/.test(route));
+
+  /* The column is `loop` because `state` was taken - by this table's own queued/claimed/done. Naming it
+   * `state`, which is what the plan said, would have been two meanings on one row. */
+  const at = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+  const migration = at('../db/010_run_queue_loop.sql');
+  check('the column is jsonb and is not called state',
+    /add column if not exists loop jsonb/.test(migration) && !/add column if not exists state /.test(migration));
+  check('and the queue still has its own state column, untouched',
+    /state {8}text {8}not null default 'queued'/.test(at('../db/007_run_queue.sql')));
+}
+
 check('the metadata document names an authorisation server',
   /authorization_servers: \[origin\]/.test(readFileSync(fileURLToPath(new URL('../api/well-known.js', import.meta.url)), 'utf8')));
 const vercel = JSON.parse(readFileSync(fileURLToPath(new URL('../vercel.json', import.meta.url)), 'utf8'));
@@ -1459,9 +1496,13 @@ group('the queue hands a job only to something that can do it');
 const mcpApi = read('../api/mcp.js');
 check('the claim asks what the claimer is',
   /const claimerIsWorker = String\(\(req\.body && req\.body\.kind\) \|\| ''\) === 'worker'/.test(mcpApi));
+/* Two things now qualify, and both DECLARE it: a worker, which runs the loop on the machine, and an agent
+ * that can carry a goal one turn at a time against ?worker=step. Neither is assumed - an old binary and an
+ * old worker go on not being given goal jobs, which is the whole reason the declaration is on the claimer. */
 check('and a created skill goes only to something that declared it has the model path',
   /and f\.deleted_at is null and f\.kind = 'created'/.test(mcpApi)
-    && /\$\{claimerIsWorker\}/.test(mcpApi));
+    && /\$\{claimerSteps\}/.test(mcpApi)
+    && /claimerSteps = claimerIsWorker \|\| \(req\.body && req\.body\.steps === true\)/.test(mcpApi));
 check('and the worker is what declares it',
   /kind: 'worker'/.test(read('../mcp/worker.mjs')));
 /* A command is `#`-prefixed and both kinds can do it — the flow lookup is only for actual skills. */

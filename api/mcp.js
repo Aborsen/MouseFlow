@@ -5,6 +5,8 @@
  *   POST /api/mcp?worker=claim       a worker on somebody's machine takes the next job  (long-polls)
  *   POST /api/mcp?worker=report      ...and says how it went
  *   GET  /api/mcp?worker=state&id=   ...and asks whether it has been cancelled meanwhile
+ *   POST /api/mcp?worker=step        ...or, with no worker at all, an agent carries out a goal one turn
+ *                                    at a time: it sends the screen, this decides, it does the action
  *
  * WHY THIS EXISTS BESIDE mcp/server.mjs. That one runs on the user's machine over stdio, which is why it can
  * run anything: the agent listens on loopback and only something on that machine can reach it. It also means
@@ -42,6 +44,13 @@ import { whoIsCalling } from './_session.js';
 import { structureOf } from './_skill-schema.mjs';
 import { flowBody, parseMacro, summarize } from './_macro.mjs';
 import { flowFor } from './_flow-for.mjs';
+/* The decision loop, turned inside out so it can live in a row between requests. See api/_step.mjs. */
+import { advance, startLoop } from './_step.mjs';
+import { ALLOWED_MODELS } from './_vision.mjs';
+import { readSettings } from './admin.js';
+/* The one implementation of what a skill's parameters do to its goal. Imported rather than repeated for
+ * the same reason flowBody is: two answers to "what is this skill's goal text" is one answer too many. */
+import { fillGoal, missingParams } from '../extension/skills.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
@@ -798,6 +807,10 @@ async function workerRoute(action, req, res, sql, who) {
      * They queue, and the caller is told nothing picked them up - which is a true sentence somebody can act
      * on, unlike the one this replaced. */
     const claimerIsWorker = String((req.body && req.body.kind) || '') === 'worker';
+    /* An agent that can carry a goal one turn at a time (see ?worker=step) may take those jobs as well.
+     * It DECLARES it, exactly as the worker does, and for the same reason: the ones that cannot must go on
+     * not being given them, and no deploy here can tell an old binary apart from a new one. */
+    const claimerSteps = claimerIsWorker || (req.body && req.body.steps === true);
     const wait = Math.min(CLAIM_WAIT_MAX_MS, Math.max(0, Number((req.body && req.body.wait) || 0) * 1000));
     const until = Date.now() + wait;
 
@@ -814,7 +827,7 @@ async function workerRoute(action, req, res, sql, who) {
              * not-a-goal, so a stale job still gets claimed and fails with a reason rather than sitting in
              * the queue forever waiting for a claimer that will never be allowed to take it. */
             and (
-              ${claimerIsWorker}
+              ${claimerSteps}
               or q.flow_id like '#%'
               or not exists (
                 select 1 from user_flow f
@@ -896,6 +909,9 @@ async function workerRoute(action, req, res, sql, who) {
              * needs nothing else; the worker reads `flow`, which it needs for a goal skill. */
             body,
             activate: activate ? activate.trim() : null,
+            /* Whether this needs a model in the loop. The agent reads it to know that `body` will be null
+             * and that it should start stepping instead; the worker already knows from `flow.kind`. */
+            goal: row.kind === 'created',
             flow: {
               id: row.client_id, source: row.source, kind: row.kind, name: row.name,
               description: row.description, payload: row.payload, origins: row.origins,
@@ -906,6 +922,133 @@ async function workerRoute(action, req, res, sql, who) {
       if (Date.now() >= until) return res.status(200).json({ ok: true, job: null });
       await new Promise((done) => setTimeout(done, CLAIM_POLL_MS));
     }
+  }
+
+  /* ------------------------------------------------------------------ one turn of a goal
+   *
+   * A goal skill is a model deciding one action at a time from a screenshot. Until now that loop could only
+   * run on the user's own machine, in a node process they had to install alongside the agent, for one
+   * reason: it talked to 127.0.0.1. This is the same loop with the machine at the other end of a request.
+   *
+   *   agent  ──POST ?worker=step { id, shot, windows, results }──►  here
+   *                                                                 the model decides (~7s)
+   *   agent  ◄──────────────  { actions: [...] }  ──────────────
+   *          performs them, takes a new picture, posts again
+   *
+   * One request per step, and nothing reconnects between steps because there is no gap between them: the
+   * reply to step n is what produces step n+1. The state lives in the row (run_queue.loop), never in this
+   * function's memory - the instance that decided step 4 may not be the one that decides step 5.
+   */
+  if (action === 'step') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
+    const body = req.body || {};
+    const id = String(body.id || '');
+    const [job] = await sql`
+      select id, flow_id, tool_name, args, state, loop, claimed_at
+      from run_queue where id = ${id} and user_id = ${who.id}
+    `;
+    /* Gone, or cancelled while it ran. Not an error: the cancellation is what somebody asked for, and the
+     * machine's job is to stop, which it cannot do unless it is told. */
+    if (!job) return res.status(200).json({ ok: true, done: true, stop: 'gone' });
+    if (job.state !== 'claimed') return res.status(200).json({ ok: true, done: true, stop: job.state });
+
+    const fail = async (why) => {
+      await sql`
+        update run_queue set state = 'failed', ok = false, said = ${why}, finished_at = now(), loop = null
+        where id = ${id} and user_id = ${who.id}
+      `;
+      return res.status(200).json({ ok: true, done: true, outcome: { ok: false, said: why } });
+    };
+
+    let loop = job.loop;
+    if (!loop) {
+      /* The first request of a run: work out what is being carried out, and start the conversation.
+       *
+       * Deliberately not a separate "begin" call. The agent has just claimed the job and taken a picture;
+       * one shape of request for every step is one thing for it to implement and one thing to get right. */
+      const flow = await sql`
+        select client_id, kind, name, payload from user_flow
+        where user_id = ${who.id} and client_id = ${job.flow_id} and deleted_at is null
+      `;
+      if (!flow.length) return fail('the skill was deleted between the ask and the run');
+      const row = flow[0];
+      if (row.kind !== 'created') return fail('this skill is a recording, not a goal - it is replayed, not decided');
+
+      const payload = row.payload || {};
+      const skill = { ...payload, id: row.client_id, name: row.name, params: payload.params || [] };
+      const args = job.args || {};
+      /* missingParams first, as its own comment instructs: fillGoal substitutes an empty string for
+       * anything it cannot resolve, so calling it alone turns a missing argument into a goal with a hole in
+       * it and a run that does something almost right. */
+      const missing = missingParams(skill, args);
+      if (missing.length) {
+        return fail(`This skill needs ${missing.join(', ')}. Ask the user for the missing value rather than `
+          + 'guessing one: the goal is carried out on their real computer and cannot be undone from here.');
+      }
+      const goal = fillGoal(skill, args);
+      if (!goal || !goal.trim()) return fail('This skill has no goal text to carry out.');
+
+      /* Resolved once, here, so every step of one run is decided by one model. A model changed mid-run
+       * would hand the task between two that never saw each other's reasoning. */
+      const settings = await readSettings(sql).catch(() => ({}));
+      const wanted = settings['model.desktop'];
+      const model = wanted && ALLOWED_MODELS.has(wanted) ? wanted : [...ALLOWED_MODELS][0];
+      loop = startLoop({ goal, model });
+      /* Who is driving. A worker runs the loop itself and never writes here; recorded so that a machine
+       * with both cannot end up driving one mouse twice. */
+      await sql`update run_queue set stepping = true where id = ${id} and user_id = ${who.id}`;
+    }
+
+    const out = await advance({ loop, shot: body.shot, windows: body.windows, results: body.results });
+
+    if (out.done) {
+      const done = out.done;
+      /* The account's log, written here rather than by the machine - the same reason a stopped recording is
+       * turned into a row here: everything it would otherwise have to learn already exists on this side. */
+      try {
+        await sql`
+          insert into user_run
+            (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
+             steps, said, extension, started_at, finished_at)
+          values
+            (${who.id}, ${'q_' + job.id}, 'agent', ${String(loop.goal).slice(0, 4000)},
+             ${String(loop.model).slice(0, 60)}, ${String(job.flow_id).slice(0, 80)},
+             ${done.ok ? 'ok' : 'failed'}, ${done.said ? String(done.said).slice(0, 2000) : null},
+             ${done.error ? String(done.error).slice(0, 2000) : null},
+             ${JSON.stringify(done.steps || [])}, ${JSON.stringify(done.saidAll || [])},
+             'cloud', ${job.claimed_at || null}, now())
+          on conflict (user_id, client_id) do update set
+            outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
+            steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at
+        `;
+      } catch (err) {
+        /* Best effort, and reported. A run whose outcome never reached the log makes the dashboard wrong,
+         * but it is not a reason to lose the answer the caller is waiting for. */
+        report(err, { route: 'mcp:step:log' });
+      }
+
+      const took = (done.steps || []).length;
+      const said = done.ok
+        ? `${done.said || 'Done.'} (${took} action${took === 1 ? '' : 's'})`
+        : `The run did not finish: ${done.error}. It took ${took} action${took === 1 ? '' : 's'}.`;
+      await sql`
+        update run_queue set state = ${done.ok ? 'done' : 'failed'}, ok = ${done.ok}, said = ${said},
+               finished_at = now(), loop = null
+        where id = ${id} and user_id = ${who.id} and state = 'claimed'
+      `;
+      return res.status(200).json({ ok: true, done: true, outcome: { ok: done.ok, said } });
+    }
+
+    /* Still going. `claimed_at` is moved on with every step, so the staleness sweep at the top of ?claim
+     * measures time since the machine was last heard from rather than time since it took the job. */
+    await sql`
+      update run_queue set loop = ${JSON.stringify(out.loop)}, claimed_at = now()
+      where id = ${id} and user_id = ${who.id} and state = 'claimed'
+    `;
+    if (out.shrink) return res.status(200).json({ ok: true, shrink: out.shrink });
+    return res.status(200).json({
+      ok: true, step: out.step, shotWidth: out.shotWidth, actions: out.actions,
+    });
   }
 
   if (action === 'report') {

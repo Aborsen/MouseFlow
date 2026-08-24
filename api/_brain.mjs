@@ -290,6 +290,19 @@ export function forgetOldPictures(messages) {
   return messages;
 }
 
+/* Что ожидание дало, словами - одними и теми же, кто бы ни ждал.
+ *
+ * На локальном пути ждёт страница, на облачном - агент у себя на машине, и модель обязана прочитать один и
+ * тот же отчёт: «экран стоит» и «всё ещё меняется» ведут к разным следующим ходам. */
+export function waitReport(outcome) {
+  const waited = Math.round((Number(outcome && outcome.waited) || 0) / 1000);
+  if (outcome && outcome.quiet) {
+    const quietFor = Math.round((Number(outcome.quietFor) || 0) / 1000);
+    return `The screen has been still for ${quietFor}s after ${waited}s of waiting.`;
+  }
+  return `Still changing after ${waited}s. Wait again with a longer limit if it needs longer.`;
+}
+
 /* --------------------------------------------------------------------------- reading the answer */
 
 /* What an HTTP failure means, in terms of the thing the user can do about it.

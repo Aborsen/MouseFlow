@@ -62,6 +62,7 @@ export function actionBody(
 export function openList(windows: WindowLike[] | null | undefined): string | null;
 export function screenMessage(frame: ShotLike, open: string | null): Message;
 export function forgetOldPictures<T extends { content?: unknown }>(messages: T[]): T[];
+export function waitReport(outcome: { quiet?: boolean; waited?: number; quietFor?: number }): string;
 export function explainStatus(status: number, stepNo: number, detail: string): string;
 export function refusedAt(stepNo: number): string;
 export function truncatedAt(stepNo: number): string;

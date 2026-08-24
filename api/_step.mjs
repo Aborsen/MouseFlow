@@ -1,0 +1,306 @@
+/* The same decision loop, one turn per HTTP request.
+ *
+ * WHY IT IS NOT web/src/lib/desktop-engine.ts CALLED FROM HERE. That loop is a for-loop: it takes a
+ * screenshot, asks the model, performs the action and comes round again, holding everything in local
+ * variables. On a serverless function there is nowhere for those variables to live between one request from
+ * the agent and the next - the instance that served step 4 may not be the one that serves step 5, and an
+ * instance that is recycled mid-run would lose the run. So the loop is turned inside out: everything it
+ * held becomes a value in `run_queue.loop`, and this file is one iteration of the body.
+ *
+ * What both drivers say to the model is NOT duplicated - see api/_brain.mjs, which is the whole point of
+ * that file existing. What differs here is only bookkeeping.
+ *
+ * THE ROW NEVER HOLDS A PICTURE. Every state that goes back to the database goes through pack(), which
+ * drops the images. A screenshot is 161KB; a run is up to 240 steps; a queue table that kept them would be
+ * a picture album with a job id attached. The agent sends a fresh one every request, so there is nothing to
+ * keep.
+ *
+ * THE SHAPE, so it can be read out of a row without this file:
+ *
+ *   v          the version of this shape, so a loop written by an older deploy can be recognised
+ *   goal       the sentence being carried out, already filled in from the skill's parameters
+ *   model      resolved once, at the start, so every step of one run is decided by one model
+ *   wave/turn  where in the wave structure this run is (see WAVES in api/_brain.mjs)
+ *   stepNo     decisions taken, across all waves - what the user is shown and what the caps count
+ *   shotWidth  what to ask the agent for; halved when a turn came back too large
+ *   messages   the conversation, pictures removed
+ *   pending    actions the agent was told to do and has not reported on yet
+ *   mine       results this side produced without asking the agent - an action it could not encode
+ *   ending     a finish that arrived behind other actions in the same turn, to be honoured after them
+ *   steps/said the run log, in the shape user_run wants
+ */
+import {
+  HANDOFF_ASK,
+  HANDOFF_SYSTEM,
+  MAX_TOKENS,
+  MAX_WAVES,
+  SETTLE_MAX_MS,
+  SYSTEM,
+  TOOLS,
+  WAVE_TURNS,
+  actionBody,
+  explainStatus,
+  forgetOldPictures,
+  openList,
+  openingMessage,
+  outOfWaves,
+  refusedAt,
+  screenMessage,
+  toolsFor,
+  truncatedAt,
+  waitReport,
+} from './_brain.mjs';
+import { DEFAULT_SHOT_W } from './_brain.mjs';
+import { callModel } from './_vision.mjs';
+
+export const LOOP_VERSION = 1;
+/** Under this a screenshot is unreadable; a turn that is still too large at 320px ends the run. */
+export const MIN_SHOT_W = 320;
+/* A hard ceiling on one run, enforced by the queue as well as by the wave structure. The waves already
+ * bound it; this is the backstop for a loop whose bookkeeping went wrong, because on this path there is no
+ * tab to close and nobody watching. */
+export const MAX_STEPS = WAVE_TURNS * MAX_WAVES;
+/* One turn's model call. The platform kills a function at 300s; this leaves room for the upload and the
+ * answer around it. A turn that times out ends the run, exactly as it does in the browser - retrying a
+ * decision the model has already been paid for, with no way to tell a slow turn from a stuck one, is how
+ * a run burns a budget without moving. */
+export const MODEL_TIMEOUT_MS = 75_000;
+
+/** A run at its first step: the goal, and nothing seen yet. */
+export function startLoop({ goal, model }) {
+  return {
+    v: LOOP_VERSION,
+    goal: String(goal || ''),
+    model: String(model || ''),
+    wave: 1,
+    turn: 0,
+    stepNo: 0,
+    shotWidth: DEFAULT_SHOT_W,
+    messages: [openingMessage(String(goal || ''), null, null)],
+    pending: [],
+    mine: [],
+    ending: null,
+    steps: [],
+    said: [],
+  };
+}
+
+/** Nothing that goes to the database keeps a screenshot. Every return path goes through here. */
+function pack(loop) {
+  forgetOldPictures(loop.messages);
+  return loop;
+}
+
+/* The upstream call, as this side makes it. Injectable so the loop can be driven by a test without an API
+ * key and without spending anything - which is the only way the bookkeeping above gets exercised at all. */
+async function defaultAsk(body) {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) {
+    return { status: 503, body: { error: { message: 'this deployment has no shared key configured' } } };
+  }
+  const answer = await callModel(body, key, AbortSignal.timeout(MODEL_TIMEOUT_MS));
+  if (answer.tooLarge) return { status: 413, body: null };
+  if (answer.unreachable) return { status: 502, body: { error: { message: answer.unreachable } } };
+  let parsed = null;
+  try { parsed = JSON.parse(answer.text); } catch (_) { parsed = null; }
+  return { status: answer.status, body: parsed };
+}
+
+/* What the agent said came of the actions it was given, in the blocks the API wants back.
+ *
+ * A pending action with no result is an error rather than an omission: the model has to know its click did
+ * not happen, and a missing tool_result is not a thing the API will accept in any case. */
+function resultBlocks(pending, said) {
+  const bySaid = new Map();
+  for (const r of Array.isArray(said) ? said : []) bySaid.set(String(r && r.id), r);
+  return pending.map((p) => {
+    const got = bySaid.get(String(p.id));
+    if (!got) {
+      return {
+        type: 'tool_result', tool_use_id: p.id, is_error: true,
+        content: 'no result came back from the machine for this action',
+      };
+    }
+    /* A wait reports numbers, not a sentence: the wording is one of the things both drivers have to say
+     * identically, so it is composed here from what the agent measured. */
+    const content = p.name === 'wait' && got.quiet !== undefined
+      ? waitReport(got)
+      : String(got.output == null ? 'done' : got.output).slice(0, 2000);
+    return { type: 'tool_result', tool_use_id: p.id, content, is_error: got.isError === true };
+  });
+}
+
+/* The seam between waves. No tools may be USED, but they must still be DECLARED - the API rejects a history
+ * containing tool_use blocks with no tools defined, and by now it always contains them. */
+async function askForHandoff(loop, ask) {
+  const messages = loop.messages.concat([{ role: 'user', content: HANDOFF_ASK }]);
+  let answer;
+  try {
+    answer = await ask({
+      model: loop.model, max_tokens: 700, system: HANDOFF_SYSTEM,
+      tools: TOOLS, tool_choice: { type: 'none' }, messages,
+    });
+  } catch (err) {
+    return { error: `the handover could not reach the server (${err && err.message})` };
+  }
+  if (!answer || answer.status < 200 || answer.status >= 300 || !answer.body) {
+    return { error: `the handover failed (HTTP ${answer ? answer.status : 0})` };
+  }
+  const note = (answer.body.content || [])
+    .filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+  return note ? { note } : { error: 'the handover came back empty' };
+}
+
+/**
+ * One turn.
+ *
+ * In: the stored loop, a fresh screenshot, what is open, and what came of the last actions.
+ * Out: the loop to store, plus exactly one of
+ *   { actions }  do these and come back with a new picture
+ *   { shrink }   that picture was too big to send - take a smaller one and ask again
+ *   { done }     the run is over, with what to report
+ */
+export async function advance({ loop, shot, windows, results, ask }) {
+  const model = ask || defaultAsk;
+  const over = (out) => ({
+    loop: pack(loop),
+    done: {
+      ok: out.ok === true,
+      said: out.said || null,
+      error: out.ok === true ? null : (out.error || out.said || 'it stopped without saying why'),
+      steps: loop.steps,
+      saidAll: loop.said,
+      stepNo: loop.stepNo,
+    },
+  });
+
+  // 1. What the agent did with what it was last told to do.
+  const answered = (loop.mine || []).concat(resultBlocks(loop.pending || [], results));
+  if (answered.length) loop.messages.push({ role: 'user', content: answered });
+  loop.mine = [];
+  loop.pending = [];
+
+  /* A finish that arrived behind other actions in the same turn. Those actions were sent and have now been
+   * carried out; the ending was always the answer and is honoured here rather than being dropped. */
+  if (loop.ending) return over(loop.ending);
+
+  // 2. The seam between waves.
+  if (loop.turn >= WAVE_TURNS) {
+    if (loop.wave >= MAX_WAVES) return over({ ok: false, error: outOfWaves() });
+    const handed = await askForHandoff(loop, model);
+    if (!handed.note) {
+      return over({
+        ok: false,
+        error: `It got as far as step ${loop.stepNo}, then ${handed.error}. It stopped there rather than `
+          + 'starting the next stretch with no idea what had been done.',
+      });
+    }
+    loop.wave += 1;
+    loop.turn = 0;
+    loop.messages = [openingMessage(loop.goal, null, handed.note)];
+  }
+
+  // 3. The picture.
+  if (!shot || !shot.png) {
+    return over({
+      ok: false,
+      error: `Could not take a picture of the screen at step ${loop.stepNo + 1}`
+        + (shot && shot.error ? ` — the agent said: ${shot.error}` : '')
+        + '. If the computer is locked or a remote session has been disconnected there is no desktop to '
+        + 'look at.',
+    });
+  }
+  if (loop.stepNo >= MAX_STEPS) {
+    return over({
+      ok: false,
+      error: `This run reached ${MAX_STEPS} steps, which is the ceiling for one job. Nothing further was `
+        + 'done. A goal that needs more than that needs breaking into smaller ones.',
+    });
+  }
+
+  forgetOldPictures(loop.messages);
+  loop.messages.push(screenMessage(shot, openList(windows)));
+  loop.stepNo += 1;
+  loop.turn += 1;
+
+  // 4. The decision.
+  let answer;
+  try {
+    answer = await model({
+      model: loop.model, max_tokens: MAX_TOKENS, system: SYSTEM,
+      /* No checkpoint tool on this path: a checkpoint stops the run until a person answers, and on this
+       * path there is no one at the other end of it - the request came from a machine. */
+      tools: toolsFor(false), messages: loop.messages,
+    });
+  } catch (err) {
+    return over({ ok: false, error: `The model could not be reached at step ${loop.stepNo}: ${err && err.message}` });
+  }
+
+  /* Too large to send. The step never happened, so it is not counted, and the picture that caused it is
+   * taken back out of the conversation - the next request brings a smaller one in its place. */
+  if (answer.status === 413 && loop.shotWidth > MIN_SHOT_W) {
+    loop.messages.pop();
+    loop.stepNo -= 1;
+    loop.turn -= 1;
+    loop.shotWidth = Math.max(MIN_SHOT_W, Math.round(loop.shotWidth / 2));
+    return { loop: pack(loop), shrink: loop.shotWidth };
+  }
+
+  if (answer.status < 200 || answer.status >= 300 || !answer.body) {
+    const detail = answer.body && answer.body.error ? String(answer.body.error.message || '') : '';
+    return over({ ok: false, error: explainStatus(answer.status, loop.stepNo, detail) });
+  }
+
+  const body = answer.body;
+  if (body.stop_reason === 'refusal') return over({ ok: false, error: refusedAt(loop.stepNo) });
+  if (body.stop_reason === 'max_tokens') return over({ ok: false, error: truncatedAt(loop.stepNo) });
+
+  const blocks = Array.isArray(body.content) ? body.content : [];
+  loop.messages.push({ role: 'assistant', content: blocks });
+
+  const said = blocks.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
+  if (said) loop.said.push(said);
+
+  const uses = blocks.filter((b) => b.type === 'tool_use');
+  if (!uses.length) return over({ ok: true, said: said || 'It had nothing further to do.' });
+
+  // 5. What the machine is to do next.
+  const actions = [];
+  for (const use of uses) {
+    if (use.name === 'finish') {
+      // Success has to be claimed: anything but an explicit true is a failure that said so in words.
+      const closing = String((use.input && use.input.said) || said || 'Done.');
+      const claimed = use.input && use.input.ok === true;
+      const ending = { ok: !!claimed, said: closing, error: claimed ? null : closing };
+      /* Nothing else in this turn ran yet. If actions were already collected they were decided before the
+       * finish and happen first, exactly as they would in the browser loop, and the ending waits. */
+      if (!actions.length) return over(ending);
+      loop.ending = ending;
+      break;
+    }
+
+    loop.steps.push({ tool: use.name || '?', input: use.input || {} });
+
+    if (use.name === 'wait') {
+      const ms = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input && use.input.ms) || 2000));
+      actions.push({ id: use.id, kind: 'wait', ms, reason: String((use.input && use.input.reason) || '') });
+      loop.pending.push({ id: use.id, name: 'wait' });
+      continue;
+    }
+
+    const line = actionBody(use.name || '', use.input || {}, shot);
+    if (!line) {
+      /* Answered here and now: the machine is not asked to do something that has no wire form, and the
+       * model still learns that its call went nowhere. */
+      loop.mine.push({
+        type: 'tool_result', tool_use_id: use.id, is_error: true,
+        content: `no such action here: ${use.name}`,
+      });
+      continue;
+    }
+    actions.push({ id: use.id, kind: 'do', name: use.name, body: line });
+    loop.pending.push({ id: use.id, name: use.name });
+  }
+
+  return { loop: pack(loop), actions, step: loop.stepNo, shotWidth: loop.shotWidth };
+}

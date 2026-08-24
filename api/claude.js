@@ -33,18 +33,11 @@ import { readSettings } from './admin.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
+import { ALLOWED_MODELS, MAX_BODY_BYTES, MAX_MESSAGES, MAX_TOKENS_CAP, callModel } from './_vision.mjs';
 
-const UPSTREAM = 'https://api.anthropic.com/v1/messages';
-
-// Only what the agent uses, and only within these bounds.
-const ALLOWED_MODELS = new Set(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001']);
-const MAX_TOKENS_CAP = 16000;
-const MAX_MESSAGES = 120;              // a runaway loop hits this long before it hits the balance
-/* Vision turns carry a picture, and the platform allows ~4.5MB. A cap of 1.5MB made this proxy the
- * tightest gate in the chain at a third of what the platform permits - and the failure it produced said
- * only "request too large". The agent sends JPEG now, which is where the real saving is; this is the
- * backstop, and it reports the size so the number is not a mystery. */
-const MAX_BODY_BYTES = 4_000_000;
+/* The call itself, the caps on it, and the key it spends live in api/_vision.mjs - because the cloud step
+ * makes the same call from inside another function, and a second copy of the caps is a second copy that can
+ * drift. What is left here is what an ENDPOINT owes: CORS, who is calling, and a rate limit per account. */
 
 /* Per-caller rate limit.
  *
@@ -184,50 +177,24 @@ async function handler(req, res) {
     return;
   }
 
-  // Rebuilt field by field rather than forwarded wholesale, so a caller cannot smuggle in
-  // options this endpoint is not meant to pay for.
-  const payload = {
-    model: body.model,
-    max_tokens: Math.min(Number(body.max_tokens) || 4096, MAX_TOKENS_CAP),
-    messages: body.messages,
-  };
-  if (typeof body.system === 'string') payload.system = body.system;
-  if (Array.isArray(body.tools)) payload.tools = body.tools;
-  if (body.tool_choice) payload.tool_choice = body.tool_choice;
-  if (body.fallbacks) payload.fallbacks = body.fallbacks;
-
-  const encoded = JSON.stringify(payload);
-  if (encoded.length > MAX_BODY_BYTES) {
-    fail(res, 413, 'request too large: ' + Math.round(encoded.length / 1024) + 'KB, limit ' +
+  // callModel rebuilds the payload field by field, so a caller cannot smuggle in options this endpoint is
+  // not meant to pay for.
+  const answer = await callModel(body, key);
+  if (answer.tooLarge) {
+    fail(res, 413, 'request too large: ' + Math.round(answer.bytes / 1024) + 'KB, limit ' +
       Math.round(MAX_BODY_BYTES / 1024) + 'KB');
     return;
   }
-
-  let upstream;
-  try {
-    upstream = await fetch(UPSTREAM, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-        // Opus 5's safety classifiers can decline a request; this re-runs it on the
-        // recommended fallback server-side instead of handing back a dead end.
-        'anthropic-beta': 'server-side-fallback-2026-07-01',
-      },
-      body: encoded,
-    });
-  } catch (err) {
-    fail(res, 502, 'could not reach the API: ' + err.message);
+  if (answer.unreachable) {
+    fail(res, 502, 'could not reach the API: ' + answer.unreachable);
     return;
   }
 
-  const text = await upstream.text();
   // Passed through as-is: the agent already reads Anthropic's error shape, and rewriting it
   // here would hide the real reason a run failed.
-  res.status(upstream.status);
-  res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
-  res.send(text);
+  res.status(answer.status);
+  res.setHeader('Content-Type', answer.contentType);
+  res.send(answer.text);
 }
 
 /* The outer net: anything thrown before or around the handler's own try block. */

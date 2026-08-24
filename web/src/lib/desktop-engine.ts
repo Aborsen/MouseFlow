@@ -52,6 +52,7 @@ import {
   screenMessage,
   toolsFor,
   truncatedAt,
+  waitReport,
 } from '../../../api/_brain.mjs';
 import type { ShotFrame } from '../../../api/_brain.d.mts';
 
@@ -468,15 +469,7 @@ async function runWave(o: {
         const limit = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input?.ms) || 2000));
         const outcome = await settle(machine, limit, isAborted, (waited) =>
           onEvent({ type: 'waiting', ms: waited, limit, reason: String(use.input?.reason ?? '') }));
-        results.push({
-          type: 'tool_result',
-          tool_use_id: use.id,
-          content: outcome.quiet
-            ? `The screen has been still for ${Math.round(outcome.quietFor / 1000)}s after ` +
-              `${Math.round(outcome.waited / 1000)}s of waiting.`
-            : `Still changing after ${Math.round(outcome.waited / 1000)}s. Wait again with a longer limit ` +
-              'if it needs longer.',
-        });
+        results.push({ type: 'tool_result', tool_use_id: use.id, content: waitReport(outcome) });
         continue;
       }
 

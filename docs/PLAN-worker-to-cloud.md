@@ -82,6 +82,10 @@ request with the agent waiting.
 
 ### 2.2 The seam: a `Machine` instead of a `port`
 
+> **Done at `6c4f7d6`.** `Machine` lives in `web/src/lib/agent.ts` rather than in the engine, so the type
+> flows the way the dependency already does; `localMachine(port)` is what both callers pass.
+
+
 Replace the `port: number` argument with an object. This is the enabling refactor and it changes no
 behaviour.
 
@@ -101,6 +105,15 @@ export function localMachine(port: number): Machine;   // exactly what happens t
 Server-side there is a second implementation whose four methods do not perform anything themselves: they
 **return the next action to the agent and wait for its answer**. That is the inversion at the heart of this
 plan — the loop believes it is calling a machine; it is really filling in one side of a held HTTP request.
+
+> **This part did not survive contact, and the reason matters.** A `Machine` whose methods block until the
+> agent's next request only works if the loop is a live for-loop somewhere — which means holding it in one
+> function invocation, which is exactly what D2 rules out. The two cannot both be true. §2.3 is the one that
+> was built: the loop is turned inside out into `api/_step.mjs`, and there is no `queuedMachine`.
+>
+> What that would have cost — two implementations of the prompt, the tool schemas and the reading of a
+> reply — is paid instead by `api/_brain.mjs`, which both drivers import. The drivers differ; what the model
+> sees does not.
 
 ### 2.3 Where the loop runs
 
@@ -134,7 +147,7 @@ declares it can serve steps (`kind: 'agent'`, `steps: true`) becomes eligible fo
 Each step is separately shippable and separately verifiable. Do not start the next until the previous is
 verified on a real machine.
 
-### Step 1 — the `Machine` seam (no behaviour change)
+### Step 1 — the `Machine` seam (no behaviour change)  ✅ `6c4f7d6`
 
 - `web/src/lib/desktop-engine.ts`: introduce `Machine`, replace the five `port` uses.
 - `web/src/lib/agent.ts`: add `localMachine(port)` built from the existing `windows/pulse/shot/doAction`.
@@ -142,12 +155,26 @@ verified on a real machine.
 - **Verify:** run a goal skill from the browser (Create page) and one through the worker. Both must behave
   exactly as before. This is the whole test — a refactor that changes behaviour has failed.
 
-### Step 2 — the per-step endpoint, with the loop still local
+### Step 2 — the per-step endpoint, with the loop still local  ✅
 
-- `POST /api/mcp?worker=step` — accepts `{ run, shot, result }`, returns `{ action }` or `{ done }`.
-- Server-side `queuedMachine()` implementing `Machine` against it.
-- `run_queue` gains `state jsonb` (migration in `db/`).
-- **Nothing calls it yet.** Verify with a test that drives it directly, not through an agent.
+Built at `fc7e9d8` (the brain) and the commit that follows it (the step and the route).
+
+- `api/_brain.mjs` — the prompt, the tool schemas, the picture message, the encoding of an action, what a
+  refusal or a truncated answer means. Imported by **both** drivers; `desktop-engine.ts` re-exports what the
+  rest of the app used to get from it.
+- `api/_vision.mjs` — the shared-key call with pictures, lifted out of `api/claude.js` so the step does not
+  make a second HTTP hop through our own endpoint to reach the same model with a different set of caps.
+- `api/_step.mjs` — `startLoop()` and `advance()`: one turn, resumable, with the model call injectable.
+- `POST /api/mcp?worker=step` — `{ id, shot, windows, results }` in; `{ actions }`, `{ shrink }` or
+  `{ done }` out.
+- `db/010_run_queue_loop.sql` — **`loop jsonb`, not `state jsonb`**: `state` is already this table's
+  queued/claimed/done. Plus `stepping boolean`, so a machine running both a worker and an agent is on record
+  as to which is driving.
+- `api/test-step.mjs` — 46 checks driving `advance()` against a scripted model. No database, no key, no
+  agent. It is wired into `npm test`.
+
+**Nothing calls it yet**: no agent declares `steps: true`, and the claim filter only relaxes for a claimer
+that does.
 
 ### Step 3 — the agent side
 
@@ -173,7 +200,7 @@ repeat. `/shot` and `/do` already exist — this is a loop around them, next to 
 | | Decision | Recommendation |
 |---|---|---|
 | **D1** | Screenshot per step over the network — acceptable? | Yes. 161 KB against a 7 s step. Reconsider only if a step gets much cheaper. |
-| **D2** | Loop state: row (`state jsonb`) or memory? | **Row.** Serverless instances are recycled; memory loses runs mid-flight. |
+| **D2** | Loop state: row (`loop jsonb`) or memory? | **Row.** Serverless instances are recycled; memory loses runs mid-flight. Built that way. |
 | **D3** | Model key: the deployment's or the user's? | Deployment's, as `/api/chat` already does — but this is a **per-step** cost now, so the rate limit must be per-run, not per-request. |
 | **D4** | Cap on steps per run | Yes, and reported. `WAVE_TURNS = 24`, `MAX_WAVES = 10` already exist in the engine; keep them and make the queue enforce a hard ceiling too. |
 | **D5** | Who wins when both a worker and a step-capable agent are listening? | The worker. It is fewer round trips and it is proven. |

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "migrate": "node scripts/migrate.mjs",
-    "test": "node agent/check-csharp.mjs && node agent/test-contract.mjs && node mcp/test-mcp.mjs"
+    "test": "node agent/check-csharp.mjs && node agent/test-contract.mjs && node api/test-step.mjs && node mcp/test-mcp.mjs"
   },
   "devDependencies": {
     "pg": "^8.23.0"
