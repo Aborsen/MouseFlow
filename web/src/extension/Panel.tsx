@@ -11,10 +11,21 @@ import { Loader2 } from 'lucide-react';
 import { Rail, type Screen } from './Rail';
 import { RecordScreen } from './RecordScreen';
 import { CreateScreen } from './CreateScreen';
-import { SkillsScreen } from './SkillsScreen';
-import { DashboardScreen } from './DashboardScreen';
-import { TeamsScreen } from './TeamsScreen';
-import { GalleryScreen } from './GalleryScreen';
+/* THE APP'S OWN SCREENS, not panel-sized twins of them.
+ *
+ * This is what the adapter was built for. Skills lists everything on the account - the desktop half
+ * included, which is what a browser panel could not otherwise show; the dashboard carries its sentences
+ * and not only its numbers; teams are EDITED here rather than read and then opened somewhere else, which
+ * is all a twin could ever offer.
+ *
+ * Record and Create stay the extension's own, and that is not an exception: they are not versions of the
+ * app's screens at all. The app records through the desktop agent; this records through content scripts in
+ * the page. Same word, different machine. */
+import { SkillsView } from '@/features/skills/SkillsView';
+import { InsightsView } from '@/features/insights/InsightsView';
+import { TeamView } from '@/features/team/TeamView';
+import { GalleryView } from '@/features/gallery/GalleryView';
+import { AccountProvider } from '@/shell/AccountProvider';
 import { AssistantScreen } from './AssistantScreen';
 import { SignInView } from '@/features/auth/SignInView';
 import { SignUpView } from '@/features/auth/SignUpView';
@@ -85,13 +96,15 @@ export const Panel = () => {
     };
   }, [signedIn, check]);
 
+  /* The app's screens read the account from here - who is signed in, the flows, the runs - and it fills
+   * itself from /api/sync through the bridge, exactly as it does in a tab. */
+  /* h-full, not h-screen: the panel is mounted in two frames - a side panel, which is the height of the
+   * window, and a popup, which is a fixed box that says how tall it is. Filling the parent works in both;
+   * measuring the viewport works in one. And `relative`, because the assistant covers this box - rail
+   * included - rather than sitting in the column beside it. */
   return (
-    /* h-full, not h-screen: the panel is mounted in two frames now - a side panel, which is the height of
-     * the window, and a popup, which is a fixed box that says how tall it is. Filling the parent works in
-     * both; measuring the viewport works in one. */
-    /* `relative`, because the assistant covers this box - rail included - rather than sitting in the
-     * column beside it. */
-    <div className="relative flex h-full items-stretch bg-surface-page text-ink-primary">
+    <AccountProvider>
+      <div className="relative flex h-full items-stretch bg-surface-page text-ink-primary">
       <Rail screen={screen} onGo={go} onAsk={() => setAsking(true)} onDetached={() => setSignedIn(false)} />
 
       <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
@@ -139,15 +152,16 @@ export const Panel = () => {
           <>
             {screen === 'record' && <RecordScreen />}
             {screen === 'create' && <CreateScreen />}
-            {screen === 'skills' && <SkillsScreen />}
-            {screen === 'dashboard' && <DashboardScreen />}
-            {screen === 'teams' && <TeamsScreen />}
-            {screen === 'gallery' && <GalleryScreen />}
+            {screen === 'skills' && <SkillsView />}
+            {screen === 'dashboard' && <InsightsView />}
+            {screen === 'teams' && <TeamView />}
+            {screen === 'gallery' && <GalleryView />}
           </>
         )}
       </main>
 
       {asking && signedIn && <AssistantScreen onClose={() => setAsking(false)} />}
     </div>
+    </AccountProvider>
   );
 };
