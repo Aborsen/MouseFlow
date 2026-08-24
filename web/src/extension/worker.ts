@@ -46,3 +46,19 @@ export const openApp = (path: string) => {
   if (inExtension) void chrome.tabs.create({ url });
   else window.open(url, '_blank', 'noopener');
 };
+
+/* The app's API, from a panel screen, exactly as the app writes it.
+ *
+ * `installApiBridge()` has already replaced fetch, so a relative /api path goes through the worker with the
+ * device token attached. This is only the two lines of JSON handling every caller was about to write, and
+ * the reason the panel's own screens stopped speaking a private command language: `app/read` was a second
+ * vocabulary for "GET something from the account", and it went out of date the moment the real one arrived.
+ */
+export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, init);
+  const body = (await res.json().catch(() => null)) as (T & { error?: { message?: string } }) | null;
+  if (!res.ok) {
+    throw new Error(body?.error?.message ?? `the account answered ${res.status}`);
+  }
+  return body as T;
+}

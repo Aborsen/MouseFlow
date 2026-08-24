@@ -48,31 +48,42 @@ export const Panel = () => {
    * already decided by installing this: they are signed in over there, and the token is a thing nobody
    * ever sees. So the panel asks the worker to do it (see `auth/auto`), and only says something when the
    * answer is one a person can act on - not signed in, or the app would not answer. */
-  const check = useCallback(async () => {
+  const check = useCallback(async (quiet = false) => {
     if (!inExtension) { setSignedIn(true); return; }   // opened as a page, to be looked at
     const status = await ask('sync/status');
     if (status.ok && status.paired === true) { setSignedIn(true); return; }
 
-    setConnecting(true);
-    const auto = await ask('auth/auto');
+    /* Quiet on a retry: see `auth/auto`. The first attempt may open a tab to find a session; the ones that
+     * follow every few seconds must not, or signing out starts a tab opening every four seconds. */
+    if (!quiet) setConnecting(true);
+    const auto = await ask('auth/auto', { quiet });
     setConnecting(false);
     if (auto.ok) { setSignedIn(true); setWhy(null); return; }
     setSignedIn(false);
+    /* A quiet retry that found nothing is the ordinary state of a wall waiting to be signed in through,
+     * not something to report. Only the loud attempt gets to put words on the screen. */
+    if (quiet) return;
     setWhy(auto.signedOut
-      ? 'Sign in to MouseFlow in this browser and this connects itself.'
+      ? 'Signing in here connects this browser by itself.'
       : auto.error ?? null);
   }, []);
 
   useEffect(() => { void check(); }, [check]);
 
-  /* While the wall is up, keep trying. Signing in happens in here OR in a tab - the Google button opens
-   * one - and either way the panel should attach itself the moment a session exists rather than waiting to
-   * be told. Four seconds is slow enough to be free and fast enough that nobody presses anything. */
+  /* Signing in happens in here or in a tab - the Google button opens one - and the panel has to notice
+   * either way. It does NOT poll for it: bridge.js runs on every load of the app's origin and pairs there
+   * and then, so the page loading is the notification. What is left here is one cheap local check when
+   * this window gets attention again, which is exactly when somebody has come back from doing it. */
   useEffect(() => {
-    if (signedIn !== false || connecting) return undefined;
-    const timer = setInterval(() => { void check(); }, 4000);
-    return () => clearInterval(timer);
-  }, [signedIn, connecting, check]);
+    if (signedIn !== false) return undefined;
+    const back = () => { if (!document.hidden) void check(true); };
+    document.addEventListener('visibilitychange', back);
+    window.addEventListener('focus', back);
+    return () => {
+      document.removeEventListener('visibilitychange', back);
+      window.removeEventListener('focus', back);
+    };
+  }, [signedIn, check]);
 
   return (
     /* h-full, not h-screen: the panel is mounted in two frames now - a side panel, which is the height of

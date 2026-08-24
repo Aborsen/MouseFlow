@@ -10,7 +10,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { Said, type SaidNote } from '@/components/Said';
-import { ask, openApp } from './worker';
+import { api, openApp } from './worker';
 
 interface Totals {
   runs: number;
@@ -41,14 +41,15 @@ export const DashboardScreen = () => {
 
   const read = useCallback(async () => {
     setBusy(true);
-    const res = await ask('app/read', { what: 'insights', days: 7 });
-    setBusy(false);
-    if (!res.ok) { setNote({ text: res.error ?? 'Could not read the account.', kind: 'bad' }); return; }
-    /* The app's own payload, read by the names it actually uses - `totals` and `previous`, from
-     * api/insights.js. Guessed field names are how a dashboard shows four confident zeroes. */
-    const body = res.body as { totals?: Totals; previous?: Previous } | undefined;
-    setTotals(body?.totals ?? null);
-    setPrevious(body?.previous ?? null);
+    try {
+      /* The app's own endpoint, read by the names it actually uses - `totals` and `previous`, from
+       * api/insights.js. Guessed field names are how a dashboard shows four confident zeroes. */
+      const body = await api<{ totals?: Totals; previous?: Previous }>('/api/insights?days=7');
+      setTotals(body.totals ?? null);
+      setPrevious(body.previous ?? null);
+    } catch (err) {
+      setNote({ text: err instanceof Error ? err.message : 'Could not read the account.', kind: 'bad' });
+    }
   }, []);
 
   useEffect(() => { void read(); }, [read]);

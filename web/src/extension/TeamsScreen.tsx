@@ -11,7 +11,7 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { Pill } from '@/components/Pill';
 import { Said, type SaidNote } from '@/components/Said';
-import { ask, openApp } from './worker';
+import { api, openApp } from './worker';
 
 interface Team { id: string; name: string; role: string; members: number }
 
@@ -20,10 +20,13 @@ export const TeamsScreen = () => {
   const [note, setNote] = useState<SaidNote | null>(null);
 
   const read = useCallback(async () => {
-    const res = await ask('app/read', { what: 'teams' });
-    if (!res.ok) { setNote({ text: res.error ?? 'Could not read the account.', kind: 'bad' }); return; }
-    const body = res.body as { teams?: Team[] } | undefined;
-    setTeams(body?.teams ?? []);
+    try {
+      const body = await api<{ teams?: Team[] }>('/api/team');
+      setTeams(body.teams ?? []);
+    } catch (err) {
+      setNote({ text: err instanceof Error ? err.message : 'Could not read the account.', kind: 'bad' });
+      setTeams([]);
+    }
   }, []);
 
   useEffect(() => { void read(); }, [read]);

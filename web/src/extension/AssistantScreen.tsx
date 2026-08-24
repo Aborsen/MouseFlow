@@ -14,7 +14,7 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { Said, type SaidNote } from '@/components/Said';
-import { ask } from './worker';
+import { api } from './worker';
 
 interface Turn { role: 'you' | 'it'; text: string }
 
@@ -45,10 +45,17 @@ export const AssistantScreen = ({ onClose }: { onClose: () => void }) => {
     /* The history that travels is what was said, in the shape /api/chat takes - and it is bounded on both
      * sides, here and in the worker. */
     const history = turns.map((t) => ({ role: t.role === 'you' ? 'user' : 'assistant', content: t.text }));
-    const res = await ask('app/ask', { question: asked, history });
+    try {
+      const body = await api<{ answer?: string }>('/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ question: asked.slice(0, 2000), history: history.slice(-8) }),
+      });
+      setTurns((was) => [...was, { role: 'it', text: String(body.answer ?? '') }]);
+    } catch (err) {
+      setNote({ text: err instanceof Error ? err.message : 'It did not answer.', kind: 'bad' });
+    }
     setBusy(false);
-    if (!res.ok) { setNote({ text: res.error ?? 'It did not answer.', kind: 'bad' }); return; }
-    setTurns((was) => [...was, { role: 'it', text: String(res.answer ?? '') }]);
   };
 
   return (

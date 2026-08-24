@@ -47,7 +47,29 @@ const FORWARDABLE = new Set(['ping', 'page/run', 'page/status', 'page/abort']);
 async function announce() {
   let version = '';
   try { version = chrome.runtime.getManifest().version; } catch (_) { return; }
-  const status = await chrome.runtime.sendMessage({ mf: 'sync/status' }).catch(() => null);
+  let status = await chrome.runtime.sendMessage({ mf: 'sync/status' }).catch(() => null);
+
+  /* THIS PAGE IS THE PROOF A SESSION EXISTS, so it is also the moment to pair.
+   *
+   * The panel used to ask every four seconds whether one had appeared - somebody signs in in another tab
+   * and nothing tells it - which is polling for an event that announces itself: this script runs on every
+   * load of the app's origin, and it only runs at all because a page there loaded. So the loading IS the
+   * notification, and the ask goes away.
+   *
+   * Silent when it fails. Somebody who is not signed in loads this page constantly; a message about it
+   * would be noise on a page that is about to offer them a sign-in anyway. */
+  if (status && !status.paired) {
+    const minted = await mint();
+    if (minted.ok && minted.token) {
+      const paired = await chrome.runtime
+        .sendMessage({ mf: 'auth/paired', token: minted.token })
+        .catch(() => null);
+      if (paired && paired.ok) {
+        status = await chrome.runtime.sendMessage({ mf: 'sync/status' }).catch(() => status);
+      }
+    }
+  }
+
   window.postMessage({
     mf: HELLO,
     version,
@@ -74,32 +96,30 @@ announce();
  * The button stays. This runs when the panel opens and there is a tab on this origin; the button is what
  * somebody presses when they want to see it happen, and what answers when the automatic path is refused.
  */
+async function mint() {
+  try {
+    const res = await fetch('/api/sync?issue=1', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'This browser' }),
+    });
+    const body = await res.json().catch(() => null);
+    /* Not signed in on this origin. Named as its own answer rather than an error string, because the
+     * panel's reply to it is a sign-in prompt and not a failure message. */
+    if (res.status === 401 || res.status === 403) return { ok: false, signedOut: true };
+    if (!res.ok || !body || !body.token) {
+      return { ok: false, error: (body && body.error) || ('the app answered ' + res.status) };
+    }
+    return { ok: true, token: body.token };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : 'the app did not answer' };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
   if (!msg || msg.mf !== 'bridge/mint') return false;
-  (async () => {
-    try {
-      const res = await fetch('/api/sync?issue=1', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ label: 'This browser' }),
-      });
-      const body = await res.json().catch(() => null);
-      if (res.status === 401 || res.status === 403) {
-        /* Not signed in on this origin. Named as its own answer rather than an error string, because the
-         * panel's reply to it is a sign-in prompt and not a failure message. */
-        respond({ ok: false, signedOut: true });
-        return;
-      }
-      if (!res.ok || !body || !body.token) {
-        respond({ ok: false, error: (body && body.error) || ('the app answered ' + res.status) });
-        return;
-      }
-      respond({ ok: true, token: body.token });
-    } catch (err) {
-      respond({ ok: false, error: err && err.message ? err.message : 'the app did not answer' });
-    }
-  })();
+  mint().then(respond);
   return true;   // answering asynchronously
 });
 

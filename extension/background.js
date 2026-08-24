@@ -1578,8 +1578,13 @@ const ROUTES = {
    *
    * NOT SIGNED IN IS NOT AN ERROR. It is the one answer the panel has something to do about, so it comes
    * back as a flag and the panel offers a sign-in rather than a failure. */
-  'auth/auto': async () => {
+  'auth/auto': async (msg) => {
     if (await syncToken()) return { ok: true, already: true };
+    /* QUIET means "use what is already open". The panel retries this every few seconds while its wall is
+     * up - somebody may be signing in in another tab - and a retry that opened a background tab each time
+     * would be a tab opened every four seconds for as long as nobody signs in. The loud version, which
+     * opens one, is what runs once when the panel is first shown. */
+    const quiet = msg && msg.quiet === true;
 
     /* EVERY app tab, then a fresh one, and the order matters.
      *
@@ -1593,6 +1598,8 @@ const ROUTES = {
       const res = await chrome.tabs.sendMessage(tab.id, { mf: 'bridge/mint' }).catch(() => null);
       if (res) return finishAuto(res, null);
     }
+
+    if (quiet) return { ok: false, error: 'no signed-in tab to connect from' };
 
     /* Background, and closed again afterwards, so this is a spinner rather than a detour through a tab
      * somebody has to find and shut. */
@@ -1681,8 +1688,16 @@ const ROUTES = {
   'app/fetch': async (msg) => {
     const path = String(msg.path || '');
     if (!path.startsWith('/api/')) throw new Error('only this account\'s own API is reachable from here');
-    const token = await syncToken();
-    if (!token) throw new Error('this browser is not attached to an account');
+
+    /* SIGNING IN CANNOT NEED A TOKEN, which is the circle this fell into: /api/auth/* is how a session
+     * comes into existence, and refusing it for want of a token meant the panel could not sign in, could
+     * not sign in again after detaching, and answered 502 to a password that was perfectly good.
+     *
+     * So auth goes through unsigned and WITH cookies - which is the whole point of it: the answer sets a
+     * session on the app's origin, and `auth/auto` mints a device token from that a moment later. */
+    const isAuth = path.startsWith('/api/auth/');
+    const token = isAuth ? null : await syncToken();
+    if (!isAuth && !token) throw new Error('this browser is not attached to an account');
 
     /* THE ONE PATH THAT CANNOT BE PROXIED, and it is the app's front door.
      *
@@ -1695,21 +1710,25 @@ const ROUTES = {
      * this token belongs to, written when it was minted and refreshed on every sync. */
     if (path.startsWith('/api/auth/get-session')) {
       const { syncWho } = await chrome.storage.local.get('syncWho');
-      return {
-        ok: true,
-        status: 200,
-        text: JSON.stringify({ user: syncWho || null }),
-        type: 'application/json',
-      };
+      if (syncWho) {
+        return { ok: true, status: 200, text: JSON.stringify({ user: syncWho }), type: 'application/json' };
+      }
+      /* Nothing recorded yet - so ask for real, with the cookie. Somebody who has just signed in through
+       * the panel has a session and no pairing, and answering "nobody" here would hide the sign-in that
+       * just worked. */
     }
 
-    const headers = { accept: 'application/json', authorization: 'Bearer ' + token };
+    const headers = { accept: 'application/json' };
+    if (token) headers.authorization = 'Bearer ' + token;
     if (msg.contentType) headers['content-type'] = msg.contentType;
     const method = String(msg.method || 'GET').toUpperCase();
 
     const res = await fetch(APP_URL + path, {
       method,
       headers,
+      /* `include`, so the session cookie the auth endpoints set actually lands - and so the next request
+       * carries it. Without this the sign-in succeeds and leaves nothing behind. */
+      credentials: 'include',
       body: method === 'GET' || method === 'HEAD' ? undefined : (msg.body ?? null),
     });
     /* Passed back as TEXT with its status, not parsed and re-shaped. The app's own error handling reads the
