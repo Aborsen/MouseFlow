@@ -179,7 +179,8 @@ export const McpView = () => {
         <Section
           id="tools"
           title="What it can do"
-          lead="Nine built-in tools, plus one for each skill on your account. They fall into groups that
+          lead="Ten tools, and the list does not grow with your library — skills are found with
+            mouseflow_recordings and run with mouseflow_run. They fall into groups that
                 fail in completely different ways, which is why the groups are named rather than left to be
                 discovered: one half answers from the account, the other needs your computer to be awake and
                 listening."

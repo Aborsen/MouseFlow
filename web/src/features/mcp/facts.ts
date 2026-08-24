@@ -51,7 +51,16 @@ export const TOOL_GROUPS: Record<ToolGroup, { title: string; note: string }> = {
   },
 };
 
-/* Every built-in tool. The per-skill tools are not here because they are yours, and there is one for each
+/* Every tool. There used to be one MORE per skill on the account, generated from its own schema; they are
+ * gone, and skills are run through `mouseflow_run` instead. The reason is written where the tool is
+ * defined: a per-skill tool costs its definition in every request forever, and a library of fifty put nine
+ * thousand tokens of tool definitions in front of every message and fifty date-shaped names in the
+ * permission list.
+ *
+ * Kept from the old note, because it is still the thing that matters: the definitions here are prose about
+ * what the server offers, and the suite checks them against `api/mcp.js` in both directions.
+ *
+ * (Historic:) The per-skill tools were not here because they are yours, and there was one for each
  * skill on the account — `mouseflow_recordings` is how you see them. */
 export const MCP_TOOLS: McpTool[] = [
   {
@@ -114,6 +123,13 @@ export const MCP_TOOLS: McpTool[] = [
     group: 'control',
     what: 'How a run that was still going is getting on. Only needed when an answer named a run id.',
     args: 'run: the id the earlier answer named (required)',
+  },
+  {
+    name: 'mouseflow_run',
+    group: 'control',
+    what: 'Runs one of your skills on the paired machine. Ask mouseflow_recordings which there are and what '
+      + 'each one takes.',
+    args: 'skill: its id (required) · arguments: what it asks for',
   },
 ];
 

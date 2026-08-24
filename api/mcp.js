@@ -280,6 +280,48 @@ async function skillsOf(sql, userId) {
 }
 
 /** Tool name -> skill. Names are near-unique by construction; a collision is still handled. */
+/* ONE tool for running a skill, instead of one tool per skill.
+ *
+ * A tool per skill is the shape that lets a model call a skill in a single step with its arguments checked
+ * by a schema, and it was the right first answer. What it costs is paid in EVERY request, forever: measured
+ * on this project's own account, a skill's definition is about 184 tokens, so fifty skills is roughly 9,200
+ * tokens of tool definitions in front of every message - and a permission list of fifty entries named after
+ * the date each recording was made.
+ *
+ * So the list stays constant and the skills move into a RESULT. `mouseflow_recordings` names them and their
+ * inputs; this runs one. The names being unreadable stops mattering, because nobody reads a tool list to
+ * find them any more.
+ *
+ * WHAT IS GIVEN UP, and it is not nothing: `arguments` is a free object, so a model can no longer be forced
+ * by the schema to supply a required input. That guarantee moves one turn later - missingParams() already
+ * refuses and names what is missing - so it holds, it just costs a round trip. A guarantee enforced by a
+ * refusal is weaker than one enforced by a type, and this is the trade being made on purpose.
+ */
+const RUN_TOOL = {
+  name: 'mouseflow_run',
+  description: 'Run one skill on the machine this account is paired with. Ask mouseflow_recordings for the '
+    + 'skills and the inputs each one takes. This drives a real mouse and keyboard on somebody\'s computer: '
+    + 'the actions cannot be undone from here, and a missing input should be asked for rather than guessed.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      skill: {
+        type: 'string',
+        description: 'The skill\'s id from mouseflow_recordings. Its exact name also works when only one '
+          + 'skill has it.',
+      },
+      arguments: {
+        type: 'object',
+        description: 'What the skill asks for, by the input names mouseflow_recordings listed. Omit for a '
+          + 'skill that asks for nothing.',
+        additionalProperties: true,
+      },
+    },
+    required: ['skill'],
+    additionalProperties: false,
+  },
+};
+
 function tableOf(skills) {
   const table = new Map();
   for (const flow of skills) {
@@ -340,7 +382,7 @@ async function readRecordings(sql, who, args) {
   const want = ['recording', 'skill'].includes(args.kind) ? args.kind : 'all';
   const limit = Math.min(200, Math.max(1, Math.round(Number(args.limit) || 50)));
   const rows = await sql`
-    select client_id, name, description, source, kind, origins, updated_at,
+    select client_id, name, description, source, kind, origins, updated_at, payload,
            payload->>'role' as role,
            jsonb_array_length(coalesce(payload->'events', '[]'::jsonb)) as events
     from user_flow
@@ -353,8 +395,16 @@ async function readRecordings(sql, who, args) {
 
   const lines = shown.map((r) => {
     const where = Array.isArray(r.origins) && r.origins.length ? ` in ${r.origins.slice(0, 3).join(', ')}` : '';
+    /* THE INPUTS, for a skill. Without them this listing names things a caller cannot use: skills are run
+     * through mouseflow_run now, whose `arguments` is a free object, so the only way to learn what a skill
+     * asks for is to be told here. It used to be in the per-skill tool's schema; that tool is gone. */
+    const asks = kindOf(r) === 'skill'
+      ? (structureOf(r).params || [])
+        .map((p) => `${p.name} (${p.type}${p.example ? '' : ', required'})`)
+      : [];
     return `${r.client_id}  ${r.name || 'untitled'}\n`
       + `    ${kindOf(r)} · ${r.source || 'unknown'} · ${r.events} events${where} · ${day(r.updated_at)}`
+      + (asks.length ? `\n    takes: ${asks.join(', ')}` : '')
       + (r.description ? `\n    ${r.description}` : '');
   });
   return say(`${shown.length} of ${rows.length} shown, newest first.\n\n${lines.join('\n')}`);
@@ -552,18 +602,41 @@ async function callTool(sql, who, params, req) {
     return queueAndWait(sql, who, { flowId: AGENT_JOBS[asked], toolName: asked, args });
   }
 
+  if (asked !== RUN_TOOL.name) {
+    return say(`There is no tool called "${asked}". Ask for the tool list again; skills are run through `
+      + `${RUN_TOOL.name} rather than each having a tool of its own.`, true);
+  }
+
+  const wanted = String((args && args.skill) || '').trim();
+  if (!wanted) return say('Which skill? Pass the id from mouseflow_recordings as `skill`.', true);
+  args = (args && typeof args.arguments === 'object' && args.arguments) || {};
+
   const { skills } = await skillsOf(sql, who.id);
-  const entry = tableOf(skills).get(asked);
+  /* By id first, because that is what mouseflow_recordings prints and it cannot be ambiguous. A name is
+   * accepted too, since it is what a person says out loud - but only when exactly one skill has it: two
+   * skills sharing a name is legal, and picking one of them silently would run the wrong errand. */
+  let entry = null;
+  for (const flow of skills) if (flow.client_id === wanted) entry = { flow, structure: structureOf(flow) };
   if (!entry) {
-    return say(`There is no skill called "${asked}" on this account any more. The list of skills has `
-      + 'changed; ask for the tool list again.', true);
+    const named = skills.filter((f) => String(f.name || '').trim() === wanted);
+    if (named.length > 1) {
+      return say(`${named.length} skills are called "${wanted}". Pass one of these ids instead: `
+        + `${named.map((f) => f.client_id).join(', ')}.`, true);
+    }
+    if (named.length === 1) entry = { flow: named[0], structure: structureOf(named[0]) };
+  }
+  if (!entry) {
+    return say(`There is no skill "${wanted}" on this account. Ask mouseflow_recordings for what there is; `
+      + 'it names each skill\'s id and the inputs it takes.', true);
   }
   if (entry.structure.runner !== 'agent') {
     return say(`"${entry.flow.name}" aims at elements in a web page, so the MouseFlow browser extension is `
       + 'the half that can replay it. A worker drives the desktop agent, which has no page to aim at. Ask '
       + 'the user to run it from the extension.', true);
   }
-  return queueAndWait(sql, who, { flowId: entry.flow.id, toolName: asked, args });
+  /* The tool name on the row stays the SKILL's, not `mouseflow_run` - it is what "MouseFlow is already busy
+   * on that machine (…)" names, and "busy on mouseflow_run" would tell nobody which errand is in progress. */
+  return queueAndWait(sql, who, { flowId: entry.flow.id, toolName: entry.structure.toolName, args });
 }
 
 /* Put it on the queue and wait for the machine.
@@ -985,16 +1058,16 @@ async function handler(req, res) {
     }
 
     if (method === 'tools/list') {
-      const { skills } = await skillsOf(sql, who.id);
-      const tools = [
-        ...READ_TOOLS,
-        START_TOOL, STOP_RECORDING_TOOL,
-        STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL,
-      ];
-      for (const [name, entry] of tableOf(skills)) {
-        tools.push({ ...wireFor('mcp', entry.structure), name });
-      }
-      res.status(200).json(rpc(id, { tools }));
+      /* Fixed, and that is the change: this used to append one tool per skill, so the list - and the
+       * tokens it costs in every request, and the permission dialog somebody reads - grew with the
+       * library. Skills are found through mouseflow_recordings and run through mouseflow_run. */
+      res.status(200).json(rpc(id, {
+        tools: [
+          ...READ_TOOLS,
+          START_TOOL, STOP_RECORDING_TOOL,
+          STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL, RUN_TOOL,
+        ],
+      }));
       return;
     }
 

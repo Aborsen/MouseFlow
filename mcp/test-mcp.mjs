@@ -505,8 +505,22 @@ check('and every GET query it does have is one of them',
   getQueries.length > 0 && getQueries.every((q) => /aGetForSomethingElse/.test(route)
     && new RegExp(`req\\.query\\.${q}\\b`).test(route.slice(0, route.indexOf('aGetForSomethingElse') + 200))),
   getQueries.join(','));
-check('tools/list serves the app\'s own derivation rather than a copy',
-  /wireFor\('mcp', entry\.structure\)/.test(route) && /from '\.\/_skill-schema\.mjs'/.test(route));
+/* tools/list is FIXED now. It used to append one tool per skill, so the list — and the tokens it costs in
+ * every request, and the permission dialog somebody reads — grew with the library. */
+check('tools/list does not grow with the library',
+  !/for \(const \[name, entry\] of tableOf\(skills\)\)/.test(route)
+    && /RUN_STATUS_TOOL, RUN_TOOL,/.test(route));
+check('and a skill is run through one tool, by its id',
+  /name: 'mouseflow_run'/.test(route) && /flow\.client_id === wanted/.test(route));
+/* Two skills may legally share a name; picking one of them silently would run the wrong errand. */
+check('an ambiguous name is refused rather than guessed at',
+  /skills are called "\$\{wanted\}"/.test(route));
+/* With the per-skill schema gone, the listing is the only place a caller can learn what to pass. */
+check('and the listing names each skill’s inputs, since the schema no longer does',
+  /takes: \$\{asks\.join\(', '\)\}/.test(route));
+/* The row still records the SKILL's tool name: "already busy on mouseflow_run" would name no errand. */
+check('the queue row still says which errand is running',
+  /toolName: entry\.structure\.toolName/.test(route));
 check('an unstamped row is not offered as a tool', /if \(role !== 'skill'\) \{ unstamped\+\+; continue; \}/.test(route));
 check('and a call with no worker listening is refused rather than left to hang',
   /No machine has ever asked this account for work/.test(route));
@@ -579,7 +593,9 @@ const missing = [...served].filter((n) => !described.has(n));
 const invented = [...described].filter((n) => !served.has(n));
 check('every tool the server offers is described on the page', missing.length === 0, missing.join(', '));
 check('and nothing is described that the server does not offer', invented.length === 0, invented.join(', '));
-check('nine of them, so a count in prose can be trusted', served.size === 9, String(served.size));
+check('ten of them, so a count in prose can be trusted', served.size === 10, String(served.size));
+check('and the page no longer promises one tool per skill',
+  !/plus one for each skill/.test(readFileSync(fileURLToPath(new URL('../web/src/features/mcp/McpView.tsx', import.meta.url)), 'utf8')));
 check('the page names the endpoint the server actually answers on',
   /const MCP_PATH = '\/api\/mcp'/.test(facts));
 check('and builds the address from the origin it is served from, not a constant',
