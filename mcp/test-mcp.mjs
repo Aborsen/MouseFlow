@@ -519,6 +519,19 @@ check('an ambiguous name is refused rather than guessed at',
 check('and the listing names each skill’s inputs, since the schema no longer does',
   /takes: \$\{asks\.join\(', '\)\}/.test(route));
 /* The row still records the SKILL's tool name: "already busy on mouseflow_run" would name no errand. */
+/* `args` is a const, and the first version of this dispatch assigned to it. `node --check` does not catch
+ * that - it is a runtime error - and every check in this group is a regex over source, so it shipped and
+ * failed on the first real call with "Assignment to constant variable".
+ *
+ * This guard catches the exact class and nothing more. The honest note is that api/mcp.js has no executable
+ * coverage at all: it needs a database and a signed-in caller, so the suite reads it rather than runs it.
+ * That is the actual gap, and a regex is not a fix for it. */
+check('the dispatch does not assign to the const it was handed',
+  !/\n\s*args = /.test(route.slice(
+    route.indexOf('if (asked !== RUN_TOOL.name)'),
+    route.indexOf('async function queueAndWait'),
+  )));
+
 check('the queue row still says which errand is running',
   /toolName: entry\.structure\.toolName/.test(route));
 check('an unstamped row is not offered as a tool', /if \(role !== 'skill'\) \{ unstamped\+\+; continue; \}/.test(route));
