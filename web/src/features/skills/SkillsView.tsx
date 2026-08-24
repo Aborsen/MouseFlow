@@ -8,10 +8,11 @@ import { useNavigate } from '@tanstack/react-router';
 import {
   ArrowRight, Braces, ChevronUp, CircleDot, Copy, Download, Ellipsis, FileText, Globe, Link2, Loader2,
   Lock, Monitor, MousePointerClick, Pencil, Puzzle, RefreshCw, Search, Share2, Sparkles, Trash2, Upload,
-  Wand2,
+  Wand2, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
+import { Checkbox } from '@insightis/ui/Checkbox';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
@@ -36,7 +37,7 @@ import {
 /* Same shape as the recordings table, and its last column is a FIXED width for the reason that one learned
  * the hard way: `auto` sizes to content, so a header word narrower than the buttons under it puts the whole
  * row out by hundreds of pixels. */
-const SKILL_COLUMNS = 'grid-cols-[2rem_minmax(12rem,1fr)_7rem_6rem_6.5rem_20rem]';
+const SKILL_COLUMNS = 'grid-cols-[1.5rem_2rem_minmax(12rem,1fr)_7rem_6rem_6.5rem_20rem]';
 
 /* Both lists are one height, and it fits five.
  *
@@ -459,6 +460,9 @@ export const SkillsView = () => {
 
   const [term, setTerm] = useState('');
   const [filter, setFilter] = useState<SkillFilter>('all');
+  /* Which skills are ticked. Deleting them one at a time was the whole of it before, and clearing out a
+   * library that way is a dozen armed buttons in a row. */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   /* Which row has its structure open. One at a time: two open panels push the list twice and the second is
    * never the one being read. */
   const [openRow, setOpenRow] = useState<string | null>(null);
@@ -608,6 +612,19 @@ export const SkillsView = () => {
     };
     return [...kept].sort((a, b) => (sort.asc ? cmp(a, b) : cmp(b, a)));
   }, [skills, term, filter, sort]);
+
+  /* Only rows that are actually on screen count as selected. A tick that survives a search or a filter which
+   * hides its row is how somebody deletes something they cannot see - the recordings table learned this
+   * first and the reasoning is the same one. */
+  const live = useMemo(
+    () => new Set([...selected].filter((id) => shownSkills.some((flow) => flow.id === id))),
+    [selected, shownSkills],
+  );
+  const toggle = useCallback((id: string) => setSelected((was) => {
+    const next = new Set(was);
+    if (!next.delete(id)) next.add(id);
+    return next;
+  }), []);
   const navigate = useNavigate();
   const [bridge, setBridge] = useState({ present: false, paired: false, version: null as string | null });
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
@@ -641,18 +658,35 @@ export const SkillsView = () => {
     return () => clearTimeout(timer);
   }, [armed]);
 
-  const remove = useCallback(async (flow: Flow) => {
-    setRemoving(flow.id);
+  /* One request for the whole selection, not one per skill.
+   *
+   * `push` already takes a list of ids, and a loop over it would be N round trips that can half-succeed -
+   * leaving the person to work out which four of seven went. One call either lands or says what failed. */
+  const removeMany = useCallback(async (flows: Flow[]) => {
+    if (!flows.length) return;
+    const ids = flows.map((flow) => flow.id);
+    setRemoving(flows.length === 1 ? ids[0] : 'selection');
     setSaid(null);
     try {
       /* Tombstoned rather than erased, which is the sync contract: a delete on one machine has to be able to
        * propagate instead of the flow reappearing from the next machine that syncs. */
-      const done = await push({ deleted: [flow.id] });
+      const done = await push({ deleted: ids });
       if (done.problems.length) throw new Error(done.problems.join('; '));
       await reload();
+      /* Названо то, что удалили, пока их немного: «Deleted 3 skills» через минуту уже не отвечает на
+       * вопрос, какие именно. Дальше счёта достаточно - список всё равно перед глазами. */
       setSaid({
-        text: `Deleted "${flow.name}".`,
+        text: flows.length === 1
+          ? `Deleted "${flows[0].name}".`
+          : flows.length <= 3
+            ? `Deleted ${flows.map((flow) => `"${flow.name}"`).join(', ')}.`
+            : `Deleted ${flows.length} skills.`,
         kind: 'good',
+      });
+      setSelected((was) => {
+        const left = new Set(was);
+        for (const id of ids) left.delete(id);
+        return left;
       });
     } catch (err) {
       setSaid({ text: err instanceof Error ? err.message : 'could not delete it', kind: 'bad' });
@@ -661,6 +695,8 @@ export const SkillsView = () => {
       setArmed(null);
     }
   }, [reload]);
+
+  const remove = useCallback((flow: Flow) => removeMany([flow]), [removeMany]);
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /* One choice for the page, not one per skill: somebody is integrating with a provider, not comparing
@@ -1021,8 +1057,63 @@ export const SkillsView = () => {
             })}
           </div>
         </div>
+        {/* Ticking, and what there is to do with several at once. A fixed height, because the selection
+            controls appear inside this line: without one, ticking a box grew it and pushed the list down -
+            exactly what the recordings table had to fix. */}
+        <div className="mb-2 flex h-8 flex-wrap items-center gap-3 text-[0.8rem]">
+          {shownSkills.length > 0 && (
+            <button
+              type="button"
+              className="text-brand-primary hover:underline"
+              onClick={() => setSelected(live.size === shownSkills.length
+                ? new Set()
+                : new Set(shownSkills.map((flow) => flow.id)))}
+            >
+              {live.size === shownSkills.length ? 'Clear selection' : 'Select all'}
+            </button>
+          )}
+
+          {live.size > 0 && (
+            <span className="ms-auto flex flex-wrap items-center gap-1.5">
+              <Typography variant="span" className="text-ink-secondary">
+                {live.size} selected
+              </Typography>
+              {/* Armed in the button rather than behind a confirm(): a dialog is easy to click through, and
+                  this one takes several skills off the account at once. It disarms itself after six
+                  seconds, like every other destructive button here. */}
+              <Button
+                variant={armed === 'selection' ? 'destructive' : 'destructiveTertiary'}
+                size="sm"
+                disabled={removing === 'selection'}
+                leftSlot={removing === 'selection'
+                  ? <Loader2 className="size-4 animate-spin" />
+                  : <Trash2 className="size-4" />}
+                onClick={() => {
+                  if (armed !== 'selection') { setArmed('selection'); return; }
+                  void removeMany(shownSkills.filter((flow) => live.has(flow.id)));
+                }}
+              >
+                {removing === 'selection'
+                  ? 'Deleting…'
+                  : armed === 'selection' ? `Delete ${live.size} — press again` : 'Delete'}
+              </Button>
+              {/* Disarms as well as clears. Clearing hides this bar, and `armed` used to stay at 'selection'
+                  behind it - so selecting again brought Delete back already cocked, one click from deleting
+                  several skills with nothing on screen to say so. */}
+              <Button
+                variant="ghost"
+                size="sm"
+                leftSlot={<X className="size-4" />}
+                onClick={() => { setArmed(null); setSelected(new Set()); }}
+              >
+                Clear
+              </Button>
+            </span>
+          )}
+        </div>
+
         <div className="overflow-x-auto pb-1">
-          <div className="min-w-[61rem]">
+          <div className="min-w-[63rem]">
           {/* Same template as the rows, so the labels line up rather than approximately line up - the lesson
               the recordings table learned when its last column was `auto` and the header sat 280px off. */}
           <div
@@ -1032,6 +1123,7 @@ export const SkillsView = () => {
               'text-[0.7rem] uppercase tracking-wide text-ink-inactive',
             )}
           >
+            <span />
             <span />
             {/* Buttons, not labels. A column of values a person can see is a column they will want in an
               * order, and "sort by name" was the one thing this table could not do. The arrow shows WHICH
@@ -1078,6 +1170,7 @@ export const SkillsView = () => {
             {shownSkills.map((flow) => {
               const structure = structureOf(flow);
               const listing = publishedAs(flow);
+              const isSelected = live.has(flow.id);
 
               return (
                 <li key={flow.id}>
@@ -1087,9 +1180,18 @@ export const SkillsView = () => {
                       'grid w-full items-center gap-x-3 rounded-lg px-3 py-2',
                       'border border-stroke/45 bg-surface-card shadow-rest transition-colors duration-fast',
                       'hover:border-card-border-hover',
-                      openRow === flow.id && 'border-brand-primary',
+                      isSelected && 'border-brand-primary bg-state-pressed',
+                      openRow === flow.id && !isSelected && 'border-brand-primary',
                     )}
                   >
+                    <span className="flex items-center">
+                      <Checkbox
+                        checked={isSelected}
+                        aria-label={`Select ${flow.name || 'Untitled'}`}
+                        onCheckedChange={() => toggle(flow.id)}
+                      />
+                    </span>
+
                     <span className="grid size-8 place-items-center rounded-lg bg-surface-card2">
                       {flow.kind === 'created'
                         ? <Sparkles className="size-4 text-brand-tertiary" />
