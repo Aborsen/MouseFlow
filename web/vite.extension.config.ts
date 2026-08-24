@@ -67,7 +67,19 @@ const packExtension = (): Plugin => ({
 
 export default defineConfig({
   plugins: [react(), packExtension()],
-  resolve: { alias: [...DESIGN_SYSTEM, { find: '@', replacement: here('./src') }] },
+  resolve: {
+    alias: [
+      ...DESIGN_SYSTEM,
+      /* The router, replaced. The app's screens import Link, useNavigate, useRouterState and useParams -
+       * all four about a URL a panel does not have - and the shim turns them into the panel's own
+       * navigation. See web/src/extension/router-shim.tsx for why this is smaller than running the real
+       * router in a page whose address is chrome-extension://…/sidepanel.html.
+       *
+       * FIRST in the list, before the '@' alias, because order decides. */
+      { find: '@tanstack/react-router', replacement: here('./src/extension/router-shim.tsx') },
+      { find: '@', replacement: here('./src') },
+    ],
+  },
   /* RELATIVE, not absolute. An extension page resolves `/assets/…` against the package root, so absolute
    * would work inside Chrome and break the moment somebody opens the built file to look at it - which is
    * how it gets checked during development. */

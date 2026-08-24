@@ -1661,66 +1661,65 @@ const ROUTES = {
     }
     return { ok: true };
   },
-  /* Reading the account's own screens, for the panel.
+  /* The app's whole API, for the app's own screens.
    *
-   * The panel shows a dashboard and the teams somebody is in, and both are the app's endpoints answered
-   * with this browser's device token. The token stays HERE: a panel is an ordinary page and a page that
-   * held the token could hand it to anything it later imported. So the panel asks, and this fetches.
+   * The panel does not carry panel-sized copies of the product any more - it mounts the app's real views,
+   * and those talk to /api the way they always have. What they cannot do from a chrome-extension:// page is
+   * carry a session cookie, so their fetch is shimmed (see web/src/extension/api-bridge.ts) and lands here,
+   * where the device token lives.
    *
-   * AN ALLOWLIST, not a proxy. Anything reachable from the panel is reachable from every page of the
-   * panel, and a generic "fetch this path with my token" is a hole the moment one of those pages renders
-   * something it did not write. Three paths, named. */
-  'app/read': async (msg) => {
-    const ALLOWED = {
-      insights: (m) => '/api/insights?days=' + (Number(m.days) === 30 ? 30 : 7),
-      teams: () => '/api/team',
-      runs: () => '/api/sync?runs=1',
-    };
-    const build = ALLOWED[String(msg.what || '')];
-    if (!build) throw new Error('nothing here reads that');
+   * THIS IS WIDER THAN WHAT IT REPLACED, which was three paths by name, and the reason is worth stating
+   * rather than leaving to be noticed: the panel IS the app now, and the app talks to its whole API. An
+   * allowlist of paths would have to be extended for every screen and would be extended without thought.
+   *
+   * What bounds it instead:
+   *   only /api/ - never an arbitrary url, so this cannot be turned into a general web fetcher
+   *   only the extension's own pages can send a runtime message at all
+   *   the token is added here and is never handed out
+   *   nothing in the panel executes what it renders, so a hostile answer is text, not code
+   */
+  'app/fetch': async (msg) => {
+    const path = String(msg.path || '');
+    if (!path.startsWith('/api/')) throw new Error('only this account\'s own API is reachable from here');
     const token = await syncToken();
     if (!token) throw new Error('this browser is not attached to an account');
-    const res = await fetch(APP_URL + build(msg), {
-      headers: { accept: 'application/json', authorization: 'Bearer ' + token },
-    });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) {
-      throw new Error((body && body.error && (body.error.message || body.error)) ||
-        'the account is not answering (HTTP ' + res.status + ')');
-    }
-    return { ok: true, body };
-  },
 
-  /* Asking the assistant, from the panel.
-   *
-   * A separate route from `app/read` and not a widening of it: that one is GET-shaped and read-only by
-   * construction, and this POSTs a question. Named on its own so the extension's reach stays readable as a
-   * list rather than as a parameter somebody has to check the allowlist for.
-   *
-   * The history travels with the question because /api/chat is stateless - it grounds an answer in the
-   * account's own recordings and runs, not in a stored thread. Bounded here as well as there: a panel that
-   * sent an unbounded conversation would be a panel that eventually sends a megabyte. */
-  'app/ask': async (msg) => {
-    const question = String(msg.question || '').trim();
-    if (!question) throw new Error('ask something');
-    const token = await syncToken();
-    if (!token) throw new Error('this browser is not attached to an account');
-    const history = Array.isArray(msg.history) ? msg.history.slice(-8) : [];
-    const res = await fetch(APP_URL + '/api/chat', {
-      method: 'POST',
-      headers: {
-        accept: 'application/json',
-        'content-type': 'application/json',
-        authorization: 'Bearer ' + token,
-      },
-      body: JSON.stringify({ question: question.slice(0, 2000), history }),
-    });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) {
-      throw new Error((body && body.error && (body.error.message || body.error)) ||
-        'the assistant is not answering (HTTP ' + res.status + ')');
+    /* THE ONE PATH THAT CANNOT BE PROXIED, and it is the app's front door.
+     *
+     * `whoAmI()` asks /api/auth/get-session, which is the auth service answering a SESSION COOKIE. This
+     * browser has a device token instead - it is authenticated, just not that way - so forwarding the
+     * question would answer "nobody", and the app's own shell would put up a sign-in wall over a panel
+     * that is signed in.
+     *
+     * Answered from what pairing already recorded. Not an invention: `syncWho` is who the account said
+     * this token belongs to, written when it was minted and refreshed on every sync. */
+    if (path.startsWith('/api/auth/get-session')) {
+      const { syncWho } = await chrome.storage.local.get('syncWho');
+      return {
+        ok: true,
+        status: 200,
+        text: JSON.stringify({ user: syncWho || null }),
+        type: 'application/json',
+      };
     }
-    return { ok: true, answer: (body && body.answer) || '', citations: (body && body.citations) || [] };
+
+    const headers = { accept: 'application/json', authorization: 'Bearer ' + token };
+    if (msg.contentType) headers['content-type'] = msg.contentType;
+    const method = String(msg.method || 'GET').toUpperCase();
+
+    const res = await fetch(APP_URL + path, {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' ? undefined : (msg.body ?? null),
+    });
+    /* Passed back as TEXT with its status, not parsed and re-shaped. The app's own error handling reads the
+     * body it was given; anything helpful done here would be a second opinion about what went wrong. */
+    return {
+      ok: true,
+      status: res.status,
+      text: await res.text(),
+      type: res.headers.get('content-type') || 'application/json',
+    };
   },
 
   /* Browsing the gallery from inside the extension.

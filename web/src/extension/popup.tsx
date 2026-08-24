@@ -14,7 +14,10 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { PanelRight } from 'lucide-react';
 import '@/globals.css';
+import { installApiBridge } from './api-bridge';
 import { Panel } from './Panel';
+
+installApiBridge();
 
 const openPanel = async () => {
   try {

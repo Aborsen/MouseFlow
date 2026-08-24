@@ -7,7 +7,6 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Typography } from '@insightis/ui/Typography';
-import { Button } from '@insightis/ui/Button';
 import { Loader2 } from 'lucide-react';
 import { Rail, type Screen } from './Rail';
 import { RecordScreen } from './RecordScreen';
@@ -17,7 +16,11 @@ import { DashboardScreen } from './DashboardScreen';
 import { TeamsScreen } from './TeamsScreen';
 import { GalleryScreen } from './GalleryScreen';
 import { AssistantScreen } from './AssistantScreen';
-import { ask, inExtension, openApp } from './worker';
+import { SignInView } from '@/features/auth/SignInView';
+import { SignUpView } from '@/features/auth/SignUpView';
+import { Said } from '@/components/Said';
+import { cn } from '@insightis/ui/cn';
+import { ask, inExtension } from './worker';
 
 /* Which screen was last open, kept across closings of the panel. A panel that always opened on Record
  * would be a panel that forgets what somebody was in the middle of. */
@@ -29,6 +32,7 @@ export const Panel = () => {
   );
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
   const [asking, setAsking] = useState(false);
+  const [door, setDoor] = useState<'in' | 'up'>('in');
 
   const go = useCallback((next: Screen) => {
     setScreen(next);
@@ -61,6 +65,15 @@ export const Panel = () => {
 
   useEffect(() => { void check(); }, [check]);
 
+  /* While the wall is up, keep trying. Signing in happens in here OR in a tab - the Google button opens
+   * one - and either way the panel should attach itself the moment a session exists rather than waiting to
+   * be told. Four seconds is slow enough to be free and fast enough that nobody presses anything. */
+  useEffect(() => {
+    if (signedIn !== false || connecting) return undefined;
+    const timer = setInterval(() => { void check(); }, 4000);
+    return () => clearInterval(timer);
+  }, [signedIn, connecting, check]);
+
   return (
     /* h-full, not h-screen: the panel is mounted in two frames now - a side panel, which is the height of
      * the window, and a popup, which is a fixed box that says how tall it is. Filling the parent works in
@@ -79,18 +92,37 @@ export const Panel = () => {
             </Typography>
           </div>
         ) : signedIn === false ? (
-          /* The wall. The same sentence the popup used, and the same one act: this extension cannot sign
-           * in with Google - that needs an OAuth client tied to an id an unpacked build does not have - so
-           * the app signs in and hands a token across. See extension/bridge.js. */
-          <div className="m-auto flex max-w-[22rem] flex-col items-center gap-3 text-center">
-            <Typography variant="h2" weight="semibold" className="text-[1.05rem]">
-              Connect this browser
-            </Typography>
-            <Typography variant="p" className="text-ink-inactive text-[0.82rem] leading-relaxed">
-              {why ?? 'This browser is not attached to a MouseFlow account yet.'}
-            </Typography>
-            <Button onClick={() => openApp('/skills')}>Sign in</Button>
-            <Button variant="ghost" size="sm" onClick={() => void check()}>Try again</Button>
+          /* THE WHOLE CYCLE, IN HERE. These are the app's own sign-in and sign-up screens - the same files
+           * the website renders - reached through the fetch bridge, so an email and a password create or
+           * open an account without leaving the panel.
+           *
+           * GOOGLE IS THE ONE THING THAT CANNOT BE, and it is worth saying rather than hiding: signing in
+           * with Google needs an OAuth client bound to the extension's id, and an unpacked extension's id
+           * comes from the folder it was loaded from - different on every machine. The button in there
+           * still works; it opens the app in a tab, and the panel connects itself the moment a session
+           * exists over there. That is what the polling below is watching for. */
+          <div className="flex flex-1 flex-col">
+            <div className="mb-2 flex gap-1">
+              {(['in', 'up'] as const).map((which) => (
+                <button
+                  key={which}
+                  type="button"
+                  onClick={() => setDoor(which)}
+                  className={cn(
+                    'flex-1 rounded-md px-2 py-1.5 text-[0.8rem] transition-colors duration-base',
+                    door === which
+                      ? 'bg-brand-primary/15 font-semibold text-brand-primary'
+                      : 'text-ink-secondary hover:bg-state-hover',
+                  )}
+                >
+                  {which === 'in' ? 'Sign in' : 'Create an account'}
+                </button>
+              ))}
+            </div>
+            {why && <Said note={{ text: why, kind: 'bad' }} className="mb-2" />}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {door === 'in' ? <SignInView /> : <SignUpView />}
+            </div>
           </div>
         ) : (
           <>
