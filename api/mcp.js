@@ -609,7 +609,10 @@ async function callTool(sql, who, params, req) {
 
   const wanted = String((args && args.skill) || '').trim();
   if (!wanted) return say('Which skill? Pass the id from mouseflow_recordings as `skill`.', true);
-  args = (args && typeof args.arguments === 'object' && args.arguments) || {};
+  /* The skill's own arguments live one level in, under `arguments`. A separate name rather than reassigning
+   * `args`, which is a const and was exactly the mistake here - and one that only shows up when the tool is
+   * actually called, since nothing else in this file reads that property. */
+  const skillArgs = (args && typeof args.arguments === 'object' && args.arguments) || {};
 
   const { skills } = await skillsOf(sql, who.id);
   /* By id first, because that is what mouseflow_recordings prints and it cannot be ambiguous. A name is
@@ -636,7 +639,9 @@ async function callTool(sql, who, params, req) {
   }
   /* The tool name on the row stays the SKILL's, not `mouseflow_run` - it is what "MouseFlow is already busy
    * on that machine (…)" names, and "busy on mouseflow_run" would tell nobody which errand is in progress. */
-  return queueAndWait(sql, who, { flowId: entry.flow.id, toolName: entry.structure.toolName, args });
+  return queueAndWait(sql, who, {
+    flowId: entry.flow.id, toolName: entry.structure.toolName, args: skillArgs,
+  });
 }
 
 /* Put it on the queue and wait for the machine.
