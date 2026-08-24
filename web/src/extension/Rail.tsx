@@ -9,9 +9,10 @@
  * app should not have to learn a second vocabulary for the same product.
  */
 import {
-  ChartNoAxesColumn, CircleDot, FolderOpen, LayoutGrid, Sparkles, Users,
+  ChartNoAxesColumn, CircleDot, FolderOpen, LayoutGrid, MessageCircle, Sparkles, Users,
 } from 'lucide-react';
 import { cn } from '@insightis/ui/cn';
+import { Account } from './Account';
 
 export type Screen = 'record' | 'create' | 'skills' | 'dashboard' | 'teams' | 'gallery';
 
@@ -24,7 +25,12 @@ const ITEMS = [
   { id: 'gallery' as Screen, label: 'Gallery', icon: LayoutGrid },
 ];
 
-export const Rail = ({ screen, onGo }: { screen: Screen; onGo: (screen: Screen) => void }) => (
+export const Rail = ({ screen, onGo, onAsk, onDetached }: {
+  screen: Screen;
+  onGo: (screen: Screen) => void;
+  onAsk: () => void;
+  onDetached: () => void;
+}) => (
   <nav
     aria-label="Sections"
     className="flex w-[3.75rem] shrink-0 flex-col items-center gap-1 border-stroke border-e bg-surface-card py-2"
@@ -49,5 +55,25 @@ export const Rail = ({ screen, onGo }: { screen: Screen; onGo: (screen: Screen) 
         {label}
       </button>
     ))}
+
+    {/* The assistant is not a screen among the six: it covers the panel when it is open, so it sits apart
+        from them here as well. Below the line, above the person - which is where the app puts it too. */}
+    <span className="my-1 h-px w-7 bg-stroke" />
+    <button
+      type="button"
+      title="Ask about your recordings and runs"
+      aria-label="Assistant"
+      onClick={onAsk}
+      className={cn(
+        'flex w-[3.1rem] flex-col items-center gap-0.5 rounded-lg py-1.5 text-[0.62rem]',
+        'text-ink-inactive transition-colors duration-base hover:bg-state-hover hover:text-ink-secondary',
+      )}
+    >
+      <MessageCircle className="size-[18px]" />
+      Ask
+    </button>
+
+    {/* Last, and pushed there by mt-auto: the app's sidebar ends with the person, and so does this. */}
+    <Account onDetached={onDetached} />
   </nav>
 );

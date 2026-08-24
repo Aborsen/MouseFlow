@@ -1691,6 +1691,38 @@ const ROUTES = {
     return { ok: true, body };
   },
 
+  /* Asking the assistant, from the panel.
+   *
+   * A separate route from `app/read` and not a widening of it: that one is GET-shaped and read-only by
+   * construction, and this POSTs a question. Named on its own so the extension's reach stays readable as a
+   * list rather than as a parameter somebody has to check the allowlist for.
+   *
+   * The history travels with the question because /api/chat is stateless - it grounds an answer in the
+   * account's own recordings and runs, not in a stored thread. Bounded here as well as there: a panel that
+   * sent an unbounded conversation would be a panel that eventually sends a megabyte. */
+  'app/ask': async (msg) => {
+    const question = String(msg.question || '').trim();
+    if (!question) throw new Error('ask something');
+    const token = await syncToken();
+    if (!token) throw new Error('this browser is not attached to an account');
+    const history = Array.isArray(msg.history) ? msg.history.slice(-8) : [];
+    const res = await fetch(APP_URL + '/api/chat', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        authorization: 'Bearer ' + token,
+      },
+      body: JSON.stringify({ question: question.slice(0, 2000), history }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error((body && body.error && (body.error.message || body.error)) ||
+        'the assistant is not answering (HTTP ' + res.status + ')');
+    }
+    return { ok: true, answer: (body && body.answer) || '', citations: (body && body.citations) || [] };
+  },
+
   /* Browsing the gallery from inside the extension.
    *
    * Reading the gallery needs no session - it is public - so the extension can fetch it directly and

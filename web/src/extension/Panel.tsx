@@ -16,6 +16,7 @@ import { SkillsScreen } from './SkillsScreen';
 import { DashboardScreen } from './DashboardScreen';
 import { TeamsScreen } from './TeamsScreen';
 import { GalleryScreen } from './GalleryScreen';
+import { AssistantScreen } from './AssistantScreen';
 import { ask, inExtension, openApp } from './worker';
 
 /* Which screen was last open, kept across closings of the panel. A panel that always opened on Record
@@ -27,6 +28,7 @@ export const Panel = () => {
     () => (localStorage.getItem(LAST) as Screen) || 'record',
   );
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
+  const [asking, setAsking] = useState(false);
 
   const go = useCallback((next: Screen) => {
     setScreen(next);
@@ -60,8 +62,13 @@ export const Panel = () => {
   useEffect(() => { void check(); }, [check]);
 
   return (
-    <div className="flex h-screen items-stretch bg-surface-page text-ink-primary">
-      <Rail screen={screen} onGo={go} />
+    /* h-full, not h-screen: the panel is mounted in two frames now - a side panel, which is the height of
+     * the window, and a popup, which is a fixed box that says how tall it is. Filling the parent works in
+     * both; measuring the viewport works in one. */
+    /* `relative`, because the assistant covers this box - rail included - rather than sitting in the
+     * column beside it. */
+    <div className="relative flex h-full items-stretch bg-surface-page text-ink-primary">
+      <Rail screen={screen} onGo={go} onAsk={() => setAsking(true)} onDetached={() => setSignedIn(false)} />
 
       <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
         {signedIn === null || connecting ? (
@@ -96,6 +103,8 @@ export const Panel = () => {
           </>
         )}
       </main>
+
+      {asking && signedIn && <AssistantScreen onClose={() => setAsking(false)} />}
     </div>
   );
 };
