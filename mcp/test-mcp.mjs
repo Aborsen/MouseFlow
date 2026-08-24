@@ -936,6 +936,68 @@ check('the model is optional — no key still produces the file',
   /let written = \{\};/.test(read('../api/skill-md.js')));
 check('and the panel says when the description was derived rather than written',
   /Its description was derived rather than written/.test(skillsView));
+
+/* An agent skill installs as a FOLDER. Handing over a bare .md means also telling somebody where to put it
+ * and what to call the directory; a zip does not. Written by hand rather than pulled in: a zip of text needs
+ * no compression, so the whole format is four fixed-layout records and a CRC-32. */
+group('and as the folder it actually installs as');
+const zipper = await import('../api/_zip.mjs');
+/* Checked against the reference implementation of CRC-32, not against itself. */
+check('the checksum is the standard one', zipper.crc32(new TextEncoder().encode('123456789')) === 0xcbf43926,
+  zipper.crc32(new TextEncoder().encode('123456789')).toString(16));
+const archive = zipper.zip([
+  { name: 'my-skill', dir: true },
+  { name: 'my-skill/SKILL.md', text: '---\nname: my-skill\n---\n\n# Привет\n' },
+], new Date('2026-08-24T19:45:00Z'));
+check('it writes the four signatures a zip is made of',
+  archive[0] === 0x50 && archive[1] === 0x4b && archive[2] === 0x03 && archive[3] === 0x04
+    && Buffer.from(archive).includes(Buffer.from([0x50, 0x4b, 0x01, 0x02]))
+    && Buffer.from(archive).includes(Buffer.from([0x50, 0x4b, 0x05, 0x06])));
+/* Read back by a real unzipper rather than by the code that wrote it. A zip writer verified only against
+ * itself is a zip writer nobody has opened. */
+{
+  const { mkdtempSync, writeFileSync, readFileSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+  const dir = mkdtempSync(join(tmpdir(), 'mf-zip-'));
+  const file = join(dir, 'a.zip');
+  writeFileSync(file, archive);
+  let tested = false;
+  try {
+    execFileSync('unzip', ['-tqq', file], { stdio: 'pipe' });
+    execFileSync('unzip', ['-qq', file, '-d', dir], { stdio: 'pipe' });
+    tested = true;
+  } catch (_) { /* no unzip on this machine - reported below rather than passed silently */ }
+  check('a real unzip reads it back, folder and all', tested
+    && existsSync(join(dir, 'my-skill', 'SKILL.md')),
+    tested ? 'ok' : 'no `unzip` on this machine, so this checked nothing');
+  check('and the UTF-8 in it survives the round trip', tested
+    && readFileSync(join(dir, 'my-skill', 'SKILL.md'), 'utf8').includes('Привет'));
+}
+/* Without the UTF-8 flag a name with a non-ASCII character is read through the unzipper's guess at a legacy
+ * codepage - which a skill named in Russian has. */
+check('every entry is flagged UTF-8', /const UTF8_FLAG = 0x0800;/.test(read('../api/_zip.mjs')));
+check('the panel offers the folder first and the bare file second',
+  skillsView.indexOf('{md.slug}.zip') < skillsView.indexOf('Just the file, for a folder you already have'));
+check('and the folder is named by the same slug as the frontmatter',
+  /slug: skillSlug\(flow\.name\)/.test(read('../api/skill-md.js')));
+
+/* Two skill buttons a word apart in meaning, one of them wordless, and the wordless one was the better
+ * answer nearly every time. */
+group('one skill button on a recording, and it makes the kind worth making');
+check('the row’s Skill button opens the wizard rather than copying coordinates',
+  /leftSlot=\{<Sparkles className="size-4" \/>\}[\s\S]{0,220}onClick=\{\(\) => onMakeSkill\(rec\)\}/.test(recTable));
+check('and the literal copy is gone from the row, prop and handler with it',
+  !/onSaveAsSkill/.test(recTable)
+    && !/onSaveAsSkill/.test(read('../web/src/features/record/RecordView.tsx'))
+    && !/const keepAsSkill/.test(read('../web/src/features/record/RecordView.tsx')));
+/* Not lost, though: it is on the Skills page where there is room to say what it means. */
+check('it is still offered where there is room to name it',
+  /Repeat it exactly/.test(skillsView));
+/* Play obeys the repeat, speed and loop below it, so it belongs beside them rather than above them. */
+check('Play is in the panel with the settings it obeys, not on the row',
+  (recTable.match(/onClick=\{\(\) => onPlay\(rec\)\}/g) || []).length === 1);
 check('step two is about instructions, not only recorded typing',
   /STAGES = \['What it did', 'Instructions', 'Name it'\]/.test(wizard));
 check('and it always offers a field, so it is never a dead end',

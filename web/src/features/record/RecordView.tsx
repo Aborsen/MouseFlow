@@ -34,7 +34,7 @@ import {
   type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
 } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
-import { hasSkillFor, saveAsSkill } from './save-as-skill';
+import { hasSkillFor } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { SessionStrip } from './SessionStrip';
 import {
@@ -807,23 +807,9 @@ export const RecordView = () => {
     return () => clearInterval(timer);
   }, [playing, port]);
 
-  /* Which recording the wizard is open over. Separate from keepAsSkill's own busy flag: one is a single
-   * press, the other is a conversation, and the list has to keep working while it happens. */
+  /* Which recording the wizard is open over. It replaced a window.prompt() for a name and a one-press
+   * literal copy: the row has one skill button now, and it opens this. */
   const [wizardFor, setWizardFor] = useState<Recording | null>(null);
-
-  const keepAsSkill = useCallback(async (rec: Recording) => {
-    const name = prompt('Name this skill', rec.name);
-    if (name === null) return;
-    try {
-      /* Общая реализация - см. save-as-skill.ts. Skills предлагает то же самое со своей страницы, и payload,
-       * написанный в двух местах, однажды разойдётся: это уже случалось с flowFor. */
-      await saveAsSkill(rec, name);
-      await reload();
-      setNote('Saved as a skill. It is in Skills, on this and any other browser you sign in from.');
-    } catch (err) {
-      setNote(`Could not save it as a skill: ${err instanceof Error ? err.message : 'unknown error'}`);
-    }
-  }, [reload]);
 
   const importFiles = useCallback(async (files: FileList) => {
     let added = 0;
@@ -1072,7 +1058,6 @@ export const RecordView = () => {
         ))}
         onAdopt={(flow) => adoptOrphan(flow)}
         onImport={(files) => { void importFiles(files); }}
-        onSaveAsSkill={(rec) => { void keepAsSkill(rec); }}
         /* Over on the Skills page, not here.
          *
          * The wizard makes a SKILL, and the place skills live is where somebody expects to end up holding

@@ -398,7 +398,7 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
             error: { type: 'skill_md_error', message: 'no skill with that id on this account' },
           });
         }
-        const [{ structureOf }, { skillMarkdown, skillFileName }] = await Promise.all([
+        const [{ structureOf }, { skillMarkdown, skillFileName, skillSlug }] = await Promise.all([
           import('../../../api/_skill-schema.mjs'),
           import('../../../api/_skill-md.mjs'),
         ]);
@@ -415,6 +415,7 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         return json(res, 200, {
           ok: true,
           filename: skillFileName(row.name),
+          slug: skillSlug(row.name),
           written: !!written.description,
           text: skillMarkdown(structure, flow, written),
         });

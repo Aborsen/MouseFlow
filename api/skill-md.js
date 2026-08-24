@@ -18,7 +18,7 @@ import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { ask, DEFAULT_MODEL, ProviderError } from './_provider.js';
 import { structureOf } from './_skill-schema.mjs';
-import { skillFileName, skillMarkdown } from './_skill-md.mjs';
+import { skillFileName, skillMarkdown, skillSlug } from './_skill-md.mjs';
 import { report, wrap } from './_report.js';
 
 const TRIGGER_TOOL = {
@@ -130,6 +130,10 @@ async function handler(req, res) {
   return res.status(200).json({
     ok: true,
     filename: skillFileName(flow.name),
+    /* The FOLDER name. An agent skill installs as `<slug>/SKILL.md`, and the slug in the frontmatter and
+     * the slug on the directory have to be the same word - so one place decides it, and the client is told
+     * rather than deriving it a second time. */
+    slug: skillSlug(flow.name),
     /* Said, so the panel can show whether the trigger line was written or derived. A file whose description
      * came out of the fallback is worth knowing about before it is handed to an agent. */
     written: !!written.description,

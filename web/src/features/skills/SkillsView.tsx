@@ -21,6 +21,7 @@ import { Signal } from '@/components/Signal';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { adoptRecording } from '@/features/record/adopt';
+import { zip } from './zip';
 import { describeRecording, hasSkillFor, saveAsSkill } from '@/features/record/save-as-skill';
 import { SkillWizard } from '@/features/record/SkillWizard';
 import {
@@ -140,7 +141,9 @@ const Structure = ({ skill, flowId, wire, onWire }: {
    * Fetched rather than built here, and that is not laziness: the row on the account is the authority on
    * what a skill is, and this browser holds a copy that can be a sync behind. A file somebody downloads,
    * hands to an agent and forgets about has to describe the skill as it IS. */
-  const [md, setMd] = useState<null | { text: string; filename: string; written: boolean }>(null);
+  const [md, setMd] = useState<
+    null | { text: string; filename: string; slug: string; written: boolean }
+  >(null);
   const [mdBusy, setMdBusy] = useState(false);
   const [mdProblem, setMdProblem] = useState<string | null>(null);
 
@@ -158,7 +161,12 @@ const Structure = ({ skill, flowId, wire, onWire }: {
       if (!res.ok || !body || !body.ok) {
         throw new Error(body?.error?.message || 'the file could not be built');
       }
-      setMd({ text: body.text, filename: body.filename, written: !!body.written });
+      setMd({
+        text: body.text,
+        filename: body.filename,
+        slug: body.slug || 'mouseflow-skill',
+        written: !!body.written,
+      });
     } catch (err) {
       setMdProblem(err instanceof Error ? err.message : 'the file could not be built');
     }
@@ -167,17 +175,34 @@ const Structure = ({ skill, flowId, wire, onWire }: {
 
   /* An object URL rather than a data: one, revoked straight after. A long file in a data URL is a long
    * string in the address bar's history, and this one carries the person's own goal text. */
-  const download = useCallback(() => {
-    if (!md) return;
-    const url = URL.createObjectURL(new Blob([md.text], { type: 'text/markdown;charset=utf-8' }));
+  const save = useCallback((blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = md.filename;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-  }, [md]);
+  }, []);
+
+  const download = useCallback(() => {
+    if (!md) return;
+    save(new Blob([md.text], { type: 'text/markdown;charset=utf-8' }), md.filename);
+  }, [md, save]);
+
+  /* The folder, which is how an agent skill actually installs: `<slug>/SKILL.md`, named SKILL.md rather
+   * than after the skill, because that is the filename the loader looks for. Handing over a bare .md means
+   * also telling somebody where to put it and what to call the directory it goes in; this does not. */
+  const downloadZip = useCallback(() => {
+    if (!md) return;
+    save(
+      new Blob([zip([{ name: md.slug, dir: true }, { name: `${md.slug}/SKILL.md`, text: md.text }])], {
+        type: 'application/zip',
+      }),
+      `${md.slug}.zip`,
+    );
+  }, [md, save]);
 
   const copy = useCallback(async () => {
     try {
@@ -304,14 +329,27 @@ const Structure = ({ skill, flowId, wire, onWire }: {
                 A SKILL.md that tells an agent when to call the tool above.
               </Typography>
               {md ? (
-                <Button
-                  variant="tertiary"
-                  size="sm"
-                  leftSlot={<Download className="size-3.5" />}
-                  onClick={download}
-                >
-                  {md.filename}
-                </Button>
+                <>
+                  {/* The folder first: it is the shape an agent skill installs in, and the bare file is the
+                    * one for somebody who already has a folder to drop it into. */}
+                  <Button
+                    variant="tertiary"
+                    size="sm"
+                    leftSlot={<Download className="size-3.5" />}
+                    title={`A folder — ${md.slug}/SKILL.md — ready to drop in as it is`}
+                    onClick={downloadZip}
+                  >
+                    {md.slug}.zip
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title="Just the file, for a folder you already have"
+                    onClick={download}
+                  >
+                    .md
+                  </Button>
+                </>
               ) : (
                 <Button
                   variant="tertiary"

@@ -25,7 +25,6 @@ import {
   Eye,
   Play,
   Repeat,
-  Save,
   Search,
   Trash2,
   Check,
@@ -81,7 +80,6 @@ export interface RecordingsTableProps {
    * which reads as Ready rather than as no. */
   hasSkill?: (rec: Recording) => boolean;
   /** Save as skill lives on the page, because it also has to report what happened. */
-  onSaveAsSkill: (rec: Recording) => void;
   /* The other way to make one: the wizard, which asks for the text a recording is not allowed to hold and
    * produces a skill with parameters. Offered beside the literal copy rather than instead of it - the two
    * are different things, and a recording that already has one may still want the other. */
@@ -109,7 +107,6 @@ export const replayOf = (rec: Recording): ReplaySettings => ({
 });
 
 export const RecordingsTable = ({
-  onSaveAsSkill,
   onMakeSkill,
   onView,
   onPlay,
@@ -557,19 +554,9 @@ export const RecordingsTable = ({
                       {/* Visible rather than revealed on hover: these were asked for as labels, and nobody
                           hovers a row to find out that Export exists. */}
                       <span className="flex items-center justify-end gap-1">
-                        {/* Icon only, with a title: Play and Add to flow are the two that do not need a word,
-                            and six labelled buttons wrapped the row onto a third line. The four the owner
-                            asked to see as labels - View, Save as skill, Export, Delete - keep them. */}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Play ${rec.name}`}
-                          title={`Play now — ${replay.repeat}x at ${replay.speed}x${replay.loop ? ', looping' : ''}`}
-                          className="!size-8 !p-0"
-                          onClick={() => onPlay(rec)}
-                        >
-                          <Play className="size-4" />
-                        </Button>
+                        {/* Play lives in the panel below, beside the repeat, speed and loop it obeys.
+                            Up here it was a button that did something different depending on settings you
+                            could not see from it - and the row already carries the one that opens them. */}
                         <Button
                           variant={isViewing ? 'secondary' : 'ghost'}
                           size="sm"
@@ -578,27 +565,22 @@ export const RecordingsTable = ({
                         >
                           View
                         </Button>
+                        {/* ONE skill button, and it makes the kind worth making.
+                            *
+                            * There were two: "Skill" copied the recording as a literal replay, and an
+                            * unlabelled sparkle opened the wizard. Two buttons a word apart in meaning, one
+                            * of them wordless, and the wordless one was the better answer nearly every time
+                            * - a goal skill re-reads the screen, so it survives a window that moved and it
+                            * can type, which a coordinate replay cannot.
+                            *
+                            * The literal copy is still there, on the Skills page, called "Repeat it exactly"
+                            * where there is room to say what it means. */}
                         <Button
-                          variant="ghost" size="sm" leftSlot={<Save className="size-4" />}
-                          title="Copy it as a skill, replayed exactly as recorded"
-                          onClick={() => onSaveAsSkill(rec)}
-                        >
-                          Skill
-                        </Button>
-                        {/* Icon only, and that is not an oversight: the labels on this row are budgeted at
-                            four - View, Skill, Export, Delete - because a fifth wraps it onto another line,
-                            which is exactly what happened when this arrived with the word "Make" on it.
-                            The title says what it is, and the Skills page carries the same thing spelled
-                            out for anybody meeting it for the first time. */}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          aria-label={`Make a skill from ${rec.name}`}
-                          title="Make a skill that can type — it asks what went into each field"
-                          className="!size-8 !p-0"
+                          variant="ghost" size="sm" leftSlot={<Sparkles className="size-4" />}
+                          title="Make a skill — it asks what went into each field, and adapts to a window that moved"
                           onClick={() => onMakeSkill(rec)}
                         >
-                          <Sparkles className="size-4" />
+                          Skill
                         </Button>
                         <Button variant="ghost" size="sm" leftSlot={<Download className="size-4" />} onClick={() => exportOne(rec)}>
                           Export
