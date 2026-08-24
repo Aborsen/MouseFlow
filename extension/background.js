@@ -1476,6 +1476,14 @@ const OPEN_WITHOUT_ACCOUNT = new Set([
   'sync/status', 'sync/pair', 'sync/unpair',
   'settings/get', 'settings/set',
   'capture/event', 'capture/moves',
+  /* app/fetch DECIDES FOR ITSELF, which is why it is here rather than behind this gate.
+   *
+   * The gate is right for everything else: a command that acts on an account with no account is a command
+   * that cannot work. But app/fetch carries /api/auth/* - the requests by which an account comes to exist -
+   * and refusing those for want of a token made signing in impossible and reported it as HTTP 502, which
+   * is a sentence about a server that was answering perfectly well. The handler checks the path and
+   * refuses everything except auth when there is no token. */
+  'app/fetch',
 ]);
 
 /* Which pages may hand a token in. The bridge content script runs only on the app's own origin
@@ -1716,6 +1724,47 @@ const ROUTES = {
       /* Nothing recorded yet - so ask for real, with the cookie. Somebody who has just signed in through
        * the panel has a session and no pairing, and answering "nobody" here would hide the sign-in that
        * just worked. */
+    }
+
+    /* SIGNING IN WITH GOOGLE IS A REDIRECT, and a redirect has nowhere to go in here.
+     *
+     * The app asks this endpoint for a url and then sets location.href to it. In a page that works; in the
+     * side panel it would walk the PANEL to accounts.google.com and leave the product replaced by a website
+     * in a 400px column. Worse, the app builds its own callback from location.origin - which here is
+     * chrome-extension://… - so the round trip would have nowhere to come back to.
+     *
+     * So the callback is rewritten to the app's own origin, the round trip happens in a TAB, and the panel
+     * is handed back its own address: setting location.href to the page you are already on reloads it,
+     * which is exactly right - it comes back up on the wall and pairs itself the moment the tab finishes,
+     * because bridge.js runs on that page. */
+    if (path.startsWith('/api/auth/sign-in/social')) {
+      let asked = {};
+      try { asked = JSON.parse(msg.body || '{}'); } catch (_) { asked = {}; }
+      const started = await fetch(APP_URL + path, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          provider: asked.provider || 'google',
+          callbackURL: APP_URL + '/api/auth/finish?to=' + encodeURIComponent('/skills'),
+        }),
+      });
+      const out = await started.json().catch(() => null);
+      if (!started.ok || !out || !out.url) {
+        return {
+          ok: true,
+          status: started.status || 502,
+          text: JSON.stringify(out || { message: 'sign-in could not be started' }),
+          type: 'application/json',
+        };
+      }
+      await chrome.tabs.create({ url: out.url, active: true }).catch(() => {});
+      return {
+        ok: true,
+        status: 200,
+        text: JSON.stringify({ url: chrome.runtime.getURL('sidepanel.html') }),
+        type: 'application/json',
+      };
     }
 
     const headers = { accept: 'application/json' };
