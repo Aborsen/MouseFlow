@@ -67,6 +67,10 @@ group('a turn goes out as one action and comes back as one result');
   check('the picture\'s coordinates were turned into the screen\'s',
     /x=200 y=400/.test(first.actions[0].body));
   check('the step is counted once', first.loop.stepNo === 1 && first.loop.turn === 1);
+  /* Наблюдено на живом прогоне: три минуты записались в лог как одиннадцать секунд, потому что за начало
+   * брался claimed_at, а его двигает каждый шаг. Начало у прогона одно, и ставится оно один раз. */
+  check('and the run knows when it really began',
+    /^\d{4}-\d\d-\d\dT/.test(first.loop.startedAt), String(first.loop.startedAt));
   check('and the action is remembered as pending', first.loop.pending.length === 1);
 
   /* The one thing a queue table must never become. */
@@ -81,6 +85,10 @@ group('a turn goes out as one action and comes back as one result');
     results: [{ id: first.actions[0].id, output: 'done' }],
   });
   check('the run ends when finish claims success', second.done && second.done.ok === true);
+  /* Наблюдено на живом прогоне: три минуты записались в лог как одиннадцать секунд, потому что за начало
+   * брался claimed_at, а его двигает каждый шаг. Начало у прогона одно. */
+  check('and the start it reports is the one it began with, not the last step',
+    second.loop.startedAt === first.loop.startedAt, String(second.loop.startedAt));
   check('with what it said', second.done.said === 'Sent it.');
   check('and the result reached the model as a tool_result',
     JSON.stringify(ask2.seen[0].messages).includes('"tool_use_id":"tclick"'));

@@ -27,6 +27,7 @@
  *   pending    actions the agent was told to do and has not reported on yet
  *   mine       results this side produced without asking the agent - an action it could not encode
  *   ending     a finish that arrived behind other actions in the same turn, to be honoured after them
+ *   startedAt  when the run began, stamped once - see the note in startLoop
  *   steps/said the run log, in the shape user_run wants
  */
 import {
@@ -72,6 +73,13 @@ export function startLoop({ goal, model }) {
     v: LOOP_VERSION,
     goal: String(goal || ''),
     model: String(model || ''),
+    /* When the run really began, stamped once.
+     *
+     * The row cannot answer this: `claimed_at` is moved on with every step so that staleness means "not
+     * heard from" rather than "took the job a while ago", which is right for the queue and useless as a
+     * start time. Logging a run against it made a three-minute run read as eleven seconds - the length of
+     * its last step - and the Hours and Insights screens are built on those stamps. */
+    startedAt: new Date().toISOString(),
     wave: 1,
     turn: 0,
     stepNo: 0,

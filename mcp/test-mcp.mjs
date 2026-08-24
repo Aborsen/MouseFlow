@@ -572,6 +572,10 @@ group('a goal can be carried out by an agent with no worker behind it');
     /startLoop\(\{ goal, model \}\)/.test(route) && /settings\['model\.desktop'\]/.test(route));
   check('the run reaches the account log like any other',
     /insert into user_run/.test(route));
+  /* claimed_at is moved on by every step so that staleness means "not heard from". Using it as the start
+   * time made a three-minute run read as eleven seconds, and the Hours screen is built on these stamps. */
+  check('and dates it from when the run began, not from its last step',
+    /\$\{loop\.startedAt \|\| job\.claimed_at \|\| null\}/.test(route));
   check('only a claimer that says it can step is given a goal',
     /req\.body\.steps === true/.test(route) && /\$\{claimerSteps\}/.test(route));
 

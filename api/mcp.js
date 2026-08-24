@@ -1023,7 +1023,8 @@ async function workerRoute(action, req, res, sql, who) {
              ${done.ok ? 'ok' : 'failed'}, ${done.said ? String(done.said).slice(0, 2000) : null},
              ${done.error ? String(done.error).slice(0, 2000) : null},
              ${JSON.stringify(done.steps || [])}, ${JSON.stringify(done.saidAll || [])},
-             'cloud', ${job.claimed_at || null}, now())
+             /* The loop's own stamp, never claimed_at: that one is moved on by every step. */
+             'cloud', ${loop.startedAt || job.claimed_at || null}, now())
           on conflict (user_id, client_id) do update set
             outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
             steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at
