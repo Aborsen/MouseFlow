@@ -1002,7 +1002,16 @@ check('the save button carries no icon, which wrapped it onto two lines',
   !/<Check className/.test(wizard));
 
 check('the step list can be taken whole in one click', /const keepAll = useCallback/.test(wizard)
-  && /lines \?\? \[\]\)\.filter\(describable\)\.map\(\(line\) => line\.n\)/.test(wizard));
+  && /lines \?\? \[\]\)\.filter\(worthShowing\)\.map\(\(line\) => line\.n\)/.test(wizard));
+/* A scroll IS describable and still is not worth a line: this kind of skill is carried out by a model
+ * reading the screen, which scrolls when it needs to see something. One recording here held 1,732 wheel
+ * notches. */
+check('a scroll is folded away with the rest, not put in front of somebody',
+  /const worthShowing = \(line: Line\) => describable\(line\) && line\.action !== 'scroll';/.test(wizard));
+check('and it is not in the skill by default either, so hidden means left out',
+  /setKept\(new Set\(flat\.filter\(worthShowing\)/.test(wizard));
+check('the fold says scrolls are among what it holds',
+  /scrolls, and clicks on things with no name/.test(wizard));
 
 /* A 546-step recording is mostly pointer moves, waits, and clicks on things the accessibility layer could
  * not name. None of them can become an instruction, so showing four hundred of them - each with three lines

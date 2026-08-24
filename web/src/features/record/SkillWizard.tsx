@@ -162,6 +162,18 @@ function describable(line: Line): boolean {
 }
 
 /** One line of the goal, built from FIELDS rather than from the transcript's prose. */
+/* Worth putting in front of somebody, as opposed to merely expressible.
+ *
+ * A scroll IS describable - `instruction()` turns it into "scroll to bring the next part into view" - and
+ * it is still not worth a line. This kind of skill is carried out by a model reading the screen: it scrolls
+ * when it needs to see something, and being told to scroll at step 14 tells it nothing it will not work out
+ * for itself. One recording here held 1,732 wheel notches; as steps that is a wall, and in the goal it is a
+ * wall the model reads too.
+ *
+ * So scrolls join the pointer moves and the unnamed clicks in the fold: left out by default, listed by
+ * count, and one click away from being put back for the recording where a scroll really is the point. */
+const worthShowing = (line: Line) => describable(line) && line.action !== 'scroll';
+
 function instruction(line: Line, blank: Blank | undefined): string | null {
   if (line.action === 'type') {
     if (!blank || blank.fill === 'skip') return null;
@@ -468,7 +480,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
         /* Everything DESCRIBABLE is in to start with. A step whose target had no name cannot become an
          * instruction, so leaving it on would put a tick beside a row that contributes nothing - which reads
          * as "this is in the skill" and is not. It stays in the list, switched off, saying why. */
-        setKept(new Set(flat.filter(describable).map((l) => l.n)));
+        setKept(new Set(flat.filter(worthShowing).map((l) => l.n)));
 
         /* Is this a field, or is it Enter? See api/_typing.mjs - on a measured 6,617-event recording nine
          * of thirteen typing runs were one text box and the other four were keys pressed at a dialog. */
@@ -537,7 +549,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   /* The steps that can become instructions, and the ones that cannot. A step with no name under it is not
    * a step a skill can be told to do - `instruction()` returns null for it either way - so hiding it hides
    * nothing that was going to happen. */
-  const describables = useMemo(() => (lines ?? []).filter(describable), [lines]);
+  const describables = useMemo(() => (lines ?? []).filter(worthShowing), [lines]);
   const hidden = (lines?.length ?? 0) - describables.length;
   const shown = showAll ? (lines ?? []) : describables;
   const fields = useMemo(() => typing.filter((b) => b.verdict.field), [typing]);
@@ -579,7 +591,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
    * starting them unticked. */
   const allKept = describables.length > 0 && describables.every((line) => kept.has(line.n));
   const keepAll = useCallback(() => {
-    setKept(new Set((lines ?? []).filter(describable).map((line) => line.n)));
+    setKept(new Set((lines ?? []).filter(worthShowing).map((line) => line.n)));
   }, [lines]);
   const keepNone = useCallback(() => setKept(new Set()), []);
 
@@ -838,9 +850,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                 {hidden > 0 && (
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-stroke bg-surface-card2 px-3 py-2">
                     <Typography variant="span" className="text-[0.82rem] text-ink-inactive">
-                      {hidden} more step{hidden === 1 ? '' : 's'} — pointer moves, waits, and clicks on
-                      things with no name. {hidden === 1 ? 'It cannot' : 'They cannot'} be described to a
-                      skill, so {hidden === 1 ? 'it is' : 'they are'} left out.
+                      {hidden} more step{hidden === 1 ? '' : 's'} left out — pointer moves, waits,
+                      scrolls, and clicks on things with no name. Show them to put any back.
                     </Typography>
                     <Button
                       variant="ghost"
