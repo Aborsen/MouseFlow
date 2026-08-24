@@ -13,8 +13,12 @@ The panel is built from the app's own components, so there is a build step now �
 the OUTPUT, not this folder.
 
 ```bash
-cd web && npm install && npm run build:extension
+npm run build:extension
 ```
+
+From the repository root — it runs the web build for you. (`cd web && npm run build:extension` works too,
+which is the same command one directory down and the reason the root one exists: typing `cd web` while
+already in `web` is a mistake that looks like a build failure and is not.)
 
 1. `chrome://extensions` → enable **Developer mode**
 2. **Load unpacked** → select `extension/dist`
