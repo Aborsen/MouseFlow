@@ -398,7 +398,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.8.2";
+        public const string Version = "0.9.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -510,6 +510,9 @@ namespace MouseFlow
             if (_hook == IntPtr.Zero)
             {
                 LastError = "SetWindowsHookEx failed: " + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
+                /* Without this hook the agent records nothing at all, and the only sign of it today is a
+                   flag in /health that somebody has to go and look at. */
+                Crash.Say(LastError, "hook.mouse");
                 return;
             }
 
@@ -1873,13 +1876,15 @@ namespace MouseFlow
 
         /* The screen as 2,304 grey samples, base64'd. Enough to tell movement from stillness, small
          * enough to poll. */
-        public static string Pulse()
+        /* The 64x36 grey reduction itself, which two callers want: /pulse, and the wait inside a goal run
+           that this agent now carries out for itself. Null when there is no screen to look at. */
+        public static byte[] Grid()
         {
             int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
             int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
             int vw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
             int vh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
-            if (vw < 2 || vh < 2) return "{\"ok\":false,\"error\":\"no screen\"}";
+            if (vw < 2 || vh < 2) return null;
 
             using (System.Drawing.Bitmap full = new System.Drawing.Bitmap(vw, vh))
             {
@@ -1898,9 +1903,16 @@ namespace MouseFlow
                             grey[y * 64 + x] = (byte)((c.R * 77 + c.G * 150 + c.B * 29) >> 8);
                         }
                     }
-                    return "{\"ok\":true,\"grid\":\"" + Convert.ToBase64String(grey) + "\"}";
+                    return grey;
                 }
             }
+        }
+
+        public static string Pulse()
+        {
+            byte[] grey = Grid();
+            if (grey == null) return "{\"ok\":false,\"error\":\"no screen\"}";
+            return "{\"ok\":true,\"grid\":\"" + Convert.ToBase64String(grey) + "\"}";
         }
 
         /* ------------------------------------------------------------- what is already open
@@ -1913,6 +1925,14 @@ namespace MouseFlow
          * nothing the compositor has cloaked.
          */
         public static string WindowsJson()
+        {
+            return "{\"ok\":true,\"windows\":" + WindowsArray() + "}";
+        }
+
+        /* Just the array. The goal run sends this to the deployment, and the macOS agent sends the same
+           shape - a wrapper on one side and an array on the other is exactly the kind of difference that
+           is invisible until the model is told nothing is open. */
+        public static string WindowsArray()
         {
             List<string> items = new List<string>();
             IntPtr front = Native.GetForegroundWindow();
@@ -1973,7 +1993,7 @@ namespace MouseFlow
                 return true;
             }, IntPtr.Zero);
 
-            return "{\"ok\":true,\"windows\":[" + string.Join(",", items.ToArray()) + "]}";
+            return "[" + string.Join(",", items.ToArray()) + "]";
         }
 
         /* Bringing one to the front.
@@ -2136,6 +2156,7 @@ namespace MouseFlow
                     else
                     {
                         // No JPEG encoder is close to impossible on Windows, but a picture beats none.
+                        Crash.Say("no JPEG encoder on this PC; sending PNG instead", "shot", "warning");
                         small.Save(buffer, System.Drawing.Imaging.ImageFormat.Png);
                         mime = "image/png";
                     }
@@ -2538,6 +2559,24 @@ namespace MouseFlow
                     + ",\"platform\":\"windows\""
                     + "}";
                 Respond(stream, 200, "application/json", json, origin);
+                return;
+            }
+
+            /* Proving the crash pipe works, on the machine it has to work on.
+
+               There is no other way to check it: a real fault cannot be arranged on demand, and "we would
+               have heard about it" is exactly the assumption that makes a silent reporter survive for
+               months. Sends one event and says whether there was anywhere to send it. */
+            if (path == "/crash-test" && method == "POST")
+            {
+                if (string.IsNullOrEmpty(Account.Token))
+                {
+                    Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"this PC is not "
+                        + "attached to an account, so there is nowhere to report a crash to\"}", origin);
+                    return;
+                }
+                Crash.Say("crash reporting test from this PC", "crash-test", "warning");
+                Respond(stream, 200, "application/json", "{\"ok\":true,\"sent\":true}", origin);
                 return;
             }
 
@@ -3049,6 +3088,102 @@ namespace MouseFlow
         }
     }
 
+    /* Falling over where nobody is looking.
+
+       This agent runs in a window, or from the Startup folder, on somebody else's PC. When it breaks what
+       happens today is a line on a console nobody is watching. The deployment and the browser have had
+       crash reporting for a while; the two programs that actually touch the mouse were the blind half.
+
+       IT REPORTS THROUGH THE ACCOUNT, not to Sentry directly. This agent already dials the deployment with
+       a device token, so ?worker=crash needs no DSN of its own - one less secret inside a program people
+       download - and what arrives is already attached to an account and to this build. The cost is real and
+       worth saying: a failure whose cause is "cannot reach the deployment" cannot travel this way.
+
+       ONCE PER PROCESS PER THING, because a hook that will not install fails every time it is tried, and a
+       reporter that says so every time is a reporter somebody mutes.
+
+       NEVER BLOCKS AND NEVER THROWS. Something has just gone wrong; a reporter that made the caller wait,
+       or that failed on top of the failure, would be worse than none. */
+    public static class Crash
+    {
+        static readonly object Gate = new object();
+        static readonly Dictionary<string, bool> Told = new Dictionary<string, bool>();
+
+        public static void Say(string message, string where)
+        {
+            Say(message, where, "error");
+        }
+
+        public static void Say(string message, string where, string level)
+        {
+            string token = Account.Token;
+            string root = Account.Base;
+            /* Not linked: there is nowhere to send it and nobody to attach it to. The console still has it. */
+            if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(root)) return;
+            if (string.IsNullOrEmpty(message)) return;
+
+            string key = where + "|" + message;
+            lock (Gate)
+            {
+                if (Told.ContainsKey(key)) return;
+                Told[key] = true;
+            }
+
+            string stack = "";
+            try { stack = Tidy(new StackTrace(1, true).ToString()); }
+            catch { stack = ""; }
+
+            StringBuilder sb = new StringBuilder();
+            sb.Append("{\"type\":\"AgentError\",\"message\":\"").Append(Agent.JsonText(message))
+              .Append("\",\"where\":\"").Append(Agent.JsonText(where))
+              .Append("\",\"level\":\"").Append(Agent.JsonText(level))
+              .Append("\",\"platform\":\"windows\",\"version\":\"").Append(Agent.JsonText(Agent.Version))
+              .Append("\"");
+            if (stack.Length > 0) sb.Append(",\"stack\":\"").Append(Agent.JsonText(stack)).Append("\"");
+            sb.Append("}");
+            string body = sb.ToString();
+
+            /* Fire and forget, off whatever thread noticed. Nothing waits for this and nothing reads the
+               answer: there is no useful thing to do about a crash report that did not arrive. */
+            Thread t = new Thread(delegate() { Send(root + "/api/mcp?worker=crash", token, body); });
+            t.IsBackground = true;
+            t.Start();
+        }
+
+        /* The user's profile directory out of a trace. It carries their account name and says nothing
+           useful. */
+        static string Tidy(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            string home = "";
+            try { home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); }
+            catch { home = ""; }
+            string cut = home.Length > 0 ? text.Replace(home, "~") : text;
+            return cut.Length > 4000 ? cut.Substring(0, 4000) : cut;
+        }
+
+        /* Its own sender rather than the courier's. That one waits ninety seconds because it long-polls;
+           a crash report that held a thread for a minute and a half would be a second fault. */
+        static void Send(string url, string token, string body)
+        {
+            try
+            {
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
+                req.Method = "POST";
+                req.ContentType = "application/json";
+                req.Headers.Add("Authorization", "Bearer " + token);
+                req.Timeout = 10000;
+                req.ReadWriteTimeout = 10000;
+                req.KeepAlive = false;
+                byte[] payload = Encoding.UTF8.GetBytes(body);
+                req.ContentLength = payload.Length;
+                using (Stream s = req.GetRequestStream()) s.Write(payload, 0, payload.Length);
+                using (HttpWebResponse res = (HttpWebResponse)req.GetResponse()) { }
+            }
+            catch { /* Nothing to do about it, and nothing worth saying twice. */ }
+        }
+    }
+
     /* The one outward-facing loop: ask for work, do it, say how it went.
 
        Long-polling rather than a fast poll - the endpoint holds the request open for up to half a minute
@@ -3089,8 +3224,13 @@ namespace MouseFlow
                    itself and that is what the queue reads, because a worker updates with `git pull` and an
                    agent is a compiled binary somebody has to reinstall. Sent anyway: it is true and costs
                    a field. */
+                /* `steps: true` is what makes a goal skill claimable here at all. The queue asks the
+                   claimer what it can do rather than assuming, for the reason written at that end: an agent
+                   is a compiled binary somebody has to reinstall, so one that predates this goes on not
+                   being given goals instead of taking one and answering that it does not understand. */
                 string answer = Post(root + "/api/mcp?worker=claim", token,
-                    "{\"worker\":\"" + Agent.JsonText(Environment.MachineName) + "\",\"kind\":\"agent\",\"wait\":"
+                    "{\"worker\":\"" + Agent.JsonText(Environment.MachineName)
+                    + "\",\"kind\":\"agent\",\"steps\":true,\"wait\":"
                     + ClaimWaitSeconds.ToString(CultureInfo.InvariantCulture) + "}", out status);
 
                 if (status == 401 || status == 403)
@@ -3108,6 +3248,14 @@ namespace MouseFlow
                 {
                     Console.WriteLine("[mouseflow] could not ask for work (HTTP " + status.ToString(CultureInfo.InvariantCulture)
                         + ") - waiting " + _backoff.ToString(CultureInfo.InvariantCulture) + "s");
+                    /* Only at the top of the backoff: by then this PC has been unable to reach its account
+                       for minutes. If the cause is the network rather than the account, this will not get
+                       out either, which is honest. */
+                    if (_backoff >= 60)
+                    {
+                        Crash.Say("cannot ask the account for work (HTTP "
+                            + status.ToString(CultureInfo.InvariantCulture) + ")", "courier.claim");
+                    }
                     Thread.Sleep(_backoff * 1000);
                     _backoff = Math.Min(60, _backoff * 2);
                     continue;
@@ -3118,11 +3266,193 @@ namespace MouseFlow
                 string id = Json.Text(job, "id");
                 if (string.IsNullOrEmpty(id)) continue;   // nothing to do; the long poll simply timed out
 
+                /* A goal is not carried, it is driven: the deployment decides one action at a time and
+                   this end does them. It also closes the job itself, at the step that finishes - so there
+                   is nothing to report here, and reporting would only overwrite what it said. */
+                if (Json.Truth(job, "goal", false))
+                {
+                    Drive(root, token, id);
+                    continue;
+                }
+
                 bool ok;
                 string said;
                 string body = Carry(job, out ok, out said);
                 Report(root, token, id, ok, said, body);
             }
+        }
+
+        /* ------------------------------------------------------------------ carrying out a goal
+
+           A goal skill is a sentence somebody wrote, carried out by a model that looks at the screen and
+           chooses one action at a time. Until now that loop had to run on this machine, in a separate node
+           process the user installed alongside this agent, for one reason: it talked to 127.0.0.1. Nothing
+           else about it was local - the model call always went out over the network.
+
+           So it moved, and this end became the hands:
+
+               this  --POST ?worker=step { shot, windows, results }-->  the deployment decides
+               this  <-------------  { actions: [...] }  -------------
+                     does them, takes a new picture, posts again
+
+           One request per step. Nothing reconnects between steps because there is no gap between them: the
+           reply to one step is what produces the next. The decision takes several seconds, which is why the
+           request is allowed to be slow - it is the model thinking, not a stall.
+
+           WHAT THIS END NEVER DECIDES: what to do. It reports what it sees and does what it is told. */
+
+        const int StepFirstWidth = 1280;
+        const int SettlePollMs = 1500;
+        const int SettleQuietFrames = 2;
+
+        static void Drive(string root, string token, string id)
+        {
+            int width = StepFirstWidth;
+            string results = "";
+
+            while (true)
+            {
+                /* One mouse. A replay started from the app while this is running would fight it for the
+                   pointer, and the run is the thing that can be resumed - so this one gives way. */
+                if (Agent.IsPlaying)
+                {
+                    Report(root, token, id, false, "This PC started replaying something else while the goal "
+                        + "was running, so the run was stopped.", null);
+                    return;
+                }
+                if (string.IsNullOrEmpty(Account.Token)) return;   // unpaired mid-run: nowhere to report to
+
+                string shot = Agent.Shot(width);
+                StringBuilder sb = new StringBuilder();
+                sb.Append("{\"id\":\"").Append(Agent.JsonText(id)).Append("\",\"shot\":").Append(shot)
+                  .Append(",\"windows\":").Append(Agent.WindowsArray())
+                  .Append(",\"results\":[").Append(results).Append("]}");
+
+                int status;
+                string answer = Post(root + "/api/mcp?worker=step", token, sb.ToString(), out status);
+                if (answer == null || status != 200)
+                {
+                    Console.WriteLine("[mouseflow] the goal run was refused (HTTP "
+                        + status.ToString(CultureInfo.InvariantCulture) + ")");
+                    Crash.Say("a goal step was refused: HTTP "
+                        + status.ToString(CultureInfo.InvariantCulture), "courier.step");
+                    Report(root, token, id, false, "This PC lost contact with the account part-way through "
+                        + "the run.", null);
+                    return;
+                }
+
+                object raw = Json.Parse(answer);
+                /* Over, one way or another - finished, cancelled, or the job is gone. The deployment has
+                   already written the outcome; saying anything here would only overwrite it. */
+                if (Json.Truth(raw, "done", false)) return;
+
+                /* Too large to send. Not a failure and not a step: take a smaller picture and ask again
+                   with no results, because nothing was done. */
+                int shrink = Json.Int(raw, "shrink", 0);
+                if (shrink > 0)
+                {
+                    width = Math.Max(320, shrink);
+                    results = "";
+                    continue;
+                }
+
+                List<object> actions = Json.Child(raw, "actions") as List<object>;
+                List<string> got = new List<string>();
+                if (actions != null)
+                {
+                    foreach (object action in actions) got.Add(Perform(action));
+                }
+                results = string.Join(",", got.ToArray());
+            }
+        }
+
+        /// One instruction from the deployment, and what to say came of it.
+        static string Perform(object action)
+        {
+            string id = Json.Text(action, "id");
+            if (id == null) id = "";
+
+            if (Json.Text(action, "kind") == "wait")
+            {
+                int ms = Math.Min(120000, Math.Max(200, Json.Int(action, "ms", 2000)));
+                int waited;
+                int quietFor;
+                bool quiet = Settle(ms, out waited, out quietFor);
+                /* Numbers, not a sentence. What the model is told about a wait is one of the things both
+                   ends have to say identically, so the wording is composed at the deployment from these. */
+                return "{\"id\":\"" + Agent.JsonText(id) + "\",\"quiet\":" + (quiet ? "true" : "false")
+                    + ",\"waited\":" + waited.ToString(CultureInfo.InvariantCulture)
+                    + ",\"quietFor\":" + quietFor.ToString(CultureInfo.InvariantCulture) + "}";
+            }
+
+            string line = Json.Text(action, "body");
+            if (string.IsNullOrEmpty(line))
+            {
+                return "{\"id\":\"" + Agent.JsonText(id) + "\",\"isError\":true,\"output\":\"nothing to do\"}";
+            }
+            string bad = Agent.DoAction(line);
+            if (bad != null)
+            {
+                return "{\"id\":\"" + Agent.JsonText(id) + "\",\"isError\":true,\"output\":\""
+                    + Agent.JsonText(bad) + "\"}";
+            }
+            /* A moment for the screen to react before the next picture, or it shows the state before this.
+               The same 350ms the app's own loop leaves. */
+            Thread.Sleep(350);
+            return "{\"id\":\"" + Agent.JsonText(id) + "\",\"output\":\"done\"}";
+        }
+
+        /* Waiting, done here rather than by asking the model to look again.
+
+           A wait used to cost a screenshot and a decision, so waiting for a page to load burned the budget
+           the run needed to finish it. The 64x36 fingerprint is 3KB and costs nothing, and the numbers here
+           are the ones the app's own loop uses - 1.5s between looks, two still frames, a mean difference of
+           3 out of 255 being the line between dither and movement. They agree on purpose. */
+        static bool Settle(int limitMs, out int waited, out int quietFor)
+        {
+            DateTime started = DateTime.UtcNow;
+            byte[] last = null;
+            DateTime quietSince = DateTime.MinValue;
+            waited = 0;
+            quietFor = 0;
+
+            while ((int)(DateTime.UtcNow - started).TotalMilliseconds < limitMs)
+            {
+                Thread.Sleep(SettlePollMs);
+                byte[] now = null;
+                try { now = Agent.Grid(); }
+                catch { now = null; }
+                if (now == null) break;   // no screen to watch; the next picture reports it properly
+
+                if (last != null && !Moved(last, now))
+                {
+                    if (quietSince == DateTime.MinValue) quietSince = DateTime.UtcNow;
+                    int still = (int)(DateTime.UtcNow - quietSince).TotalMilliseconds;
+                    int frames = (int)Math.Round((double)still / SettlePollMs) + 1;
+                    if (frames >= SettleQuietFrames)
+                    {
+                        waited = (int)(DateTime.UtcNow - started).TotalMilliseconds;
+                        quietFor = still;
+                        return true;
+                    }
+                }
+                else
+                {
+                    quietSince = DateTime.MinValue;
+                }
+                last = now;
+            }
+
+            waited = (int)(DateTime.UtcNow - started).TotalMilliseconds;
+            return false;
+        }
+
+        static bool Moved(byte[] a, byte[] b)
+        {
+            if (a.Length != b.Length) return true;
+            long sum = 0;
+            for (int i = 0; i < a.Length; i++) sum += Math.Abs((int)a[i] - (int)b[i]);
+            return (double)sum / a.Length > 3;
         }
 
         /* ------------------------------------------------------------------ doing it */

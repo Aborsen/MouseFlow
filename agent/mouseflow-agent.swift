@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.8.2"
+let VERSION = "0.9.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -1585,10 +1585,12 @@ enum Screen {
 
         let data = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else {
+            Crash.say("no JPEG encoder on this Mac", at: "shot")
             return "{\"ok\":false,\"error\":\"no JPEG encoder\"}"
         }
         CGImageDestinationAddImage(dest, got.image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
         guard CGImageDestinationFinalize(dest) else {
+            Crash.say("the screen could not be encoded as JPEG", at: "shot")
             return "{\"ok\":false,\"error\":\"the screen could not be encoded\"}"
         }
 
@@ -1617,19 +1619,14 @@ enum Screen {
      * The same luminance weights as the Windows agent, although the client only ever compares two grids for
      * difference - matching them costs nothing and means the two agents cannot disagree about what "the
      * screen changed" means. */
-    static func pulse() -> String {
-        guard #available(macOS 14.0, *) else {
-            return "{\"ok\":false,\"error\":\"seeing the screen needs macOS 14 or newer\"}"
-        }
-        /* Captured small and then squashed to 64x36. The aspect ratio is deliberately not kept: the client
-         * only ever compares one grid with the next, and matching the Windows agent's 64x36 exactly means
-         * the two cannot disagree about what "the screen changed" means. */
-        guard let got = grab(width: 128, height: 72) else {
-            return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent\"}"
-        }
-        guard let ctx = resize(got.image, 64, 36, gray: false), let data = ctx.data else {
-            return "{\"ok\":false,\"error\":\"no screen\"}"
-        }
+    /* The 64x36 grey reduction itself, which two callers want: /pulse, and the wait inside a goal run that
+     * this agent now carries out for itself. The aspect ratio is deliberately not kept - a caller only ever
+     * compares one grid with the next, and matching the Windows agent's 64x36 exactly means the two cannot
+     * disagree about what "the screen changed" means. */
+    static func grid() -> [UInt8]? {
+        guard #available(macOS 14.0, *) else { return nil }
+        guard let got = grab(width: 128, height: 72) else { return nil }
+        guard let ctx = resize(got.image, 64, 36, gray: false), let data = ctx.data else { return nil }
         let bytes = data.bindMemory(to: UInt8.self, capacity: 64 * 36 * 4)
         var grey = [UInt8](repeating: 0, count: 64 * 36)
         for i in 0..<(64 * 36) {
@@ -1637,6 +1634,16 @@ enum Screen {
             let g = Int(bytes[i * 4 + 1])
             let b = Int(bytes[i * 4 + 2])
             grey[i] = UInt8((r * 77 + g * 150 + b * 29) >> 8)
+        }
+        return grey
+    }
+
+    static func pulse() -> String {
+        guard #available(macOS 14.0, *) else {
+            return "{\"ok\":false,\"error\":\"seeing the screen needs macOS 14 or newer\"}"
+        }
+        guard let grey = grid() else {
+            return "{\"ok\":false,\"error\":\"macOS has not granted Screen Recording to this agent\"}"
         }
         return "{\"ok\":true,\"grid\":\"\(Data(grey).base64EncodedString())\"}"
     }
@@ -2380,6 +2387,71 @@ func log(_ words: String) {
     print("[mouseflow] " + words)
 }
 
+/* Falling over where nobody is looking.
+ *
+ * This agent runs under launchd on somebody else's Mac. When it breaks, what happens today is a line in
+ * ~/Library/Logs/mouseflow-agent.log, which is a file nobody opens until they are already asking why
+ * nothing works. The deployment and the browser have had crash reporting for a while; the two programs
+ * that actually touch the mouse were the blind half.
+ *
+ * IT REPORTS THROUGH THE ACCOUNT, not to Sentry directly. This agent already dials the deployment with a
+ * device token, so ?worker=crash needs no DSN of its own - one less secret inside a program people
+ * download - and what arrives is already attached to an account and to this build. The cost is real and
+ * worth saying: a failure whose cause is "cannot reach the deployment" cannot travel this way, and stays
+ * in the log where it always was.
+ *
+ * ONCE PER PROCESS PER THING. A hook that will not install fails every time it is tried, and a reporter
+ * that says so every time is a reporter somebody mutes. The first one is the useful one.
+ *
+ * NEVER BLOCKS AND NEVER THROWS. Something has just gone wrong; a reporter that made the caller wait, or
+ * that failed on top of the failure, would be worse than none.
+ */
+enum Crash {
+    private static let gate = NSLock()
+    private static var told = Set<String>()
+
+    /// The home directory out of a backtrace. It carries the user's account name and says nothing useful.
+    private static func tidy(_ line: String) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return home.isEmpty ? line : line.replacingOccurrences(of: home, with: "~")
+    }
+
+    static func say(_ message: String, at where_: String, level: String = "error", trace: Bool = true) {
+        /* Not linked: there is nowhere to send it and nobody to attach it to. The log still has it. */
+        guard let link = Account.link, let url = URL(string: link.base + "/api/mcp?worker=crash") else { return }
+
+        let key = where_ + "|" + message
+        gate.lock()
+        let first = told.insert(key).inserted
+        gate.unlock()
+        guard first else { return }
+
+        let stack = trace
+            ? Thread.callStackSymbols.prefix(12).map(tidy).joined(separator: "\n")
+            : ""
+        var said: [String: Any] = [
+            "type": "AgentError",
+            "message": message,
+            "where": where_,
+            "level": level,
+            "platform": "macos",
+            "version": VERSION,
+        ]
+        if !stack.isEmpty { said["stack"] = stack }
+        guard let data = try? JSONSerialization.data(withJSONObject: said) else { return }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer " + link.token, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = data
+        req.timeoutInterval = 10
+        /* Fire and forget, off whatever thread noticed. Nothing waits for this and nothing reads the answer:
+         * there is no useful thing to do about a crash report that did not arrive. */
+        URLSession.shared.dataTask(with: req) { _, _, _ in }.resume()
+    }
+}
+
 enum Account {
     struct Link {
         var token: String
@@ -2477,6 +2549,9 @@ enum Courier {
         var body: String?
         /// `action=activate ...`, for the window the recording belongs to. Best effort, exactly as the app does it.
         var activate: String?
+        /* Whether this one needs a model in the loop. A recorded skill is a body to replay; a created one is
+         * a goal, and a goal is decided one action at a time by something that is not on this machine. */
+        var goal: Bool
         var moveMs: Int
     }
 
@@ -2496,14 +2571,25 @@ enum Courier {
             switch claim(link) {
             case .failed(let why):
                 log("could not ask for work: \(why) - waiting \(backoff)s")
+                /* Only once it has stopped being a hiccup. At the top of the backoff this machine has been
+                 * unable to reach its account for minutes, which is worth a report - and if the cause is the
+                 * network rather than the account, the report will not get out either, which is honest. */
+                if backoff >= 60 { Crash.say("cannot ask the account for work: \(why)", at: "courier.claim") }
                 sleep(backoff)
                 backoff = min(60, backoff * 2)
             case .idle:
                 backoff = 2
             case .job(let job):
                 backoff = 2
-                let done = carry(job)
-                report(link, id: job.id, done: done)
+                /* A goal is not carried, it is driven: the deployment decides one action at a time and this
+                 * end does them. It also closes the job itself, at the step that finishes - so there is
+                 * nothing to report here, and reporting would only overwrite what it said. */
+                if job.goal {
+                    drive(link, id: job.id)
+                } else {
+                    let done = carry(job)
+                    report(link, id: job.id, done: done)
+                }
             }
         }
     }
@@ -2540,8 +2626,13 @@ enum Courier {
          * that is what the queue reads, because a worker updates with `git pull` and an agent is a compiled
          * binary somebody has to reinstall. Sent anyway: it is true, it costs a field, and it is what the
          * server would read if the decision were ever made the other way round. */
+        /* `steps: true` is what makes a goal skill claimable here at all. The queue asks the claimer what
+         * it can do rather than assuming, for the reason written at that end: an agent is a compiled binary
+         * somebody has to reinstall, so one that predates this goes on not being given goals instead of
+         * taking one and answering that it does not understand. */
         let ask: [String: Any] = ["worker": Host.current().localizedName ?? "this Mac",
                                   "kind": "agent",
+                                  "steps": true,
                                   "wait": claimWaitSeconds]
         guard let body = try? JSONSerialization.data(withJSONObject: ask),
               let (status, data) = request(url, token: link.token, body: body) else {
@@ -2564,6 +2655,7 @@ enum Courier {
                         command: job["command"] as? String,
                         body: job["body"] as? String,
                         activate: job["activate"] as? String,
+                        goal: job["goal"] as? Bool == true,
                         moveMs: (args["moveMs"] as? Int) ?? 0))
     }
 
@@ -2584,6 +2676,148 @@ enum Courier {
              * other end is being told nothing picked it up while something did. */
             log("the outcome of \(id) could not be reported")
         }
+    }
+
+    /* ------------------------------------------------------------------ carrying out a goal
+
+       A goal skill is a sentence somebody wrote, carried out by a model that looks at the screen and
+       chooses one action at a time. Until now that loop had to run on this machine, in a separate node
+       process the user installed alongside this agent, for one reason: it talked to 127.0.0.1. Nothing
+       else about it was local - the model call always went out over the network.
+
+       So it moved, and this end became the hands:
+
+           this  ──POST ?worker=step { shot, windows, results }──►  the deployment decides
+           this  ◄──────────  { actions: [...] }  ──────────────
+                 does them, takes a new picture, posts again
+
+       One request per step. Nothing reconnects between steps because there is no gap between them: the
+       reply to one step is what produces the next. The decision takes several seconds, which is why the
+       request is allowed to be slow - it is the model thinking, not a stall.
+
+       WHAT THIS END NEVER DECIDES: what to do. It reports what it sees and does what it is told, and the
+       one judgement it makes is refusing to start while something else is driving the mouse. */
+
+    private static let stepFirstWidth = 1280
+    private static let settlePollMs = 1500
+    private static let settleQuietFrames = 2
+
+    private static func drive(_ link: Account.Link, id: String) {
+        guard let url = URL(string: link.base + "/api/mcp?worker=step") else { return }
+        var width = stepFirstWidth
+        var results: [String] = []
+
+        while true {
+            /* One mouse. A replay started from the app while this is running would fight it for the
+               pointer, and the run is the thing that can be resumed - so this one gives way and says so. */
+            if Replayer.shared.isPlaying {
+                report(link, id: id, done: Done(ok: false, said: "This Mac started replaying something "
+                    + "else while the goal was running, so the run was stopped.", body: nil))
+                return
+            }
+            guard Account.link != nil else { return }   // unpaired mid-run: there is nowhere to report to
+
+            let shot = Screen.shot(want: width)
+            let windows = Windows.list().prefix(24).map { w in
+                "{\"title\":\(jsonString(w.title)),\"process\":\(jsonString(w.process))"
+                    + ",\"active\":\(jsonBool(w.active)),\"minimized\":\(jsonBool(w.minimized))}"
+            }.joined(separator: ",")
+
+            let body = "{\"id\":\(jsonString(id)),\"shot\":\(shot),\"windows\":[\(windows)]"
+                + ",\"results\":[\(results.joined(separator: ","))]}"
+            guard let data = body.data(using: .utf8),
+                  let (status, answer) = request(url, token: link.token, body: data) else {
+                log("the goal run could not reach the account; stopping")
+                Crash.say("a goal run lost the account mid-way", at: "courier.step")
+                report(link, id: id, done: Done(ok: false, said: "This Mac lost contact with the account "
+                    + "part-way through the run.", body: nil))
+                return
+            }
+            guard status == 200,
+                  let raw = (try? JSONSerialization.jsonObject(with: answer)) as? [String: Any] else {
+                log("the goal run was refused: HTTP \(status)")
+                Crash.say("a goal step was refused: HTTP \(status)", at: "courier.step")
+                report(link, id: id, done: Done(ok: false, said: "The account refused a step of this run "
+                    + "(HTTP \(status)).", body: nil))
+                return
+            }
+
+            /* Over, one way or another - finished, cancelled, or the job is gone. The deployment has
+               already written the outcome; saying anything here would only overwrite it. */
+            if raw["done"] as? Bool == true { return }
+
+            /* Too large to send. Not a failure and not a step: take a smaller picture and ask again with
+               no results, because nothing was done. */
+            if let smaller = raw["shrink"] as? Int {
+                width = max(320, smaller)
+                results = []
+                continue
+            }
+
+            let actions = (raw["actions"] as? [[String: Any]]) ?? []
+            results = actions.map { perform($0) }
+        }
+    }
+
+    /// One instruction from the deployment, and what to say came of it.
+    private static func perform(_ action: [String: Any]) -> String {
+        let id = (action["id"] as? String) ?? ""
+        if (action["kind"] as? String) == "wait" {
+            let ms = min(120_000, max(200, (action["ms"] as? Int) ?? 2000))
+            let outcome = settle(ms)
+            /* Numbers, not a sentence. What the model is told about a wait is one of the things both ends
+               have to say identically, so the wording is composed at the deployment from these. */
+            return "{\"id\":\(jsonString(id)),\"quiet\":\(jsonBool(outcome.quiet))"
+                + ",\"waited\":\(outcome.waited),\"quietFor\":\(outcome.quietFor)}"
+        }
+
+        let line = (action["body"] as? String) ?? ""
+        if line.isEmpty {
+            return "{\"id\":\(jsonString(id)),\"isError\":true,\"output\":\"nothing to do\"}"
+        }
+        if let bad = doAction(line) {
+            return "{\"id\":\(jsonString(id)),\"isError\":true,\"output\":\(jsonString(bad))}"
+        }
+        /* A moment for the screen to react before the next picture, or it shows the state before this. The
+           same 350ms the app's own loop leaves. */
+        Thread.sleep(forTimeInterval: 0.35)
+        return "{\"id\":\(jsonString(id)),\"output\":\"done\"}"
+    }
+
+    /* Waiting, done here rather than by asking the model to look again.
+     *
+     * A wait used to cost a screenshot and a decision, so waiting for a page to load burned the budget the
+     * run needed to finish it. The 64x36 fingerprint is 3KB and costs nothing, and the numbers below are
+     * the ones the app's own loop uses - 1.5s between looks, two still frames, a mean difference of 3 out
+     * of 255 being the line between dither and movement. They agree on purpose. */
+    private static func settle(_ limitMs: Int) -> (quiet: Bool, waited: Int, quietFor: Int) {
+        let started = Date()
+        var last: [UInt8]?
+        var quietSince: Date?
+        let since = { (from: Date) in Int(Date().timeIntervalSince(from) * 1000) }
+
+        while since(started) < limitMs {
+            Thread.sleep(forTimeInterval: Double(settlePollMs) / 1000)
+            guard let now = Screen.grid() else { break }   // no screen to watch; the next picture reports it
+            if let was = last, !moved(was, now) {
+                if quietSince == nil { quietSince = Date() }
+                let frames = Int((Double(since(quietSince!)) / Double(settlePollMs)).rounded()) + 1
+                if frames >= settleQuietFrames {
+                    return (true, since(started), since(quietSince!))
+                }
+            } else {
+                quietSince = nil
+            }
+            last = now
+        }
+        return (false, since(started), 0)
+    }
+
+    private static func moved(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+        if a.count != b.count { return true }
+        var sum = 0
+        for i in 0..<a.count { sum += abs(Int(a[i]) - Int(b[i])) }
+        return Double(sum) / Double(a.count) > 3
     }
 
     /* ------------------------------------------------------------------ doing it */
@@ -3061,6 +3295,20 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         json += "}"
         return Response(body: json)
 
+    /* Proving the crash pipe works, on the machine it has to work on.
+     *
+     * There is no other way to check it: a real fault cannot be arranged on demand, and "we would have
+     * heard about it" is exactly the assumption that makes a silent reporter survive for months. Sends one
+     * event and says whether the account took it. */
+    case "/crash-test":
+        if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        guard Account.link != nil else {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":\"this Mac is not attached to an "
+                + "account, so there is nowhere to report a crash to\"}")
+        }
+        Crash.say("crash reporting test from this Mac", at: "crash-test", level: "warning")
+        return Response(body: "{\"ok\":true,\"sent\":true}")
+
     case "/record/start":
         if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
         if eventTap == nil {
@@ -3293,6 +3541,11 @@ Permission.ask()
  * path the resolver rules keep clear of I/O. */
 _ = Recorder.shared.heldStatus
 let tapped = installTap()
+/* Permitted and still would not install. That is a fault, not a pending grant - the pending grant is the
+ * ordinary state of a fresh install and is not worth reporting. */
+if !tapped, Permission.accessibility {
+    Crash.say("the input hook would not install although Accessibility is granted", at: "installTap")
+}
 
 let listener = socket(AF_INET, SOCK_STREAM, 0)
 if listener < 0 {

@@ -339,5 +339,74 @@ group('курьер говорит, что он курьер, и цели ему
 check('оба агента объявляют kind=agent при claim',
   /"kind": "agent"/.test(swift) && /\\"kind\\":\\"agent\\"/.test(ps));
 
+/* Скилл-цель раньше требовала отдельного процесса на машине - воркера, - и вся его квалификация была в том,
+ * что он дотягивался до 127.0.0.1. Теперь решает деплой, а агент - руки. Две реализации рук должны вести
+ * себя одинаково, иначе один и тот же скилл на Mac и на PC - это два разных скилла. */
+group('агент сам доводит цель, по одному ходу за запрос');
+check('оба объявляют, что умеют шагать - иначе цель им не дадут',
+  /"steps": true/.test(swift) && /\\"steps\\":true/.test(ps));
+check('оба ходят в один и тот же endpoint',
+  /worker=step/.test(swift) && /worker=step/.test(ps));
+/* Обёртка с одной стороны и массив с другой не видны ниоткуда, пока модели не скажут, что ничего не
+ * открыто. */
+check('оба шлют МАССИВ окон, а не обёртку',
+  /\\"windows\\":\[\\\(windows\)\]/.test(swift) && /Append\(Agent\.WindowsArray\(\)\)/.test(ps));
+check('оба умеют уменьшить картинку по просьбе и не считают это шагом',
+  /raw\["shrink"\] as\? Int/.test(swift) && /Json\.Int\(raw, "shrink", 0\)/.test(ps)
+    && /results = \[\]/.test(swift) && /results = "";/.test(ps));
+/* Деплой закрывает работу сам на том шаге, который её закончил. Отчёт поверх - это затирание того, что
+ * прогон сказал о себе. */
+check('оба молча останавливаются на done и НЕ отчитываются поверх',
+  /if raw\["done"\] as\? Bool == true \{ return \}/.test(swift)
+    && /if \(Json\.Truth\(raw, "done", false\)\) return;/.test(ps));
+check('но оба отчитываются, если сдались на полпути',
+  /report\(link, id: id, done: Done\(ok: false/.test(swift)
+    && /Report\(root, token, id, false/.test(ps));
+/* Формулировку про ожидание читает модель, и она обязана быть одной. Поэтому едут числа. */
+check('ожидание отвечает числами, а не фразой',
+  /\\"quiet\\":\\\(jsonBool\(outcome\.quiet\)\)/.test(swift) && /\\"quiet\\":" \+ \(quiet \? "true"/.test(ps));
+check('и обе реализации ждут по одним и тем же числам',
+  /settlePollMs = 1500/.test(swift) && /SettlePollMs = 1500/.test(ps)
+    && /settleQuietFrames = 2/.test(swift) && /SettleQuietFrames = 2/.test(ps));
+check('и одинаково решают, что экран шевельнулся',
+  /Double\(sum\) \/ Double\(a\.count\) > 3/.test(swift) && /\(double\)sum \/ a\.Length > 3/.test(ps));
+check('оба дают экрану те же 350мс среагировать',
+  /forTimeInterval: 0\.35/.test(swift) && /Thread\.Sleep\(350\)/.test(ps));
+/* Мышь одна. Повтор, запущенный из приложения посреди прогона, дрался бы с ним за курсор. */
+check('оба уступают, если на машине уже что-то воспроизводится',
+  /if Replayer\.shared\.isPlaying \{/.test(swift) && /if \(Agent\.IsPlaying\)/.test(ps));
+
+/* Оба агента падают там, где никто не смотрит: один под launchd, другой в окне на чужом компьютере. До
+ * сих пор единственным следом была строка в логе. Проверяется у обоих и одинаково - расходятся они именно
+ * в таких местах: одна сторона шлёт, вторая молчит, и это не видно ниоткуда. */
+group('агент умеет сказать, что упал');
+check('оба шлют краш через аккаунт',
+  /worker=crash/.test(swift) && /worker=crash/.test(ps));
+/* Ключевое: DSN не лежит внутри программы, которую скачивает пользователь. Дозвон и так идёт с токеном. */
+const looksLikeDsn = (text) => /sentry_key=|ingest\.[a-z.]*sentry|https:\/\/[0-9a-f]{16,}@/i.test(text);
+check('и ни один не носит в себе DSN Sentry',
+  !looksLikeDsn(swift) && !looksLikeDsn(ps));
+check('оба говорят, какая они платформа и какая сборка',
+  /"platform": "macos"/.test(swift) && /\\"platform\\":\\"windows\\"/.test(ps)
+    && /"version": VERSION/.test(swift) && /Agent\.JsonText\(Agent\.Version\)/.test(ps));
+/* Хук, который не встал, не встаёт КАЖДЫЙ раз. Репортер, повторяющий это каждый раз, - выключенный
+ * репортер. */
+check('оба докладывают один и тот же сбой один раз за процесс',
+  /told\.insert\(key\)\.inserted/.test(swift) && /Told\.ContainsKey\(key\)/.test(ps));
+check('оба молчат, пока машина не привязана к аккаунту',
+  /guard let link = Account\.link/.test(swift) && /if \(string\.IsNullOrEmpty\(token\)/.test(ps));
+/* Курьер ждёт 90 секунд, потому что он лонг-поллит. Отчёт о падении с таким таймаутом - вторая авария. */
+check('и ни один не держит поток минуту с лишним ради отчёта',
+  /req\.timeoutInterval = 10/.test(swift) && /req\.Timeout = 10000/.test(ps));
+/* Единственный способ проверить трубу на машине, где она обязана работать: настоящую аварию по заказу не
+ * устроить, а «мы бы узнали» - это ровно то допущение, из-за которого молчащий репортер живёт месяцами. */
+check('у обоих есть способ проверить трубу нарочно',
+  /case "\/crash-test"/.test(swift) && /path == "\/crash-test"/.test(ps));
+check('и он отказывается, когда докладывать некуда',
+  /nowhere to report a crash to/.test(swift) && /nowhere to report a crash to/.test(ps));
+/* Хук - главная причина, по которой этот репортер существует: без него запись не пишет ничего. */
+check('оба докладывают о невставшем хуке ввода',
+  /at: "installTap"/.test(swift) && /"hook\.mouse"/.test(ps));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -133,6 +133,68 @@ and a replay `body` in the format it already speaks, with an optional `activate`
 Everything that makes a skill a skill — its events, its parameters, its tool definition — stays on the
 deployment, which is what keeps this a few hundred lines rather than a second client.
 
+### `?worker=step` — carrying out a goal without a model on the machine
+
+A **recorded** skill is a body to replay and an agent has always been able to do it alone. A **created**
+skill is a *goal*: a sentence a model carries out by looking at the screen and choosing one action at a
+time. There is no model in an agent, so until 0.9.0 those jobs needed a separate node process on the same
+machine — the worker — whose only real qualification was that it could reach `127.0.0.1`.
+
+Since 0.9.0 the agent does them itself, by being the hands rather than the head:
+
+```
+agent  ──POST /api/mcp?worker=step  { id, shot, windows, results }──►  deployment decides (~7s)
+agent  ◄─────────────────  { actions: [ … ] }  ─────────────────────
+       does them, takes a new picture, posts again
+```
+
+One request per step, and nothing reconnects between steps because there is no gap between them: the reply
+to one step is what produces the next. The request is deliberately allowed to be slow — that is the model
+thinking, not a stall.
+
+- **`shot`** is exactly what `/shot` returns, spliced in whole. **`windows`** is the ARRAY from `/windows`,
+  not the wrapper — both agents send the array, because a wrapper on one side is invisible until the model
+  is told nothing is open.
+- **`results`** is what came of the last `actions`: `{ id, output }`, or `{ id, isError: true, output }`.
+  A `wait` answers with NUMBERS — `{ id, quiet, waited, quietFor }` — never a sentence: the wording the
+  model reads is composed at the deployment so both agents cannot phrase it differently.
+- The answer is one of **`{ actions }`**, **`{ shrink: <width> }`** (that picture was too large to send —
+  take a smaller one and ask again; nothing was done, so send no results) or **`{ done: true }`** (finished,
+  cancelled, or the job is gone).
+- An action is `{ id, kind: "do", body }` — a `/do` line the agent already speaks — or
+  `{ id, kind: "wait", ms }`.
+- **The deployment closes the job itself** on the step that ends it. An agent must NOT also `?worker=report`
+  a run it drove, or it overwrites what the run said. It reports only when it gives up part-way.
+- A claimer is given goal jobs only if it says it can take them: `steps: true` in the `?worker=claim` body.
+  An older agent goes on not being offered them, which is why the declaration is on the claimer.
+
+Waiting is done at the agent, with the same numbers the app's own loop uses: the 64×36 fingerprint from
+`/pulse`, 1.5s between looks, two still frames, and a mean difference above 3/255 counting as movement.
+They agree on purpose — "the screen stopped" must not mean two things.
+
+### `?worker=crash` and `/crash-test` — an agent that can say it fell over
+
+An agent runs under launchd, or in a window, on somebody else's computer. Until 0.9.0 the only trace of a
+fault was a line in a log nobody opens. Both agents now report through the ACCOUNT — `POST
+/api/mcp?worker=crash` with `{ type, message, where, level, platform, version, stack }` — and not to Sentry
+directly. That is the design, not a shortcut: the agent already dials the deployment with a device token, so
+it needs no DSN of its own inside a program people download, and what arrives is already attached to an
+account and to a build.
+
+Three rules, both implementations:
+
+- **Once per process per thing.** A hook that will not install fails every time it is tried.
+- **Silent when unpaired.** No account, nowhere to send it, nobody to attach it to.
+- **Never blocks, never throws, ten-second timeout.** The courier waits ninety seconds because it
+  long-polls; a crash report that held a thread that long would be a second fault.
+
+What cannot travel this way is a failure whose cause is *cannot reach the deployment*. That stays in the
+agent's own log, and saying so is part of the contract.
+
+`POST /crash-test` sends one event on purpose and answers `{ ok, sent }`, or 409 when the machine is not
+attached to an account. It exists because a real fault cannot be arranged on demand, and "we would have
+heard about it" is exactly the assumption that lets a silent reporter survive for months.
+
 ### The capability flags
 
 The `can*` flags exist because a version number could not answer the question that mattered. An
