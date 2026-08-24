@@ -36,26 +36,23 @@ import {
  * row out by hundreds of pixels. */
 const SKILL_COLUMNS = 'grid-cols-[2rem_minmax(12rem,1fr)_7.5rem_7rem_6rem_6.5rem_15rem]';
 
-/* Блок «Ready to become a skill» - одного размера всегда.
+/* Блок «Ready to become a skill» - не больше шести записей: остальные на Record, и страница про скиллы не
+ * должна превращаться во второй список записей.
  *
- * Шесть строк это и максимум (больше здесь не нужно - остальные на Record), и МИНИМУМ высоты. Без второго
- * блок терял строку на каждое «Save as skill»: страница подпрыгивала под курсором ровно в тот момент, когда
- * человек тянулся к следующей кнопке, и вторым нажатием попадал не туда, куда смотрел.
+ * ЗДЕСЬ БЫЛ РЕЗЕРВ ВЫСОТЫ - minHeight на шесть строк, чтобы блок не менял размер, когда запись превращают в
+ * скилл и строка исчезает. Он существовал ради того, что стояло ПОД блоком: страница подпрыгивала под
+ * курсором ровно в тот момент, когда человек тянулся к следующей кнопке.
  *
- * Высота строки и высота списка выведены из ОДНОГО числа. Два похожих литерала - `3.25rem` в строке и
- * посчитанный руками итог в списке - однажды разойдутся, и разойдутся молча: список станет короче своего
- * содержимого и обрежет последнюю строку. minHeight, а не height, по той же причине: в узком окне строка
- * переносит кнопку на второй ряд и должна вырасти, а не спрятать её под краем.
+ * Под блоком больше ничего не стоит - он последний на странице. А с одной записью резерв на шесть рисовал
+ * 374px пустоты внутри рамки, что читалось как незагрузившийся список. Причина исчезла раньше следствия, и
+ * убрано именно следствие, а не подогнано число.
  */
 const READY_SHOWN = 6;
 /* Измеренная высота строки, а не выбранная: две строки текста (0.88rem и 0.76rem) плюс py-2 дают ровно
- * 57px = 3.5625rem. Число, взятое на глаз, я тут уже поставил - 3.25rem - и получил блок, который при шести
- * строках всё равно выше, чем при трёх, то есть ровно ту прыгающую страницу, от которой резерв и заводился.
- * Проверяется единственным способом, которым такое проверяется: измерить блок с одной строкой и с шестью и
- * сравнить: 57.33px на строку, шесть строк и пять промежутков - 374px, и столько же при одной строке. */
+ * 57px = 3.5625rem. Осталась на САМОЙ строке, а не на списке: она держит ряд одной высоты независимо от того,
+ * перенеслась ли кнопка на второй ряд в узком окне. minHeight, а не height, по той же причине - строке надо
+ * дать вырасти, а не спрятать кнопку под краем. */
 const READY_ROW = 3.583;
-const READY_GAP = 0.375;  // rem - gap-1.5 между строками
-const READY_MIN = `${READY_SHOWN * READY_ROW + (READY_SHOWN - 1) * READY_GAP}rem`;
 
 /* Когда запись сделана. Нечитаемое значение - 0, чтобы оно тонуло в конец списка, а не тасовало его: NaN в
  * компараторе оставляет порядок на усмотрение движка. */
@@ -650,204 +647,6 @@ export const SkillsView = () => {
         </Typography>
       )}
 
-      {/* Записи, готовые стать скиллом.
-        *
-        * Раньше за этим надо было идти на Record - при том что вся страница про скиллы и человек пришёл сюда
-        * именно за этим. Показываются только те, у которых скилла ещё нет: id скилла выведен из id записи,
-        * так что второе нажатие перезаписало бы существующий, а список, приглашающий к этому, - ловушка. */}
-      <div className={cn('mb-4 grid gap-4', skills.length === 0 && convertible.length > 0 && 'xl:grid-cols-2')}>
-      {convertible.length > 0 && (
-        <section className="rounded-xl border-stroke border bg-surface-card p-4">
-          <div className="mb-2.5 flex flex-wrap items-center gap-2">
-            <CircleDot className="size-4 shrink-0 text-brand-primary" />
-            <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
-              Ready to become a skill
-            </Typography>
-            <span className="ms-auto shrink-0 rounded-full bg-brand-primary/12 px-2 py-0.5 text-[0.74rem] font-semibold text-brand-primary tabular-nums">
-              {convertible.length} recording{convertible.length === 1 ? '' : 's'}
-            </span>
-          </div>
-
-          <Typography variant="p" className="mb-2.5 max-w-[74ch] text-ink-inactive text-[0.82rem]">
-            Recordings in this browser that have no skill yet. Making one is a separate copy — the recording
-            stays exactly as it is, and deleting the skill later leaves it alone.
-          </Typography>
-
-          <ul className="flex flex-col gap-1.5" style={{ minHeight: READY_MIN }}>
-            {convertible.slice(0, READY_SHOWN).map((rec) => (
-              <li
-                key={rec.id}
-                className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2"
-                style={{ minHeight: `${READY_ROW}rem` }}
-              >
-                <span className="flex items-center"><Signal events={rec.events} bars={10} className="h-4" /></span>
-
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <Typography variant="span" weight="semibold" className="truncate text-[0.88rem]">
-                    {rec.name || 'Untitled recording'}
-                  </Typography>
-                  <span className="truncate text-[0.76rem] text-ink-inactive">
-                    {describeRecording(rec)}
-                  </span>
-                </span>
-
-                {/* Два исхода, и разница между ними стоит того, чтобы стоять рядом. «Repeat it exactly» -
-                  * то, что было: буквальный повтор координат, бесплатный и быстрый, и он не печатает,
-                  * потому что содержимое нажатий нигде не хранится. Визард спрашивает недостающий текст
-                  * один раз и делает скилл-ЦЕЛЬ: он печатает, перечитывает экран и уезжает к ИИ с
-                  * параметрами. См. SkillWizard.tsx. */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  isLoading={making === rec.id}
-                  disabled={!!making}
-                  onClick={() => void convert(rec)}
-                >
-                  Repeat it exactly
-                </Button>
-                <Button
-                  size="sm"
-                  leftSlot={<Sparkles className="size-4" />}
-                  disabled={!!making}
-                  onClick={() => setWizardFor(rec)}
-                >
-                  Make a skill
-                </Button>
-              </li>
-            ))}
-          </ul>
-
-          {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
-            * остальные, а не оставить человека считать. */}
-          {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
-            * остальные, а не оставить человека считать. Показаны при этом САМЫЕ СВЕЖИЕ - что и делает
-            * усечение приемлемым: спрятано старое, а не только что записанное. */}
-          {convertible.length > READY_SHOWN && (
-            <Typography variant="p" className="mt-2 text-ink-inactive text-[0.78rem]">
-              {convertible.length - READY_SHOWN} older{' '}
-              {convertible.length - READY_SHOWN === 1 ? 'one is' : 'ones are'} on the{' '}
-              <strong>Record</strong> page.
-            </Typography>
-          )}
-        </section>
-      )}
-
-      {/* Что дальше. Метки справа - три факта, каждый из которых иначе спрашивают вслух: структура
-        * открывается сразу, тест идёт здесь и никуда не уходит, публикация никогда не случается сама. Только
-        * в пустом состоянии: человеку с двадцатью скиллами нужно место, а не объяснение. */}
-      {skills.length === 0 && convertible.length > 0 && (
-        <section className="rounded-xl border-stroke border bg-surface-card p-4">
-          <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
-            What happens next
-          </Typography>
-          <Typography variant="p" className="mt-0.5 mb-2.5 text-ink-inactive text-[0.82rem]">
-            You stay in control at every stage.
-          </Typography>
-
-          <ol className="divide-stroke/60 divide-y">
-            {[
-              {
-                n: 1,
-                title: 'Look at the structure',
-                said: 'Its steps and inputs, and the same definition an API would be handed.',
-                tag: 'Next',
-                tone: 'text-brand-primary',
-              },
-              {
-                n: 2,
-                title: 'Run it on this machine',
-                said: 'The local agent replays it here. Nothing about the run leaves your account.',
-                tag: 'Private',
-                tone: 'text-ink-inactive',
-              },
-              {
-                n: 3,
-                title: 'Publish it, if you want to',
-                said: 'It never happens on its own, and withdrawing is a separate act too.',
-                tag: 'Optional',
-                tone: 'text-ink-inactive',
-              },
-            ].map((step) => (
-              <li key={step.n} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
-                <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border-stroke border bg-surface-card2 font-mono text-[0.72rem] text-ink-secondary">
-                  {step.n}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
-                    {step.title}
-                  </Typography>
-                  <Typography variant="span" className="block text-[0.8rem] text-ink-inactive">
-                    {step.said}
-                  </Typography>
-                </span>
-                <span className={cn('shrink-0 text-[0.74rem]', step.tone)}>{step.tag}</span>
-              </li>
-            ))}
-          </ol>
-        </section>
-      )}
-      </div>
-
-      {/* Другие способы начать. Все три ведут в то, что уже существует - и «Import» назван тем, чем
-        * является: импорта скиллов в вебе нет, есть импорт .mmmacro, который станет ЗАПИСЬЮ и появится в
-        * секции выше. Плитка, обещающая «skill file», обещала бы формат, которого у нас нет. */}
-      {skills.length === 0 && (
-        <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(9rem,auto)_1fr_1fr_1fr]">
-          <div className="min-w-0 self-center">
-            <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
-              Other ways to start
-            </Typography>
-            <Typography variant="span" className="block text-[0.78rem] text-ink-inactive">
-              Whichever source fits the job.
-            </Typography>
-          </div>
-
-          {[
-            {
-              icon: <Wand2 className="size-4 text-brand-tertiary" />,
-              title: 'Describe a skill',
-              said: 'Say the outcome and have the agent work it out',
-              go: () => { void navigate({ to: '/create' }); },
-            },
-            {
-              icon: <Upload className="size-4 text-ink-secondary" />,
-              title: 'Import a recording',
-              said: 'A .mmmacro file becomes a recording above',
-              go: () => { void navigate({ to: '/record' }); },
-            },
-            {
-              icon: <Puzzle className="size-4 text-ink-secondary" />,
-              title: bridge.paired ? 'Extension connected' : 'Sync the extension',
-              said: bridge.paired ? 'Its skills appear here after its next sync' : 'Pull the skills made in your browser',
-              go: () => { void connect(); },
-            },
-          ].map((tile) => (
-            <button
-              key={tile.title}
-              type="button"
-              onClick={tile.go}
-              className={cn(
-                'flex min-w-0 items-center gap-3 rounded-xl border-stroke border bg-surface-card px-3.5 py-3 text-left',
-                'transition-colors duration-base hover:border-card-border-hover hover:bg-state-hover',
-              )}
-            >
-              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-card2">
-                {tile.icon}
-              </span>
-              <span className="min-w-0 flex-1">
-                <Typography variant="span" weight="semibold" className="block truncate text-[0.86rem]">
-                  {tile.title}
-                </Typography>
-                <Typography variant="span" className="block truncate text-[0.76rem] text-ink-inactive">
-                  {tile.said}
-                </Typography>
-              </span>
-              <ArrowRight className="size-4 shrink-0 text-ink-inactive" />
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* The library's own heading, under the builder rather than inside it: what a skill is and what you
         * have are two different statements, and one card saying both said neither clearly. */}
       {skills.length > 0 && (
@@ -1155,6 +954,215 @@ export const SkillsView = () => {
             })}
           </ul>
           </div>
+        </div>
+      )}
+
+      {/* Ниже библиотеки, а не над ней.
+       *
+       * Человек приходит сюда за своими скиллами - это то, ради чего страница называется Skills. Блок
+       * «сделать скилл из записи» стоял первым и отодвигал библиотеку за нижний край экрана: на 1680×1050
+       * с одной записью до заголовка «Your skills» надо было прокрутить, то есть страница открывалась на
+       * том, что человек делает изредка, и прятала то, что он делает каждый раз.
+       *
+       * Пустой аккаунт переставляется тоже, и в его пользу: заголовок «Your skills» при нуле скиллов не
+       * рисуется вовсе, вместо него - полоса «скиллов пока нет», и она теперь стоит НАД этим блоком, а не
+       * под ним. Читается по порядку: у тебя пока ничего нет -> вот запись, из которой это делается -> вот
+       * что будет дальше. Проверено на обоих состояниях, а не выведено из одного. */}
+      {/* Записи, готовые стать скиллом.
+        *
+        * Раньше за этим надо было идти на Record - при том что вся страница про скиллы и человек пришёл сюда
+        * именно за этим. Показываются только те, у которых скилла ещё нет: id скилла выведен из id записи,
+        * так что второе нажатие перезаписало бы существующий, а список, приглашающий к этому, - ловушка. */}
+      <div className={cn('mb-4 grid gap-4', skills.length === 0 && convertible.length > 0 && 'xl:grid-cols-2')}>
+      {convertible.length > 0 && (
+        <section className="rounded-xl border-stroke border bg-surface-card p-4">
+          <div className="mb-2.5 flex flex-wrap items-center gap-2">
+            <CircleDot className="size-4 shrink-0 text-brand-primary" />
+            <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
+              Ready to become a skill
+            </Typography>
+            <span className="ms-auto shrink-0 rounded-full bg-brand-primary/12 px-2 py-0.5 text-[0.74rem] font-semibold text-brand-primary tabular-nums">
+              {convertible.length} recording{convertible.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          <Typography variant="p" className="mb-2.5 max-w-[74ch] text-ink-inactive text-[0.82rem]">
+            Recordings in this browser that have no skill yet. Making one is a separate copy — the recording
+            stays exactly as it is, and deleting the skill later leaves it alone.
+          </Typography>
+
+          <ul className="flex flex-col gap-1.5">
+            {convertible.slice(0, READY_SHOWN).map((rec) => (
+              <li
+                key={rec.id}
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2"
+                style={{ minHeight: `${READY_ROW}rem` }}
+              >
+                <span className="flex items-center"><Signal events={rec.events} bars={10} className="h-4" /></span>
+
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <Typography variant="span" weight="semibold" className="truncate text-[0.88rem]">
+                    {rec.name || 'Untitled recording'}
+                  </Typography>
+                  <span className="truncate text-[0.76rem] text-ink-inactive">
+                    {describeRecording(rec)}
+                  </span>
+                </span>
+
+                {/* Два исхода, и разница между ними стоит того, чтобы стоять рядом. «Repeat it exactly» -
+                  * то, что было: буквальный повтор координат, бесплатный и быстрый, и он не печатает,
+                  * потому что содержимое нажатий нигде не хранится. Визард спрашивает недостающий текст
+                  * один раз и делает скилл-ЦЕЛЬ: он печатает, перечитывает экран и уезжает к ИИ с
+                  * параметрами. См. SkillWizard.tsx. */}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  isLoading={making === rec.id}
+                  disabled={!!making}
+                  onClick={() => void convert(rec)}
+                >
+                  Repeat it exactly
+                </Button>
+                <Button
+                  size="sm"
+                  leftSlot={<Sparkles className="size-4" />}
+                  disabled={!!making}
+                  onClick={() => setWizardFor(rec)}
+                >
+                  Make a skill
+                </Button>
+              </li>
+            ))}
+          </ul>
+
+          {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
+            * остальные, а не оставить человека считать. */}
+          {/* Молчаливое усечение читается как «это все»: если их больше, чем показано, надо сказать где
+            * остальные, а не оставить человека считать. Показаны при этом САМЫЕ СВЕЖИЕ - что и делает
+            * усечение приемлемым: спрятано старое, а не только что записанное. */}
+          {convertible.length > READY_SHOWN && (
+            <Typography variant="p" className="mt-2 text-ink-inactive text-[0.78rem]">
+              {convertible.length - READY_SHOWN} older{' '}
+              {convertible.length - READY_SHOWN === 1 ? 'one is' : 'ones are'} on the{' '}
+              <strong>Record</strong> page.
+            </Typography>
+          )}
+        </section>
+      )}
+
+      {/* Что дальше. Метки справа - три факта, каждый из которых иначе спрашивают вслух: структура
+        * открывается сразу, тест идёт здесь и никуда не уходит, публикация никогда не случается сама. Только
+        * в пустом состоянии: человеку с двадцатью скиллами нужно место, а не объяснение. */}
+      {skills.length === 0 && convertible.length > 0 && (
+        <section className="rounded-xl border-stroke border bg-surface-card p-4">
+          <Typography variant="h3" weight="semibold" className="text-[0.95rem]">
+            What happens next
+          </Typography>
+          <Typography variant="p" className="mt-0.5 mb-2.5 text-ink-inactive text-[0.82rem]">
+            You stay in control at every stage.
+          </Typography>
+
+          <ol className="divide-stroke/60 divide-y">
+            {[
+              {
+                n: 1,
+                title: 'Look at the structure',
+                said: 'Its steps and inputs, and the same definition an API would be handed.',
+                tag: 'Next',
+                tone: 'text-brand-primary',
+              },
+              {
+                n: 2,
+                title: 'Run it on this machine',
+                said: 'The local agent replays it here. Nothing about the run leaves your account.',
+                tag: 'Private',
+                tone: 'text-ink-inactive',
+              },
+              {
+                n: 3,
+                title: 'Publish it, if you want to',
+                said: 'It never happens on its own, and withdrawing is a separate act too.',
+                tag: 'Optional',
+                tone: 'text-ink-inactive',
+              },
+            ].map((step) => (
+              <li key={step.n} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+                <span className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md border-stroke border bg-surface-card2 font-mono text-[0.72rem] text-ink-secondary">
+                  {step.n}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
+                    {step.title}
+                  </Typography>
+                  <Typography variant="span" className="block text-[0.8rem] text-ink-inactive">
+                    {step.said}
+                  </Typography>
+                </span>
+                <span className={cn('shrink-0 text-[0.74rem]', step.tone)}>{step.tag}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+      </div>
+
+      {/* Другие способы начать. Все три ведут в то, что уже существует - и «Import» назван тем, чем
+        * является: импорта скиллов в вебе нет, есть импорт .mmmacro, который станет ЗАПИСЬЮ и появится в
+        * секции выше. Плитка, обещающая «skill file», обещала бы формат, которого у нас нет. */}
+      {skills.length === 0 && (
+        <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(9rem,auto)_1fr_1fr_1fr]">
+          <div className="min-w-0 self-center">
+            <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
+              Other ways to start
+            </Typography>
+            <Typography variant="span" className="block text-[0.78rem] text-ink-inactive">
+              Whichever source fits the job.
+            </Typography>
+          </div>
+
+          {[
+            {
+              icon: <Wand2 className="size-4 text-brand-tertiary" />,
+              title: 'Describe a skill',
+              said: 'Say the outcome and have the agent work it out',
+              go: () => { void navigate({ to: '/create' }); },
+            },
+            {
+              icon: <Upload className="size-4 text-ink-secondary" />,
+              title: 'Import a recording',
+              said: 'A .mmmacro file becomes a recording above',
+              go: () => { void navigate({ to: '/record' }); },
+            },
+            {
+              icon: <Puzzle className="size-4 text-ink-secondary" />,
+              title: bridge.paired ? 'Extension connected' : 'Sync the extension',
+              said: bridge.paired ? 'Its skills appear here after its next sync' : 'Pull the skills made in your browser',
+              go: () => { void connect(); },
+            },
+          ].map((tile) => (
+            <button
+              key={tile.title}
+              type="button"
+              onClick={tile.go}
+              className={cn(
+                'flex min-w-0 items-center gap-3 rounded-xl border-stroke border bg-surface-card px-3.5 py-3 text-left',
+                'transition-colors duration-base hover:border-card-border-hover hover:bg-state-hover',
+              )}
+            >
+              <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-surface-card2">
+                {tile.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <Typography variant="span" weight="semibold" className="block truncate text-[0.86rem]">
+                  {tile.title}
+                </Typography>
+                <Typography variant="span" className="block truncate text-[0.76rem] text-ink-inactive">
+                  {tile.said}
+                </Typography>
+              </span>
+              <ArrowRight className="size-4 shrink-0 text-ink-inactive" />
+            </button>
+          ))}
         </div>
       )}
 

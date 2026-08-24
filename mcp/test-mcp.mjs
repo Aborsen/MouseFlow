@@ -812,6 +812,18 @@ check('dropping the parameter once used, so the wizard does not reopen later',
   /searchParams\.delete\('make'\)/.test(skillsView));
 check('and saying so when this browser does not have that recording',
   /not in this browser/.test(skillsView));
+/* Order on the page, which is a thing source order actually decides here - both blocks are siblings in one
+ * container with no ordering CSS. Somebody comes to /skills for the skills they have; the builder for the
+ * ones they do not was standing in front of it, and on a 1680x1050 screen the library began below the fold. */
+/* The RENDERED headings, not the first mention: both names appear in comments above the code that draws
+ * them, and a plain indexOf finds the comment. That is how this check first passed the wrong way round. */
+check('the library stands above the builder, not behind it',
+  skillsView.indexOf('\n              Your skills\n')
+    < skillsView.indexOf('\n              Ready to become a skill\n'));
+/* The list reserved six rows of height so that converting a recording could not shift what sat BELOW it.
+ * Nothing sits below it now, and with one recording the reserve drew 374px of empty card. */
+check('and the builder no longer reserves height for rows that are not there',
+  !/minHeight: READY_MIN/.test(skillsView) && !/const READY_MIN/.test(skillsView));
 check('step two is about instructions, not only recorded typing',
   /STAGES = \['What it did', 'Instructions', 'Name it'\]/.test(wizard));
 check('and it always offers a field, so it is never a dead end',
