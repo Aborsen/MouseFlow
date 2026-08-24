@@ -753,11 +753,14 @@ check('and the roster stays whole while the counting narrows, or the filter is a
 check('the range presets are Today, 7 days and Custom', /const RANGES = \[7\];/.test(dash));
 
 const teamView = read('../web/src/features/team/TeamView.tsx');
+/* The first column is the tick, added when the list learned to select several teams at once. Named in the
+ * template rather than left implicit: the header draws a spacer for it, and a header that forgets is every
+ * label one column out. */
 check('teams are rows, in the anatomy the recordings table already uses',
-  /const COLUMNS = 'grid-cols-\[minmax\(11rem,1fr\)/.test(teamView)
+  /const COLUMNS = 'grid-cols-\[1\.5rem_minmax\(11rem,1fr\)/.test(teamView)
   && /border border-stroke\/45/.test(teamView));
 check('one grid template for the header and the rows, or the labels sit over nothing',
-  (teamView.match(/cn\(COLUMNS|cn\(ROW, COLUMNS/g) || []).length >= 2);
+  (teamView.match(/cn\(COLUMNS|cn\(\s*\n?\s*ROW, COLUMNS/g) || []).length >= 2);
 check('opening a team is a panel over the list, not a page away from it',
   /role="dialog"/.test(teamView) && /fixed inset-y-0 end-0/.test(teamView));
 check('and it can be closed with Escape, like every other overlay',
