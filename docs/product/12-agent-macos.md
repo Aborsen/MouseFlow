@@ -1,7 +1,7 @@
 # 12 — The macOS agent
 
 `agent/mouseflow-agent.swift`, one file, ~2,390 lines, compiled on the machine by
-`agent/install-mac.sh`. Version **0.9.0**. Debugging notes:
+`agent/install-mac.sh`. Version **0.9.1**. Debugging notes:
 [`docs/DEBUG-MAC.md`](../DEBUG-MAC.md).
 
 It implements the same protocol as the Windows agent, on the same port, with the same table. The only
@@ -160,7 +160,7 @@ the main one. Nothing else changed shape.
 
 | Item | When |
 |---|---|
-| `MouseFlow Agent 0.9.0` | always (header) |
+| `MouseFlow Agent 0.9.1` | always (header) |
 | `Records only between Start and Stop` | always |
 | **Start Recording** | idle |
 | **Stop and Save Recording** | while recording |

@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.0"
+let VERSION = "0.9.1"
 
 // ---------------------------------------------------------------- arguments
 
@@ -2762,20 +2762,38 @@ enum Courier {
 
             let body = "{\"id\":\(jsonString(id)),\"shot\":\(shot),\"windows\":[\(windows)]"
                 + ",\"results\":[\(results.joined(separator: ","))]}"
-            guard let data = body.data(using: .utf8),
-                  let (status, answer) = request(url, token: link.token, body: data) else {
-                log("the goal run could not reach the account; stopping")
-                Crash.say("a goal run lost the account mid-way", at: "courier.step")
-                report(link, id: id, done: Done(ok: false, said: "This Mac lost contact with the account "
-                    + "part-way through the run.", body: nil))
-                return
+            guard let data = body.data(using: .utf8) else { return }
+
+            /* One retry, and only for the failures that pass.
+             *
+             * A run is minutes long and a deployment can be swapped under it - that is a few seconds of
+             * 5xx, and losing a half-finished run to it is a poor trade for one extra request. A 4xx is
+             * different: a revoked token or a refused body will say the same thing twice. */
+            var status = 0
+            var answer = Data()
+            for attempt in 0..<2 {
+                if let (got, payload) = request(url, token: link.token, body: data) {
+                    status = got
+                    answer = payload
+                } else {
+                    status = 0
+                }
+                if status == 200 { break }
+                if attempt == 0 && (status == 0 || status >= 500) {
+                    log("a step of the goal run did not land (HTTP \(status)); one more try")
+                    Thread.sleep(forTimeInterval: 2)
+                    continue
+                }
+                break
             }
+
             guard status == 200,
                   let raw = (try? JSONSerialization.jsonObject(with: answer)) as? [String: Any] else {
                 log("the goal run was refused: HTTP \(status)")
                 Crash.say("a goal step was refused: HTTP \(status)", at: "courier.step")
-                report(link, id: id, done: Done(ok: false, said: "The account refused a step of this run "
-                    + "(HTTP \(status)).", body: nil))
+                report(link, id: id, done: Done(ok: false, said: status == 0
+                    ? "This Mac lost contact with the account part-way through the run."
+                    : "The account refused a step of this run (HTTP \(status)).", body: nil))
                 return
             }
 

@@ -398,7 +398,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.0";
+        public const string Version = "0.9.1";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -3358,16 +3358,37 @@ namespace MouseFlow
                   .Append(",\"windows\":").Append(Agent.WindowsArray())
                   .Append(",\"results\":[").Append(results).Append("]}");
 
-                int status;
-                string answer = Post(root + "/api/mcp?worker=step", token, sb.ToString(), out status);
+                /* One retry, and only for the failures that pass.
+
+                   A run is minutes long and a deployment can be swapped under it - that is a few seconds of
+                   5xx, and losing a half-finished run to it is a poor trade for one extra request. A 4xx is
+                   different: a revoked token or a refused body will say the same thing twice. */
+                int status = 0;
+                string answer = null;
+                for (int attempt = 0; attempt < 2; attempt++)
+                {
+                    answer = Post(root + "/api/mcp?worker=step", token, sb.ToString(), out status);
+                    if (answer != null && status == 200) break;
+                    if (attempt == 0 && (status == 0 || status >= 500))
+                    {
+                        Console.WriteLine("[mouseflow] a step of the goal run did not land (HTTP "
+                            + status.ToString(CultureInfo.InvariantCulture) + "); one more try");
+                        Thread.Sleep(2000);
+                        continue;
+                    }
+                    break;
+                }
+
                 if (answer == null || status != 200)
                 {
                     Console.WriteLine("[mouseflow] the goal run was refused (HTTP "
                         + status.ToString(CultureInfo.InvariantCulture) + ")");
                     Crash.Say("a goal step was refused: HTTP "
                         + status.ToString(CultureInfo.InvariantCulture), "courier.step");
-                    Report(root, token, id, false, "This PC lost contact with the account part-way through "
-                        + "the run.", null);
+                    Report(root, token, id, false, status == 0
+                        ? "This PC lost contact with the account part-way through the run."
+                        : "The account refused a step of this run (HTTP "
+                          + status.ToString(CultureInfo.InvariantCulture) + ").", null);
                     return;
                 }
 
