@@ -1280,11 +1280,34 @@ check('the step list can be taken whole in one click', /const keepAll = useCallb
  * reading the screen, which scrolls when it needs to see something. One recording here held 1,732 wheel
  * notches. */
 check('a scroll is folded away with the rest, not put in front of somebody',
-  /const worthShowing = \(line: Line\) => describable\(line\) && line\.action !== 'scroll';/.test(wizard));
+  /describable\(line\) && line\.action !== 'scroll'/.test(wizard));
 check('and it is not in the skill by default either, so hidden means left out',
   /setKept\(new Set\(flat\.filter\(worthShowing\)/.test(wizard));
 check('the fold says scrolls are among what it holds',
-  /scrolls, and clicks on things with no name/.test(wizard));
+  /scrolls, clicks on things with no name/.test(wizard));
+
+/* Every recording started from the app ends with a click on MouseFlow's own Stop button. That click is
+ * bookkeeping ABOUT the recording, not part of the work - and a skill repeating it presses Stop on a
+ * recorder nobody started, which is what the first goal skill made here actually did. */
+check('MouseFlow’s own recorder controls are folded away too',
+  /const OWN_RECORDER_CONTROLS = new Set\(\[/.test(wizard)
+    && /'stop and save this recording',/.test(wizard)
+    && /!isOwnRecorderControl\(line\)/.test(wizard));
+/* Narrow on purpose: a click on "Make a skill" or "Delete" is somebody USING the app - unlikely to be the
+ * task, but at least something they did. Stopping the recording is the one action guaranteed not to be. */
+check('and only the recorder’s controls, not everything in MouseFlow',
+  !/'make a skill'|'delete'|'next'/.test(wizard.slice(
+    wizard.indexOf('const OWN_RECORDER_CONTROLS'), wizard.indexOf('const isOwnRecorderControl'))));
+/* Matching our OWN labels is safe where matching a platform's control type is not: these are not translated
+ * — which is why the strings were taken from the app's and both agents' source rather than invented. */
+check('the labels cover the app, the macOS menu item and the Windows tray item',
+  /'stop and save recording',/.test(wizard) && /'mouseflow agent - recording',/.test(wizard));
+/* A recording whose only step is the click that stopped it now folds to nothing. An empty list under a
+ * disabled Next with no sentence reads as a broken screen; it is a real recording with nothing in it. */
+check('a recording that folds to nothing says so rather than showing an empty list',
+  /Nothing in this recording can become a skill\./.test(wizard));
+check('and the dev fixture ends the way a real recording does',
+  /control: 'Stop and save this recording'/.test(read('../web/src/dev/mock-api.ts')));
 
 /* A 546-step recording is mostly pointer moves, waits, and clicks on things the accessibility layer could
  * not name. None of them can become an instruction, so showing four hundred of them - each with three lines

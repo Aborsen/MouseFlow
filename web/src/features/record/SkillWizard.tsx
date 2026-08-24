@@ -162,6 +162,31 @@ function describable(line: Line): boolean {
 }
 
 /** One line of the goal, built from FIELDS rather than from the transcript's prose. */
+/* MouseFlow's OWN recording controls, which are in the recording because of how it was made.
+ *
+ * Every recording started from the app ends with a click on "Stop and save this recording", and many begin
+ * with a click on Start. Those clicks are bookkeeping ABOUT the recording, not part of the work it caught -
+ * and a skill that faithfully repeats them ends by pressing Stop on a recorder nobody started, which is
+ * what the first goal skill made here actually did.
+ *
+ * NARROW ON PURPOSE. Only the recorder's controls, not everything in MouseFlow: a click on "Make a skill"
+ * or "Delete" is somebody USING the app, which is unlikely to be the task but is at least something they
+ * did. Stopping the recording is the one action that is guaranteed not to be.
+ *
+ * Matched by name, which is safe HERE and nowhere else in this file: these are our own labels in our own
+ * product, taken from our own source, and unlike a platform's control type they are not translated. The
+ * strings are the ones the web app and both agents actually use - the app's button, the macOS menu-bar item
+ * and the Windows tray item. */
+const OWN_RECORDER_CONTROLS = new Set([
+  'stop and save this recording',
+  'stop and save recording',
+  'start recording',
+  'mouseflow agent - recording',
+]);
+
+const isOwnRecorderControl = (line: Line) =>
+  OWN_RECORDER_CONTROLS.has(String(line.control || '').trim().toLowerCase());
+
 /* Worth putting in front of somebody, as opposed to merely expressible.
  *
  * A scroll IS describable - `instruction()` turns it into "scroll to bring the next part into view" - and
@@ -172,7 +197,8 @@ function describable(line: Line): boolean {
  *
  * So scrolls join the pointer moves and the unnamed clicks in the fold: left out by default, listed by
  * count, and one click away from being put back for the recording where a scroll really is the point. */
-const worthShowing = (line: Line) => describable(line) && line.action !== 'scroll';
+const worthShowing = (line: Line) =>
+  describable(line) && line.action !== 'scroll' && !isOwnRecorderControl(line);
 
 function instruction(line: Line, blank: Blank | undefined): string | null {
   if (line.action === 'type') {
@@ -785,6 +811,22 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     {kept.size} of {describables.length} kept
                   </Typography>
                 </div>
+                {/* Everything folded away, which is a real recording and not an error state.
+                  *
+                  * A recording whose only step is the click that stopped it produces an empty list once the
+                  * recorder's own controls are folded - and an empty list under a disabled Next, with no
+                  * sentence, reads as a broken screen. It is not: there is genuinely nothing here that could
+                  * become a skill, and saying which is the difference between a dead end and an answer. */}
+                {shown.length === 0 && (
+                  <Typography variant="p" className="rounded-lg border border-stroke bg-surface-card2 px-3 py-2.5 text-[0.85rem] text-ink-body leading-relaxed">
+                    Nothing in this recording can become a skill.{' '}
+                    {lines.length === hidden && hidden > 0
+                      ? 'All of it is pointer movement, waiting, scrolling, or starting and stopping the '
+                        + 'recording itself.'
+                      : 'Every step was left out.'}
+                    {' '}Record the work you want repeated, then make a skill from that.
+                  </Typography>
+                )}
                 <ul className="grid gap-1">
                   {shown.map((line) => {
                     const isTyping = line.action === 'type';
@@ -851,7 +893,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-stroke bg-surface-card2 px-3 py-2">
                     <Typography variant="span" className="text-[0.82rem] text-ink-inactive">
                       {hidden} more step{hidden === 1 ? '' : 's'} left out — pointer moves, waits,
-                      scrolls, and clicks on things with no name. Show them to put any back.
+                      scrolls, clicks on things with no name, and starting or stopping this recording.
+                      Show them to put any back.
                     </Typography>
                     <Button
                       variant="ghost"

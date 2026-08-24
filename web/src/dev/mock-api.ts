@@ -542,6 +542,10 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
              * recording typed into a single "Prompt" nine times - and without one here the wizard's
              * "2 of 2" counter and its prompt1/prompt2 naming are unreachable in dev. */
             { n: 9, at: 44000, ms: 5200, action: 'type', what: 'typed for 5.2s - 24 keystrokes into the "Message body" edit box in OUTLOOK', target: null, note: null, control: 'Message body', controlType: 'edit box', role: 'AXTextArea', keys: 24 },
+            /* How every recording made from the app ends: a click on MouseFlow's OWN stop button. It is
+             * bookkeeping about the recording, not part of the work, and a skill that repeats it presses
+             * Stop on a recorder nobody started. Here so the fold is reachable in dev. */
+            { n: 10, at: 62000, ms: 180, action: 'click', what: 'clicked the "Stop and save this recording" button in MouseFlow', target: '1180,74', note: null, control: 'Stop and save this recording', controlType: 'button', role: 'AXButton', keys: 0 },
             { n: 6, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches in EXCEL', target: null, note: null, control: null, controlType: null, role: null, keys: 0 },
             /* Two typing runs that are NOT fields - Enter and Escape at a dialog, which the hit-test names
              * after the dialog. Measured on a real recording (see api/_typing.mjs); here so that the folded
