@@ -619,12 +619,14 @@ async function callTool(sql, who, params, req) {
    * accepted too, since it is what a person says out loud - but only when exactly one skill has it: two
    * skills sharing a name is legal, and picking one of them silently would run the wrong errand. */
   let entry = null;
-  for (const flow of skills) if (flow.client_id === wanted) entry = { flow, structure: structureOf(flow) };
+  /* `.id`, which is what skillsOf() calls it - it renames client_id on the way out. Reading `client_id`
+   * here found nothing, ever, and looked exactly like a deleted skill. */
+  for (const flow of skills) if (flow.id === wanted) entry = { flow, structure: structureOf(flow) };
   if (!entry) {
     const named = skills.filter((f) => String(f.name || '').trim() === wanted);
     if (named.length > 1) {
       return say(`${named.length} skills are called "${wanted}". Pass one of these ids instead: `
-        + `${named.map((f) => f.client_id).join(', ')}.`, true);
+        + `${named.map((f) => f.id).join(', ')}.`, true);
     }
     if (named.length === 1) entry = { flow: named[0], structure: structureOf(named[0]) };
   }

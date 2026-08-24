@@ -510,8 +510,11 @@ check('and every GET query it does have is one of them',
 check('tools/list does not grow with the library',
   !/for \(const \[name, entry\] of tableOf\(skills\)\)/.test(route)
     && /RUN_STATUS_TOOL, RUN_TOOL,/.test(route));
-check('and a skill is run through one tool, by its id',
-  /name: 'mouseflow_run'/.test(route) && /flow\.client_id === wanted/.test(route));
+/* skillsOf() renames client_id to `id` on the way out, and the dispatch has to read the name it is given.
+ * Reading `client_id` found nothing, ever, and the answer looked exactly like a deleted skill. */
+check('and a skill is run through one tool, by the id field skillsOf actually returns',
+  /name: 'mouseflow_run'/.test(route) && /flow\.id === wanted/.test(route)
+    && /skills\.push\(\{\s*\n\s*id: row\.client_id,/.test(route));
 /* Two skills may legally share a name; picking one of them silently would run the wrong errand. */
 check('an ambiguous name is refused rather than guessed at',
   /skills are called "\$\{wanted\}"/.test(route));
