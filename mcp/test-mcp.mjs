@@ -924,8 +924,28 @@ check('the chip shows the current answer, so nothing is set without saying so',
 check('the control sits outside the label, so opening it does not untick the step',
   /The chip sits OUTSIDE the label/.test(wizard)
     && /<label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2\.5">/.test(wizard));
-check('only a field gets one — an Enter keypress is not asked about twice',
-  /blank\.verdict\.field && on/.test(wizard));
+/* A run that is NOT a field gets a chip too, and that is a fix rather than a decoration: without one the
+ * row looked identical to a field's and simply had nowhere to answer. The first person to see the screen
+ * asked why some typing rows could be filled in and others could not — the screen knew and was not saying. */
+check('a typing run that is not a field says so, rather than sitting there silent',
+  /const isField = blank\.verdict\.field;/.test(wizard)
+    && /'keys, not text'/.test(wizard) && /Nothing to type here/.test(wizard));
+check('and it explains itself with the same verdict the folding used',
+  /\{blank\.verdict\.why\}/.test(wizard));
+check('and it can be overturned there, not only from step two',
+  wizard.split('It is a field →').length - 1 === 2);
+check('only a KEPT step gets one — a dropped step types nothing by definition',
+  /const askable = !!blank && on;/.test(wizard));
+/* The three chip weights: loud when it wants an answer, quiet when it has one, barely a control when it is
+ * only explaining itself. A muted label is information; a bordered chip is a question. */
+check('the chip that only explains itself does not look like a question',
+  /border-transparent text-ink-inactive hover:bg-state-hover/.test(wizard));
+
+/* The free-text field first, the per-field cards under it. Free text can be written about ANY recording;
+ * the cards answer a question the recording itself raises, and there may be none of them at all. */
+check('step two leads with the field anybody can use, not with the special case',
+  wizard.indexOf('Anything else it should know')
+    < wizard.indexOf('MouseFlow records that a key was pressed and when'));
 check('a 546-step list does not scan the blanks once per row',
   /const blankOf = useMemo\(\(\) => new Map/.test(wizard));
 check('and both screens edit the same blank, so they cannot disagree',

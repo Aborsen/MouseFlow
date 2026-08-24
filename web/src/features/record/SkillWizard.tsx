@@ -241,7 +241,14 @@ const WhatWasTyped = ({ blank, onEdit }: {
   blank: Blank;
   onEdit: (patch: Partial<Blank>) => void;
 }) => {
-  const chip = chipOf(blank);
+  /* A typing run that is NOT a field gets a chip too, and this is a fix rather than a decoration.
+   *
+   * Without one the row looked identical to a field's - highlighted, keyboard icon - and simply had nowhere
+   * to answer. The first person to see it asked why some typing rows could be filled in and others could
+   * not, which is the screen failing to say something it knows. It knows exactly why: the keys went to a
+   * dialog, or to something with no name, and `verdict.why` is that sentence already. */
+  const isField = blank.verdict.field;
+  const chip = isField ? chipOf(blank) : { label: 'keys, not text', set: true };
   /* Typing picks "always this text" for you - but only from the untouched state. Somebody who deliberately
    * chose "ask" and then types a note to themselves must not have that choice taken back off them, so the
    * switch fires on the first keystroke into an empty box and never again. */
@@ -258,15 +265,44 @@ const WhatWasTyped = ({ blank, onEdit }: {
           className={cn(
             'shrink-0 rounded-md border px-2 py-0.5 text-[0.76rem] transition-colors duration-fast',
             'max-w-[13rem] truncate',
-            chip.set
-              ? 'border-stroke bg-surface-card2 text-ink-secondary hover:bg-state-hover'
-              : 'border-brand-primary/45 bg-brand-primary/10 text-brand-primary hover:bg-brand-primary/20',
+            /* Three weights, and the order is deliberate: the one that WANTS an answer is loudest, the one
+             * that has an answer is quiet, and the one that is only explaining itself barely a control at
+             * all - it is there to be read, and clickable in case the reading is wrong. */
+            !isField
+              ? 'border-transparent text-ink-inactive hover:bg-state-hover'
+              : chip.set
+                ? 'border-stroke bg-surface-card2 text-ink-secondary hover:bg-state-hover'
+                : 'border-brand-primary/45 bg-brand-primary/10 text-brand-primary hover:bg-brand-primary/20',
           )}
         >
           {chip.label}
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[19rem]">
+        {!isField ? (
+          <>
+            <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
+              Nothing to type here
+            </Typography>
+            <Typography variant="p" className="mt-1 text-[0.82rem] text-ink-inactive leading-relaxed">
+              {blank.keys
+                ? `${blank.keys === 1 ? 'That 1 keystroke' : `Those ${blank.keys} keystrokes`} went to `
+                : 'The keys went to '}
+              {blank.control ? `“${blank.control}”` : 'something with no name'} — {blank.verdict.why}
+              {blank.verdict.sure ? '' : ', as far as it could tell'}. Enter, Tab and keyboard shortcuts
+              land like that, so there is nothing here for the skill to type.
+            </Typography>
+            <Button
+              variant="secondary"
+              size="xs"
+              className="mt-2.5"
+              onClick={() => onEdit({ fill: 'ask', verdict: { ...blank.verdict, field: true } })}
+            >
+              It is a field →
+            </Button>
+          </>
+        ) : (
+        <>
         <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
           What did you type here?
         </Typography>
@@ -323,6 +359,8 @@ const WhatWasTyped = ({ blank, onEdit }: {
               )}
             />
           </div>
+        )}
+        </>
         )}
       </PopoverContent>
     </Popover>
@@ -615,7 +653,9 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     /* Only a FIELD gets the chip. Offering "what did you type here?" beside an Enter keypress
                      * is the same nineteen questions the folding on step 2 exists to remove, just moved. */
                     const blank = blankOf.get(line.n);
-                    const askable = !!blank && blank.verdict.field && on;
+                    /* Every KEPT typing step, field or not. A row that was dropped from the skill has
+                     * nothing to say about what it types, so it keeps the plain icon. */
+                    const askable = !!blank && on;
                     return (
                       /* The chip sits OUTSIDE the label. Inside it, every click on it would also reach the
                        * label and toggle the checkbox — the row would drop out of the skill at the exact
@@ -664,11 +704,50 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
 
             {lines && stage === 1 && (
               <>
+                {/* Anything the recording could not say, in the person's own words.
+                  *
+                  * This step used to be a dead end whenever nothing had been typed: one sentence explaining
+                  * that there was nothing to fill in, and no field at all. But a recording is coordinates
+                  * and timings — it cannot know that the second box wants today's date, that the dialog is
+                  * skipped when a row already exists, or which button ends the job. That knowledge only
+                  * exists in the head of the person who just did it, and this is the moment they are here.
+                  *
+                  * It goes into the goal, which for a skill made here is the sentence a model reads and
+                  * carries out. So this is executed rather than filed. */}
+                <div className="grid gap-1.5">
+                  <Typography variant="span" weight="semibold" className="text-[0.86rem]">
+                    Anything else it should know
+                  </Typography>
+                  <Typography variant="p" className="text-ink-inactive text-[0.82rem] leading-relaxed">
+                    Optional. The recording has the clicks; this is for what it cannot see.
+                  </Typography>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value.slice(0, 2000))}
+                    rows={6}
+                    placeholder={'Add instructions in your own words — including any text it should type.\n\n'
+                      + 'For example:\n'
+                      + '• Type today’s date in the reference box\n'
+                      + '• If a row for this client already exists, stop and say so\n'
+                      + '• Finish by pressing Save, not Send'}
+                    className="w-full resize-y rounded-lg border border-stroke bg-surface-card2 px-3 py-2 text-[0.86rem] text-ink-primary leading-relaxed placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
+                  />
+                  <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
+                    This is added to the skill’s instructions, which you can read and edit on the next step.
+                  </Typography>
+                </div>
+
+                {/* Под свободным текстом, а не над ним.
+                  *
+                  * Свободный текст можно написать всегда и про любую запись. Карточки ниже - ответ на
+                  * вопрос, который задаёт САМА запись, и их может не быть вовсе: у записи без набора
+                  * текста их ноль. Экран, начинавшийся с карточек, начинался с частного случая и прятал
+                  * под ним то, что нужно всем. */}
                 {/* The recorded typing, when there was any. A blank is a place the recording KNOWS
                   * something was typed and cannot know what; it is a different thing from the free text
                   * below, which is anything the recording could not know at all. */}
                 {fields.length > 0 && (
-                <>
+                <div className="mt-5 border-stroke border-t pt-4">
                   <Typography variant="p" className="mb-2 text-ink-inactive text-[0.85rem] leading-relaxed">
                     MouseFlow records that a key was pressed and when, never which key — so what you typed is
                     not in the recording and cannot be. Each card below is one place the recording knows you
@@ -796,7 +875,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                       </div>
                     ))}
                   </div>
-                </>
+                </div>
                 )}
 
                 {/* What was NOT a field, in one line instead of one card each.
@@ -858,39 +937,6 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     )}
                   </div>
                 )}
-
-                {/* Anything the recording could not say, in the person's own words.
-                  *
-                  * This step used to be a dead end whenever nothing had been typed: one sentence explaining
-                  * that there was nothing to fill in, and no field at all. But a recording is coordinates
-                  * and timings — it cannot know that the second box wants today's date, that the dialog is
-                  * skipped when a row already exists, or which button ends the job. That knowledge only
-                  * exists in the head of the person who just did it, and this is the moment they are here.
-                  *
-                  * It goes into the goal, which for a skill made here is the sentence a model reads and
-                  * carries out. So this is executed rather than filed. */}
-                <div className={cn('grid gap-1.5', typing.length > 0 && 'mt-5 border-stroke border-t pt-4')}>
-                  <Typography variant="span" weight="semibold" className="text-[0.86rem]">
-                    Anything else it should know
-                  </Typography>
-                  <Typography variant="p" className="text-ink-inactive text-[0.82rem] leading-relaxed">
-                    Optional. The recording has the clicks; this is for what it cannot see.
-                  </Typography>
-                  <textarea
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value.slice(0, 2000))}
-                    rows={6}
-                    placeholder={'Add instructions in your own words — including any text it should type.\n\n'
-                      + 'For example:\n'
-                      + '• Type today’s date in the reference box\n'
-                      + '• If a row for this client already exists, stop and say so\n'
-                      + '• Finish by pressing Save, not Send'}
-                    className="w-full resize-y rounded-lg border border-stroke bg-surface-card2 px-3 py-2 text-[0.86rem] text-ink-primary leading-relaxed placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
-                  />
-                  <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
-                    This is added to the skill’s instructions, which you can read and edit on the next step.
-                  </Typography>
-                </div>
               </>
             )}
 
