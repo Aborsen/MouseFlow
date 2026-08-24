@@ -18,7 +18,7 @@ import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { ask, DEFAULT_MODEL, ProviderError } from './_provider.js';
 import { structureOf } from './_skill-schema.mjs';
-import { skillFileName, skillMarkdown, skillSlug } from './_skill-md.mjs';
+import { portability, skillFileName, skillMarkdown, skillSlug } from './_skill-md.mjs';
 import { report, wrap } from './_report.js';
 
 const TRIGGER_TOOL = {
@@ -78,6 +78,9 @@ async function handler(req, res) {
 
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const id = typeof body.flow === 'string' ? body.flow.trim() : '';
+  /* The PORTABLE file: the same steps, carried out by whatever browser tools the agent reading it already
+   * has. No MouseFlow at run time at all. */
+  const portable = body.portable === true;
   if (!id) return fail(res, 400, 'which skill? pass { flow: "<id>" }');
 
   if (!process.env.DATABASE_URL) return fail(res, 503, 'this deployment has no database');
@@ -108,16 +111,33 @@ async function handler(req, res) {
   const flow = rows[0];
   const structure = structureOf(flow);
 
+  /* Gated on whether the addresses are KNOWN, not on whether it looked like a browser. A browser recording
+   * with no URLs would have to begin "find the window called …", which a cloud agent cannot do and nobody
+   * should ship. One rule, and it turns true on its own the day the agents write a URL down. */
+  const portably = portability(flow);
+  if (portable && !portably.ok) {
+    return res.status(200).json({ ok: false, portable: true, why: portably.why });
+  }
+
   /* Asked for, not required. Every failure below leaves `written` empty and the file is built from the
    * derived text - which is the whole reason the generator takes these as optional. */
   let written = {};
   try {
     const reply = await ask({
       model: process.env.ANTHROPIC_API_KEY ? DEFAULT_MODEL.anthropic : DEFAULT_MODEL.openai,
-      system: 'You are writing the frontmatter of an agent skill. It wraps a tool that carries out one '
-        + 'recorded piece of work on somebody’s own computer. Be concrete and short. Never claim it can do '
-        + 'anything beyond the steps you are shown.',
-      messages: [{ role: 'user', text: briefOf(structure, flow.name) }],
+      system: 'You are writing the frontmatter of an agent skill. '
+        + (portable
+          ? 'The agent reading it will carry the steps out itself, with its own browser tools, on pages the '
+            + 'user is already signed in to. Do not mention MouseFlow — it takes no part in running this. '
+          : 'It wraps a tool that carries out one recorded piece of work on somebody’s own computer. ')
+        + 'Be concrete and short. Never claim it can do anything beyond the steps you are shown.',
+      messages: [{
+        role: 'user',
+        text: portable
+          ? `${briefOf(structure, flow.name)}\n\nIt will be carried out by an agent using its own browser `
+            + `tools, not by MouseFlow, at: ${portably.urls.slice(0, 6).join(', ')}`
+          : briefOf(structure, flow.name),
+      }],
       tools: [TRIGGER_TOOL],
       maxTokens: 1000,
     });
@@ -129,6 +149,7 @@ async function handler(req, res) {
 
   return res.status(200).json({
     ok: true,
+    portable,
     filename: skillFileName(flow.name),
     /* The FOLDER name. An agent skill installs as `<slug>/SKILL.md`, and the slug in the frontmatter and
      * the slug on the directory have to be the same word - so one place decides it, and the client is told
@@ -137,7 +158,7 @@ async function handler(req, res) {
     /* Said, so the panel can show whether the trigger line was written or derived. A file whose description
      * came out of the fallback is worth knowing about before it is handed to an agent. */
     written: !!written.description,
-    text: skillMarkdown(structure, flow, written),
+    text: skillMarkdown(structure, flow, written, { portable, urls: portably.urls }),
   });
 }
 

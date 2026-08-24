@@ -937,6 +937,73 @@ check('the model is optional — no key still produces the file',
 check('and the panel says when the description was derived rather than written',
   /Its description was derived rather than written/.test(skillsView));
 
+/* The other bargain: a file the agent reading it carries out ITSELF, with its own browser tools, on a
+ * machine MouseFlow is not on. Same steps, everything round them different. */
+group('a skill that runs where MouseFlow is not');
+const EXT_FLOW = {
+  name: 'Reply', source: 'web', kind: 'created',
+  payload: {
+    kind: 'created', goalTemplate: 'In Outlook, do this:\n1. Click "Reply".',
+    events: [
+      { action: 'Focus', url: 'https://outlook.office.com/mail/inbox' },
+      { action: 'Focus', url: 'https://outlook.office.com/mail/id/AAQk?token=secret#frag' },
+      { action: 'Focus', url: 'https://outlook.office.com/mail/inbox' },
+      { action: 'Focus', url: 'file:///Users/somebody/notes.txt' },
+    ],
+  },
+};
+/* A SKILL.md gets downloaded, committed, forwarded and pasted into an agent. A query string is where a
+ * session token, a one-time link or a search somebody typed lives. */
+check('the addresses come back with query and fragment dropped',
+  skillMd.urlTrail(EXT_FLOW.payload).join(' ')
+    === 'https://outlook.office.com/mail/inbox https://outlook.office.com/mail/id/AAQk',
+  skillMd.urlTrail(EXT_FLOW.payload).join(' '));
+check('and a non-web address is not one an agent can open, so it is not listed',
+  !skillMd.urlTrail(EXT_FLOW.payload).some((u) => u.startsWith('file:')));
+
+/* The gate is "do we know the addresses", not "did this look like a browser": a browser recording with no
+ * urls would have to begin "find the window called …", which a cloud agent cannot do. */
+check('a recording with addresses can be exported this way', skillMd.portability(EXT_FLOW).ok);
+check('one without them cannot, and is told why in terms of the recorder that made it',
+  skillMd.portability({ source: 'desktop', payload: { events: [] } }).ok === false
+    && /does not write down web addresses yet/.test(
+      skillMd.portability({ source: 'desktop', payload: { events: [] } }).why));
+
+const portableMd = skillMd.skillMarkdown(MD_STRUCTURE, { name: 'Reply' }, {},
+  { portable: true, urls: skillMd.urlTrail(EXT_FLOW.payload) });
+check('the portable file needs no agent, no worker and no connector',
+  /\| \*\*No MouseFlow\*\* \|/.test(portableMd)
+    && !/The MouseFlow agent, running/.test(portableMd)
+    && !/The MouseFlow worker, running/.test(portableMd));
+check('it tells the reader to carry the steps out with its own browser tools',
+  /Carry out the steps below yourself, with your browser tools\./.test(portableMd));
+/* The numbers in a recording came off somebody else's screen. Aiming by them on another machine is the one
+ * mistake this file has to forbid outright. */
+check('and to aim by name, never by coordinate',
+  /Aim by name, never by coordinate/.test(portableMd));
+check('it lists where it happens, and says the query was dropped on purpose',
+  /## Where it happens/.test(portableMd) && /Query strings were left out on purpose/.test(portableMd));
+/* Credentials are the one thing an unattended agent must never touch. */
+check('a sign-in wall is a stop, not a thing to solve',
+  /do not sign in, and do not handle\s+credentials/.test(portableMd)
+    && /never handle credentials/.test(portableMd));
+check('nothing in it claims the work happens on the user’s own machine',
+  !/own machine|on their machine/.test(portableMd));
+/* The steps are the ones the person approved in the wizard, notes and all. Re-deriving a second list would
+ * hand somebody a skill that differs from the one they read and agreed to. */
+check('the steps are the approved ones, not a second derivation',
+  /1\. Click "New mail"\./.test(portableMd));
+check('and the route refuses rather than shipping a file with nowhere to start',
+  /if \(portable && !portably\.ok\)/.test(read('../api/skill-md.js')));
+check('the model is told not to mention MouseFlow in a portable file',
+  /Do not mention MouseFlow — it takes no part in running this/.test(read('../api/skill-md.js')));
+check('the choice is offered at export, not forked at creation',
+  /const \[portable, setPortable\] = useState\(false\)/.test(skillsView)
+    && /Through MouseFlow/.test(skillsView) && /'Portable'/.test(skillsView));
+/* The dev fixture has to be able to reach BOTH answers or one of them is unreachable without production. */
+check('and the dev fixture carries a url with a query on it, so both paths are reachable',
+  /token=secret/.test(read('../web/src/dev/mock-api.ts')));
+
 /* An agent skill installs as a FOLDER. Handing over a bare .md means also telling somebody where to put it
  * and what to call the directory; a zip does not. Written by hand rather than pulled in: a zip of text needs
  * no compression, so the whole format is four fixed-layout records and a CRC-32. */

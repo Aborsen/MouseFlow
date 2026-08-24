@@ -142,8 +142,12 @@ const Structure = ({ skill, flowId, wire, onWire }: {
    * what a skill is, and this browser holds a copy that can be a sync behind. A file somebody downloads,
    * hands to an agent and forgets about has to describe the skill as it IS. */
   const [md, setMd] = useState<
-    null | { text: string; filename: string; slug: string; written: boolean }
+    null | { text: string; filename: string; slug: string; written: boolean; portable: boolean }
   >(null);
+  /* Which kind of file. Not a fork at creation time - the recording is the same either way, and somebody
+   * choosing before they know the difference ends up with the wrong row. This is a decision at the moment
+   * of use, and one skill can yield both. */
+  const [portable, setPortable] = useState(false);
   const [mdBusy, setMdBusy] = useState(false);
   const [mdProblem, setMdProblem] = useState<string | null>(null);
 
@@ -155,23 +159,26 @@ const Structure = ({ skill, flowId, wire, onWire }: {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ flow: flowId }),
+        body: JSON.stringify({ flow: flowId, portable }),
       });
       const body = await res.json();
       if (!res.ok || !body || !body.ok) {
-        throw new Error(body?.error?.message || 'the file could not be built');
+        /* A portable refusal is not a failure - it is an answer about this recording, and it says which
+         * recordings can be exported this way. Carried through as the reason rather than as an error. */
+        throw new Error(body?.why || body?.error?.message || 'the file could not be built');
       }
       setMd({
         text: body.text,
         filename: body.filename,
         slug: body.slug || 'mouseflow-skill',
         written: !!body.written,
+        portable: !!body.portable,
       });
     } catch (err) {
       setMdProblem(err instanceof Error ? err.message : 'the file could not be built');
     }
     setMdBusy(false);
-  }, [flowId]);
+  }, [flowId, portable]);
 
   /* An object URL rather than a data: one, revoked straight after. A long file in a data URL is a long
    * string in the address bar's history, and this one carries the person's own goal text. */
@@ -320,13 +327,39 @@ const Structure = ({ skill, flowId, wire, onWire }: {
 
           {/* ------------------------------------------------- and the same skill as an agent skill */}
           <div className="mt-3 border-stroke/60 border-t pt-3">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
               <FileText className="size-4 shrink-0 text-ink-inactive" />
               <Typography variant="span" weight="semibold" className="text-[0.8rem] text-ink-secondary">
                 As an agent skill
               </Typography>
+              {/* Two files, two bargains, and the difference is what has to be true when it runs. */}
+              <div className="ms-auto flex items-center gap-0.5 rounded-md border-stroke border bg-surface-card p-0.5">
+                {([
+                  [false, 'Through MouseFlow', 'Runs on this machine, any application — needs the agent'],
+                  [true, 'Portable', 'The agent reading it drives its own browser — needs no MouseFlow'],
+                ] as [boolean, string, string][]).map(([value, label, title]) => (
+                  <button
+                    key={label}
+                    type="button"
+                    title={title}
+                    onClick={() => { setPortable(value); setMd(null); setMdProblem(null); }}
+                    className={cn(
+                      'rounded px-2 py-1 text-[0.75rem] transition-colors duration-base',
+                      portable === value
+                        ? 'bg-brand-primary/15 font-semibold text-brand-primary'
+                        : 'text-ink-inactive hover:bg-state-hover',
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
               <Typography variant="span" className="min-w-0 flex-1 text-[0.74rem] text-ink-inactive">
-                A SKILL.md that tells an agent when to call the tool above.
+                {portable
+                  ? 'A SKILL.md an agent carries out with its own browser tools. No agent, no worker, no connector.'
+                  : 'A SKILL.md that tells an agent when to call the tool above.'}
               </Typography>
               {md ? (
                 <>

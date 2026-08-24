@@ -109,7 +109,14 @@ const FLOWS = [
         { name: 'type the message', input: 'the invoice is approved' },
         { name: 'attach the invoice', input: 'invoice-4417.pdf' },
       ],
-      events: [],
+      /* Only the addresses. The extension recorder writes `url` on the events that carry one, and this is
+       * what makes the PORTABLE export reachable in dev - without it every fixture is a desktop recording
+       * with no urls, and the only thing a person can see here is the refusal. The query on the second one
+       * is deliberate: urlTrail() drops it, and a fixture that never carried one would not prove that. */
+      events: [
+        { x: 0, y: 0, delayMs: 0, action: 'Focus', url: 'https://outlook.office.com/mail/inbox' },
+        { x: 0, y: 0, delayMs: 900, action: 'Focus', url: 'https://outlook.office.com/mail/id/AAQk?token=secret' },
+      ],
     },
   },
 ];
@@ -387,9 +394,10 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     req.on('data', (chunk) => { text += chunk; });
     req.on('end', () => {
       void (async () => {
-        let body: { flow?: string } = {};
+        let body: { flow?: string; portable?: boolean } = {};
         try { body = text ? JSON.parse(text) : {}; } catch (_) { /* handled below */ }
         const id = String(body.flow || '');
+        const portable = body.portable === true;
         const flow = [...FLOWS, ...pushedFlows.values()]
           .find((f) => (f as { id?: string }).id === id) as
             { id: string; name: string; kind?: string; source?: string; payload?: unknown } | undefined;
@@ -398,26 +406,45 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
             error: { type: 'skill_md_error', message: 'no skill with that id on this account' },
           });
         }
-        const [{ structureOf }, { skillMarkdown, skillFileName, skillSlug }] = await Promise.all([
+        const [{ structureOf }, { skillMarkdown, skillFileName, skillSlug, portability }] = await Promise.all([
           import('../../../api/_skill-schema.mjs'),
           import('../../../api/_skill-md.mjs'),
         ]);
         const structure = structureOf(flow);
         const row = flow;
+        /* The real gate, not a fixture of one: the dev flows are desktop recordings with no urls, so the
+         * portable refusal is what a person sees here - which is exactly what they would see in production
+         * for the same recording, and the reason worth reading. */
+        const portably = portability(flow);
+        if (portable && !portably.ok) {
+          return json(res, 200, { ok: false, portable: true, why: portably.why });
+        }
         /* What a model would have written, for a fixture. Deliberately in the voice the tool asks for. */
-        const written = id.endsWith('1') ? {
-          description: `Use this when the user asks to run "${row.name}" on their own computer. `
-            + 'Drives the real pointer through the MouseFlow agent on a paired machine.',
-          whenToUse: 'Use it when somebody asks for this work to be actually done, not described. It acts '
-            + 'on a real computer, so it is never the answer to a question. If no MouseFlow tool is '
-            + 'available, say so rather than attempting the steps another way.',
-        } : {};
+        /* The two prose fields differ BY MODE, because the real route gives the model a different system
+         * prompt for each - a portable file that talked about the MouseFlow agent would be a fixture
+         * teaching the wrong thing about the feature it exists to show. */
+        const written = id.endsWith('1')
+          ? (portable ? {
+            description: `Use this when the user asks to run "${row.name}" in their browser. Carries the `
+              + 'steps out with your own browser tools on pages they are already signed in to.',
+            whenToUse: 'Use it when somebody asks for this work to be actually done, not described. It '
+              + 'acts on a real, signed-in account, so it is never the answer to a question. If the page '
+              + 'does not look like the steps, stop rather than improvising.',
+          } : {
+            description: `Use this when the user asks to run "${row.name}" on their own computer. `
+              + 'Drives the real pointer through the MouseFlow agent on a paired machine.',
+            whenToUse: 'Use it when somebody asks for this work to be actually done, not described. It '
+              + 'acts on a real computer, so it is never the answer to a question. If no MouseFlow tool is '
+              + 'available, say so rather than attempting the steps another way.',
+          })
+          : {};
         return json(res, 200, {
           ok: true,
+          portable,
           filename: skillFileName(row.name),
           slug: skillSlug(row.name),
           written: !!written.description,
-          text: skillMarkdown(structure, flow, written),
+          text: skillMarkdown(structure, flow, written, { portable, urls: portably.urls }),
         });
       })();
     });
