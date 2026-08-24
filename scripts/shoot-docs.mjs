@@ -245,7 +245,7 @@ try { localStorage.setItem('mouseflow.theme', 'dark'); } catch (e) {}
  * a machine that is already attached — see the header. */
 const STAGED = `
 const HEALTH = {
-  ok: true, version: '0.8.2', platform: 'macos', screen: { w: 1512, h: 982 },
+  ok: true, version: '0.9.2', platform: 'macos', screen: { w: 1512, h: 982 },
   recording: false, playing: false, canSee: true, canWindows: true, canName: true,
   canKeys: true, canDrain: true, linked: false, autostart: true, canAutostart: true,
   permissions: { accessibility: true, screenRecording: true },
