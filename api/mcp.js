@@ -1024,7 +1024,7 @@ async function workerRoute(action, req, res, sql, who) {
       } catch (err) {
         /* Best effort, and reported. A run whose outcome never reached the log makes the dashboard wrong,
          * but it is not a reason to lose the answer the caller is waiting for. */
-        report(err, { route: 'mcp:step:log' });
+        await report(err, req, { route: 'mcp:step:log' });
       }
 
       const took = (done.steps || []).length;
