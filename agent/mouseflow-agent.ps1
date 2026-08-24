@@ -3085,10 +3085,10 @@ namespace MouseFlow
                 string token = Account.Token;
                 string root = Account.Base;
                 int status;
-                /* `kind: agent` says what this claimer is, so the queue does not hand it a goal skill.
-                   This courier records and replays; a goal skill is a model deciding one action at a time
-                   and there is no model here. Both it and the worker claim from the same endpoint, so
-                   without this it is whichever long-poll lands first. */
+                /* `kind: agent` says what this claimer is. Nothing depends on it - the WORKER declares
+                   itself and that is what the queue reads, because a worker updates with `git pull` and an
+                   agent is a compiled binary somebody has to reinstall. Sent anyway: it is true and costs
+                   a field. */
                 string answer = Post(root + "/api/mcp?worker=claim", token,
                     "{\"worker\":\"" + Agent.JsonText(Environment.MachineName) + "\",\"kind\":\"agent\",\"wait\":"
                     + ClaimWaitSeconds.ToString(CultureInfo.InvariantCulture) + "}", out status);

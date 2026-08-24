@@ -702,14 +702,22 @@ async function workerRoute(action, req, res, sql, who) {
      * to do something it does not understand" to. The worker has the model path.
      *
      * Both POST here with the same shape, and this took the oldest queued row regardless. While everything
-     * queued was a `#record.*` command, which both can do, nothing went wrong. The first goal skill queued
-     * on a machine running both would have gone to whichever long-poll landed first - a coin flip, and a
-     * confusing message on the losing side.
+     * queued was a `#record.*` command, which both can do, nothing went wrong; the first goal skill queued
+     * on a machine running both went to whichever long-poll landed first, and it was observed doing exactly
+     * that - the courier took it and answered "does not understand".
      *
-     * The AGENT declares itself rather than the worker declaring its powers, and that is the migration-safe
-     * direction: an agent too old to say so keeps behaving exactly as it does today, and no worker - old or
-     * new - is ever refused a job it can do. */
-    const claimerIsAgent = String((req.body && req.body.kind) || '') === 'agent';
+     * THE WORKER DECLARES ITSELF, and which side declares is the whole decision.
+     *
+     * Having the AGENT declare instead is the version that never refuses an old worker anything, and it was
+     * written that way first. It is wrong for one concrete reason: an agent is a COMPILED BINARY installed
+     * on somebody's machine, so that fix arrives only when every one of them has been rebuilt and
+     * reinstalled. The worker is a checkout of this repository run by node - it updates with `git pull`.
+     * Declaring on the side that can actually be updated is what makes the fix land.
+     *
+     * The cost is real and worth stating: a worker too old to declare itself stops being given goal skills.
+     * They queue, and the caller is told nothing picked them up - which is a true sentence somebody can act
+     * on, unlike the one this replaced. */
+    const claimerIsWorker = String((req.body && req.body.kind) || '') === 'worker';
     const wait = Math.min(CLAIM_WAIT_MAX_MS, Math.max(0, Number((req.body && req.body.wait) || 0) * 1000));
     const until = Date.now() + wait;
 
@@ -726,7 +734,7 @@ async function workerRoute(action, req, res, sql, who) {
              * not-a-goal, so a stale job still gets claimed and fails with a reason rather than sitting in
              * the queue forever waiting for a claimer that will never be allowed to take it. */
             and (
-              ${!claimerIsAgent}
+              ${claimerIsWorker}
               or q.flow_id like '#%'
               or not exists (
                 select 1 from user_flow f

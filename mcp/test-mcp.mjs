@@ -1403,20 +1403,24 @@ check('a deployment with no model key says so rather than reporting a crash',
 group('the queue hands a job only to something that can do it');
 const mcpApi = read('../api/mcp.js');
 check('the claim asks what the claimer is',
-  /const claimerIsAgent = String\(\(req\.body && req\.body\.kind\) \|\| ''\) === 'agent'/.test(mcpApi));
-check('and an agent is not handed a created skill',
-  /and f\.deleted_at is null and f\.kind = 'created'/.test(mcpApi));
+  /const claimerIsWorker = String\(\(req\.body && req\.body\.kind\) \|\| ''\) === 'worker'/.test(mcpApi));
+check('and a created skill goes only to something that declared it has the model path',
+  /and f\.deleted_at is null and f\.kind = 'created'/.test(mcpApi)
+    && /\$\{claimerIsWorker\}/.test(mcpApi));
+check('and the worker is what declares it',
+  /kind: 'worker'/.test(read('../mcp/worker.mjs')));
 /* A command is `#`-prefixed and both kinds can do it — the flow lookup is only for actual skills. */
 check('a command still goes to either of them', /q\.flow_id like '#%'/.test(mcpApi));
 /* A stale job whose flow is gone must still be claimable, or it sits in the queue for ever waiting for a
  * claimer that will never be allowed to take it. */
 check('and a job whose flow went missing is still claimed, then fails with a reason',
   /not exists \(/.test(mcpApi));
-/* The AGENT declares itself rather than the worker declaring its powers: an agent too old to say so keeps
- * behaving exactly as it does today, and no worker - old or new - is ever refused a job it can do. */
-check('the declaration is on the agent, so an old one is unchanged and no worker is ever refused',
-  /\$\{!claimerIsAgent\}/.test(mcpApi)
-    && !/req\.body\.canGoal|body\.runsGoals/.test(mcpApi));
+/* WHICH SIDE declares is the whole decision, and it was made the wrong way round first. Having the AGENT
+ * declare never refuses an old worker anything - and it lands only when every compiled agent binary has
+ * been rebuilt and reinstalled. The worker is a checkout that updates with `git pull`. */
+check('the declaration is on the side that can be updated',
+  /an agent is a COMPILED BINARY/.test(mcpApi)
+    && /updates with `git pull`/.test(read('../mcp/worker.mjs')));
 
 /* A crash reporter on a product that promises not to watch you is worth checking rather than trusting. */
 group('error reporting sends crashes and not people');

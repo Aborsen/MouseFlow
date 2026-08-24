@@ -81,7 +81,14 @@ async function main() {
   for (;;) {
     let claimed;
     try {
-      claimed = await post('claim', { worker: CONFIG.name, wait: CONFIG.wait });
+      /* `kind: worker` says this claimer has the model path, so the queue may hand it a GOAL skill.
+       *
+       * An agent's own courier claims from this same endpoint and cannot run one - it records and replays,
+       * and there is no model in it. Without this the queue gave a goal skill to whichever long-poll landed
+       * first, and the courier answered "asked to do something it does not understand". Declaring on THIS
+       * side rather than the agent's is deliberate: an agent is a compiled binary that has to be rebuilt
+       * and reinstalled, and this is a checkout that updates with `git pull`. */
+      claimed = await post('claim', { worker: CONFIG.name, kind: 'worker', wait: CONFIG.wait });
       backoff = BACKOFF_MIN_MS;
     } catch (err) {
       say(`${err.message} — waiting ${Math.round(backoff / 1000)}s`);

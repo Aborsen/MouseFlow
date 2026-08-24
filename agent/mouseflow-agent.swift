@@ -2536,12 +2536,10 @@ enum Courier {
         guard let url = URL(string: link.base + "/api/mcp?worker=claim") else {
             return .failed("the account address is not a URL")
         }
-        /* `kind: agent` says what this claimer is, so the queue does not hand it a goal skill.
-         *
-         * This courier can start a recording, stop one, and replay a body. A goal skill is a model deciding
-         * one action at a time and there is no model here - taking one would mean answering "asked to do
-         * something it does not understand" to work the worker on the same machine could have done. Both
-         * claim from the same endpoint, so without this it is whichever long-poll lands first. */
+        /* `kind: agent` says what this claimer is. Nothing depends on it - the WORKER declares itself and
+         * that is what the queue reads, because a worker updates with `git pull` and an agent is a compiled
+         * binary somebody has to reinstall. Sent anyway: it is true, it costs a field, and it is what the
+         * server would read if the decision were ever made the other way round. */
         let ask: [String: Any] = ["worker": Host.current().localizedName ?? "this Mac",
                                   "kind": "agent",
                                   "wait": claimWaitSeconds]
