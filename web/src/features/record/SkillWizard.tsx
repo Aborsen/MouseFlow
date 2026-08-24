@@ -748,23 +748,6 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   * below, which is anything the recording could not know at all. */}
                 {fields.length > 0 && (
                 <div className="mt-5 border-stroke border-t pt-4">
-                  <Typography variant="p" className="mb-2 text-ink-inactive text-[0.85rem] leading-relaxed">
-                    MouseFlow records that a key was pressed and when, never which key — so what you typed is
-                    not in the recording and cannot be. Each card below is one place the recording knows you
-                    typed something and cannot know what.
-                  </Typography>
-                  {/* What the three buttons MEAN for the finished skill. Without this the screen is three
-                    * unlabelled choices repeated N times, and the only way to find out what they do is to
-                    * save and run it. */}
-                  <ul className="mb-3 grid gap-0.5 text-[0.82rem] text-ink-inactive leading-relaxed">
-                    <li><span className="text-ink-body">Ask each time</span> — becomes an input on the skill;
-                      whoever runs it has to supply the text.</li>
-                    <li><span className="text-ink-body">Always the same</span> — you write it once here and
-                      the skill types that on every run.</li>
-                    <li><span className="text-ink-body">Type nothing</span> — the skill leaves that field
-                      alone.</li>
-                  </ul>
-
                   {/* Setting them one at a time is fine for two and absurd for nineteen — and nineteen is
                     * what a long recording produces. A skill that asks for eighteen inputs before it will
                     * run is a skill nobody calls, so the way out of that has to be one click. */}
@@ -935,6 +918,34 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                         ))}
                       </ul>
                     )}
+                  </div>
+                )}
+
+                {/* The reference half, last.
+                  *
+                  * It was at the top, where it was the first thing on the step and pushed the cards - the
+                  * part somebody is here to USE - below the fold. Six lines of explanation standing in front
+                  * of the controls they explain is a screen that has to be scrolled past before it can be
+                  * worked, and the person who reported it could not see that there were cards at all.
+                  *
+                  * Kept rather than cut: without it the three buttons are unlabelled and the only way to
+                  * learn what they do is to save the skill and run it. Reference material belongs where
+                  * reference material is looked up - underneath, when a word on a button is not enough. */}
+                {fields.length > 0 && (
+                  <div className="mt-5 border-stroke/60 border-t pt-3">
+                    <Typography variant="p" className="mb-2 text-ink-inactive text-[0.82rem] leading-relaxed">
+                      MouseFlow records that a key was pressed and when, never which key — so what you typed
+                      is not in the recording and cannot be. Each card above is one place the recording knows
+                      you typed something and cannot know what.
+                    </Typography>
+                    <ul className="grid gap-0.5 text-[0.8rem] text-ink-inactive leading-relaxed">
+                      <li><span className="text-ink-body">Ask each time</span> — becomes an input on the
+                        skill; whoever runs it has to supply the text.</li>
+                      <li><span className="text-ink-body">Always the same</span> — you write it once here and
+                        the skill types that on every run.</li>
+                      <li><span className="text-ink-body">Type nothing</span> — the skill leaves that field
+                        alone.</li>
+                    </ul>
                   </div>
                 )}
               </>

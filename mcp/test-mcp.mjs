@@ -946,6 +946,13 @@ check('the chip that only explains itself does not look like a question',
 check('step two leads with the field anybody can use, not with the special case',
   wizard.indexOf('Anything else it should know')
     < wizard.indexOf('MouseFlow records that a key was pressed and when'));
+/* Six lines of explanation standing in front of the controls they explain is a screen that has to be
+ * scrolled past before it can be worked — the cards were not visible at all. Kept, but underneath. */
+check('and the explanation sits under the cards it explains, not on top of them',
+  wizard.indexOf('Set all {fields.length}')
+    < wizard.indexOf('MouseFlow records that a key was pressed and when'));
+check('and it says the cards are above it, since that is now where they are',
+  /Each card above is one place/.test(wizard));
 check('a 546-step list does not scan the blanks once per row',
   /const blankOf = useMemo\(\(\) => new Map/.test(wizard));
 check('and both screens edit the same blank, so they cannot disagree',
