@@ -121,10 +121,26 @@ as `stop`, or the run would halt only formally and wait forever.
 
 ## The desktop decision loop
 
-`web/src/lib/desktop-engine.ts`. The agent has eyes (`/shot`, `/pulse`), hands (`/do`) and a memory of what
-is open (`/windows`) — and no model. Deciding what to do next is this file's job.
+The agent has eyes (`/shot`, `/pulse`), hands (`/do`) and a memory of what is open (`/windows`) — and no
+model. Something else decides what to do next, and since 0.9.0 that something runs in **two places over one
+brain**.
+
+| | Drives the loop | Where it runs |
+|---|---|---|
+| `web/src/lib/desktop-engine.ts` | a `for` loop in the browser | the tab, while somebody watches |
+| `api/_step.mjs` | one turn per request | the deployment, for `?worker=step` |
+
+**`api/_brain.mjs` holds what both of them think with**: the system prompt, the tool schemas, the picture
+message, the encoding of an action, and what a refusal or a truncated answer means. Neither driver owns the
+prompt any more, which is the whole point — two loops that phrase the same instruction differently are two
+products.
+
+So this file is the **browser** driver. It is not the definition of the loop, and a change to how the model
+is asked belongs in `_brain.mjs` or it lands on one path only.
 
 ### Shape
+
+The constants live in `api/_brain.mjs`, and both drivers read them from there.
 
 | | |
 |---|---|

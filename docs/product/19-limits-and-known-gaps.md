@@ -71,12 +71,44 @@ These are not bugs and no amount of work inside the current design removes them.
 | macOS: Chrome's tab strip | Measured and **still nameless**: the hit test returns an unnamed group, climbing finds nothing, and the bounded child descent reached no tabs either (8 tab clicks, 0 named). The tabs must live in another branch, likely an `AXTabGroup` under the window. Finding it needs an AX-tree inspection of a real Chrome, not another guess. |
 | The OpenAI provider path | **Written, never run from here.** No `OPENAI_API_KEY` on the deployment. Structured so a wrong assumption fails loudly with the upstream's own message rather than silently degrading. |
 | Antivirus / EDR behaviour | **Untested.** A global mouse hook plus `SendInput` looks exactly like a RAT. |
-| The Windows worker installer | **Written, never run.** No Windows on this machine, so `mcp/install-worker-windows.ps1` has not been executed. Its contract is held against the macOS installer by the suite — token shape, no-echo prompt, Node floor, the three settings, status and uninstall — but that compares text, not behaviour. Unlike launchd there is no KeepAlive: a Startup-folder item is started once at sign-in and not restarted, which the script says out loud. |
+| **The Windows agent at 0.9.2** | **Written, never run there.** The step loop (`?worker=step`) and the crash reporter (`?worker=crash`, `/crash-test`) were both written on a Mac and have not executed on Windows once. The contract suite holds them against the macOS implementation, but that compares **text, not behaviour** — it would pass an implementation that returns the right shapes and moves no mouse. |
+| The Windows worker installer | **Written, never run.** No Windows on this machine, so `mcp/install-worker-windows.ps1` has not been executed. Its contract is held against the macOS installer by the suite — token shape, no-echo prompt, Node floor, the three settings, status and uninstall — but that compares text, not behaviour. Unlike launchd there is no KeepAlive: a Startup-folder item is started once at sign-in and not restarted, which the script says out loud. **It now matters less than it did**: nobody needs the worker for a goal skill since 0.9.0. |
 | Windows `/account` and the courier | **Verified on a real PC, 2026-08-23.** Attached from the app, `/health` answered `"linked":true,"taking":true,"platform":"windows"`, and a recording was started and stopped from a chat over MCP — the full path, chat to account to queue to the machine and back. It failed to compile on the first attempt: `HookInstalled` was declared a second time and `Add-Type` refused the whole block, which is the loud failure rather than a quiet one. `agent/check-csharp.mjs` runs in `npm test` now and catches that class of mistake. |
 | Team invitation emails | **Configured, not yet observed delivering.** `RESEND_API_KEY` and `MAIL_FROM` are set on production against the verified domain `kuswise.com`, so the send path is live — but no invitation has been watched arriving in a real inbox yet, and "the request returned 200" and "it landed in an inbox" are different claims. The message builder and the unconfigured path are covered by the suite. Invitations work either way: the row is the invitation, and if a send fails the screen says so with the provider's own words. |
 | The team dashboard at a large team | **Not measured past a handful of accounts.** `/api/insights?team=` unrolls every event of every recording for every member in one read-only transaction, and it is already the most expensive read in the product for one account. A 200-person team — the schema's cap — has never been tried, and the rate limit (30/min) counts requests, not accounts. If it becomes slow, the fix is to bound the per-application unrolling by member count rather than to raise a timeout. |
 
 ---
+
+### The stop-inside-a-wait path is written and not observed
+
+A wait can last two minutes, so the agent asks `?worker=state&id=` every third look at the screen and
+abandons the turn if the job is no longer `claimed`. That code has **never run**, because the model did not
+call `wait` in any of the verification runs — and it cannot be made to. Asking for a goal that ought to need
+waiting is not the same as getting a `wait`, and a path proven by a test that forces the call is a path
+proven against the test rather than against the model.
+
+The cancellation that *was* measured took a different route: the run was between steps, and the row was
+tidied in 0.2 s.
+
+### `api/mcp.js` still has no executable coverage
+
+This is the honest headline. The route that queues work, hands it to a machine, drives the loop and closes
+the job is checked by **regexes over its own source** and by nothing that runs it.
+
+Four bugs shipped from it in one day, and every one was found by watching a real run rather than by a suite:
+
+| | |
+|---|---|
+| A cancelled job kept its conversation | so the next claim resumed something the user had stopped |
+| A log entry written under `q_q_…` | the queue id prefixed twice |
+| A three-minute run recorded as eleven seconds | the wrong timestamp closed it |
+| A helper declared after the branch that called it | which answered a cancelling agent with HTTP 500 |
+
+The regexes now guard all four, which is worth something and is not the same thing as coverage: each one was
+written after the fact, from a bug already understood. A regex cannot find the fifth.
+
+What it would take is a harness that stands a queue up, claims from it, steps through a scripted loop and
+cancels part-way — the same shape as the existing suites, against a route that currently has none.
 
 ## Defects found while writing this documentation
 
@@ -125,12 +157,15 @@ Both of these predate the 0.8.2 tray icon and are now wrong, or at least incompl
 - [`AppLayout.tsx`](../../web/src/shell/AppLayout.tsx), the agent pill's tooltip: *"To stop it, close its
   PowerShell window."* Shown on **both** platforms, so on macOS it names a window that does not exist.
 
-### 5. `AGENT_WANTS` trails the agents
+### 5. `AGENT_WANTS` trails the agents — **fixed**
 
-`AGENT_WANTS` is `0.8.0`; both agents report `0.8.2`. That is coherent — 0.8.0 is the build that satisfies
-everything the client *requires* — but a 0.8.0 agent reads as "current" while lacking the tray, the menu bar
-and the ability to end a recording itself. Nothing breaks (the client only ever reacts to the held state and
-never requires it), so this is a judgement call to make deliberately rather than a defect.
+`AGENT_WANTS` is `0.9.2` (`web/src/lib/agent.ts`), which is what both agents report.
+
+The reasoning changed rather than the number merely catching up. It used to be a judgement call: 0.8.0 was
+the build that satisfied everything the client *required*, so trailing was defensible. Now the nudge is
+**deliberate and load-bearing** — an update prompt is the only way somebody on 0.8.x learns that the install
+step is gone and a goal skill no longer needs a worker beside the agent. A client that quietly accepted the
+old build would leave them installing a second program for nothing.
 
 ### 6. The macOS agent's four new `#ctx` keys are emitted and never read
 

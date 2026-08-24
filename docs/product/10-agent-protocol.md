@@ -41,6 +41,7 @@ slow answer is worse than a refusal**.
 | DELETE | `/account` | 5 s | `{ ok, linked: false }` |
 | POST | `/autostart/enable` | 8 s | `{ ok }` — needs the agent to exist as a file on disk |
 | POST | `/autostart/disable` | — | `{ ok }` |
+| POST | `/crash-test` | 15 s | `{ ok, reported }` — sends one crash on purpose and **waits** for the answer. **409** when the machine is not attached to an account |
 
 ## Capability flags
 
@@ -394,6 +395,87 @@ Three properties are the design rather than details of it:
 
 `agent/PROTOCOL.md` is normative for this route; [21 — MCP](21-mcp.md#letting-it-act-on-your-computer) is
 what it is for.
+
+
+## Carrying out a goal — `?worker=step`
+
+A **recorded** skill is a body to replay, and an agent has always been able to do that alone. A **created**
+skill is a *goal*: a sentence a model carries out by looking at the screen and choosing one action at a
+time. There is no model in an agent, so until 0.9.0 those jobs needed a second node process on the same
+machine — the worker — whose only real qualification was that it could reach `127.0.0.1`.
+
+Since 0.9.0 the agent does them itself, by being the hands rather than the head:
+
+```
+agent  ──POST /api/mcp?worker=step  { id, shot, windows, results }──►  deployment decides (~7s)
+agent  ◄─────────────────  { actions: [ … ] }  ─────────────────────
+       does them, takes a new picture, posts again
+```
+
+One request per step, and nothing reconnects between them because there is no gap: the reply to one step is
+what produces the next. The request is deliberately allowed to be slow — that is the model thinking, not a
+stall.
+
+| | |
+|---|---|
+| **`shot`** | Exactly what `/shot` returns, spliced in whole |
+| **`windows`** | The **ARRAY** from `/windows`, not the wrapper. Both agents send the array, because a wrapper on one side is invisible until the model is told nothing is open |
+| **`results`** | What came of the last `actions`: `{ id, output }`, or `{ id, isError: true, output }` |
+
+**A `wait` answers with numbers** — `{ id, quiet, waited, quietFor }` — and never a sentence. The wording the
+model reads is composed at the deployment, so the two agents cannot phrase the same outcome differently.
+
+The answer is one of **`{ actions }`**, **`{ shrink: <width> }`** (that picture was too large to send — take
+a smaller one and ask again; nothing was done, so send no results) or **`{ done: true }`** (finished,
+cancelled, or the job is gone). An action is `{ id, kind: "do", body }` — a `/do` line the agent already
+speaks — or `{ id, kind: "wait", ms }`.
+
+Four rules that are easy to get wrong:
+
+- **The deployment closes the job itself** on the step that ends it. An agent must NOT also
+  `?worker=report` a run it drove, or it overwrites what the run said. It reports only when it gives up
+  part-way.
+- **A claimer is offered goals only if it says it can take them** — `steps: true` in the `?worker=claim`
+  body. An older agent goes on not being offered them, which is why the declaration is on the claimer
+  rather than inferred from a version.
+- **When a worker and a step-capable agent are both listening, the agent gets the goal.** There is one
+  mouse and both long-poll the same endpoint, so the queue decides rather than the race: a worker is not
+  offered a goal while an agent has asked for work in the last 90 seconds, and starts taking them again by
+  itself if that agent stops. A machine with only a worker is unaffected.
+- **A stop is noticed inside a wait.** A wait can last two minutes, which is far too long for "cancelled"
+  to mean nothing, so every third look at the screen the agent also asks `?worker=state&id=`. If the job is
+  no longer `claimed` it abandons the rest of the turn and posts what it has. No answer to that question is
+  not an answer — the next step finds out anyway.
+
+**Waiting happens at the agent now**, with the same numbers the app's own loop uses: the 64×36 fingerprint
+from `/pulse`, 1.5 s between looks, two still frames, and a mean difference above 3/255 counting as
+movement. They agree on purpose — "the screen stopped" must not mean two things.
+
+## Saying it fell over — `?worker=crash` and `/crash-test`
+
+An agent runs under launchd, or in a window, on somebody else's computer. Until 0.9.0 the only trace of a
+fault was a line in a log nobody opens.
+
+Both agents now report **through the account** — `POST /api/mcp?worker=crash` with
+`{ type, message, where, level, platform, version, stack }` — and never to Sentry directly. That is the
+design rather than a shortcut: the agent already dials the deployment with a device token, so it needs no
+DSN of its own inside a program people download, and what arrives is already attached to an account and to
+a build.
+
+Three rules, both implementations:
+
+- **Once per process per thing.** A hook that will not install fails every time it is tried.
+- **Silent when unpaired.** No account, nowhere to send it, nobody to attach it to.
+- **Never blocks, never throws, ten-second timeout.** The courier waits ninety seconds because it
+  long-polls; a crash report that held a thread that long would be a second fault.
+
+What cannot travel this way is a failure whose cause is *cannot reach the deployment*. That stays in the
+agent's own log, and saying so is part of the contract.
+
+`POST /crash-test` sends one event on purpose and **waits** for the answer: `{ ok, reported }`, where
+`reported` is true only if Sentry itself took the event. Fire-and-forget is right for a real fault and
+useless for a test — "sent" would mean "handed to a socket", which is exactly the answer that lets a silent
+reporter live for months.
 
 ## Authentication
 

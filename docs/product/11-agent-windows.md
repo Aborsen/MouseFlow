@@ -1,7 +1,18 @@
 # 11 — The Windows agent
 
 `agent/mouseflow-agent.ps1`, one file, ~2,440 lines of PowerShell wrapping a C# type definition. Version
-**0.8.2**. Debugging notes: [`docs/DEBUG-WINDOWS.md`](../DEBUG-WINDOWS.md).
+**0.9.2**. Debugging notes: [`docs/DEBUG-WINDOWS.md`](../DEBUG-WINDOWS.md).
+
+### What 0.9.x added here, none of it run on Windows yet
+
+- **It can carry out a goal skill by itself** — `?worker=step`, one turn per request, no worker process on
+  the machine. See [10 — the agent protocol](10-agent-protocol.md).
+- **It reports its own crashes** through the account, `?worker=crash`, with `POST /crash-test` to prove the
+  pipe.
+- **It notices a stop inside a wait**, by asking `?worker=state&id=` every third look at the screen.
+
+All three were written on a Mac. The contract suite holds this implementation against the macOS one, but
+that compares **text, not behaviour** — see [19 — limits and known gaps](19-limits-and-known-gaps.md).
 
 ## How it runs
 
@@ -64,7 +75,7 @@ Right-click menu:
 
 | Item | When it shows |
 |---|---|
-| `MouseFlow agent 0.8.2` | always (header, disabled) |
+| `MouseFlow agent 0.9.2` | always (header, disabled) |
 | `Records only between Start and Stop` | always (disabled) |
 | **Start Recording** | idle, nothing held, and the hook is installed |
 | **Stop and Save Recording** | while recording |

@@ -112,6 +112,7 @@ before it offers a button:
 | Aim a replay by name | yes (`#ctx` on the press) | inherent — it aims at elements |
 | Long sessions (hours) | yes (`canDrain`, 0.8.0+) | no |
 | End a recording at the agent | yes (0.8.2: tray / menu bar) | no |
+| **Carry out a goal skill** | **yes, on its own since 0.9.0** — one turn per request, no second program on the machine | as it is today |
 | Reach a native application | yes | no |
 | Survive a page redesign | no — coordinates | mostly — selectors and text |
 | Zero install | no | yes |

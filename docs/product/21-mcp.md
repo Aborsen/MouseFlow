@@ -486,6 +486,8 @@ The server answers in sentences rather than error codes, on purpose. These are t
 | `POST /api/mcp?worker=claim` | A claimer takes the next job (long-polls, ≤25s) |
 | `POST /api/mcp?worker=report` | …and says how it went. A stopped recording arrives here as a five-column body and is turned into a row **here**, not on the machine |
 | `GET /api/mcp?worker=state&id=` | …and asks whether it has been cancelled meanwhile |
+| `POST /api/mcp?worker=step` | A machine carries out **one turn of a goal**. Posts `{ id, shot, windows, results }`, gets `{ actions }`, `{ shrink }` or `{ done }`. Holds while the model decides, which is thinking rather than a stall. The deployment closes the job itself on the step that ends it — an agent must not also `?worker=report` a run it drove |
+| `POST /api/mcp?worker=crash` | …and says when it fell over. `{ type, message, where, level, platform, version, stack }`, through the account rather than to Sentry directly, so no DSN sits inside a downloaded program |
 | `POST /api/oauth?do=register` | RFC 7591 dynamic client registration |
 | `GET /api/oauth?do=authorize` | the consent page, behind the ordinary sign-in wall |
 | `POST /api/oauth?do=approve` | "yes, this client may act as me" → a code |

@@ -122,6 +122,53 @@ An extension run's steps carry a per-step `ms` and the page each acted on, which
 timing anywhere in the schema**. A desktop run's steps carry `{ tool, input }` and no timing at all — which is
 why "where did the time go inside a desktop run" is in the Dashboard's gaps rather than on its chart.
 
+## `run_queue` — work asked for in one place and done in another
+
+`db/007_run_queue.sql`, plus `db/010_run_queue_loop.sql`
+
+An MCP call cannot reach into somebody's desktop, and nothing in the design should let it: the agent does
+not accept connections from the internet. So the desktop asks instead. A tool call becomes a **row** here, a
+claimer on the user's own machine takes it, and the outcome is written back. The direction of the connection
+never reverses — that is the security property, and a machine with nothing listening simply never claims
+anything.
+
+| Column | Notes |
+|---|---|
+| `id` | text, primary key |
+| `user_id` | uuid |
+| `flow_id` | the skill, by the client id `user_flow` is keyed on. **Not a foreign key** — a skill deleted between the ask and the claim should fail the job with a reason, not fail the delete |
+| `tool_name`, `args` | what was asked for |
+| `state` | `queued` → `claimed` → `done` \| `failed` |
+| `claimed_by`, `claimed_at`, `finished_at` | |
+| `ok`, `said` | the outcome, in the words the tool result will use |
+| `created_at` | |
+| `loop` | jsonb — the decision loop's conversation, for a goal driven from the cloud |
+| `stepping` | boolean — that the cloud path is driving this job |
+
+**Nothing goes back.** A job a machine took and lost is expired by the claim age, never returned to the
+pool: a run that may be half-done must not be repeated blind.
+
+**`loop` never holds a picture.** A goal is a model deciding one action at a time from a screenshot, and a
+serverless function has nowhere to keep a conversation between two requests — the instance that decided step
+4 may not be the one that decides step 5. So the conversation lives in the row. But at 161 KB a step and up
+to 240 steps a run, keeping the images would turn the queue into a picture album, so `api/_step.mjs` strips
+every image before writing the state back. There is nothing to keep: the agent sends a fresh picture with
+every request.
+
+The column is called `loop` rather than `state` because **`state` is already this table's
+queued/claimed/done**.
+
+### What it writes to the log
+
+A queued job that runs writes `user_run` like any other run. Two things identify one driven from the cloud:
+`extension: 'cloud'`, and `client_id` set to the queue id. A run somebody **stopped** is logged too, with
+`outcome: 'stopped'` — a cancellation is a fact about the run, not an absence of one.
+
+> **Why not `user_run`.** That table is the LOG — what happened, for the dashboard and the assistant to
+> read. This is a QUEUE — what has been asked for and has not happened yet. One table would mean every
+> reader of the log filtering out work that may never occur, and the first reader to forget would report a
+> request as an action.
+
 ## `device_token` — pairing the extension
 
 `db/002_user_data.sql`. `id`, `user_id`, `token_hash` (unique), `label`, `created_at`, `last_used_at`,

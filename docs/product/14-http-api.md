@@ -370,7 +370,20 @@ GET    /api/mcp?pending=1          "is anything waiting for a machine?"  (any cr
 POST   /api/mcp?worker=claim       a machine takes the next job          (long-polls, ≤25 s)
 POST   /api/mcp?worker=report      …and says how it went
 GET    /api/mcp?worker=state&id=   …and asks whether it was cancelled meanwhile
+POST   /api/mcp?worker=step        a machine carries out one turn of a goal   (holds while the model decides)
+POST   /api/mcp?worker=crash       …and says when it fell over
 ```
+
+`?worker=step` is how a goal skill runs without a model on the machine. The agent posts
+`{ id, shot, windows, results }` and gets back one of `{ actions }`, `{ shrink: <width> }` — that picture was
+too large, take a smaller one and ask again, nothing was done — or `{ done: true }`. One request per step, and
+nothing reconnects between them because the reply to one step is what produces the next. The request is
+deliberately allowed to be slow: that is the model thinking, not a stall. `windows` is the ARRAY from
+`/windows` and not the wrapper.
+
+**The deployment closes the job itself** on the step that ends it. An agent must NOT also `?worker=report` a
+run it drove, or it overwrites what the run said — it reports only when it gives up part-way. The full
+contract is in [`agent/PROTOCOL.md`](../../agent/PROTOCOL.md) and [10 — the agent protocol](10-agent-protocol.md).
 
 Everything about it — every tool, what it refuses, how a request reaches somebody's desktop — is
 [21 — MCP](21-mcp.md). Three things belong here, beside the other routes:
