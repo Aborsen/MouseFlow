@@ -256,9 +256,27 @@ deployment".
 
 ## 6. Definition of done
 
-- A machine with **only the agent installed** runs a goal skill through MCP, end to end.
-- The worker, when present, still takes precedence and behaves as before.
-- A run is measurably no more than ~10% slower per step than the local path, measured the same way as
-  §1 (`user_run.steps` and the started/finished stamps).
-- `agent/test-contract.mjs` proves both agents implement the step loop.
-- The Connections screen no longer asks anybody to install a worker.
+| | Status |
+|---|---|
+| A machine with **only the agent installed** runs a goal skill through MCP, end to end | ✅ 2026-08-24, worker stopped |
+| A run is no more than ~10% slower per step than the local path | ✅ **8.7 s/step** against the local **7.0–8.6 s** measured in §1 |
+| `agent/test-contract.mjs` proves both agents implement the step loop | ✅ 13 checks |
+| The worker, when present, still takes precedence | ❌ **not enforced** — the claim filter lets both take goals, so it goes to whichever asks first. Step 4. |
+| The Connections screen no longer asks anybody to install a worker | ❌ Step 4 |
+
+The per-step number is measured the same way as §1 — `user_run.steps` against the started/finished stamps —
+on a stopped run of 11 steps in 95.7 s. It sits at the top of the local range rather than below it, which is
+what one 161 KB upload per step costs.
+
+### What the live runs found that no test did
+
+Four, all in the route, and every one of them from watching a real run rather than from reading:
+
+1. Cancelling left the conversation in the row.
+2. The run was logged under `q_q_…`, because the queue id is already prefixed.
+3. A three-minute run was logged as eleven seconds: `claimed_at` is moved on by every step.
+4. **A helper declared after the branch that calls it** — a temporal dead zone, so cancelling answered the
+   agent with HTTP 500 and it abandoned the run. `node --check` does not see it and every check over this
+   route is a regex, which is the standing gap `api/mcp.js` admits to in its own comments.
+
+All four fixed and guarded. The fourth guard was verified by putting the bug back and watching it fail.
