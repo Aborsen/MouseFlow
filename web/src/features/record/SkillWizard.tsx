@@ -98,6 +98,10 @@ interface Blank {
   /** Is this a place a skill could type, and was that read or guessed? From classifyTyping(). */
   verdict: TypingVerdict;
   fill: Fill;
+  /** Which of the runs into this same control this one is, and how many there are. 0 when it is the only
+   *  one, or when this is not a field at all. Nine runs into one "Prompt" made nine identical cards. */
+  nth: number;
+  of: number;
   /** For `ask`: the parameter's name and type. For `fixed`: the text to type. */
   param: string;
   type: 'quoted' | 'email' | 'url';
@@ -106,17 +110,23 @@ interface Blank {
 
 /* A field name is written for a person - "To", "Subject line", "Search the web" - and a parameter name is
  * written for a schema. Slugged rather than invented, so the two are recognisably the same thing. */
-const paramFromControl = (control: string | null, taken: Set<string>) => {
-  const base = String(control || 'text')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 24) || 'text';
-  if (!taken.has(base)) return base;
+const slugOf = (control: string | null) => String(control || 'text')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_')
+  .replace(/^_+|_+$/g, '')
+  .slice(0, 24) || 'text';
+
+/* Two DIFFERENT controls can slug to the same word, and two parameters with one name is a skill that asks
+ * for one thing and fills two. Separate from the numbering below, which is about the same control typed
+ * into repeatedly - that one is numbered from 1, this one only breaks a tie. */
+const unique = (want: string, taken: Set<string>) => {
+  if (!taken.has(want)) return want;
   let n = 2;
-  while (taken.has(`${base}${n}`)) n++;
-  return `${base}${n}`;
+  while (taken.has(`${want}${n}`)) n++;
+  return `${want}${n}`;
 };
+
+const paramFromControl = (control: string | null, taken: Set<string>) => unique(slugOf(control), taken);
 
 /* The three types `parameterise()` emits and `api/_skill-schema.mjs` knows how to describe. Guessed from the
  * field's own name, and only where the name is unambiguous: "To" and "Cc" in a mail window are addresses,
@@ -308,6 +318,7 @@ const WhatWasTyped = ({ blank, onEdit }: {
         </Typography>
         <Typography variant="p" className="mt-0.5 mb-2 truncate text-[0.78rem] text-ink-inactive">
           {blank.control ? `into “${blank.control}”` : 'the field could not be named'}
+          {blank.of > 1 ? ` ${blank.nth} of ${blank.of}` : ''}
           {blank.keys ? ` · ${blank.keys} keystroke${blank.keys === 1 ? '' : 's'}` : ''}
         </Typography>
 
@@ -433,14 +444,36 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
          * as "this is in the skill" and is not. It stays in the list, switched off, saying why. */
         setKept(new Set(flat.filter(describable).map((l) => l.n)));
 
+        /* Is this a field, or is it Enter? See api/_typing.mjs - on a measured 6,617-event recording nine
+         * of thirteen typing runs were one text box and the other four were keys pressed at a dialog. */
+        const typed = flat.filter((l) => l.action === 'type');
+        const verdicts = new Map(typed.map((l) => [l.n, classifyTyping(l, l.where)]));
+
+        /* How many FIELD runs share a control, counted before any of them is named.
+         *
+         * The same box typed into nine times is nine runs, and they are not the same value: nine prompts in
+         * a chat are nine different sentences. So they stay nine parameters - but they have to be tellable
+         * apart, and `prompt, prompt2, prompt3` is a list where only the first is unnumbered, which reads as
+         * if it were the odd one out. Counted first so that the first of several can be `prompt1`, which is
+         * only knowable once the total is. */
+        const totals = new Map<string, number>();
+        for (const l of typed) {
+          if (!verdicts.get(l.n)?.field) continue;
+          const base = slugOf(l.control);
+          totals.set(base, (totals.get(base) ?? 0) + 1);
+        }
+
+        const soFar = new Map<string, number>();
         const taken = new Set<string>();
-        setBlanks(flat.filter((l) => l.action === 'type').map((l) => {
-          /* Is this a field, or is it Enter? See api/_typing.mjs - on a measured 6,617-event recording nine
-           * of thirteen typing runs were one text box and the other four were keys pressed at a dialog. */
-          const verdict = classifyTyping(l, l.where);
+        setBlanks(typed.map((l) => {
+          const verdict = verdicts.get(l.n) as TypingVerdict;
+          const base = slugOf(l.control);
+          const of = verdict.field ? (totals.get(base) ?? 1) : 0;
+          const nth = verdict.field ? (soFar.get(base) ?? 0) + 1 : 0;
+          if (verdict.field) soFar.set(base, nth);
           /* A parameter name is only spent on something that could take one. Numbering them from the whole
            * list would give the first real field a name like `text4`, counted off three keypresses. */
-          const param = verdict.field ? paramFromControl(l.control, taken) : '';
+          const param = verdict.field ? unique(of > 1 ? `${base}${nth}` : base, taken) : '';
           if (param) taken.add(param);
           return {
             n: l.n,
@@ -448,6 +481,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
             role: l.role,
             keys: l.keys,
             verdict,
+            nth,
+            of,
             /* Asking is the default for a FIELD, because that is what makes this a tool rather than a macro.
              * For everything else it is `skip`, and the screen says so in one line rather than in a card:
              * offering to parameterise an Enter keypress is how nineteen questions happened. That default is
@@ -795,6 +830,15 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                           >
                             {b.control ? `Into “${b.control}”` : 'Into a field it could not name'}
                           </span>
+                          {/* Which of them this is, in a span of its own so the truncation above can never
+                            * eat it. Nine cards all headed Into “Prompt” are nine cards nobody can tell
+                            * apart, and the total is half the answer: knowing this is the second of nine is
+                            * what makes the list navigable. */}
+                          {b.of > 1 && (
+                            <span className="shrink-0 font-medium text-[0.9rem] text-ink-primary">
+                              {b.nth} of {b.of}
+                            </span>
+                          )}
                           <span className="text-[0.76rem] text-ink-inactive">
                             step {b.n}{b.keys ? ` · ${b.keys} keystroke${b.keys === 1 ? '' : 's'}` : ''}
                           </span>

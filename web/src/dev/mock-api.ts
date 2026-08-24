@@ -426,6 +426,10 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           n: 2, where: { kind: 'app', label: 'Book1 - Excel', detail: 'EXCEL' }, startMs: 41000, seconds: 33,
           steps: [
             { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null, control: 'B4', controlType: 'cell', role: 'AXCell', keys: 0 },
+            /* A SECOND run into the same box as step 4. Real recordings are full of these - one measured
+             * recording typed into a single "Prompt" nine times - and without one here the wizard's
+             * "2 of 2" counter and its prompt1/prompt2 naming are unreachable in dev. */
+            { n: 9, at: 44000, ms: 5200, action: 'type', what: 'typed for 5.2s - 24 keystrokes into the "Message body" edit box in OUTLOOK', target: null, note: null, control: 'Message body', controlType: 'edit box', role: 'AXTextArea', keys: 24 },
             { n: 6, at: 52000, ms: 90, action: 'scroll', what: 'scrolled down 3 notches in EXCEL', target: null, note: null, control: null, controlType: null, role: null, keys: 0 },
             /* Two typing runs that are NOT fields - Enter and Escape at a dialog, which the hit-test names
              * after the dialog. Measured on a real recording (see api/_typing.mjs); here so that the folded

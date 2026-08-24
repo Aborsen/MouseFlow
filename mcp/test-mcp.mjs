@@ -953,6 +953,30 @@ check('and the explanation sits under the cards it explains, not on top of them'
     < wizard.indexOf('MouseFlow records that a key was pressed and when'));
 check('and it says the cards are above it, since that is now where they are',
   /Each card above is one place/.test(wizard));
+
+/* Nine runs into one "Prompt" made nine cards headed identically, and named them prompt, prompt2, prompt3 —
+ * a list where only the first is unnumbered, which reads as though it were the odd one out. They stay nine
+ * parameters, because nine prompts in a chat are nine different sentences; they just become tellable apart. */
+group('repeats of one field are numbered, not left looking identical');
+check('the total is counted before any of them is named, so the first can be prompt1',
+  /const totals = new Map<string, number>\(\);/.test(wizard)
+    && /const param = verdict\.field \? unique\(of > 1 \? `\$\{base\}\$\{nth\}` : base, taken\) : '';/.test(wizard));
+check('a field typed into once keeps its plain name',
+  /of > 1 \? `\$\{base\}\$\{nth\}` : base/.test(wizard));
+check('the card says which of them it is, and how many there are',
+  /\{b\.nth\} of \{b\.of\}/.test(wizard));
+check('and the popover says it too, since that is the other place they look identical',
+  /blank\.of > 1 \? ` \$\{blank\.nth\} of \$\{blank\.of\}` : ''/.test(wizard));
+/* The control name is truncated — it is often a window title. The counter must not be inside that span. */
+check('the counter sits outside the truncating span, so it can never be cut off',
+  wizard.indexOf('so the truncation above can never') > 0
+    && /<span className="shrink-0 font-medium text-\[0\.9rem\] text-ink-primary">/.test(wizard));
+/* Numbering repeats and breaking a tie between two DIFFERENT controls that slug alike are separate jobs. */
+check('two different controls that slug alike still get separate names',
+  /const unique = \(want: string, taken: Set<string>\)/.test(wizard)
+    && /const slugOf = \(control: string \| null\)/.test(wizard));
+check('the dev fixture carries a repeated field, or none of this is reachable in dev',
+  (read('../web/src/dev/mock-api.ts').match(/control: 'Message body'/g) || []).length === 2);
 check('a 546-step list does not scan the blanks once per row',
   /const blankOf = useMemo\(\(\) => new Map/.test(wizard));
 check('and both screens edit the same blank, so they cannot disagree',
@@ -968,7 +992,7 @@ check('a wrong verdict is one click to overturn',
 check('a guess is labelled as one, since that is what decides whether to overturn it',
   /b\.verdict\.sure \? '' : ' \(a guess\)'/.test(wizard));
 check('parameter names are spent on fields only, so the first real one is not called text4',
-  /verdict\.field \? paramFromControl\(l\.control, taken\) : ''/.test(wizard));
+  /const param = verdict\.field \? unique\(/.test(wizard) && /: '';/.test(wizard));
 check('overturning one names it, so Next is never disabled with an empty box and no reason',
   /next\.fill === 'ask' && !next\.param\.trim\(\)/.test(wizard));
 check('the transcript sends the unlocalised role, which is what any of this rests on',
