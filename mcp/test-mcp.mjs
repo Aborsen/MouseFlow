@@ -1466,6 +1466,18 @@ check('both refuse anything that is not a device token',
   /mf_\*\)/.test(mac) && /StartsWith\('mf_'\)/.test(win));
 check('both read the token without echoing it',
   /read -rs TOKEN/.test(mac) && /-AsSecureString/.test(win));
+/* Which is exactly why the length has to be checked. A prompt that does not echo invites somebody who is
+ * not sure the paste landed to paste again; that produces a 92-character string with the right prefix,
+ * which installs cleanly and then fails auth forever. It happened. */
+check('and both check the length, because the prefix alone let a doubled paste through',
+  /TOKEN_LEN" -ne 46/.test(mac) && /\$Token\.Length -ne 46/.test(win));
+/* The message has to name what happened. "Mint a new one" sends somebody to make a second token that
+ * fails the same way — which is what the worker's own error said, and it was not enough. */
+check('and say it was pasted twice rather than sending somebody to mint another',
+  /pasted twice/.test(mac) && /pasted twice/.test(win));
+/* 46 is not a guess: api/sync.js mints `mf_` + base64url of 32 random bytes. */
+check('46 is the length the account actually mints',
+  /DEVICE_TOKEN_PREFIX \+ randomBytes\(32\)\.toString\('base64url'\)/.test(read('../api/sync.js')));
 check('both refuse a Node older than 22.18, which the worker needs',
   /22 \] \|\| \{ \[ "\$NODE_MAJOR" -eq 22 \] && \[ "\$NODE_MINOR" -lt 18/.test(mac)
   && /major -lt 22 -or \(\$major -eq 22 -and \$minor -lt 18\)/.test(win));

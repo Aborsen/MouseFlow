@@ -314,13 +314,31 @@ async function main() {
       await wait(2200);
       await page.shot('record-transcript.png');
 
-      await page.goto(SITE + '/record', 2500);
-      await page.eval("window.__mf.clickAttr('aria-label', 'Make a skill from')");
-      await wait(1600);
-      await page.shot('record-skill-wizard.png');
-      await page.eval("window.__mf.clickExact('Next')");
-      await wait(1200);
-      await page.shot('record-skill-wizard-2.png');
+      /* ---- the skill wizard ----
+       *
+       * IT MOVED, AND THIS FAILED SILENTLY WHEN IT DID. Pressing Skill on a recording used to open the
+       * wizard over the recordings list, so this clicked an aria-label on the Record row and shot what
+       * came up. That button now navigates to /skills with the wizard open, and the aria-label it looked
+       * for is a HEADING INSIDE the wizard rather than an attribute on the row — so the click matched
+       * nothing, returned false into a value nobody read, and both wizard pictures came back as the
+       * Record page. They shipped that way. Hence the assertions below: a click that finds nothing is
+       * reported, and a picture that would have been of the wrong screen is skipped instead of taken.
+       */
+      await page.goto(SITE + '/skills', 2500);
+      if (!await page.eval("window.__mf.clickExact('Make a skill')")) {
+        console.log('  SKIPPED record-skill-wizard.png - no "Make a skill" button on /skills');
+      } else if (!await page.until("document.body.innerText.includes('Make a skill from')", 20)) {
+        console.log('  SKIPPED record-skill-wizard.png - the wizard never opened');
+      } else {
+        await wait(600);
+        await page.shot('record-skill-wizard.png');
+        if (!await page.eval("window.__mf.clickExact('Next')")) {
+          console.log('  SKIPPED record-skill-wizard-2.png - no Next button');
+        } else {
+          await wait(1200);
+          await page.shot('record-skill-wizard-2.png');
+        }
+      }
 
       /* ---- skills ---- */
       await page.goto(SITE + '/skills', 2500);

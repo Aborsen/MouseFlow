@@ -113,8 +113,20 @@ if (-not $Token) {
     $Token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
 }
+# See the note in install-worker-mac.sh: the prefix alone let through a token pasted twice, which installs
+# cleanly and then fails auth forever while telling somebody to mint a new one.
 if (-not $Token.StartsWith('mf_')) {
     Say 'That does not start with "mf_", so it is not a MouseFlow device token.'
+    exit 1
+}
+if ($Token.Length -ne 46) {
+    $half = [int]($Token.Length / 2)
+    if ($Token.Length % 2 -eq 0 -and $Token.Substring(0, $half) -ceq $Token.Substring($half)) {
+        Say "That looks like the same token pasted twice ($($Token.Length) characters, and the two halves match)."
+        Say 'This prompt does not echo, which is why it is easy to do. Run it again and paste once.'
+    } else {
+        Say "A device token is 46 characters; that one is $($Token.Length). Copy the whole of it, and only it."
+    }
     exit 1
 }
 

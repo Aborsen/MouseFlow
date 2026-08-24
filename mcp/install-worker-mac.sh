@@ -82,10 +82,28 @@ if [ -z "$TOKEN" ]; then
   read -rs TOKEN
   printf '\n'
 fi
+# What a token is, checked before it is written into a file that will retry it for sixty seconds at a time.
+#
+# `mf_` plus base64url of 32 random bytes - api/sync.js - so exactly 46 characters, always. The prefix alone
+# used to be the whole check, and it let through the one mistake this prompt invites: it does not echo, so
+# somebody who is not sure the paste landed pastes again. That produces a 92-character string with the right
+# prefix, which installs cleanly and then fails auth forever - and the only message is "mint a new one",
+# which sends them to make a second token that will fail exactly the same way.
+TOKEN_LEN=${#TOKEN}
 case "$TOKEN" in
   mf_*) : ;;
   *) say "That does not start with \"mf_\", so it is not a MouseFlow device token."; exit 1 ;;
 esac
+if [ "$TOKEN_LEN" -ne 46 ]; then
+  half=$((TOKEN_LEN / 2))
+  if [ $((TOKEN_LEN % 2)) -eq 0 ] && [ "${TOKEN:0:$half}" = "${TOKEN:$half}" ]; then
+    say "That looks like the same token pasted twice ($TOKEN_LEN characters, and the two halves match)."
+    say "This prompt does not echo, which is why it is easy to do. Run it again and paste once."
+  else
+    say "A device token is 46 characters; that one is $TOKEN_LEN. Copy the whole of it, and only it."
+  fi
+  exit 1
+fi
 
 mkdir -p "$(dirname "$PLIST")"
 cat > "$PLIST" <<PLIST
