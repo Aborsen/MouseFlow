@@ -5,9 +5,15 @@
 # run on a machine that also ran this, because the decision loop talked to 127.0.0.1. It does not any more:
 # the agent posts the screen to the deployment, the deployment decides, the agent acts. One install, done.
 #
-# WHAT IS LEFT IS ONE REASON, and it is a real one: with this running, the loop runs on YOUR machine, so the
-# screenshots never leave it. The deployment sees the outcome and not the screen. If that matters to you,
-# install this; if it does not, do not.
+# WHAT IS LEFT IS ONE REASON, and it is narrower than it sounds. With this running, the CONVERSATION stays
+# here: the transcript of a run lives in this process's memory and is gone when the run ends, where the
+# agent-only path keeps it in run_queue.loop on the deployment until the run finishes.
+#
+# WHAT IS NOT A REASON, and was claimed here for a few hours: the screenshot does NOT stay on this machine.
+# The loop asks /api/claude for every decision, so the picture goes to the deployment either way - that is
+# what runOnDesktop has always done, and no key on this machine changes it today. If "the screen never
+# leaves this computer" is what somebody wants, it needs the loop to call Anthropic directly with their own
+# key, and nothing here does that yet.
 #
 # The worker asks the account for work, does it through the local agent, and reports back. The direction
 # never reverses, which is why there is no inbound path to this computer at all. While it is running the

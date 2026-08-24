@@ -229,7 +229,9 @@ deployment".
   means "no agent", so a precedence rule can never be the thing that stops work happening.
 - `docs/product/21-mcp.md` said a created skill "still needs `mcp/worker.mjs` on the machine". It does not.
 - Both installers and `mcp/README.md` now open with *nobody needs this any more*, and keep the one real
-  reason to want it: with a worker, the loop runs on your machine and the screenshots never leave it.
+  reason left to want it: the run's conversation stays in that process rather than in `run_queue.loop`. NOT
+  privacy of the screen - the loop asks `/api/claude` for every decision, so the picture reaches the
+  deployment on both paths. That claim was written into the installers for a few hours and is wrong.
 - `AGENT_WANTS` moved to the build that no longer needs a worker beside it — the update nudge is the only
   way somebody on 0.8.x learns the install step is gone.
 

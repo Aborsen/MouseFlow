@@ -397,9 +397,16 @@ machine for one reason — it talked to `127.0.0.1` — and it does not any more
 `?worker=step`, the deployment decides, the agent does the action and posts the next screen. One request per
 step. See `agent/PROTOCOL.md`.
 
-`mcp/worker.mjs` still exists and still works. It is now a choice, not a requirement, and there is exactly
-one reason to want it: the decision loop runs on your own machine, so the screenshot never leaves it. Every
-other reason it used to have is gone.
+`mcp/worker.mjs` still exists and still works. It is now a choice, not a requirement, and the reason to want
+it is narrower than it looks.
+
+**It is not privacy of the screen.** The loop asks `/api/claude` for every decision, so the screenshot goes
+to the deployment on both paths — that is what `runOnDesktop` has always done. What the worker keeps local
+is the **conversation**: the transcript lives in that process's memory and is gone when the run ends, where
+the agent-only path holds it in `run_queue.loop` until the run finishes (images stripped, then cleared).
+
+If somebody wants "the screen never leaves this computer", neither path gives it today. It would take the
+loop calling Anthropic directly with the user's own key instead of `/api/claude`, which nothing does yet.
 
 | | |
 |---|---|
