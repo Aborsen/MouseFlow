@@ -289,6 +289,108 @@ const Structure = ({ skill, flowId, wire, onWire }: {
           )}
         </dl>
 
+        {/* The FILE first, the tool definitions under it.
+          *
+          * They were the other way round: the section somebody presses "Use in AI" to reach sat
+          * under a screen of JSON, reachable only by scrolling inside a panel — which is how it
+          * came to be asked where the download was. The JSON is reference. The file is the thing
+          * being fetched, and it goes first. */}
+        <div className="mb-4 border-stroke/60 border-b pb-3">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <FileText className="size-4 shrink-0 text-ink-inactive" />
+            <Typography variant="span" weight="semibold" className="text-[0.8rem] text-ink-secondary">
+              As an agent skill
+            </Typography>
+            {/* Two files, two bargains, and the difference is what has to be true when it runs. */}
+            <div className="ms-auto flex items-center gap-0.5 rounded-md border-stroke border bg-surface-card p-0.5">
+              {([
+                [false, 'Through MouseFlow', 'Runs on this machine, any application — needs the agent'],
+                [true, 'Portable', 'The agent reading it drives its own browser — needs no MouseFlow'],
+              ] as [boolean, string, string][]).map(([value, label, title]) => (
+                <button
+                  key={label}
+                  type="button"
+                  title={title}
+                  onClick={() => { setPortable(value); setMd(null); setMdProblem(null); }}
+                  className={cn(
+                    'rounded px-2 py-1 text-[0.75rem] transition-colors duration-base',
+                    portable === value
+                      ? 'bg-brand-primary/15 font-semibold text-brand-primary'
+                      : 'text-ink-inactive hover:bg-state-hover',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Typography variant="span" className="min-w-0 flex-1 text-[0.74rem] text-ink-inactive">
+              {portable
+                ? 'A SKILL.md an agent carries out with its own browser tools. No agent, no worker, no connector.'
+                : 'A SKILL.md that tells an agent when to call the tool above.'}
+            </Typography>
+            {md ? (
+              <>
+                {/* The folder first: it is the shape an agent skill installs in, and the bare file is the
+                  * one for somebody who already has a folder to drop it into. */}
+                <Button
+                  variant="tertiary"
+                  size="sm"
+                  leftSlot={<Download className="size-3.5" />}
+                  title={`A folder — ${md.slug}/SKILL.md — ready to drop in as it is`}
+                  onClick={downloadZip}
+                >
+                  {md.slug}.zip
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title="Just the file, for a folder you already have"
+                  onClick={download}
+                >
+                  .md
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="tertiary"
+                size="sm"
+                disabled={mdBusy}
+                leftSlot={mdBusy
+                  ? <Loader2 className="size-3.5 animate-spin" />
+                  : <FileText className="size-3.5" />}
+                onClick={() => { void makeMd(); }}
+              >
+                {mdBusy ? 'Writing' : 'Build it'}
+              </Button>
+            )}
+          </div>
+
+          {mdProblem && (
+            <Typography variant="p" className="mt-1.5 text-[0.74rem] text-fb-red-text">
+              {mdProblem}
+            </Typography>
+          )}
+
+          {md && (
+            <>
+              {/* Whether the trigger line was written or derived. A description that came out of the
+                * fallback reads "Carries out: In Outlook, do this:" — true, and a poor reason for an
+                * agent to reach for the file. Worth knowing before it is handed to one. */}
+              {!md.written && (
+                <Typography variant="p" className="mt-1.5 text-[0.74rem] text-ink-inactive">
+                  Its description was derived rather than written — no model was reachable. The file works;
+                  an agent is just less likely to reach for it. Build it again later for a better one.
+                </Typography>
+              )}
+              <pre className="mt-2 max-h-72 overflow-auto rounded-md border-stroke border bg-surface-chips p-2.5 font-mono text-[0.72rem] leading-relaxed text-ink-secondary">
+                {md.text}
+              </pre>
+            </>
+          )}
+        </div>
+
         {/* --------------------------------------------------------- the same thing, on the wire */}
         <div>
           <div className="mb-1.5 flex items-center gap-1.5">
@@ -325,102 +427,6 @@ const Structure = ({ skill, flowId, wire, onWire }: {
             {json}
           </pre>
 
-          {/* ------------------------------------------------- and the same skill as an agent skill */}
-          <div className="mt-3 border-stroke/60 border-t pt-3">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <FileText className="size-4 shrink-0 text-ink-inactive" />
-              <Typography variant="span" weight="semibold" className="text-[0.8rem] text-ink-secondary">
-                As an agent skill
-              </Typography>
-              {/* Two files, two bargains, and the difference is what has to be true when it runs. */}
-              <div className="ms-auto flex items-center gap-0.5 rounded-md border-stroke border bg-surface-card p-0.5">
-                {([
-                  [false, 'Through MouseFlow', 'Runs on this machine, any application — needs the agent'],
-                  [true, 'Portable', 'The agent reading it drives its own browser — needs no MouseFlow'],
-                ] as [boolean, string, string][]).map(([value, label, title]) => (
-                  <button
-                    key={label}
-                    type="button"
-                    title={title}
-                    onClick={() => { setPortable(value); setMd(null); setMdProblem(null); }}
-                    className={cn(
-                      'rounded px-2 py-1 text-[0.75rem] transition-colors duration-base',
-                      portable === value
-                        ? 'bg-brand-primary/15 font-semibold text-brand-primary'
-                        : 'text-ink-inactive hover:bg-state-hover',
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Typography variant="span" className="min-w-0 flex-1 text-[0.74rem] text-ink-inactive">
-                {portable
-                  ? 'A SKILL.md an agent carries out with its own browser tools. No agent, no worker, no connector.'
-                  : 'A SKILL.md that tells an agent when to call the tool above.'}
-              </Typography>
-              {md ? (
-                <>
-                  {/* The folder first: it is the shape an agent skill installs in, and the bare file is the
-                    * one for somebody who already has a folder to drop it into. */}
-                  <Button
-                    variant="tertiary"
-                    size="sm"
-                    leftSlot={<Download className="size-3.5" />}
-                    title={`A folder — ${md.slug}/SKILL.md — ready to drop in as it is`}
-                    onClick={downloadZip}
-                  >
-                    {md.slug}.zip
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    title="Just the file, for a folder you already have"
-                    onClick={download}
-                  >
-                    .md
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  variant="tertiary"
-                  size="sm"
-                  disabled={mdBusy}
-                  leftSlot={mdBusy
-                    ? <Loader2 className="size-3.5 animate-spin" />
-                    : <FileText className="size-3.5" />}
-                  onClick={() => { void makeMd(); }}
-                >
-                  {mdBusy ? 'Writing' : 'Build it'}
-                </Button>
-              )}
-            </div>
-
-            {mdProblem && (
-              <Typography variant="p" className="mt-1.5 text-[0.74rem] text-fb-red-text">
-                {mdProblem}
-              </Typography>
-            )}
-
-            {md && (
-              <>
-                {/* Whether the trigger line was written or derived. A description that came out of the
-                  * fallback reads "Carries out: In Outlook, do this:" — true, and a poor reason for an
-                  * agent to reach for the file. Worth knowing before it is handed to one. */}
-                {!md.written && (
-                  <Typography variant="p" className="mt-1.5 text-[0.74rem] text-ink-inactive">
-                    Its description was derived rather than written — no model was reachable. The file works;
-                    an agent is just less likely to reach for it. Build it again later for a better one.
-                  </Typography>
-                )}
-                <pre className="mt-2 max-h-72 overflow-auto rounded-md border-stroke border bg-surface-chips p-2.5 font-mono text-[0.72rem] leading-relaxed text-ink-secondary">
-                  {md.text}
-                </pre>
-              </>
-            )}
-          </div>
           <Typography variant="p" className="mt-1.5 text-ink-inactive text-[0.74rem]">
             {wire === 'openai'
               ? 'Responses API shape — name and parameters sit on the tool itself, not under a function key.'
