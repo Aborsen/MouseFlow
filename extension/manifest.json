@@ -13,6 +13,7 @@
   "host_permissions": [
     "<all_urls>",
     "https://api.anthropic.com/*",
+    "https://mouseflowapp.vercel.app/*",
     "https://mouse-agent.vercel.app/*"
   ],
   "background": {
@@ -35,6 +36,7 @@
   },
   "externally_connectable": {
     "matches": [
+      "https://mouseflowapp.vercel.app/*",
       "https://mouse-agent.vercel.app/*",
       "http://localhost/*",
       "http://127.0.0.1/*"
@@ -43,6 +45,7 @@
   "content_scripts": [
     {
       "matches": [
+        "https://mouseflowapp.vercel.app/*",
         "https://mouse-agent.vercel.app/*",
         "http://localhost/*",
         "http://127.0.0.1/*"

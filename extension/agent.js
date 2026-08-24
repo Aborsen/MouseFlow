@@ -23,7 +23,7 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
  * to Anthropic as before - so a user with their own key does not depend on this deployment
  * being up, and is not sharing anyone's quota.
  */
-const SHARED_URL = 'https://mouse-agent.vercel.app/api/claude';
+const SHARED_URL = 'https://mouseflowapp.vercel.app/api/claude';
 
 // Kept separate so the call site reads as one thing that can fail, rather than a nested literal.
 function fetchWithBody(url, headers, body) {

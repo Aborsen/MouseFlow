@@ -9,7 +9,7 @@
 
 'use strict';
 
-const APP_URL = 'https://mouse-agent.vercel.app';
+const APP_URL = 'https://mouseflowapp.vercel.app';
 const $ = (id) => document.getElementById(id);
 
 let recPoll = null;

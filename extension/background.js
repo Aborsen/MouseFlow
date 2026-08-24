@@ -26,7 +26,7 @@ import {
  * that warning cry wolf. */
 const VERSION = '0.16.2';
 // Where the gallery lives. The same deployment that serves the shared Claude key.
-const APP_URL = 'https://mouse-agent.vercel.app';
+const APP_URL = 'https://mouseflowapp.vercel.app';
 const KEEPALIVE_MS = 20000;
 
 const rec = {

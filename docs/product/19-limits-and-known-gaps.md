@@ -140,12 +140,20 @@ answered 400 on that machine until somebody tried it" — and the fix is the exi
 would cache a 404 into the install step. The app is installable (the manifest and icons are real) but has no
 offline behaviour.
 
-### 3. Two deployment hostnames in the tree
+### 3. Two deployment hostnames in the tree — and in the extension it was not cosmetic
 
 The API's CORS fallback origin and the Vite dev proxy target are `https://mouse-agent.vercel.app`, while the
 macOS installer's default origin and the documented deployment are `https://mouseflowapp.vercel.app`. The
 page is same-origin so the fallback never bites it, and every install command is built from `location.origin`
 — but the two names disagree, and the CORS fallback is the one that would matter to a non-browser caller.
+
+**Fixed for the extension on 2026-08-25, where the same disagreement was breaking a feature.** Its
+`content_scripts.matches` and `externally_connectable.matches` listed only `mouse-agent.vercel.app`, which is
+an alias that 307s to `mouseflowapp.vercel.app` and serves nothing itself. A match pattern is tested against
+the page's FINAL url, so `bridge.js` never loaded on the live app and the one-click "connect the extension"
+handover could not work in production — the redirect that makes the old name look alive is exactly what hides
+this. Both names are listed now, and `APP_URL` in `popup.js`/`background.js` plus `SHARED_URL` in `agent.js`
+point at the real one.
 
 ### 4. Stale instructions about stopping the Windows agent
 
