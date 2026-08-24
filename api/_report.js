@@ -150,6 +150,40 @@ export async function report(err, req, extra) {
 }
 
 /**
+ * A crash that happened somewhere else and was told to us.
+ *
+ * The agents are the case this exists for: a Swift binary under launchd and a PowerShell script in a
+ * window, both on somebody else's computer, both of which fail into a log file nobody is looking at. They
+ * already dial this deployment with a device token, so the cheapest honest reporter is to let them say what
+ * happened and to forward it from here - which also means no DSN inside a program a user downloads, and a
+ * crash that arrives already attached to an account.
+ *
+ * THE STACK IS NOT PARSED, deliberately. framesOf() reads V8's format; a Swift backtrace and PowerShell's
+ * ScriptStackTrace are neither that nor each other, and a parser that half-recognises a foreign format
+ * produces a trace that is confidently wrong. It travels as text under `extra`, where it is readable and
+ * cannot be mistaken for something this side worked out.
+ */
+export async function reportSaid(said) {
+  if (!dsnOf()) return false;
+  const type = String((said && said.type) || 'AgentError').slice(0, 80);
+  const message = String((said && said.message) || '').slice(0, 1000);
+  if (!message) return false;
+  const stack = said && said.stack ? String(said.stack).slice(0, 4000) : '';
+
+  return send({
+    level: said && said.level === 'warning' ? 'warning' : 'error',
+    /* Not 'node'. What ran was Swift or PowerShell, and saying otherwise would put every agent crash in the
+     * same bucket as this deployment's own. */
+    platform: 'other',
+    timestamp: Date.now() / 1000,
+    environment: process.env.VERCEL_ENV || 'development',
+    exception: { values: [{ type, value: message }] },
+    tags: said && said.tags ? said.tags : undefined,
+    extra: stack ? { ...(said.extra || {}), stack } : (said && said.extra) || undefined,
+  });
+}
+
+/**
  * The outer net: an exception that escapes a handler entirely.
  *
  * Most routes here catch their own errors and answer 500 themselves — which is exactly why `report()` is

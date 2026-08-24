@@ -5,6 +5,7 @@
  *   POST /api/mcp?worker=claim       a worker on somebody's machine takes the next job  (long-polls)
  *   POST /api/mcp?worker=report      ...and says how it went
  *   GET  /api/mcp?worker=state&id=   ...and asks whether it has been cancelled meanwhile
+ *   POST /api/mcp?worker=crash       ...and says when it fell over, so the crash is not only in a log file
  *   POST /api/mcp?worker=step        ...or, with no worker at all, an agent carries out a goal one turn
  *                                    at a time: it sends the screen, this decides, it does the action
  *
@@ -53,7 +54,7 @@ import { readSettings } from './admin.js';
 import { fillGoal, missingParams } from '../extension/skills.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
-import { report, wrap } from './_report.js';
+import { report, reportSaid, wrap } from './_report.js';
 
 const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const NEWEST = '2025-06-18';
@@ -1083,6 +1084,43 @@ async function workerRoute(action, req, res, sql, who) {
     /* A job cancelled while it ran is not 'claimed' any more, so nothing is updated - and that is the right
      * answer, not an error: the cancellation is what the person asked for and it stands. */
     return res.status(200).json({ ok: true, recorded: done.length === 1 });
+  }
+
+  /* An agent saying it fell over.
+   *
+   * It goes through here rather than to Sentry directly, and that is the whole design: the agent already
+   * dials this endpoint with a device token, so it needs no DSN of its own - one less secret inside a
+   * program people download - and what arrives is already attached to an account and a machine. The cost is
+   * stated plainly: a crash whose cause is "cannot reach the deployment" cannot arrive this way, and stays
+   * in the agent's own log where it always was.
+   *
+   * Nothing here can fail the caller. An agent that has just crashed is not helped by a 500.
+   */
+  if (action === 'crash') {
+    if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
+    const body = req.body || {};
+    let sent = false;
+    try {
+      sent = await reportSaid({
+        type: body.type,
+        message: body.message,
+        stack: body.stack,
+        level: body.level,
+        tags: {
+          route: 'agent',
+          /* Which agent, and which build of it. A crash that only happens on one platform or after one
+           * release is the common case, and without these every report reads as "the agent broke". */
+          platform: String(body.platform || 'unknown').slice(0, 20),
+          version: String(body.version || 'unknown').slice(0, 20),
+        },
+        extra: { where: String(body.where || '').slice(0, 200) },
+      });
+    } catch (_) {
+      sent = false;
+    }
+    /* `reported` is the truth, not a courtesy: a deployment with no DSN configured accepts this and sends
+     * nothing, and an agent that was told "ok" either way could never tell that apart from a working one. */
+    return res.status(200).json({ ok: true, reported: sent });
   }
 
   if (action === 'state') {
