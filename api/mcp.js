@@ -951,7 +951,13 @@ async function workerRoute(action, req, res, sql, who) {
     /* Gone, or cancelled while it ran. Not an error: the cancellation is what somebody asked for, and the
      * machine's job is to stop, which it cannot do unless it is told. */
     if (!job) return res.status(200).json({ ok: true, done: true, stop: 'gone' });
-    if (job.state !== 'claimed') return res.status(200).json({ ok: true, done: true, stop: job.state });
+    if (job.state !== 'claimed') {
+      /* Cancelled, or finished by something else. Told to stop AND tidied up: the conversation is only
+       * worth keeping while there is a next step to take, and a cancelled job that kept one would leave
+       * tens of kilobytes in the queue for as long as the row lives. */
+      if (job.loop) await sql`update run_queue set loop = null where id = ${id} and user_id = ${who.id}`;
+      return res.status(200).json({ ok: true, done: true, stop: job.state });
+    }
 
     const fail = async (why) => {
       await sql`
@@ -1012,7 +1018,7 @@ async function workerRoute(action, req, res, sql, who) {
             (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
              steps, said, extension, started_at, finished_at)
           values
-            (${who.id}, ${'q_' + job.id}, 'agent', ${String(loop.goal).slice(0, 4000)},
+            (${who.id}, ${job.id}, 'agent', ${String(loop.goal).slice(0, 4000)},
              ${String(loop.model).slice(0, 60)}, ${String(job.flow_id).slice(0, 80)},
              ${done.ok ? 'ok' : 'failed'}, ${done.said ? String(done.said).slice(0, 2000) : null},
              ${done.error ? String(done.error).slice(0, 2000) : null},

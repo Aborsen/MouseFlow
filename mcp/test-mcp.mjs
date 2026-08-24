@@ -555,7 +555,15 @@ group('a goal can be carried out by an agent with no worker behind it');
   check('every step moves the claim on, so staleness means "not heard from"',
     /loop = \$\{JSON\.stringify\(out\.loop\)\}, claimed_at = now\(\)/.test(route));
   check('a job cancelled while it ran tells the machine to stop rather than to carry on',
-    /job\.state !== 'claimed'[\s\S]{0,80}done: true, stop: job\.state/.test(route));
+    /job\.state !== 'claimed'[\s\S]{0,600}done: true, stop: job\.state/.test(route));
+  /* Observed on a real run: cancelling left 28KB of conversation in the row, because the stop path
+   * answered the machine and returned before tidying. A row that is over keeps nothing. */
+  check('and clears the conversation on the way out, not only when a run finishes',
+    /if \(job\.loop\) await sql`update run_queue set loop = null/.test(route));
+  /* The queue id is already prefixed. `q_ + job.id` wrote q_q_… into the log, which reads as a typo and
+   * would break any join somebody writes against it later. */
+  check('the run is logged under the queue id, not a second prefix of it',
+    !/\$\{'q_' \+ job\.id\}/.test(route));
   check('the goal comes from the one implementation of what a parameter does',
     /from '\.\.\/extension\/skills\.js'/.test(route) && /fillGoal\(skill, args\)/.test(route));
   check('and a missing parameter fails the job instead of running a sentence with a hole in it',

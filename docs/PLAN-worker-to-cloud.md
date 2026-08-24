@@ -176,7 +176,23 @@ Built at `fc7e9d8` (the brain) and the commit that follows it (the step and the 
 **Nothing calls it yet**: no agent declares `steps: true`, and the claim filter only relaxes for a claimer
 that does.
 
-### Step 3 — the agent side
+### Step 3 — the agent side  ✅
+
+Shipped in agent **0.9.0**, both implementations, one build. Verified on a real Mac on 2026-08-24 with the
+worker **stopped**: the agent claimed a goal job (`claimed_by: "MacBook Air — Victor"`, `stepping: true`),
+took 31 decisions, crossed the wave seam in the cloud — `loop` fell from 67,846 to 28,388 bytes at wave 2,
+which is the "the tenth wave costs what the first did" property, observed — and never once held a picture in
+the row. It opened the self-chat and typed the message it was given. Cancelling it stopped the machine
+within a step.
+
+Two things the live run found that no test had: cancelling left the conversation in the row, and the run was
+logged under `q_q_…` because the queue id is already prefixed. Both fixed, both now asserted.
+
+Crash reporting rode along in the same build (see below), because reinstalling an agent is the expensive
+part — though on a Mac with a Developer ID certificate the rebuild keeps its permissions, so it is cheaper
+than it looks.
+
+
 
 Both agents grow a step loop: while a job is claimed, POST a screenshot, receive an action, perform it,
 repeat. `/shot` and `/do` already exist — this is a loop around them, next to the existing courier.
@@ -186,6 +202,21 @@ repeat. `/shot` and `/do` already exist — this is a loop around them, next to 
 - `agent/PROTOCOL.md`: document `?worker=step` and the loop.
 - `agent/test-contract.mjs`: both agents must implement it identically.
 - **Verify:** a goal skill on a machine with the worker **stopped**.
+
+### Step 3.5 — an agent that can say it fell over  ✅
+
+Not in the original plan, and it belongs here rather than after: step 3 is exactly the change that fails
+silently on somebody else's machine, and the Windows agent has still never been run for real.
+
+- `POST /api/mcp?worker=crash` + `reportSaid()` in `api/_report.js` — the agent carries no DSN; it reports
+  through the account it already dials, so a crash arrives attached to an account and a build.
+- `POST /crash-test` on both agents, which WAITS and answers `{ reported }` — true only when Sentry itself
+  took the event. Verified on this Mac: `{"ok":true,"reported":true}`.
+- `api/test-report.mjs` reads the envelope off a socket, because a hand-written wire format that was
+  reasoned about rather than observed is a thing that silently sends nothing.
+
+What cannot travel this way, and is written into the protocol: a failure whose cause is "cannot reach the
+deployment".
 
 ### Step 4 — make the worker optional in the product
 
