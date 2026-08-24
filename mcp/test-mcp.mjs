@@ -555,11 +555,17 @@ group('a goal can be carried out by an agent with no worker behind it');
   check('every step moves the claim on, so staleness means "not heard from"',
     /loop = \$\{JSON\.stringify\(out\.loop\)\}, claimed_at = now\(\)/.test(route));
   check('a job cancelled while it ran tells the machine to stop rather than to carry on',
-    /job\.state !== 'claimed'[\s\S]{0,600}done: true, stop: job\.state/.test(route));
+    /job\.state !== 'claimed'[\s\S]{0,1200}done: true, stop: job\.state/.test(route));
   /* Observed on a real run: cancelling left 28KB of conversation in the row, because the stop path
    * answered the machine and returned before tidying. A row that is over keeps nothing. */
   check('and clears the conversation on the way out, not only when a run finishes',
-    /if \(job\.loop\) await sql`update run_queue set loop = null/.test(route));
+    /await sql`update run_queue set loop = null where id = \$\{id\}/.test(route));
+  /* And a run stopped part-way is still work that happened on somebody's computer. The worker path always
+   * logged it; this one used to let a cancelled run vanish from the Hours screen entirely. */
+  check('a stopped run is logged rather than dropped',
+    /await logRun\(job\.loop, 'stopped'/.test(route));
+  check('and there is ONE writer for the account log, so the two paths cannot drift',
+    (route.match(/insert into user_run/g) || []).length === 1);
   /* The queue id is already prefixed. `q_ + job.id` wrote q_q_… into the log, which reads as a typo and
    * would break any join somebody writes against it later. */
   check('the run is logged under the queue id, not a second prefix of it',
@@ -575,7 +581,7 @@ group('a goal can be carried out by an agent with no worker behind it');
   /* claimed_at is moved on by every step so that staleness means "not heard from". Using it as the start
    * time made a three-minute run read as eleven seconds, and the Hours screen is built on these stamps. */
   check('and dates it from when the run began, not from its last step',
-    /\$\{loop\.startedAt \|\| job\.claimed_at \|\| null\}/.test(route));
+    /\$\{state\.startedAt \|\| job\.claimed_at \|\| null\}/.test(route));
   check('only a claimer that says it can step is given a goal',
     /req\.body\.steps === true/.test(route) && /\$\{claimerSteps\}/.test(route));
 

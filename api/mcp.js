@@ -955,7 +955,13 @@ async function workerRoute(action, req, res, sql, who) {
       /* Cancelled, or finished by something else. Told to stop AND tidied up: the conversation is only
        * worth keeping while there is a next step to take, and a cancelled job that kept one would leave
        * tens of kilobytes in the queue for as long as the row lives. */
-      if (job.loop) await sql`update run_queue set loop = null where id = ${id} and user_id = ${who.id}`;
+      /* Cancelled part-way is still work that was done on somebody's computer, and the log is what the
+       * Hours screen and the assistant read. The worker path has always recorded it; this one used to let
+       * a stopped run vanish. */
+      if (job.loop) {
+        await logRun(job.loop, 'stopped', null, `stopped after ${job.loop.stepNo || 0} steps`);
+        await sql`update run_queue set loop = null where id = ${id} and user_id = ${who.id}`;
+      }
       return res.status(200).json({ ok: true, done: true, stop: job.state });
     }
 
@@ -965,6 +971,34 @@ async function workerRoute(action, req, res, sql, who) {
         where id = ${id} and user_id = ${who.id}
       `;
       return res.status(200).json({ ok: true, done: true, outcome: { ok: false, said: why } });
+    };
+
+    /* The account's log, written here rather than by the machine - the same reason a stopped recording is
+     * turned into a row here: everything the machine would otherwise have to learn already exists on this
+     * side. Best effort, and reported: a run whose outcome never reached the log makes the dashboard wrong,
+     * but it is not a reason to lose the answer somebody is waiting for. */
+    const logRun = async (state, outcome, said, error) => {
+      try {
+        await sql`
+          insert into user_run
+            (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
+             steps, said, extension, started_at, finished_at)
+          values
+            (${who.id}, ${job.id}, 'agent', ${String(state.goal || '').slice(0, 4000)},
+             ${String(state.model || '').slice(0, 60)}, ${String(job.flow_id).slice(0, 80)},
+             ${outcome}, ${said ? String(said).slice(0, 2000) : null},
+             ${error ? String(error).slice(0, 2000) : null},
+             ${JSON.stringify(state.steps || [])}, ${JSON.stringify(state.said || [])},
+             /* The loop's own stamp, never claimed_at: that one is moved on by every step, so a
+              * three-minute run would be logged with the duration of its last one. */
+             'cloud', ${state.startedAt || job.claimed_at || null}, now())
+          on conflict (user_id, client_id) do update set
+            outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
+            steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at
+        `;
+      } catch (err) {
+        await report(err, req, { route: 'mcp:step:log' });
+      }
     };
 
     let loop = job.loop;
@@ -1010,30 +1044,10 @@ async function workerRoute(action, req, res, sql, who) {
 
     if (out.done) {
       const done = out.done;
-      /* The account's log, written here rather than by the machine - the same reason a stopped recording is
-       * turned into a row here: everything it would otherwise have to learn already exists on this side. */
-      try {
-        await sql`
-          insert into user_run
-            (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
-             steps, said, extension, started_at, finished_at)
-          values
-            (${who.id}, ${job.id}, 'agent', ${String(loop.goal).slice(0, 4000)},
-             ${String(loop.model).slice(0, 60)}, ${String(job.flow_id).slice(0, 80)},
-             ${done.ok ? 'ok' : 'failed'}, ${done.said ? String(done.said).slice(0, 2000) : null},
-             ${done.error ? String(done.error).slice(0, 2000) : null},
-             ${JSON.stringify(done.steps || [])}, ${JSON.stringify(done.saidAll || [])},
-             /* The loop's own stamp, never claimed_at: that one is moved on by every step. */
-             'cloud', ${loop.startedAt || job.claimed_at || null}, now())
-          on conflict (user_id, client_id) do update set
-            outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
-            steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at
-        `;
-      } catch (err) {
-        /* Best effort, and reported. A run whose outcome never reached the log makes the dashboard wrong,
-         * but it is not a reason to lose the answer the caller is waiting for. */
-        await report(err, req, { route: 'mcp:step:log' });
-      }
+      await logRun(
+        { ...loop, steps: done.steps, said: done.saidAll },
+        done.ok ? 'ok' : 'failed', done.said, done.error,
+      );
 
       const took = (done.steps || []).length;
       const said = done.ok
