@@ -132,6 +132,32 @@
  * charcoal this palette replaced, and the navy is a shade lighter, which is enough to drop it under AA at
  * 12px. Two points of lightness buys 4.9:1 and the orange still reads as orange. ── */
 :root:root.dark {
+  /* ── THE EDGE OF A CARD, which on this navy had stopped being one.
+   *
+   * Upstream reads --stroke-border from --grey-700, and on the charcoal it was designed for that is a
+   * visible rule. Rotated onto navy it is #192758, four points of lightness from --surface-card (#0f1734) -
+   * a border measuring 1.23:1 against the thing it is drawing around. On screen the cards had no edges at
+   * all: a list of rows read as one slab, and `border-stroke/45`, which every row in the app uses, is
+   * dimmer still.
+   *
+   * The landing site does not have this problem because it draws its rules as a translucent LIGHT line -
+   * #d6e6ff at 16% - rather than as a darker navy. That cannot be copied literally: Tailwind composes every
+   * colour as `hsl(var(--token) / <alpha-value>)`, so a token carrying its own alpha produces invalid CSS
+   * and the border vanishes instead of changing. What is set here is that same line RESOLVED over the
+   * surface it is drawn on, which is what the eye receives either way.
+   *
+   * MEASURED, because a number in a comment nobody checked is how this goes wrong: 1.23:1 before, 1.61:1
+   * after, against --surface-card; 1.46:1 against --surface-card2; 2.04:1 for the hover, so a hover still
+   * moves. Modest ratios, and they are the SITE'S - its own line measures 1.68:1 on its own card - because
+   * a rule between two panels is not text and does not want to be. The difference between not seeing an
+   * edge and seeing one is the whole of it.
+   *
+   * A SEMANTIC, against this file's own rule, and deliberately: the primitive it would otherwise mean
+   * moving is --grey-700, which is also the chips and the pressed state. Changing those to fix a border
+   * would be three changes wearing one name. ── */
+  --stroke-border: 223.1 28.5% 26.9%; /* #313c58 — the site's rule, resolved */
+  --stroke-border-hover: 222.9 28.7% 33.5%; /* #3d4b6e — a step up, so a hover still moves */
+
   --brand-hover: 90 100% 46%; /* #75eb00 */
   --btn-primary-bg-hover: 90 100% 46%; /* #75eb00 */
   --btn-primary-bg-press: 90 100% 38%; /* #61c200 */

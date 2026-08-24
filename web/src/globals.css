@@ -33,6 +33,27 @@
 }
 
 @layer components {
+  /* The lime glow the landing site opens with, carried into the app.
+   *
+   * Somebody who presses "Start for free" on mouse-flow.vercel.app has just looked at a navy page with a
+   * lime bloom in its top right corner; the app's page was a flat fill. Same gradient, same numbers, taken
+   * off the site's own `.page` rule.
+   *
+   * FIXED rather than scrolling: the site's sits on a page one screen tall, and an app whose lists run for
+   * pages would otherwise drag the glow down through the middle of them.
+   *
+   * Dark only. The site has no light theme to copy, and a lime bloom on white paper is not the same idea
+   * translated - it is a stain. Applied by AppLayout to the one element that is the page, so nothing has to
+   * guess which div that is. */
+  .page-glow {
+    background-image: none;
+    background-attachment: fixed;
+  }
+
+  :root.dark .page-glow {
+    background-image: radial-gradient(circle at 80% 4%, #a3ff4640, transparent 27rem);
+  }
+
   /* Content over a solid accent. See mouseflow-palette.css for why this cannot be an existing token: the
    * accent is light in both themes, so the colour on top of it must not flip with the theme. */
   .on-accent {

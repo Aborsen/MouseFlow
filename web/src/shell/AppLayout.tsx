@@ -54,7 +54,7 @@ const ShellFrame = () => {
   const path = useRouterState({ select: (s) => s.location.pathname });
 
   return (
-    <div className="flex min-h-screen items-stretch bg-surface-page">
+    <div className="page-glow flex min-h-screen items-stretch bg-surface-page">
       <Reconciler />
       <AppSidebar onOpenSettings={(screen) => setSettings(screen ?? 'account')} />
 
