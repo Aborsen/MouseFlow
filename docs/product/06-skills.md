@@ -133,6 +133,20 @@ The More panel holds:
 - **Delete** — armed in the button (`Delete — press again`). The message afterwards says whether a gallery
   listing survives it: withdrawing is a separate act, done in the gallery.
 
+### Clearing several out at once
+
+The recordings table has had ticks and a selection bar for a while; this page had one Delete per row and
+nothing else, so removing six skills meant arming and pressing twelve times. It is now the same shape as the
+recordings table — **Select all**, an *N selected* bar, an armed **Delete** that disarms itself, and a
+**Clear** that disarms as well as clearing. Clearing used to hide the bar with `armed` still set behind it.
+
+Two things it deliberately does **not** copy from that table:
+
+- **Only rows currently on screen count as selected.** A tick that survives a search is how somebody deletes
+  what they cannot see.
+- **The whole selection goes in one push.** `push` already takes a list, and a loop over it would be N round
+  trips that can half-succeed — leaving the person to work out which four of seven went.
+
 ## Skill structure, and the three wire formats
 
 ![A skill as an MCP tool definition](../img/skills-structure.png)
