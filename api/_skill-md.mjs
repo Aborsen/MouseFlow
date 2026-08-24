@@ -65,7 +65,13 @@ export function urlTrail(payload) {
   const seen = new Set();
   const out = [];
   for (const event of events) {
-    const raw = event && typeof event.url === 'string' ? event.url : '';
+    /* TWO PLACES, because the two recorders put it in different ones and reading one would find nothing
+     * from the other half of the product. The extension writes `url` on the event - it has the tab. The
+     * desktop agent writes it into the `#ctx` line above the event, which macro.ts parses onto
+     * `context.url`, because that is where everything it reads off the accessibility tree goes. */
+    const raw = event && typeof event.url === 'string' && event.url
+      ? event.url
+      : (event && event.context && typeof event.context.url === 'string' ? event.context.url : '');
     if (!/^https?:\/\//i.test(raw)) continue;
     let bare;
     try {

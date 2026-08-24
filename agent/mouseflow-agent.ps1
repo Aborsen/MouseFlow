@@ -376,6 +376,9 @@ namespace MouseFlow
         public string Window;
         public string Control;
         public string ControlType;
+        /* The page it landed on, when it landed on one. Origin and path - the cut happens in PageUrl(),
+         * before the value ever reaches this object. Null on everything that is not a browser. */
+        public string Url;
     }
 
     public class Step
@@ -474,6 +477,9 @@ namespace MouseFlow
          * nothing in it says which keys - and a replay that quietly pressed nothing for the two minutes
          * somebody spent typing would report a clean run. Counted, and reported by /replay/status. */
         static int _unplayable;
+        /* How many presses were aimed somewhere other than the recorded point. Reported, because a replay
+         * that quietly moved where it clicked is a replay whose report cannot be trusted. */
+        static int _retargeted;
         static int _stepIdx, _stepCount, _pass, _passes, _evIdx, _evCount;
         static int _flowPass, _flowPasses;
 
@@ -819,6 +825,9 @@ namespace MouseFlow
 
             job.Target.Control = string.IsNullOrEmpty(name) ? null : Clip(name, 120);
             job.Target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
+            /* The typing job too: a typing run is where a portable skill's inputs go, and a step saying
+             * which page it went into is the difference between an instruction and a guess. */
+            job.Target.Url = PageUrl(el);
         }
 
         /* The title and the process, from the window manager rather than from an accessibility provider -
@@ -881,6 +890,60 @@ namespace MouseFlow
 
             job.Target.Control = string.IsNullOrEmpty(name) ? null : Clip(name, 120);
             job.Target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
+            job.Target.Url = PageUrl(el);
+        }
+
+        /* The address of the page a click landed on, ORIGIN AND PATH ONLY.
+         *
+         * In Chromium and in Edge the Document element carries the url as its ValuePattern - that is where
+         * a browser puts it, and it is the same in both. Found by climbing UP from what was hit, never by
+         * searching down: PROTOCOL.md forbids walking the tree on this path because a full control-view
+         * walk is 0.6-4.4 seconds per window, and FindFirst over a browser's descendants is exactly that
+         * walk. Climbing is bounded and cheap, and a page element always has a Document above it.
+         *
+         * WHY THE CUT IS HERE. A query string is where a session token, a one-time sign-in link and
+         * whatever somebody typed into a search box live. Everything past this point copies the payload
+         * around - to the account, to a model, into files people download and forward - so a value that
+         * never entered the recording cannot leak from any of them. Cutting it downstream would mean every
+         * one of those paths had to remember to.
+         *
+         * Nothing found is the normal answer, not a failure: a desktop application has no Document with a
+         * url in it, and the export that wants one says so rather than inventing it.
+         */
+        static string PageUrl(AutomationElement from)
+        {
+            AutomationElement at = from;
+            for (int climbed = 0; climbed <= 8 && at != null; climbed++)
+            {
+                try
+                {
+                    if (at.Current.ControlType == ControlType.Document)
+                    {
+                        object pattern;
+                        if (at.TryGetCurrentPattern(ValuePattern.Pattern, out pattern))
+                        {
+                            string raw = ((ValuePattern)pattern).Current.Value;
+                            return Bare(raw);
+                        }
+                        return null;
+                    }
+                    at = TreeWalker.ControlViewWalker.GetParent(at);
+                }
+                catch { return null; }   // the element went away mid-read
+            }
+            return null;
+        }
+
+        /* Origin and path. Uri rather than string surgery: a url with a colon in its path, or one with no
+         * path at all, is where hand-rolled splitting goes wrong. */
+        static string Bare(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return null;
+            Uri parsed;
+            if (!Uri.TryCreate(raw, UriKind.Absolute, out parsed)) return null;
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps) return null;
+            string path = parsed.AbsolutePath == "/" ? "" : parsed.AbsolutePath;
+            return Clip(parsed.GetLeftPart(UriPartial.Authority) + path, 300);
         }
 
         static string Clip(string text, int max)
@@ -1141,12 +1204,15 @@ namespace MouseFlow
          */
         static void WriteContext(StringBuilder sb, Ev e)
         {
-            if (e.Process == null && e.Window == null && e.Control == null) return;
+            if (e.Process == null && e.Window == null && e.Control == null && e.Url == null) return;
             sb.Append("#ctx");
             if (e.Process != null) { sb.Append("\tapp="); sb.Append(e.Process); }
             if (e.Window != null) { sb.Append("\twindow="); sb.Append(e.Window); }
             if (e.Control != null) { sb.Append("\tcontrol="); sb.Append(e.Control); }
             if (e.ControlType != null) { sb.Append("\ttype="); sb.Append(e.ControlType); }
+            /* Added after the four that were always here. PROTOCOL.md: unknown keys are skipped rather than
+             * being an error, so an older reader loads this exactly as it did before. */
+            if (e.Url != null) { sb.Append("\turl="); sb.Append(e.Url); }
             sb.Append("\n");
         }
 
@@ -1202,6 +1268,7 @@ namespace MouseFlow
                        were never recorded, and focus markers, which are notes rather than actions. Without
                        this a replay of a recording that was half typing reports a clean run. */
                     + ",\"unplayable\":" + _unplayable.ToString(CultureInfo.InvariantCulture)
+                    + ",\"retargeted\":" + _retargeted.ToString(CultureInfo.InvariantCulture)
                     + "}";
             }
         }
@@ -1226,6 +1293,7 @@ namespace MouseFlow
                 _playing = true;
                 _abort = false;
                 _unplayable = 0;
+                _retargeted = 0;
                 _stepIdx = 0;
                 _stepCount = flow.Steps.Count;
                 _pass = 0;
@@ -1382,8 +1450,17 @@ namespace MouseFlow
             if (vw < 2) vw = 2;
             if (vh < 2) vh = 2;
 
-            int nx = (int)Math.Round((e.X - vx) * 65535.0 / (vw - 1));
-            int ny = (int)Math.Round((e.Y - vy) * 65535.0 / (vh - 1));
+            /* Aim by NAME before pressing, when the recording left one.
+             *
+             * Only on the press, and the release follows wherever the press went - releasing at the
+             * recorded coordinate after pressing somewhere else turns one click into a drag across the
+             * window, which PROTOCOL.md says outright and which is the failure worth avoiding here. */
+            int ax = e.X;
+            int ay = e.Y;
+            if (IsPress(e.Action)) Retarget(e, ref ax, ref ay);
+
+            int nx = (int)Math.Round((ax - vx) * 65535.0 / (vw - 1));
+            int ny = (int)Math.Round((ay - vy) * 65535.0 / (vh - 1));
 
             uint flags = Native.MOUSEEVENTF_MOVE | Native.MOUSEEVENTF_ABSOLUTE | Native.MOUSEEVENTF_VIRTUALDESK;
             uint data = 0;
@@ -1425,6 +1502,48 @@ namespace MouseFlow
             inputs[0].mi.time = 0;
             inputs[0].mi.dwExtraInfo = IntPtr.Zero;
             Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT))), 1);
+        }
+
+        static bool IsPress(string action)
+        {
+            return action == "Left Click Down" || action == "Right Click Down" || action == "Middle Click Down";
+        }
+
+        /* Where this click should actually land.
+         *
+         * The recorded point is a guess about a layout, and the name is the thing. Hit-test the point; if
+         * what is under it is already the named control, nothing to do - which is the common case and costs
+         * one UIA call. If it is something else, look ONE LEVEL among the siblings of whatever IS there:
+         * a re-laid-out row of tabs, buttons or list rows keeps its neighbours exactly there, and that is
+         * the case that fails. Not a tree walk - PROTOCOL.md forbids walking because a full control-view
+         * walk is 0.6-4.4 seconds per window, and the same arithmetic applies on this side.
+         *
+         * Everything here fails soft: no name, no element, no clickable point, or UIA throwing because the
+         * screen moved under it, all mean "press where it was recorded". A replay that refused because an
+         * accessibility call failed would be worse than one that aimed by coordinate.
+         */
+        static void Retarget(Ev e, ref int x, ref int y)
+        {
+            if (e == null || string.IsNullOrEmpty(e.Control)) return;
+            try
+            {
+                AutomationElement at = AutomationElement.FromPoint(new System.Windows.Point(x, y));
+                if (at == null) return;
+                if (string.Equals(at.Current.Name, e.Control, StringComparison.Ordinal)) return;
+
+                AutomationElement parent = TreeWalker.ControlViewWalker.GetParent(at);
+                if (parent == null) return;
+                AutomationElement found = parent.FindFirst(TreeScope.Children,
+                    new PropertyCondition(AutomationElement.NameProperty, e.Control));
+                if (found == null) return;
+
+                System.Windows.Point where;
+                if (!found.TryGetClickablePoint(out where)) return;
+                x = (int)Math.Round(where.X);
+                y = (int)Math.Round(where.Y);
+                lock (Gate) { _retargeted++; }
+            }
+            catch { /* the screen moved under the read; the recorded point stands */ }
         }
 
         /* ---------------------------------------------------------------- one action at a time
@@ -2052,10 +2171,36 @@ namespace MouseFlow
 
         // ---------- flow body parsing ----------
 
+        /* One `#ctx` line into the fields it names. Tab-separated `key=value`; the value takes the rest of
+         * the field unsplit, because a window title contains spaces and an equals sign as often as not.
+         * Unknown keys are ignored rather than being an error - that is what lets an agent add one. */
+        static Ev ParseCtx(string line)
+        {
+            Ev ctx = new Ev();
+            string[] fields = line.Split('\t');
+            for (int f = 1; f < fields.Length; f++)
+            {
+                int eq = fields[f].IndexOf('=');
+                if (eq <= 0) continue;
+                string key = fields[f].Substring(0, eq).Trim().ToLowerInvariant();
+                string val = fields[f].Substring(eq + 1).Trim();
+                if (val.Length == 0) continue;
+                if (key == "app") ctx.Process = val;
+                else if (key == "window") ctx.Window = val;
+                else if (key == "control") ctx.Control = val;
+                else if (key == "type") ctx.ControlType = val;
+                else if (key == "url") ctx.Url = val;
+            }
+            return ctx;
+        }
+
         static Flow ParseFlow(string body)
         {
             Flow flow = new Flow();
             Step current = null;
+            /* Attaches to exactly ONE event - the next one - and is cleared by it. A `#ctx` that leaked
+             * onto later events would aim a whole run at one control. */
+            Ev pending = null;
             if (body == null) return flow;
 
             string[] lines = body.Replace("\r\n", "\n").Replace("\r", "\n").Split('\n');
@@ -2063,7 +2208,17 @@ namespace MouseFlow
             {
                 string line = lines[i].Trim();
                 if (line.Length == 0) continue;
-                if (line.StartsWith("#")) continue;
+                /* `#ctx` is READ now, not skipped.
+                 *
+                 * It was dropped here, which is why a replay on this platform had nothing but coordinates:
+                 * the recording knew it clicked "Send" and the replay knew only 1074,159. Everything after
+                 * this - aiming by name when the layout moved - rests on the line above the event, and it
+                 * was being thrown away three characters into the parse. Any other comment still is. */
+                if (line.StartsWith("#"))
+                {
+                    if (line.StartsWith("#ctx", StringComparison.OrdinalIgnoreCase)) pending = ParseCtx(line);
+                    continue;
+                }
 
                 if (line.StartsWith("startDelay=", StringComparison.OrdinalIgnoreCase))
                 {
@@ -2130,6 +2285,15 @@ namespace MouseFlow
                 e.Y = y;
                 e.DelayMs = delay;
                 e.Action = string.Join("|", cols, 4, cols.Length - 4).Trim();
+                if (pending != null)
+                {
+                    e.Process = pending.Process;
+                    e.Window = pending.Window;
+                    e.Control = pending.Control;
+                    e.ControlType = pending.ControlType;
+                    e.Url = pending.Url;
+                    pending = null;
+                }
                 current.Events.Add(e);
             }
 

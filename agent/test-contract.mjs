@@ -287,5 +287,48 @@ group('повтор целится в имя, а координата - запа
     /name == "text" \|\| name == "title" \|\| name == "name"/.test(swift));
 }
 
+/* Оба агента пишут адрес страницы, и обрезают его ОДИНАКОВО. Это половина того, что делает запись
+ * пригодной для портативного скилла - без адреса первый шаг звучит как «найди окно с таким заголовком», а
+ * этого облачный агент не умеет. */
+group('адрес страницы, и он обрезан в агенте');
+check('macOS читает AXURL там, где уже искал контейнер',
+  /if role == "AXWebArea" \{ out\.url = webURL\(e\) \}/.test(swift));
+check('Windows читает его с Document через ValuePattern',
+  /at\.Current\.ControlType == ControlType\.Document/.test(ps)
+    && /\(\(ValuePattern\)pattern\)\.Current\.Value/.test(ps));
+/* Не поиском вниз: полный обход control view - 0.6-4.4 секунды на окно, и протокол это запрещает. */
+check('и оба поднимаются вверх, а не ищут вниз',
+  /TreeWalker\.ControlViewWalker\.GetParent\(at\)/.test(ps) && !/FindFirst\(TreeScope\.Descendants/.test(ps));
+/* Строка запроса - это место, где живут сессионный токен, одноразовая ссылка и то, что человек набрал в
+ * поиске. Дальше по цепочке payload копируется куда угодно, поэтому режется здесь. */
+check('macOS отбрасывает query и fragment', /parts\.query = nil/.test(swift) && /parts\.fragment = nil/.test(swift));
+check('Windows отбрасывает их через Uri, а не строковой хирургией',
+  /GetLeftPart\(UriPartial\.Authority\)/.test(ps) && /Uri\.TryCreate/.test(ps));
+check('и оба берут только http и https',
+  /scheme == "http" \|\| scheme == "https"/.test(swift)
+    && /parsed\.Scheme != Uri\.UriSchemeHttp/.test(ps));
+check('протокол называет ключ и говорит, где происходит обрезка',
+  /`url` \(the page it landed on/.test(protocol) && /the cut happens in the AGENT/.test(protocol));
+check('и обе половины пишут его в #ctx',
+  /out \+= "\\turl=" \+ v/.test(swift) && /sb\.Append\("\\turl="\)/.test(ps));
+
+/* Перенаведение на Windows. macOS это уже умеет; пока Windows не умел, повтор там был чистыми
+ * координатами - и это ровно та половина продукта, которой пользуется владелец. */
+group('Windows тоже целится в имя');
+/* Настоящий блокер был здесь: парсер повтора выбрасывал #ctx на третьем символе, так что имён при
+ * воспроизведении не существовало вовсе. */
+check('парсер повтора читает #ctx, а не пропускает его',
+  /if \(line\.StartsWith\("#ctx", StringComparison\.OrdinalIgnoreCase\)\) pending = ParseCtx\(line\)/.test(ps));
+check('и контекст цепляется ровно к одному событию', /pending = null;/.test(ps));
+check('целится только на нажатии, release идёт следом',
+  /if \(IsPress\(e\.Action\)\) Retarget\(e, ref ax, ref ay\)/.test(ps));
+check('ищет имя среди СОСЕДЕЙ, на один уровень',
+  /parent\.FindFirst\(TreeScope\.Children/.test(ps));
+check('поправки считаются и отдаются в статусе, как на macOS',
+  /_retargeted\+\+/.test(ps) && /\\"retargeted\\":/.test(ps));
+check('и счётчик сбрасывается на каждом прогоне', /_retargeted = 0;/.test(ps));
+/* Отказ accessibility не должен отменять повтор: без имени, без элемента, без точки - жмём туда, где было. */
+check('всё падает мягко в координату', /catch \{ \/\* the screen moved under the read/.test(ps));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

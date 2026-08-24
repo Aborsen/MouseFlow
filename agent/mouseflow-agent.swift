@@ -257,6 +257,7 @@ final class Ev {
     var window: String?
     var control: String?
     var controlType: String?
+    var url: String?
 }
 
 /// A resolution job. `target` is the event to write the names onto once they are known.
@@ -778,6 +779,7 @@ final class Recorder {
                 if let v = e.subrole { out += "\tsubrole=" + v }
                 if let v = e.container { out += "\tin=" + v }
                 if let v = e.containerName { out += "\tinName=" + v }
+                if let v = e.url { out += "\turl=" + v }
                 out += "\n"
             }
             out += "\(index) | \(e.x) | \(e.y) | \(e.delayMs) | \(e.action)\n"
@@ -809,6 +811,8 @@ struct Named {
     var subrole: String?
     var container: String?
     var containerName: String?
+    /* The page a click landed on, when it landed on one. Origin and path only - see webURL below. */
+    var url: String?
 }
 
 enum Accessibility {
@@ -898,6 +902,30 @@ enum Accessibility {
         return ctxClean(raw)
     }
 
+    /* The address of the page a click landed on, ORIGIN AND PATH ONLY.
+     *
+     * WHY IT IS CUT HERE, in the agent, rather than anywhere downstream. A query string is where a session
+     * token, a one-time sign-in link and whatever somebody typed into a search box live. Everything past
+     * this point copies the payload around - it is pushed to the account, handed to a model, written into
+     * a SKILL.md that gets downloaded and forwarded - and a value that never entered the recording cannot
+     * leak from any of them. Cutting it later would mean every one of those paths had to remember to.
+     *
+     * That has a cost and it is real: a flow whose page is `?view=list` loses the part that made it that
+     * page. The exported file says so, so a person can put it back.
+     *
+     * AXURL is a CFURL, not a string - the one attribute here that is not - which is why this cannot go
+     * through stringAttr. */
+    private static func webURL(_ element: AXUIElement) -> String? {
+        guard let raw = copyAttr(element, kAXURLAttribute as String) else { return nil }
+        guard CFGetTypeID(raw) == CFURLGetTypeID() else { return nil }
+        guard var parts = URLComponents(url: (raw as! URL), resolvingAgainstBaseURL: false) else { return nil }
+        guard let scheme = parts.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        parts.query = nil
+        parts.fragment = nil
+        guard let text = parts.string else { return nil }
+        return ctxClean(text)
+    }
+
     private static func elementAttr(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
         guard let raw = copyAttr(element, attribute) else { return nil }
         guard CFGetTypeID(raw) == AXUIElementGetTypeID() else { return nil }
@@ -942,6 +970,10 @@ enum Accessibility {
                   containerRoles.contains(role) else { return }
             out.container = role
             out.containerName = stringAttr(e, kAXTitleAttribute) ?? stringAttr(e, kAXDescriptionAttribute)
+            /* On the SAME walk that was already looking for a container, and only when that container is a
+             * web area - which is the only element that carries an address. No extra traversal: the
+             * protocol forbids walking on the input path because it costs seconds, and this is that walk. */
+            if role == "AXWebArea" { out.url = webURL(e) }
         }
 
         var walker: AXUIElement? = start
@@ -1203,6 +1235,7 @@ enum Accessibility {
         job.target.subrole = named.subrole
         job.target.container = named.container
         job.target.containerName = named.containerName
+        job.target.url = named.url
         if hasPid { job.target.window = frontWindowTitle(pid: pid) }
     }
 
@@ -1229,6 +1262,9 @@ enum Accessibility {
         job.target.subrole = named.subrole
         job.target.container = named.container
         job.target.containerName = named.containerName
+        /* The typing job too: a typing run is where a portable skill's inputs go, and a step saying which
+         * page it went into is the difference between an instruction and a guess. */
+        job.target.url = named.url
     }
 }
 

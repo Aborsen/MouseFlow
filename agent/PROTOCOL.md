@@ -298,8 +298,15 @@ A click may be preceded by a comment line naming what was under it:
 
 Tab-separated `key=value`, on the line **above** its event, and it attaches to exactly one event. Keys:
 `app` (process or application name), `window` (title), `control` (the accessible name of the thing under the
-pointer), `type` (its control type). Unknown keys are ignored rather than being an error, so an agent may add
-one; a value that is empty is the same as absent.
+pointer), `type` (its control type), `url` (the page it landed on, when it landed on one). Unknown keys are
+ignored rather than being an error, so an agent may add one; a value that is empty is the same as absent.
+
+**`url` is origin and path only, and the cut happens in the AGENT.** A query string is where a session token,
+a one-time sign-in link and whatever somebody typed into a search box live. Everything past the agent copies
+the payload around — it is pushed to the account, handed to a model, written into files people download and
+forward — and a value that never entered the recording cannot leak from any of them; cutting it later would
+mean every one of those paths had to remember to. Read it off the element that actually has one (`AXWebArea`
+and its UIA equivalent) on the walk that is already looking for a container, never as a second traversal.
 
 This is what turns *"clicked at 1074,159"* into *"clicked **Send** in Outlook"*, and it is the only per-event
 answer to "which application was this in" — `payload.windows` is sampled once a second at the recording

@@ -46,7 +46,7 @@ export function parseMacro(text) {
           if (value)
             found[key] = value;
         }
-        /* Eight keys, not four.
+        /* Nine keys, not four.
          *
          * The agent has been writing `role`, `subrole`, `in` and `inName` since 0.8.0 and this dropped all
          * four on the floor - so a click that named nothing arrived as bare coordinates even though the
@@ -62,6 +62,9 @@ export function parseMacro(text) {
           subrole: found.subrole,
           container: found.in,
           containerName: found.inName,
+          /* Origin and path, cut in the agent - see PROTOCOL.md. Carried through untouched here: this is
+           * a parser, and a parser that also edited values would be a second place the rule lived. */
+          url: found.url,
         };
         pending = Object.values(context).some(Boolean) ? context : undefined;
       }
@@ -131,6 +134,8 @@ export function flowBody(flow, recordings, opts) {
           fields.push(`in=${e.context.container}`);
         if (e.context.containerName)
           fields.push(`inName=${e.context.containerName}`);
+        if (e.context.url)
+          fields.push(`url=${e.context.url}`);
         if (fields.length)
           lines.push(`#ctx	${fields.join('	')}`);
       }

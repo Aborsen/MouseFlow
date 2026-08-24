@@ -22,6 +22,8 @@ export interface MacroEvent {
     /** The container the named thing sits in - a list, a toolbar - and its own name, where it has one. */
     container?: string;
     containerName?: string;
+    /** The page a click landed on: origin and path, cut in the agent. */
+    url?: string;
   };
 }
 
