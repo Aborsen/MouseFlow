@@ -29,6 +29,7 @@ import {
   Search,
   Trash2,
   Check,
+  ChevronUp,
   Ellipsis,
   Sparkles,
   Upload,
@@ -55,6 +56,19 @@ const SPEEDS = [0.5, 1, 1.5, 2, 4];
  * so the 1fr name column absorbed a different amount of space in each. A shared template only shares if every
  * track but one is fixed. */
 const COLUMNS = 'grid-cols-[1.25rem_minmax(11rem,1fr)_7rem_6.5rem_7rem_16.5rem]';
+
+/* Sortable columns, the same arrangement the skills table uses.
+ *
+ * `Signal` is a sparkline, and there is nothing alphabetical about a picture - it sorts on how much is IN
+ * the recording, which is what somebody scanning that column is actually reading off it. */
+type SortKey = 'name' | 'size' | 'created' | 'status';
+
+const SORTABLE: { key: SortKey; label: string; title?: string }[] = [
+  { key: 'name', label: 'Recording' },
+  { key: 'size', label: 'Signal', title: 'Sort by how much was recorded' },
+  { key: 'created', label: 'Captured' },
+  { key: 'status', label: 'Status', title: 'Sort by whether a skill has been made from it' },
+];
 
 export interface RecordingsTableProps {
   /** Recordings the ACCOUNT has that this browser does not. Answered by the caller, which is the half that
@@ -130,17 +144,39 @@ export const RecordingsTable = ({
   }, [clearing]);
   const fileInput = useRef<HTMLInputElement>(null);
 
+  /* Newest at the top to begin with: the recording someone is looking for is almost always the one they
+   * just made, and the store appends, so raw order buried it at the bottom of the scroll. Clicking a
+   * column takes over from there. */
+  const [sort, setSort] = useState<{ by: SortKey; asc: boolean }>({ by: 'created', asc: false });
+  const sortBy = useCallback((by: SortKey) => {
+    setSort((was) => (was.by === by ? { by, asc: !was.asc } : { by, asc: by === 'name' }));
+  }, []);
+
   const rows = useMemo(() => {
-    /* Newest at the top: the recording someone is looking for is almost always the one they just made, and
-     * the store appends, so raw order buried it at the bottom of the scroll. */
-    const fresh = [...state.recordings].sort((a, b) => (b.created ?? '').localeCompare(a.created ?? ''));
     const needle = term.trim().toLowerCase();
-    if (!needle) return fresh;
-    return fresh.filter((rec) => {
-      const where = rec.windows.map((w) => `${w.title} ${w.process}`).join(' ');
-      return `${rec.name} ${where}`.toLowerCase().includes(needle);
-    });
-  }, [state.recordings, term]);
+    const kept = needle
+      ? state.recordings.filter((rec) => {
+        const where = rec.windows.map((w) => `${w.title} ${w.process}`).join(' ');
+        return `${rec.name} ${where}`.toLowerCase().includes(needle);
+      })
+      : [...state.recordings];
+
+    /* numeric, so "MouseFlow 24/08 9:00" sorts before "… 10:00" rather than after it - every default name
+     * this app writes is a date and a time. */
+    const cmp = (a: Recording, b: Recording) => {
+      switch (sort.by) {
+        case 'name':
+          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        case 'size':
+          return a.events.length - b.events.length;
+        case 'status':
+          return Number(!!hasSkill?.(a)) - Number(!!hasSkill?.(b));
+        default:
+          return (a.created ?? '').localeCompare(b.created ?? '');
+      }
+    };
+    return kept.sort((a, b) => (sort.asc ? cmp(a, b) : cmp(b, a)));
+  }, [state.recordings, term, sort, hasSkill]);
 
   const visible = rows.slice(0, shown);
 
@@ -415,10 +451,24 @@ export const RecordingsTable = ({
                 )}
               >
                 <span />
-                <span>Recording</span>
-                <span title="When the events happened, across the length of the recording">Signal</span>
-                <span>Captured</span>
-                <span title="Whether a skill has been made from this recording">Status</span>
+                {SORTABLE.map(({ key, label, title }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => sortBy(key)}
+                    title={title ?? `Sort by ${label.toLowerCase()}`}
+                    className={cn(
+                      'flex items-center gap-1 text-left uppercase tracking-wide',
+                      'transition-colors duration-base hover:text-ink-secondary',
+                      sort.by === key && 'text-brand-primary',
+                    )}
+                  >
+                    {label}
+                    {sort.by === key && (
+                      <ChevronUp className={cn('size-3 shrink-0', !sort.asc && 'rotate-180')} />
+                    )}
+                  </button>
+                ))}
                 <span className="text-right">Actions</span>
               </div>
 

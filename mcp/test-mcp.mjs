@@ -867,6 +867,28 @@ check('anything past that scrolls inside its own block',
 check('and the "N older ones are on the Record page" truncation is gone',
   !/older\{' '\}/.test(skillsView) && !/const READY_SHOWN/.test(skillsView));
 
+/* The same treatment on the other table, because two tables of the same product sorting differently - or
+ * one of them not sorting at all - is a difference somebody has to learn for no reason. */
+group('and the recordings table sorts the same way');
+const recTable = read('../web/src/features/record/RecordingsTable.tsx');
+check('its columns are buttons too',
+  /const SORTABLE: \{ key: SortKey; label: string; title\?: string \}\[\]/.test(recTable)
+    && /onClick=\{\(\) => sortBy\(key\)\}/.test(recTable));
+check('and it shows which column is deciding, and which way',
+  /!sort\.asc && 'rotate-180'/.test(recTable));
+/* A sparkline has nothing alphabetical about it; what somebody reads off that column is how much is in the
+ * recording, so that is what it sorts on. */
+check('the sparkline column sorts on how much was recorded',
+  /case 'size':\s*\n\s*return a\.events\.length - b\.events\.length;/.test(recTable));
+check('names sort numerically, since every default name is a date and a time',
+  /numeric: true, sensitivity: 'base'/.test(recTable));
+check('and newest-first is still where it starts',
+  /useState<\{ by: SortKey; asc: boolean \}>\(\{ by: 'created', asc: false \}\)/.test(recTable));
+/* The status is read from the account, not from a flag on the row, so the comparator has to be too. */
+check('status sorts on whether a skill exists, read the same way the cell reads it',
+  /Number\(!!hasSkill\?\.\(a\)\) - Number\(!!hasSkill\?\.\(b\)\)/.test(recTable)
+    && /\[state\.recordings, term, sort, hasSkill\]/.test(recTable));
+
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');
 const MD_STRUCTURE = {
