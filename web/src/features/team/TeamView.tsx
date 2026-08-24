@@ -142,7 +142,7 @@ const ROLE_TONE: Record<Role, 'primary' | 'accent' | 'secondary'> = {
  * because an `auto` actions column sizes to its content — and the header's word ACTIONS is narrower than
  * the buttons beneath it, so the flexible name column absorbs a different amount in each and the two
  * disagree by exactly that difference. */
-const COLUMNS = 'grid-cols-[minmax(11rem,1fr)_6.5rem_7rem_8rem_7rem_9.5rem]';
+const COLUMNS = 'grid-cols-[1.5rem_minmax(11rem,1fr)_6.5rem_7rem_8rem_7rem_9.5rem]';
 const ROW = 'grid w-full items-center gap-x-3 rounded-lg px-3 py-2.5 border border-stroke/45 '
   + 'bg-surface-card transition-colors duration-fast hover:border-stroke-hover';
 const LABEL = 'text-[0.7rem] uppercase tracking-wide text-ink-inactive';
@@ -312,6 +312,55 @@ export const TeamView = () => {
       : { text: `${done}.`, kind: 'good' });
   }, [detail, live, openId, loadTeams, loadDetail]);
 
+  /* Which TEAMS are ticked, on the list. A different selection from the roster's - one is people inside a
+   * team, this is the teams themselves - so a different set, and they can never be on screen together.
+   *
+   * ONLY THE ONES YOU OWN can be ticked, because only an owner may delete a team. A tick that leads to
+   * "not found" is a promise the row could not keep, and the row knows in advance. */
+  const [pickedTeams, setPickedTeams] = useState<Set<string>>(new Set());
+  const ownTeams = useMemo(() => (teams ?? []).filter((t) => t.role === 'owner').map((t) => t.id), [teams]);
+  const liveTeams = useMemo(
+    () => new Set([...pickedTeams].filter((id) => ownTeams.includes(id))),
+    [pickedTeams, ownTeams],
+  );
+
+  /* Deleting several teams.
+   *
+   * One request each, for the reason the roster has: /api/team decides per team whether the caller may,
+   * and every deletion takes a team away from everybody in it. Awaited one at a time, and what failed is
+   * named - "Deleted 2 of 3" is a sentence somebody can act on. */
+  const deletePickedTeams = useCallback(async () => {
+    if (!liveTeams.size) return;
+    setBusy(true);
+    setSaid(null);
+    const names = new Map((teams ?? []).map((t) => [t.id, t.name]));
+    let gone = 0;
+    const failed: string[] = [];
+
+    for (const id of liveTeams) {
+      try {
+        await call(`?id=${encodeURIComponent(id)}&team=1`, { method: 'DELETE' });
+        gone += 1;
+        /* The panel is showing a team that no longer exists. Closed here rather than left to fail on its
+         * next read. */
+        if (id === openId) setOpenId(null);
+      } catch (err) {
+        failed.push(`${names.get(id) ?? id} (${err instanceof Error ? err.message : 'refused'})`);
+      }
+    }
+
+    await loadTeams();
+    setPickedTeams(new Set());
+    setBusy(false);
+    setSaid(failed.length
+      ? {
+        text: `${gone ? `Deleted ${gone} team${gone === 1 ? '' : 's'}` : 'Nothing was deleted'}. `
+          + `Could not delete ${failed.join('; ')}.`,
+        kind: 'bad',
+      }
+      : { text: `Deleted ${gone} team${gone === 1 ? '' : 's'}.`, kind: 'good' });
+  }, [liveTeams, teams, openId, loadTeams]);
+
   /* Only skills, and only mine. Sharing a raw recording would put a payload in front of a team without the
    * step that turns it into something meant to be handed over. */
   const shareable = useMemo(
@@ -418,17 +467,30 @@ export const TeamView = () => {
 
         {/* ------------------------------------------------------------ the teams, one per row */}
         {teams && teams.length > 0 && (
-          <div className="flex items-center gap-2.5 pb-2 text-[0.8rem] text-ink-inactive">
-            <span>{totals.teams} {totals.teams === 1 ? 'team' : 'teams'}</span>
-            <span className="h-3 w-px bg-stroke" />
-            <span>{totals.people} {totals.people === 1 ? 'seat' : 'seats'} in total</span>
-          </div>
+          <SelectionBar
+            className="pb-2"
+            total={ownTeams.length}
+            selected={liveTeams.size}
+            onSelectAll={(all) => setPickedTeams(all ? new Set(ownTeams) : new Set())}
+            onClear={() => setPickedTeams(new Set())}
+            onConfirm={() => void deletePickedTeams()}
+            busy={busy}
+            busyLabel="Deleting…"
+            label={(
+              <span className="flex items-center gap-2.5 text-ink-inactive">
+                <span>{totals.teams} {totals.teams === 1 ? 'team' : 'teams'}</span>
+                <span className="h-3 w-px bg-stroke" />
+                <span>{totals.people} {totals.people === 1 ? 'seat' : 'seats'} in total</span>
+              </span>
+            )}
+          />
         )}
 
         <div className="overflow-x-auto pb-1">
           <div className="min-w-[52rem]">
             {teams && teams.length > 0 && (
               <div className={cn(COLUMNS, 'grid w-full items-center gap-x-3 px-3 pb-1.5', LABEL)}>
+                <span />
                 <span>Team</span>
                 <span>Your role</span>
                 <span>People</span>
@@ -439,9 +501,45 @@ export const TeamView = () => {
             )}
 
             <ul className="flex flex-col gap-1.5">
-              {(teams ?? []).map((t) => (
+              {(teams ?? []).map((t) => {
+                const ticked = liveTeams.has(t.id);
+                return (
                 <li key={t.id}>
-                  <div className={cn(ROW, COLUMNS, t.id === openId && 'border-brand-primary bg-state-pressed')}>
+                  {/* The whole row opens the team, not just the word at the end of it.
+                    *
+                    * NOT a <button> around all of this: it already contains a checkbox and a button, and a
+                    * control inside a control is invalid HTML that behaves differently in every browser.
+                    * The row is a MOUSE shortcut on top of a control that is still there - "Open" keeps the
+                    * keyboard and the screen reader, so nothing is lost by this being a plain div.
+                    *
+                    * Anything that is itself a control has already done its own job, which is why the tick
+                    * does not open the panel underneath it. */}
+                  <div
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest('button,input,select,a,[role="checkbox"]')) return;
+                      setOpenId(t.id === openId ? null : t.id);
+                    }}
+                    className={cn(
+                      ROW, COLUMNS, 'cursor-pointer',
+                      ticked && 'border-brand-primary bg-state-pressed',
+                      t.id === openId && !ticked && 'border-brand-primary bg-state-pressed',
+                    )}
+                  >
+                    {t.role === 'owner' ? (
+                      <Checkbox
+                        checked={ticked}
+                        aria-label={`Select ${t.name}`}
+                        onCheckedChange={() => setPickedTeams((was) => {
+                          const next = new Set(was);
+                          if (!next.delete(t.id)) next.add(t.id);
+                          return next;
+                        })}
+                      />
+                    ) : (
+                      /* Not yours to delete, so not yours to tick - but it keeps the column, or every name
+                         below sits a checkbox further left than the ones above it. */
+                      <span className="size-4 shrink-0" aria-hidden />
+                    )}
                     <span className="flex min-w-0 items-center gap-2.5">
                       <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-state-pressed font-bold text-[0.75rem] text-brand-primary">
                         {(t.name || '?').trim()[0]?.toUpperCase()}
@@ -475,7 +573,8 @@ export const TeamView = () => {
                     </span>
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
 
             {teams && teams.length === 0 && (

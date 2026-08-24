@@ -1060,6 +1060,14 @@ export const SkillsView = () => {
         </div>
         <SelectionBar
           className="mb-2"
+          /* Counted here as well as in the header above, because this line is the one being acted on: with a
+             search or a filter running, "2 of 7" is the number that says what Select all would tick. */
+          label={(
+            <Typography variant="span" className="text-ink-secondary">
+              {shownSkills.length} skill{shownSkills.length === 1 ? '' : 's'}
+              {shownSkills.length !== skills.length ? ` of ${skills.length}` : ''}
+            </Typography>
+          )}
           total={shownSkills.length}
           selected={live.size}
           onSelectAll={(all) => setSelected(all ? new Set(shownSkills.map((flow) => flow.id)) : new Set())}
