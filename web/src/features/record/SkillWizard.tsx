@@ -43,6 +43,7 @@ import { saveAsGoalSkill } from './save-as-skill';
 /* Which typing runs are fields and which are somebody pressing Enter. Lives beside the API rather than here
  * because the suite runs it for real against measured recordings, and a .tsx cannot be imported by Node. */
 import { classifyTyping, type TypingVerdict } from './typing';
+import type { Conflict, Unplaced } from '../../../../api/_compose.mjs';
 
 /* ------------------------------------------------------------------ what the transcript sends */
 
@@ -183,20 +184,33 @@ function instruction(line: Line, blank: Blank | undefined): string | null {
   }
 }
 
-function buildGoal(lines: Line[], kept: Set<number>, blanks: Blank[]): string {
+/* The goal in PIECES, because two callers want different halves of it.
+ *
+ * The wizard wants the finished sentence. /api/compose wants the steps with their own numbers still on
+ * them, because a note is placed by saying which step it follows - and the numbers are the recording's,
+ * with gaps in them where steps were dropped, not positions in a list. Building the string and then
+ * parsing the numbers back out of it is the mistake this file's header already warns about once. */
+function goalParts(lines: Line[], kept: Set<number>, blanks: Blank[]) {
   const byStep = new Map(blanks.map((b) => [b.n, b]));
   const wheres = [...new Set(lines.filter((l) => kept.has(l.n) && l.where).map((l) => l.where as string))];
-  const steps: string[] = [];
+  const steps: { n: number; instruction: string }[] = [];
   for (const line of lines) {
     if (!kept.has(line.n)) continue;
     const said = instruction(line, byStep.get(line.n));
-    if (said) steps.push(said);
+    if (said) steps.push({ n: line.n, instruction: said });
   }
-  if (!steps.length) return '';
   const opening = wheres.length
     ? `In ${wheres.slice(0, 2).join(' and ')}, do this:`
     : 'Do this on the computer:';
-  return `${opening}\n${steps.map((s, i) => `${i + 1}. ${s[0].toUpperCase()}${s.slice(1)}.`).join('\n')}`;
+  return { opening, steps };
+}
+
+function buildGoal(lines: Line[], kept: Set<number>, blanks: Blank[]): string {
+  const { opening, steps } = goalParts(lines, kept, blanks);
+  if (!steps.length) return '';
+  return `${opening}\n${steps
+    .map((s, i) => `${i + 1}. ${s.instruction[0].toUpperCase()}${s.instruction.slice(1)}.`)
+    .join('\n')}`;
 }
 
 /* Whatever the person added in their own words, on the end of the derived steps.
@@ -403,6 +417,18 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   /* The folded-away keypresses, shut by default. Open is the exception - it exists so a wrong classification
    * is correctable, not so everybody reads a list of Enters. */
   const [showAside, setShowAside] = useState(false);
+  /* Whether the steps that cannot be described are on screen. Shut by default: on a 546-step recording they
+   * are the majority of the list, each carrying three lines saying the same thing, and a person scrolling
+   * past four hundred of them is not reading any of them. */
+  const [showAll, setShowAll] = useState(false);
+  /* What /api/compose made of the notes, when it was asked and answered. `plan` holds only the two things
+   * that are NOT applied - what clashes and what could not be placed - because everything else it decided
+   * is already in the goal text below. Null means the plain append was used. */
+  const [plan, setPlan] = useState<null | { conflicts: Conflict[]; unplaced: Unplaced[]; placed: number }>(null);
+  const [composing, setComposing] = useState(false);
+  /* Why it fell back, when it did. Shown as one quiet line: a model that was busy is not an error somebody
+   * has to act on, but it does change what the goal on the next screen says, so it is not silent either. */
+  const [composeNote, setComposeNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -508,6 +534,12 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   /* Step 1 asks each row for its blank. A Map rather than a find() per row: a 546-step recording renders
    * 546 rows, and a linear scan inside each of them is the kind of thing that turns a list into a stutter. */
   const blankOf = useMemo(() => new Map(blanks.map((b) => [b.n, b])), [blanks]);
+  /* The steps that can become instructions, and the ones that cannot. A step with no name under it is not
+   * a step a skill can be told to do - `instruction()` returns null for it either way - so hiding it hides
+   * nothing that was going to happen. */
+  const describables = useMemo(() => (lines ?? []).filter(describable), [lines]);
+  const hidden = (lines?.length ?? 0) - describables.length;
+  const shown = showAll ? (lines ?? []) : describables;
   const fields = useMemo(() => typing.filter((b) => b.verdict.field), [typing]);
   const aside = useMemo(() => typing.filter((b) => !b.verdict.field), [typing]);
   const asked = useMemo(() => typing.filter((b) => b.fill === 'ask'), [typing]);
@@ -518,8 +550,12 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   );
 
   /* The goal follows the choices until somebody edits it, and then it is theirs. Overwriting a sentence
-   * a person wrote because a checkbox moved is the kind of helpfulness that loses work. */
-  useEffect(() => { if (!touchedGoal) setGoal(derived); }, [derived, touchedGoal]);
+   * a person wrote because a checkbox moved is the kind of helpfulness that loses work.
+   *
+   * A composed goal counts as theirs too: it is the answer to what they wrote, and rebuilding it from the
+   * checkboxes would throw that away the moment any state below it changed. Going Back clears it, which is
+   * what makes a second pass possible. */
+  useEffect(() => { if (!touchedGoal && !plan) setGoal(derived); }, [derived, touchedGoal, plan]);
 
   const toggle = useCallback((n: number) => {
     setKept((was) => {
@@ -538,9 +574,12 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
    *
    * "None" is here because the pair is what makes either one safe to press: having taken everything, the
    * way back to a considered selection should not be fourteen clicks either. */
-  const allKept = !!lines && lines.length > 0 && lines.every((line) => kept.has(line.n));
+  /* "Everything" means everything that can be described. A tick beside a step that contributes nothing to
+   * the goal reads as "this is in the skill" and is not - which is the same lie the list already avoids by
+   * starting them unticked. */
+  const allKept = describables.length > 0 && describables.every((line) => kept.has(line.n));
   const keepAll = useCallback(() => {
-    setKept(new Set((lines ?? []).map((line) => line.n)));
+    setKept(new Set((lines ?? []).filter(describable).map((line) => line.n)));
   }, [lines]);
   const keepNone = useCallback(() => setKept(new Set()), []);
 
@@ -562,6 +601,52 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
 
   const unnamed = typing.some((b) => b.fill === 'ask' && !b.param.trim());
   const unfilled = typing.some((b) => b.fill === 'fixed' && !b.fixed.trim());
+
+  /* Ask /api/compose to put the notes onto the steps, on the way to the last screen.
+   *
+   * Here rather than at run time, and that is the whole design: "finish by pressing Send, not Save" is a
+   * change to the PLAN, and the thing that carries a goal out decides one action at a time on somebody's
+   * real computer - it may well have clicked Save before it reads the sentence saying not to. Done now, the
+   * person who just did the work is still on screen and sees the result before it becomes a skill.
+   *
+   * Every failure path ends in the plain append, which is what this did before the route existed. A model
+   * being busy must not be able to stop somebody saving a skill. */
+  const compose = async () => {
+    if (!lines) return;
+    const said = notes.trim();
+    const { opening, steps } = goalParts(lines, kept, blanks);
+    if (!said || !steps.length) return;
+
+    setComposing(true);
+    setComposeNote(null);
+    try {
+      const res = await fetch('/api/compose', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ steps, notes: said, opening }),
+      });
+      const body = await res.json();
+      if (body && body.ok && typeof body.text === 'string' && body.text.trim()) {
+        setGoal(body.text);
+        setPlan({
+          conflicts: Array.isArray(body.conflicts) ? body.conflicts : [],
+          unplaced: Array.isArray(body.unplaced) ? body.unplaced : [],
+          placed: Array.isArray(body.inserted) ? body.inserted.length : 0,
+        });
+      } else {
+        setPlan(null);
+        setGoal(withNotes(buildGoal(lines, kept, blanks), notes));
+        setComposeNote(typeof body?.why === 'string' ? body.why : 'the notes were added as written');
+      }
+    } catch (_) {
+      /* Offline, or the route is not on this deployment. Same answer either way. */
+      setPlan(null);
+      setGoal(withNotes(buildGoal(lines, kept, blanks), notes));
+      setComposeNote('the notes were added as written');
+    }
+    setComposing(false);
+  };
 
   const save = async () => {
     if (!lines) return;
@@ -635,7 +720,14 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
             </div>
           </header>
 
-          <div className="max-h-[60vh] min-h-[280px] overflow-auto px-4 py-3.5">
+          {/* One height, always.
+            *
+            * It used to be `max-h-60vh min-h-280px`, which is a range, and a range means the dialog was a
+            * different size on every recording and on every step of the same one: a four-step list opened
+            * short, a 546-step list opened tall, and moving between steps 1, 2 and 3 resized it under the
+            * cursor - with Next moving as it went. Fixed, so the only thing that changes when a step
+            * changes is what is inside it. Bounded top and bottom for a small window and a very tall one. */}
+          <div className="h-[60vh] max-h-[34rem] min-h-[20rem] overflow-auto px-4 py-3.5">
             {problem && (
               <div className="mb-3 rounded-lg border border-toast-border-error bg-toast-bg-error px-3 py-2.5 text-[0.85rem] text-fb-red-text">
                 {problem}
@@ -678,11 +770,11 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     None
                   </Button>
                   <Typography variant="span" className="ms-auto text-[0.76rem] text-ink-inactive">
-                    {kept.size} of {lines.length} kept
+                    {kept.size} of {describables.length} kept
                   </Typography>
                 </div>
                 <ul className="grid gap-1">
-                  {lines.map((line) => {
+                  {shown.map((line) => {
                     const isTyping = line.action === 'type';
                     const on = kept.has(line.n);
                     /* Only a FIELD gets the chip. Offering "what did you type here?" beside an Enter keypress
@@ -734,6 +826,32 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     );
                   })}
                 </ul>
+                {/* What was left out, said rather than simply absent.
+                  *
+                  * These are pointer moves, waits, and clicks on things the accessibility layer could not
+                  * name. None of them can become an instruction - a goal is carried out by a model reading
+                  * the screen, and "click 1030,1053" would put back exactly the fragility this kind of skill
+                  * exists to escape - so hiding them hides nothing that was going to happen.
+                  *
+                  * But a recording of 546 steps that shows 90 is a claim about what was recorded, and the
+                  * page has to make that claim out loud. One line, with the count and a way in. */}
+                {hidden > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-stroke bg-surface-card2 px-3 py-2">
+                    <Typography variant="span" className="text-[0.82rem] text-ink-inactive">
+                      {hidden} more step{hidden === 1 ? '' : 's'} — pointer moves, waits, and clicks on
+                      things with no name. {hidden === 1 ? 'It cannot' : 'They cannot'} be described to a
+                      skill, so {hidden === 1 ? 'it is' : 'they are'} left out.
+                    </Typography>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      className="ms-auto"
+                      onClick={() => setShowAll((was) => !was)}
+                    >
+                      {showAll ? 'Hide' : 'Show'}
+                    </Button>
+                  </div>
+                )}
               </>
             )}
 
@@ -1016,6 +1134,44 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     className="rounded-lg border border-stroke bg-surface-card2 p-3 font-mono text-[0.82rem] text-ink-primary leading-relaxed focus:border-brand-primary focus:outline-none"
                   />
                 </label>
+                {/* What the compiler did with what you wrote, above the goal rather than under it.
+                  *
+                  * Only the two things it did NOT apply. Everything it placed is already in the text below,
+                  * and listing that too would be asking somebody to read the same change twice. A conflict
+                  * is shown because BOTH survive - the recorded step was not rewritten, deliberately - so
+                  * the only way the person learns their sentence disagreed with the recording is here. */}
+                {plan && (plan.conflicts.length > 0 || plan.unplaced.length > 0) && (
+                  <div className="grid gap-2 rounded-lg border border-fb-attention/40 bg-fb-attention/5 px-3 py-2.5">
+                    {plan.conflicts.map((c) => (
+                      <div key={`c${c.n}`} className="text-[0.82rem] leading-relaxed">
+                        <span className="text-ink-body">You wrote “{c.note}”</span>
+                        {/* Numbered in the GOAL's numbering, which is the one on screen, and quoted as well
+                          * — a quotation cannot drift out of step with a renumbering. */}
+                        <span className="text-ink-inactive"> — {c.why}. Step {c.at ?? c.n} below
+                          {c.instruction ? ` (“${c.instruction}”)` : ''} was left as recorded; edit it if
+                          your version is the right one.</span>
+                      </div>
+                    ))}
+                    {plan.unplaced.map((u) => (
+                      <div key={u.note} className="text-[0.82rem] leading-relaxed">
+                        <span className="text-ink-body">“{u.note}”</span>
+                        <span className="text-ink-inactive"> was not placed — {u.why}. Add it to the goal
+                          below if it should happen.</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {plan && plan.placed > 0 && plan.conflicts.length === 0 && plan.unplaced.length === 0 && (
+                  <Typography variant="p" className="text-[0.8rem] text-ink-inactive">
+                    Your {plan.placed === 1 ? 'instruction was' : `${plan.placed} instructions were`} placed
+                    among the steps below.
+                  </Typography>
+                )}
+                {composeNote && (
+                  <Typography variant="p" className="text-[0.8rem] text-ink-inactive">
+                    Your instructions are at the end rather than in place — {composeNote}.
+                  </Typography>
+                )}
                 <Typography variant="p" className="text-ink-inactive text-[0.8rem] leading-relaxed">
                   {asked.length > 0 ? (
                     <>
@@ -1036,7 +1192,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
 
           <footer className="flex items-center gap-2 border-stroke border-t px-4 py-3">
             <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
-              {stage === 0 && lines ? `${kept.size} of ${lines.length} steps kept` : ''}
+              {stage === 0 && lines ? `${kept.size} of ${describables.length} steps kept` : ''}
               {stage === 1 && fields.length > 0 ? `${asked.length} will be asked for` : ''}
               {/* The step can now be used with no blanks at all, so the footer had nothing to say on the
                 * commonest path through it. */}
@@ -1046,13 +1202,33 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
             </Typography>
             <div className="ms-auto flex items-center gap-2">
               {stage > 0 && (
-                <Button variant="ghost" size="sm" onClick={() => setStage(stage - 1)}>Back</Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  /* Going back throws away what the compiler made of the notes. It has to: the notes or the
+                   * steps are about to change, and a goal composed against the old ones would look current
+                   * and be stale. Clearing it is also what lets the next Next ask again. */
+                  onClick={() => { setPlan(null); setComposeNote(null); setStage(stage - 1); }}
+                >
+                  Back
+                </Button>
               )}
               {/* Save carries NO icon. The Button lays its children out in a row that wraps, and at this
                 * width the tick came out on a line of its own above the words — a two-line button that
                 * reads as a rendering fault. The word is doing the work. */}
               {stage < STAGES.length - 1 ? (
-                <Button size="sm" disabled={!canGo} onClick={() => setStage(stage + 1)}>Next</Button>
+                <Button
+                  size="sm"
+                  disabled={!canGo || composing}
+                  isLoading={composing}
+                  onClick={() => {
+                    /* Only on the way OFF the instructions step, and only when something was written. */
+                    if (stage === 1) void compose().then(() => setStage(2));
+                    else setStage(stage + 1);
+                  }}
+                >
+                  Next
+                </Button>
               ) : (
                 <Button size="sm" disabled={!canGo} isLoading={saving} onClick={() => void save()}>
                   Save the skill

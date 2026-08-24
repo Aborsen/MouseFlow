@@ -1002,9 +1002,150 @@ check('the save button carries no icon, which wrapped it onto two lines',
   !/<Check className/.test(wizard));
 
 check('the step list can be taken whole in one click', /const keepAll = useCallback/.test(wizard)
-  && /lines \?\? \[\]\)\.map\(\(line\) => line\.n\)/.test(wizard));
+  && /lines \?\? \[\]\)\.filter\(describable\)\.map\(\(line\) => line\.n\)/.test(wizard));
+
+/* A 546-step recording is mostly pointer moves, waits, and clicks on things the accessibility layer could
+ * not name. None of them can become an instruction, so showing four hundred of them - each with three lines
+ * saying why it cannot be used - is a list nobody reads any of. */
+group('the step list opens on the steps that can become a skill');
+check('what cannot be described is folded away by default',
+  /const \[showAll, setShowAll\] = useState\(false\)/.test(wizard)
+    && /const shown = showAll \? \(lines \?\? \[\]\) : describables;/.test(wizard));
+check('and the list renders the folded view, not the whole thing',
+  /\{shown\.map\(\(line\) => \{/.test(wizard));
+/* Hidden is not the same as absent: a recording of 546 steps showing 90 is a claim, and the page says it. */
+check('the count of what was left out is stated, with a way in',
+  /\{hidden\} more step\{hidden === 1 \? '' : 's'\}/.test(wizard)
+    && /setShowAll\(\(was\) => !was\)/.test(wizard));
+check('and both counters count the same thing, so "8 of 9" cannot appear over 8 rows',
+  (wizard.match(/of \{describables\.length\}/g) || []).length === 1
+    && /\$\{kept\.size\} of \$\{describables\.length\} steps kept/.test(wizard));
+check('taking everything takes what can be described, not ticks that contribute nothing',
+  /describables\.every\(\(line\) => kept\.has\(line\.n\)\)/.test(wizard));
+
+/* The dialog was `max-h-[60vh] min-h-[280px]` — a RANGE, so it was a different size on every recording and
+ * on every step of the same one, resizing under the cursor with Next moving as it went. */
+check('the dialog is one height rather than a range',
+  /h-\[60vh\] max-h-\[34rem\] min-h-\[20rem\]/.test(wizard)
+    && !/max-h-\[60vh\] min-h-\[280px\]/.test(wizard));
 check('and emptied in one, so neither direction costs a click per step',
   /const keepNone = useCallback\(\(\) => setKept\(new Set\(\)\)/.test(wizard));
+
+/* The compiler that puts what somebody WROTE onto the steps their recording DERIVED.
+ *
+ * Run for real. Applying the plan is plain code on purpose - the model decides where a sentence goes and
+ * whether something clashes; this decides what the goal text ends up being - so it is the half that can be
+ * tested without a model, and the half where a mistake silently changes what runs on a real machine. */
+group('what was written is placed among the steps, never instead of them');
+const compose = await import('../api/_compose.mjs');
+
+const RECORDED = [
+  { n: 1, instruction: 'click "New mail"' },
+  { n: 4, instruction: 'type {{subject}} into "Subject"' },
+  { n: 7, instruction: 'click "Save"' },
+];
+
+const placed = compose.applyPlan({ steps: RECORDED, opening: 'In Outlook, do this:' }, {
+  insert: [{ after: 4, instruction: 'type today’s date into "Reference"', from: 'type today’s date' }],
+  conflicts: [{ n: 7, note: 'finish by pressing Send, not Save', why: 'the recording clicked Save here' }],
+  unplaced: [{ note: 'this is for the Q3 client', why: 'it is context, not an action' }],
+});
+check('an insert lands after the step it names, in the position that step now occupies',
+  /2\. Type \{\{subject\}\} into "Subject"\./.test(placed.text)
+    && /3\. Type today’s date into "Reference"\./.test(placed.text), placed.text);
+/* The placeholder is an input the skill will ask for. A compiler that helpfully filled one in would build a
+ * skill that runs the author's own errand for whoever calls it. */
+check('and a placeholder survives the round trip untouched',
+  placed.text.includes('{{subject}}'));
+check('the inserted line sits between the two it was placed between',
+  placed.lines.map((l) => l.from).join(',') === 'recorded,recorded,yours,recorded',
+  placed.lines.map((l) => l.instruction).join(' | '));
+check('and the whole thing renumbers, so the goal reads 1..4',
+  /1\. Click/.test(placed.text) && /4\. Click "Save"\./.test(placed.text), placed.text);
+/* The decision that matters: a conflict is REPORTED and the recorded step survives. A compiler that deleted
+ * step 7 because a sentence disagreed with it would destroy the one thing here that is not a guess. */
+check('a conflict is reported and the step it clashes with is left exactly as it was',
+  placed.conflicts.length === 1 && placed.conflicts[0].n === 7
+    && placed.text.includes('Click "Save"'));
+/* Two numberings are on screen at once: the recording's, which has gaps where steps were dropped, and the
+ * goal's, renumbered 1..N with the inserts spliced in. Reporting a clash in the first sends somebody to a
+ * different line of the second — which is what it did until it was looked at rather than reasoned about. */
+check('and it is numbered in the goal’s numbering, not the recording’s',
+  placed.conflicts[0].n === 7 && placed.conflicts[0].at === 4,
+  JSON.stringify(placed.conflicts[0]));
+check('and quoted too, since a quotation cannot drift out of step with a renumbering',
+  placed.conflicts[0].instruction === 'click "Save"');
+check('and nothing the person wrote is swallowed - unplaced comes back',
+  placed.unplaced.length === 1 && /context, not an action/.test(placed.unplaced[0].why));
+
+/* A position the model invented cannot be honoured, and the instruction it carried must not be dropped on
+ * the floor or appended somewhere plausible - either would be a silent guess about where work happens. */
+const stray = compose.applyPlan({ steps: RECORDED }, {
+  insert: [{ after: 99, instruction: 'click "Send"', from: 'finish with Send' }],
+  conflicts: [], unplaced: [],
+});
+check('an insert after a step nobody kept becomes unplaced, not a guess',
+  stray.unplaced.length === 1 && /not one of the steps kept/.test(stray.unplaced[0].why)
+    && !stray.text.includes('Send'));
+check('and it is reported under what the person wrote, not under the model’s paraphrase',
+  stray.unplaced[0].note === 'finish with Send');
+
+check('after 0 means before the first step, which is a real answer',
+  compose.applyPlan({ steps: RECORDED }, {
+    insert: [{ after: 0, instruction: 'open Outlook', from: 'start in Outlook' }],
+    conflicts: [], unplaced: [],
+  }).lines[0].from === 'yours');
+
+check('a conflict against a step nobody kept is not a conflict any more',
+  compose.applyPlan({ steps: RECORDED }, {
+    insert: [], conflicts: [{ n: 99, note: 'x', why: 'y' }], unplaced: [],
+  }).conflicts.length === 0);
+
+check('two inserts after one step keep the order they came in',
+  compose.applyPlan({ steps: RECORDED }, {
+    insert: [
+      { after: 1, instruction: 'first', from: 'a' },
+      { after: 1, instruction: 'second', from: 'b' },
+    ],
+    conflicts: [], unplaced: [],
+  }).lines.map((l) => l.instruction).slice(1, 3).join(',') === 'first,second');
+
+check('an empty instruction is ignored rather than numbered as a blank line',
+  compose.applyPlan({ steps: RECORDED }, {
+    insert: [{ after: 1, instruction: '   ', from: 'a' }], conflicts: [], unplaced: [],
+  }).lines.length === RECORDED.length);
+
+/* Junk from a model must not throw. This route runs while somebody is trying to save a skill. */
+check('a plan that is not the shape asked for leaves the recorded steps intact',
+  compose.applyPlan({ steps: RECORDED }, null).lines.length === 3
+    && compose.applyPlan({ steps: RECORDED }, { insert: 'nope' }).lines.length === 3);
+
+/* No silent caps: a compiler that considered the first 300 of 546 steps would place "finish by pressing
+ * Save" against whatever step 300 happened to be. */
+const long = Array.from({ length: compose.MAX_STEPS + 46 }, (_, i) => ({ n: i + 1, instruction: 'click x' }));
+const prompt = compose.promptFor({ steps: long, notes: 'finish by pressing Save' });
+check('a list longer than the cap says how many it left out', prompt.dropped === 46
+  && /46 further steps are not listed/.test(prompt.user));
+check('the model is told never to place a note just to avoid the unplaced list',
+  /Unplaced is a normal answer/.test(compose.SYSTEM));
+check('and never to inline a value for an input the skill will ask for',
+  /never inline a value for one/.test(compose.SYSTEM));
+/* The tool is what forces the structure; without required fields the model answers in prose. */
+check('the plan is required to carry all three lists',
+  compose.PLAN_TOOL.schema.required.join(',') === 'insert,conflicts,unplaced');
+
+group('and the route can fail without stopping anybody saving a skill');
+const composeApi = read('../api/compose.js');
+check('every refusal answers 200 with a reason, so a busy model is not a dead end',
+  /const no = \(res, why\) => res\.status\(200\)\.json\(\{ ok: false, why \}\)/.test(composeApi));
+check('it is behind whoIsCalling, because it spends the deployment’s own key',
+  /whoIsCalling\(req, sql\)/.test(composeApi) && /if \(!who\) return no\(/.test(composeApi));
+check('and rate-limited per account rather than per address',
+  /tooMany\(who\.id\)/.test(composeApi));
+check('no notes means no model call at all',
+  /if \(!notes\.trim\(\)\) return no\(/.test(composeApi));
+check('a deployment with no model key says so rather than reporting a crash',
+  /instanceof ProviderError/.test(composeApi));
 
 /* A crash reporter on a product that promises not to watch you is worth checking rather than trusting. */
 group('error reporting sends crashes and not people');

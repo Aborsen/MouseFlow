@@ -374,6 +374,41 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     });
   }
 
+  /* Placing what somebody wrote onto the steps they recorded.
+   *
+   * Only the MODEL is faked. The plan below is handed to the REAL applyPlan from api/_compose.mjs, because
+   * the half worth exercising in a browser is the half that decides what the goal text ends up being - and
+   * a fixture that reimplemented the splice would be a fixture agreeing with itself. The plan is written to
+   * hit all three outcomes at once: one line placed, one clash reported, one sentence left unplaced.
+   */
+  if (url.startsWith('/api/compose')) {
+    if (method !== 'POST') return json(res, 200, { ok: false, why: 'POST a step list and some notes' });
+    let text = '';
+    req.on('data', (chunk) => { text += chunk; });
+    req.on('end', () => {
+      void (async () => {
+        let body: { steps?: { n: number; instruction: string }[]; notes?: string; opening?: string } = {};
+        try { body = text ? JSON.parse(text) : {}; } catch (_) { /* handled below */ }
+        const steps = Array.isArray(body.steps) ? body.steps : [];
+        const said = String(body.notes || '').split('\n').map((l) => l.replace(/^[•\-*]\s*/, '').trim())
+          .filter(Boolean);
+        if (!said.length || !steps.length) {
+          return json(res, 200, { ok: false, why: 'nothing was written, so there is nothing to place' });
+        }
+        const { applyPlan } = await import('../../../api/_compose.mjs');
+        const applied = applyPlan({ steps, opening: body.opening }, {
+          insert: said[0] ? [{ after: steps[0].n, instruction: said[0], from: said[0] }] : [],
+          conflicts: said[1] && steps.length > 1
+            ? [{ n: steps[steps.length - 1].n, note: said[1], why: 'the recording did something else here' }]
+            : [],
+          unplaced: said[2] ? [{ note: said[2], why: 'it reads as context rather than an action' }] : [],
+        });
+        return json(res, 200, { ok: true, ...applied, dropped: 0, limit: 300 });
+      })();
+    });
+    return undefined;
+  }
+
   /* The transcript, so the panel can be looked at without a session. A fixture of the SHAPE - the real
    * derivation is api/_transcript.js and it is pure, so what is worth checking here is that the panel reads
    * the shape the derivation produces. Two segments, one step with no context, and a gaps list, because
