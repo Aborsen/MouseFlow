@@ -694,6 +694,22 @@ async function workerRoute(action, req, res, sql, who) {
     `;
 
     const by = String((req.body && req.body.worker) || 'worker').slice(0, 60);
+    /* WHAT THIS CLAIMER CAN ACTUALLY DO, which the queue did not ask until it had to.
+     *
+     * There are two kinds of claimer on one account and they are not interchangeable. An agent's own
+     * courier can start a recording, stop one, and replay a body - it has no model in it, so a GOAL skill,
+     * whose whole nature is a model deciding one action at a time, is something it can only answer "asked
+     * to do something it does not understand" to. The worker has the model path.
+     *
+     * Both POST here with the same shape, and this took the oldest queued row regardless. While everything
+     * queued was a `#record.*` command, which both can do, nothing went wrong. The first goal skill queued
+     * on a machine running both would have gone to whichever long-poll landed first - a coin flip, and a
+     * confusing message on the losing side.
+     *
+     * The AGENT declares itself rather than the worker declaring its powers, and that is the migration-safe
+     * direction: an agent too old to say so keeps behaving exactly as it does today, and no worker - old or
+     * new - is ever refused a job it can do. */
+    const claimerIsAgent = String((req.body && req.body.kind) || '') === 'agent';
     const wait = Math.min(CLAIM_WAIT_MAX_MS, Math.max(0, Number((req.body && req.body.wait) || 0) * 1000));
     const until = Date.now() + wait;
 
@@ -703,9 +719,22 @@ async function workerRoute(action, req, res, sql, who) {
       const took = await sql`
         update run_queue set state = 'claimed', claimed_by = ${by}, claimed_at = now()
         where id = (
-          select id from run_queue
-          where user_id = ${who.id} and state = 'queued'
-          order by created_at limit 1
+          select id from run_queue q
+          where q.user_id = ${who.id} and q.state = 'queued'
+            /* A command starts with '#' and both kinds can do it; a skill has to be looked at. An agent is
+             * handed everything EXCEPT a created skill - and a flow row that has gone missing counts as
+             * not-a-goal, so a stale job still gets claimed and fails with a reason rather than sitting in
+             * the queue forever waiting for a claimer that will never be allowed to take it. */
+            and (
+              ${!claimerIsAgent}
+              or q.flow_id like '#%'
+              or not exists (
+                select 1 from user_flow f
+                where f.user_id = q.user_id and f.client_id = q.flow_id
+                  and f.deleted_at is null and f.kind = 'created'
+              )
+            )
+          order by q.created_at limit 1
         )
         returning id, flow_id, tool_name, args
       `;

@@ -1397,6 +1397,27 @@ check('no notes means no model call at all',
 check('a deployment with no model key says so rather than reporting a crash',
   /instanceof ProviderError/.test(composeApi));
 
+/* Two claimers on one account, and they are not interchangeable. While everything queued was a `#record.*`
+ * command - which both can do - nothing went wrong; the first goal skill queued on a machine running both
+ * would have gone to whichever long-poll landed first. */
+group('the queue hands a job only to something that can do it');
+const mcpApi = read('../api/mcp.js');
+check('the claim asks what the claimer is',
+  /const claimerIsAgent = String\(\(req\.body && req\.body\.kind\) \|\| ''\) === 'agent'/.test(mcpApi));
+check('and an agent is not handed a created skill',
+  /and f\.deleted_at is null and f\.kind = 'created'/.test(mcpApi));
+/* A command is `#`-prefixed and both kinds can do it — the flow lookup is only for actual skills. */
+check('a command still goes to either of them', /q\.flow_id like '#%'/.test(mcpApi));
+/* A stale job whose flow is gone must still be claimable, or it sits in the queue for ever waiting for a
+ * claimer that will never be allowed to take it. */
+check('and a job whose flow went missing is still claimed, then fails with a reason',
+  /not exists \(/.test(mcpApi));
+/* The AGENT declares itself rather than the worker declaring its powers: an agent too old to say so keeps
+ * behaving exactly as it does today, and no worker - old or new - is ever refused a job it can do. */
+check('the declaration is on the agent, so an old one is unchanged and no worker is ever refused',
+  /\$\{!claimerIsAgent\}/.test(mcpApi)
+    && !/req\.body\.canGoal|body\.runsGoals/.test(mcpApi));
+
 /* A crash reporter on a product that promises not to watch you is worth checking rather than trusting. */
 group('error reporting sends crashes and not people');
 const sentry = read('../web/src/lib/sentry.ts');

@@ -3085,8 +3085,12 @@ namespace MouseFlow
                 string token = Account.Token;
                 string root = Account.Base;
                 int status;
+                /* `kind: agent` says what this claimer is, so the queue does not hand it a goal skill.
+                   This courier records and replays; a goal skill is a model deciding one action at a time
+                   and there is no model here. Both it and the worker claim from the same endpoint, so
+                   without this it is whichever long-poll lands first. */
                 string answer = Post(root + "/api/mcp?worker=claim", token,
-                    "{\"worker\":\"" + Agent.JsonText(Environment.MachineName) + "\",\"wait\":"
+                    "{\"worker\":\"" + Agent.JsonText(Environment.MachineName) + "\",\"kind\":\"agent\",\"wait\":"
                     + ClaimWaitSeconds.ToString(CultureInfo.InvariantCulture) + "}", out status);
 
                 if (status == 401 || status == 403)
