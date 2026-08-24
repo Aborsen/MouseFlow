@@ -21,6 +21,12 @@ import { CreateScreen } from './CreateScreen';
  * Record and Create stay the extension's own, and that is not an exception: they are not versions of the
  * app's screens at all. The app records through the desktop agent; this records through content scripts in
  * the page. Same word, different machine. */
+import { RecordView } from '@/features/record/RecordView';
+/* Pulls recordings the account has and this browser does not into the local store. The app mounts it in
+ * its layout for the same reason it is here: a list that only fills when somebody visits the right page is
+ * a list that is wrong until they do. Without it the panel's recordings screen is empty on an account full
+ * of them, which is exactly what it was. */
+import { Reconciler } from '@/features/record/Reconciler';
 import { SkillsView } from '@/features/skills/SkillsView';
 import { InsightsView } from '@/features/insights/InsightsView';
 import { TeamView } from '@/features/team/TeamView';
@@ -44,6 +50,7 @@ export const Panel = () => {
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
   const [asking, setAsking] = useState(false);
   const [door, setDoor] = useState<'in' | 'up'>('in');
+  const [recordWhere, setRecordWhere] = useState<'browser' | 'desktop'>('browser');
 
   const go = useCallback((next: Screen) => {
     setScreen(next);
@@ -104,6 +111,7 @@ export const Panel = () => {
    * included - rather than sitting in the column beside it. */
   return (
     <AccountProvider>
+      <Reconciler />
       <div className="relative flex h-full items-stretch bg-surface-page text-ink-primary">
       <Rail screen={screen} onGo={go} onAsk={() => setAsking(true)} onDetached={() => setSignedIn(false)} />
 
@@ -150,7 +158,34 @@ export const Panel = () => {
           </div>
         ) : (
           <>
-            {screen === 'record' && <RecordScreen />}
+            {screen === 'record' && (
+              <>
+                {/* TWO RECORDERS, ONE AT A TIME. This browser records inside web pages through content
+                    scripts; this computer records everything through the agent. Both belong in the panel -
+                    it is the one surface where both are in reach - but showing both at once put two Start
+                    buttons on one screen, which is a question nobody should have to answer twice.
+                    The list below is one list either way: a recording is a recording once it exists. */}
+                <div className="flex gap-1 rounded-md border border-stroke bg-surface-card2 p-0.5">
+                  {([['browser', 'This browser'], ['desktop', 'This computer']] as const).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setRecordWhere(id)}
+                      className={cn(
+                        'flex-1 rounded px-2 py-1 text-[0.78rem] transition-colors duration-base',
+                        recordWhere === id
+                          ? 'bg-brand-primary/15 font-semibold text-brand-primary'
+                          : 'text-ink-secondary hover:bg-state-hover',
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {recordWhere === 'browser' && <RecordScreen />}
+                <RecordView recorder={recordWhere === 'desktop'} />
+              </>
+            )}
             {screen === 'create' && <CreateScreen />}
             {screen === 'skills' && <SkillsView />}
             {screen === 'dashboard' && <InsightsView />}

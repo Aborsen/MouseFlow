@@ -48,7 +48,9 @@ const SPEEDS = [0.5, 1, 1.5, 2, 4];
  * exactly the same width: `auto` sizes to content, the header's word ACTIONS is narrow, four buttons are not,
  * so the 1fr name column absorbed a different amount of space in each. A shared template only shares if every
  * track but one is fixed. */
-const COLUMNS = 'grid-cols-[1.25rem_minmax(11rem,1fr)_7rem_6.5rem_7rem_16.5rem]';
+/* The wide shape, and only where it fits - see the same note in SkillsView. Under `md` the row stacks,
+ * which is what makes this table readable in a narrow window and in the extension's side panel. */
+const COLUMNS = 'md:grid-cols-[1.25rem_minmax(11rem,1fr)_7rem_6.5rem_7rem_16.5rem]';
 
 /* Sortable columns, the same arrangement the skills table uses.
  *
@@ -386,13 +388,14 @@ export const RecordingsTable = ({
                window cannot hold it, this scrolls rather than the page. A page that slides sideways is the
                worse of the two. */
             <div className="overflow-x-auto pb-1">
-              <div className="min-w-[52rem]">
+              <div className="md:min-w-[52rem]">
               {/* The labels the controls were missing. Same template as the rows, so they line up rather than
                   approximately line up. */}
+              {/* Hidden with the grid: headings over a stack of cards name nothing. */}
               <div
                 className={cn(
                   COLUMNS,
-                  'grid w-full items-center gap-x-3 px-3 pb-1.5',
+                  'hidden w-full items-center gap-x-3 px-3 pb-1.5 md:grid',
                   'text-[0.7rem] uppercase tracking-wide text-ink-inactive',
                 )}
               >
@@ -437,7 +440,8 @@ export const RecordingsTable = ({
                       }}
                       className={cn(
                         COLUMNS,
-                        'grid w-full cursor-pointer items-center gap-x-3 rounded-lg px-3 py-1.5',
+                        'flex w-full cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 rounded-lg px-3 py-1.5',
+                        'md:grid md:flex-nowrap',
                         'border border-stroke/45 bg-surface-card shadow-rest transition-colors duration-fast',
                         'hover:border-card-border-hover',
                         isSelected && 'border-brand-primary bg-state-pressed',
@@ -502,7 +506,9 @@ export const RecordingsTable = ({
 
                       {/* Visible rather than revealed on hover: these were asked for as labels, and nobody
                           hovers a row to find out that Export exists. */}
-                      <span className="flex items-center justify-end gap-1">
+                      {/* Wraps under md, where the row is a card and these are the last line of it. Without it
+                          the actions run off the right of a narrow panel and take a scrollbar with them. */}
+                      <span className="flex flex-wrap items-center justify-start gap-1 md:flex-nowrap md:justify-end">
                         {/* Play lives in the panel below, beside the repeat, speed and loop it obeys.
                             Up here it was a button that did something different depending on settings you
                             could not see from it - and the row already carries the one that opens them. */}

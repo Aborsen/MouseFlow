@@ -756,8 +756,10 @@ const teamView = read('../web/src/features/team/TeamView.tsx');
 /* The first column is the tick, added when the list learned to select several teams at once. Named in the
  * template rather than left implicit: the header draws a spacer for it, and a header that forgets is every
  * label one column out. */
+/* `md:` because the grid only applies where it fits: below that the row stacks, which is what makes this
+ * readable in a narrow window and in the extension's side panel. The template is the same one. */
 check('teams are rows, in the anatomy the recordings table already uses',
-  /const COLUMNS = 'grid-cols-\[1\.5rem_minmax\(11rem,1fr\)/.test(teamView)
+  /const COLUMNS = 'md:grid-cols-\[1\.5rem_minmax\(11rem,1fr\)/.test(teamView)
   && /border border-stroke\/45/.test(teamView));
 check('one grid template for the header and the rows, or the labels sit over nothing',
   (teamView.match(/cn\(COLUMNS|cn\(\s*\n?\s*ROW, COLUMNS/g) || []).length >= 2);

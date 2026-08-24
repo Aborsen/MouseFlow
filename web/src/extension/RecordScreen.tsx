@@ -66,15 +66,16 @@ export const RecordScreen = () => {
   return (
     <div className="flex flex-col gap-3">
       <header className="flex items-center gap-2">
-        <Typography variant="h2" weight="semibold" className="text-[1.05rem]">Record</Typography>
+        <Typography variant="h2" weight="semibold" className="text-[1.05rem]">This browser</Typography>
         {status.recording
           ? <Pill tone="bad">Recording</Pill>
           : <Pill>Ready</Pill>}
       </header>
 
       <Typography variant="p" className="text-ink-inactive text-[0.8rem] leading-relaxed">
-        Captures clicks, drags, scrolling and the path the pointer took, in this browser. Typing is timed,
-        never read — nothing about what was typed is in a recording.
+        Inside web pages, through this extension — no agent needed. Clicks, drags, scrolling and the path
+        the pointer took. Typing is timed, never read: nothing about what was typed is in a recording.
+        The whole computer is the recorder below.
       </Typography>
 
       {/* Three numbers, the same three the popup showed, because they are what tells somebody the

@@ -42,7 +42,13 @@ import {
 /* Same shape as the recordings table, and its last column is a FIXED width for the reason that one learned
  * the hard way: `auto` sizes to content, so a header word narrower than the buttons under it puts the whole
  * row out by hundreds of pixels. */
-const SKILL_COLUMNS = 'grid-cols-[1.5rem_2rem_minmax(12rem,1fr)_7rem_6rem_6.5rem_20rem]';
+/* THE WIDE SHAPE, and only where it fits.
+ *
+ * These columns need about a thousand pixels. Below that - a narrow window, and the browser extension's
+ * side panel, which is four hundred - a seven-column grid is a row scrolled sideways to read, which is not
+ * reading. So the grid is applied from `md` up and the row stacks under it, and the same components serve
+ * both without a second copy of the table existing anywhere. */
+const SKILL_COLUMNS = 'md:grid-cols-[1.5rem_2rem_minmax(12rem,1fr)_7rem_6rem_6.5rem_20rem]';
 
 /* Both lists are one height, and it fits five.
  *
@@ -920,7 +926,10 @@ export const SkillsView = () => {
           <span className="grid size-9 shrink-0 place-items-center rounded-full bg-brand-tertiary/15">
             <Wand2 className="size-4 text-brand-tertiary" />
           </span>
-          <div className="min-w-0 flex-1">
+          {/* basis-full under sm, so the sentence takes the line rather than a sixty-pixel column beside
+              two buttons - which is one word per line, and unreadable in a narrow window or an extension
+              panel. `min-w-0` alone does not do it: flex-1 will happily shrink to nothing. */}
+          <div className="min-w-[14rem] flex-1 basis-full sm:basis-auto">
             <Typography variant="span" weight="semibold" className="block text-[0.92rem]">
               {convertible.length
                 ? `${convertible.length} recording${convertible.length === 1 ? '' : 's'} ready to become a skill`
@@ -1000,7 +1009,9 @@ export const SkillsView = () => {
       ) : (
         <section className="mb-4 rounded-xl border-stroke border bg-surface-card p-4">
         <div className="mb-3 flex flex-wrap items-end gap-x-4 gap-y-3">
-          <div className="min-w-0 flex-1">
+          {/* Same rule as the strip above: the title and its sentence get a whole line before the search
+              box and the filters sit beside them. */}
+          <div className="min-w-[16rem] flex-1 basis-full lg:basis-auto">
             <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
               Library · {skills.length} skill{skills.length === 1 ? '' : 's'}
             </Typography>
@@ -1064,13 +1075,14 @@ export const SkillsView = () => {
         />
 
         <div className="overflow-x-auto pb-1">
-          <div className="min-w-[63rem]">
+          <div className="md:min-w-[63rem]">
           {/* Same template as the rows, so the labels line up rather than approximately line up - the lesson
               the recordings table learned when its last column was `auto` and the header sat 280px off. */}
+          {/* Hidden when the grid is: column headings over a stack of cards name nothing. */}
           <div
             className={cn(
               SKILL_COLUMNS,
-              'grid w-full items-center gap-x-3 px-3 pb-1.5',
+              'hidden w-full items-center gap-x-3 px-3 pb-1.5 md:grid',
               'text-[0.7rem] uppercase tracking-wide text-ink-inactive',
             )}
           >
@@ -1127,7 +1139,9 @@ export const SkillsView = () => {
                     }}
                     className={cn(
                       SKILL_COLUMNS,
-                      'grid w-full cursor-pointer items-center gap-x-3 rounded-lg px-3 py-2',
+                      /* A stack of labelled lines under md, a row of columns above it. */
+                      'flex w-full cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 rounded-lg px-3 py-2',
+                      'md:grid md:flex-nowrap',
                       'border border-stroke/45 bg-surface-card shadow-rest transition-colors duration-fast',
                       'hover:border-card-border-hover',
                       isSelected && 'border-brand-primary bg-state-pressed',
@@ -1195,7 +1209,9 @@ export const SkillsView = () => {
                       )}
                     </span>
 
-                    <span className="flex items-center justify-end gap-1">
+                    {/* Wraps under md, where the row is a card and these are the last line of it. Without it
+                        the actions run off the right of a narrow panel and take a scrollbar with them. */}
+                    <span className="flex flex-wrap items-center justify-start gap-1 md:flex-nowrap md:justify-end">
                       {/* The way into an AI system, on the row.
                         *
                         * Everything that makes a skill usable BY a model - the tool definition in three

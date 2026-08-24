@@ -210,7 +210,17 @@ const RecorderCard = ({ live, screen, elapsedMs, events, windows, onToggle, foot
   </section>
 );
 
-export const RecordView = () => {
+export interface RecordViewProps {
+  /* Whether to draw the recorder itself, or only what has been recorded.
+   *
+   * True everywhere in the app. False in exactly one place: the browser extension's side panel, which has a
+   * recorder of its own - it captures inside web pages through content scripts, where this one captures the
+   * whole desktop through the agent - and two Start buttons on one screen is a question nobody should have
+   * to answer twice. The list below is one list either way: a recording is a recording once it exists. */
+  recorder?: boolean;
+}
+
+export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
   const [state, update] = useConsole();
   const { health } = useAgent();
   const { reload, flows } = useAccount();
@@ -910,6 +920,8 @@ export const RecordView = () => {
         onDone={(said) => setNote(said)}
       />
 
+      {recorder && (
+      <>
       {/* One component, one height, three states - see RecorderCard. The footer is what varies, and it is a
         * slot that always exists rather than three blocks that come and go, which is what made this card
         * change size every time capture started or stopped. */}
@@ -1026,6 +1038,9 @@ export const RecordView = () => {
               + 'the account anyway.'
             : '.'}
         </Typography>
+      )}
+
+      </>
       )}
 
       {/* Sessions above the recordings table: a session is the bigger object, and its parts are on the

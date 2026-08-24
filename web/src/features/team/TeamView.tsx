@@ -144,8 +144,9 @@ const ROLE_TONE: Record<Role, 'primary' | 'accent' | 'secondary'> = {
  * because an `auto` actions column sizes to its content — and the header's word ACTIONS is narrower than
  * the buttons beneath it, so the flexible name column absorbs a different amount in each and the two
  * disagree by exactly that difference. */
-const COLUMNS = 'grid-cols-[1.5rem_minmax(11rem,1fr)_6.5rem_7rem_8rem_7rem_9.5rem]';
-const ROW = 'grid w-full items-center gap-x-3 rounded-lg px-3 py-2.5 border border-stroke/45 '
+/* The wide shape, and only where it fits - see the same note in SkillsView. */
+const COLUMNS = 'md:grid-cols-[1.5rem_minmax(11rem,1fr)_6.5rem_7rem_8rem_7rem_9.5rem]';
+const ROW = 'flex w-full flex-wrap items-center gap-x-3 gap-y-1 md:grid md:flex-nowrap rounded-lg px-3 py-2.5 border border-stroke/45 '
   + 'bg-surface-card transition-colors duration-fast hover:border-stroke-hover';
 const LABEL = 'text-[0.7rem] uppercase tracking-wide text-ink-inactive';
 const FIELD = 'h-9 rounded-lg border border-stroke bg-surface-card2 px-3 text-[0.86rem] text-ink-primary '
@@ -469,9 +470,9 @@ export const TeamView = () => {
         )}
 
         <div className="overflow-x-auto pb-1">
-          <div className="min-w-[52rem]">
+          <div className="md:min-w-[52rem]">
             {teams && teams.length > 0 && (
-              <div className={cn(COLUMNS, 'grid w-full items-center gap-x-3 px-3 pb-1.5', LABEL)}>
+              <div className={cn(COLUMNS, 'hidden w-full items-center gap-x-3 px-3 pb-1.5 md:grid', LABEL)}>
                 <span />
                 <span>Team</span>
                 <span>Your role</span>
@@ -541,7 +542,9 @@ export const TeamView = () => {
                       {t.id === openId && detail ? (detail.shared.length || 'none yet') : '—'}
                     </span>
                     <span className="text-[0.82rem] text-ink-inactive tabular-nums">{when(t.created_at)}</span>
-                    <span className="flex items-center justify-end gap-1.5">
+                    {/* Wraps under md, where the row is a card and these are the last line of it. Without it
+                        the actions run off the right of a narrow panel and take a scrollbar with them. */}
+                    <span className="flex flex-wrap items-center justify-start gap-1.5 md:flex-nowrap md:justify-end">
                       {/* No chevron beside the word: the Button lays its children out in a row that wraps,
                         * and at this column width "Open" and the arrow came out on two lines. The word is
                         * doing the work anyway. */}
