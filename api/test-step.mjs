@@ -104,6 +104,26 @@ group('a finish that does not claim success is a failure that said why');
   check('and the reason is what it said', out.done.error === 'I could not find the button.');
 }
 
+/* Silence is not success, and it used to be. A turn that writes prose and calls no tool has claimed
+ * nothing, so reading it as success infers the one thing `finish` exists to make explicit. What ends this
+ * way is a model that stalled, asked a question, or forgot to say it was done - and all three closed the
+ * run green and were logged as `ok`. A false red is visible; a false green is not. */
+group('a turn that called nothing has not succeeded');
+{
+  const ask = scripted([answer([])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('it ends', !!out.done);
+  check('and it ends as a failure', out.done && out.done.ok === false);
+}
+{
+  const ask = scripted([answer([{ type: 'text', text: 'Which of the two invoices did you mean?' }])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a question is a failure too, not a finished run',
+    out.done && out.done.ok === false);
+  check('and what it asked becomes the reason, because that is the whole explanation',
+    out.done && /Which of the two invoices/.test(String(out.done.error)));
+}
+
 group('an action decided before a finish in the same turn still happens');
 {
   const ask = scripted([answer([

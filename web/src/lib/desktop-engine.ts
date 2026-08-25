@@ -401,9 +401,23 @@ async function runWave(o: {
     const said = blocks.filter((b) => b.type === 'text').map((b) => b.text).join(' ').trim();
     if (said) onEvent({ type: 'text', text: said });
 
+    /* A TURN THAT CALLED NOTHING HAS NOT SUCCEEDED, and this used to be the opposite.
+     *
+     * `finish` exists so that success is CLAIMED - the branch below says so outright: anything but an explicit
+     * true is a failure that said so in words. A turn that writes prose and calls no tool has claimed nothing,
+     * so reading it as success infers the one thing the protocol insists must be stated. What actually ends
+     * this way is a model that stalled, that asked the user a question, or that thought it was done and forgot
+     * to say so - and all three closed the run green, were logged as `ok`, and fed the dashboard.
+     *
+     * A false red is visible and can be argued with. A false green is neither.
+     *
+     * The model is now told this in the `finish` description, so the requirement is stated where the decision
+     * is made rather than only enforced afterwards. Whatever it wrote is carried into the reason, because that
+     * sentence is usually the whole explanation. */
     const uses = blocks.filter((b) => b.type === 'tool_use');
     if (!uses.length) {
-      return { stepNo, result: { ok: true, said: said || 'It had nothing further to do.', steps } };
+      const why = said || 'it stopped without doing anything or saying why';
+      return { stepNo, result: { ok: false, error: why, steps } };
     }
 
     const results: unknown[] = [];

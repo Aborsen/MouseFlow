@@ -166,7 +166,10 @@ export const TOOLS = [
   },
   {
     name: 'finish',
-    description: 'End the run. Set ok true only if the goal was actually achieved, and false if it was not - including when you got part of the way.',
+    description: 'End the run. This is the ONLY way to end it: if you stop without calling this, the run '
+      + 'is recorded as not finished, whatever you wrote. Set ok true only if the goal was actually '
+      + 'achieved, and false if it was not - including when you got part of the way, and when you need to '
+      + 'ask the user something, which is not success.',
     input_schema: {
       type: 'object',
       properties: { said: { type: 'string' }, ok: { type: 'boolean' } },
