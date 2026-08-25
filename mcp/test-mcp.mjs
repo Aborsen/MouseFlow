@@ -2019,6 +2019,25 @@ check('the wizard can build an instruction from it without a control name',
   && /if \(line\.action === 'press'\) return !!line\.pressed;/.test(
     read('../web/src/features/record/SkillWizard.tsx')));
 
+/* A reporting script that runs against the production database, so the thing worth holding is that it can
+ * only ever read - and that it does not print what a run was FOR. Measuring the pace is not a reason to put
+ * somebody's goal text on a terminal. */
+group('the pace report reads, and reads only');
+/* Comments stripped FIRST, for both. This file explains itself at length and says the words it is
+ * checking for - the first version matched "Select statements" in a comment, ran the capture through to
+ * the real query, and reported the prose as SQL. */
+const pace = read('../scripts/pace.mjs')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+check('nothing in it writes',
+  !/\b(insert|update|delete|drop|alter|truncate|create)\s+(into|table|from|set)?/i.test(pace));
+check('and it never selects the goal, which is not what it is measuring',
+  !/\bgoal\b/.test(pace.match(/select[\s\S]*?from user_run/i)?.[0] ?? ''));
+/* On the CODE, not on the prose that describes it - the prose was just stripped, and a check that reads a
+ * comment passes for a file whose comment survived a change its code did not. */
+check('percentiles rather than means, or one timeout moves the number people act on',
+  /Math\.ceil\(\(p \/ 100\) \* sorted\.length\)/.test(pace)
+  && !/reduce\(\(a, b\) => a \+ b/.test(pace));
+
 /* A page title cut at ninety characters read as a title that ends there. "…press stop when the task is
  * done. - Google Search" became "… - Go", which a reader has no way to recognise as shortened - and a page
  * title is precisely a thing people recognise. */
