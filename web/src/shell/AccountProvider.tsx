@@ -7,8 +7,11 @@
  * than access control - the enforcement is in the API, which checks a session or a device token on every
  * request and cannot be talked out of it. A gate in a page is a suggestion; those checks are the rule.
  */
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState,
+} from 'react';
 import { type Account, type Flow, type Run, pull, signOut, whoAmI } from '@/lib/api';
+import { type MailState, type TeamList, type TeamRow, callTeams } from '@/lib/teams';
 import { LANDINGS } from '@/features/auth/shared';
 
 interface AccountValue {
@@ -29,6 +32,27 @@ interface AccountValue {
   leave: () => Promise<void>;
   /** Why the last log-out did not happen, if it did not. Null while nothing has gone wrong. */
   leaveProblem: string | null;
+
+  /* ------------------------------------------------------------------------------ teams
+   *
+   * The list this account is in, read ONCE and kept. Two screens asked for it independently - the Teams
+   * page and the dashboard's scope picker - each with its own fetch and its own copy, so opening both read
+   * it twice and coming back to either read it again. On the deployment that is 0.4-0.7s of function boot
+   * plus two Neon round trips every time, spent on a list that had not changed, and the Teams page sat on
+   * "Reading…" for all of it.
+   *
+   * `null` means NOT READ YET, and it is not the same as an empty array - which is the mistake the Skills
+   * page made with `flows`. Nothing renders "you are not in a team" off a null.
+   */
+  teams: TeamRow[] | null;
+  /** Whether an invitation would actually be delivered. Arrives with the list; only the Teams page reads it. */
+  teamsMail: MailState | null;
+  /** The endpoint's own words when the read failed, or null. `teams` stays null, so nothing claims emptiness. */
+  teamsProblem: string | null;
+  /** Read the list if nobody has yet. Called by `useTeams`; harmless to call again. */
+  ensureTeams: () => Promise<void>;
+  /** Read it again because something changed it - a team made, a member removed. The only thing that re-reads. */
+  refreshTeams: () => Promise<void>;
 }
 
 /* The pages that are their own front door. Exported because two places need the same list: the wall, which
@@ -79,6 +103,21 @@ export const useAccount = () => {
   return value;
 };
 
+/* The teams this account is in.
+ *
+ * A hook rather than a field on `useAccount`, because it does something on mount: the first screen that
+ * asks starts the read. Reading `useAccount().teams` directly would hand back a null that nothing had
+ * arranged to fill, which is the kind of API that works in whichever screen was tested first.
+ *
+ * `refresh` is for a change - a team made, a member removed. Nothing else re-reads; a list that expired on
+ * a timer would put "Reading…" back for no reason anybody could see.
+ */
+export const useTeams = () => {
+  const { teams, teamsMail, teamsProblem, ensureTeams, refreshTeams } = useAccount();
+  useEffect(() => { void ensureTeams(); }, [ensureTeams]);
+  return { teams, mail: teamsMail, problem: teamsProblem, refresh: refreshTeams };
+};
+
 export const AccountProvider = ({ children }: { children: ReactNode }) => {
   const [account, setAccount] = useState<Account | null>(null);
   const [flows, setFlows] = useState<Flow[]>([]);
@@ -103,6 +142,36 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   });
   const [loaded, setLoaded] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
+
+  const [teams, setTeams] = useState<TeamRow[] | null>(null);
+  const [teamsMail, setTeamsMail] = useState<MailState | null>(null);
+  const [teamsProblem, setTeamsProblem] = useState<string | null>(null);
+  /* Whether the read has been STARTED, which is not the same question as whether it has finished, and is why
+   * this is a ref and not state: two consumers mounting in the same commit would both see a `false` piece of
+   * state and both fetch, and it must not cause a render of its own either. */
+  const startedTeams = useRef(false);
+
+  const refreshTeams = useCallback(async () => {
+    startedTeams.current = true;
+    try {
+      const body = await callTeams<TeamList>('');
+      setTeams(body.teams);
+      setTeamsMail(body.mail ?? null);
+      setTeamsProblem(null);
+    } catch (err) {
+      /* `teams` is left ALONE - null if it was never read, and the list that is on screen if it was. A failed
+       * refresh after removing somebody should not blank the page it happened on, and it must never come out
+       * as an empty array: "you are not in a team" is a different sentence from "that could not be read". */
+      setTeamsProblem(err instanceof Error ? err.message : 'your teams could not be read');
+    }
+  }, []);
+
+  /* LAZY on purpose. An account that never opens Teams or the dashboard should not pay for this, and most of
+   * the app never mentions a team - putting it in the mount path would make every page load carry it. */
+  const ensureTeams = useCallback(async () => {
+    if (startedTeams.current) return;
+    await refreshTeams();
+  }, [refreshTeams]);
 
   const reload = useCallback(async () => {
     try {
@@ -199,8 +268,14 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   }, [account]);
 
   const value = useMemo(
-    () => ({ account, flows, runs, loaded, readFailed, reload, leave, leaveProblem: leaving }),
-    [account, flows, runs, loaded, readFailed, reload, leave, leaving],
+    () => ({
+      account, flows, runs, loaded, readFailed, reload, leave, leaveProblem: leaving,
+      teams, teamsMail, teamsProblem, ensureTeams, refreshTeams,
+    }),
+    [
+      account, flows, runs, loaded, readFailed, reload, leave, leaving,
+      teams, teamsMail, teamsProblem, ensureTeams, refreshTeams,
+    ],
   );
 
   // Nothing renders while the answer is unknown: a flash of the app before the wall is worse than a pause.

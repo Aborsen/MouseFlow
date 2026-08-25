@@ -50,16 +50,14 @@ import { cn } from '@insightis/ui/cn';
 import { ArmedButton } from '@/components/ArmedButton';
 import { Said } from '@/components/Said';
 import { SelectionBar } from '@/components/SelectionBar';
-import { useAccount } from '@/shell/AccountProvider';
+import { useAccount, useTeams } from '@/shell/AccountProvider';
+import { type TeamRole, callTeams } from '@/lib/teams';
 import { Page } from '@/shell/Surface';
 import { roleOf, SKILL_ROLE } from '@/lib/flow-role';
 
-type Role = 'owner' | 'admin' | 'member';
-
-interface TeamRow { id: string; name: string; role: Role; members: number; created_at?: string }
-
-/** Whether a message would actually reach anybody, answered by the endpoint before an address is typed. */
-interface MailState { configured: boolean; problem: string | null }
+/* Role, the team row and the mail state now live in lib/teams.ts, with the transport: the dashboard reads the
+ * same list and AccountProvider holds it, so three copies of one endpoint's shape was two too many. */
+type Role = TeamRole;
 
 interface Member {
   id: string;
@@ -88,23 +86,9 @@ interface Detail {
   shared: Shared[];
 }
 
-/* Two error shapes reach this: `{ error: "words" }` from api/team.js, and `{ error: { message } }` from the
- * dev mock and from a couple of the older routes. Reading only the first turns the second into the string
- * "[object Object]" on screen, which is a bug report nobody can act on. */
-const saidWrong = (body: unknown, status: number): string => {
-  const said = (body as { error?: unknown } | null)?.error;
-  if (typeof said === 'string' && said.trim()) return said;
-  const nested = (said as { message?: unknown } | null | undefined)?.message;
-  if (typeof nested === 'string' && nested.trim()) return nested;
-  return `HTTP ${status}`;
-};
-
-const call = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  const res = await fetch(`/api/team${path}`, { credentials: 'same-origin', ...init });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(saidWrong(body, res.status));
-  return body as T;
-};
+/* The transport moved to lib/teams.ts along with the two error shapes it untangles - see the note there.
+ * Still used here for one team and for every change to either; the LIST is read by AccountProvider now. */
+const call = callTeams;
 
 const when = (iso: string | null | undefined) => {
   if (!iso) return '—';
@@ -155,8 +139,9 @@ const FIELD = 'h-9 rounded-lg border border-stroke bg-surface-card2 px-3 text-[0
 
 export const TeamView = () => {
   const { account, flows } = useAccount();
-  const [teams, setTeams] = useState<TeamRow[] | null>(null);
-  const [mail, setMail] = useState<MailState | null>(null);
+  /* Read once for the whole session and kept, so coming back to this page does not sit on "Reading…" for a
+   * round trip that answers the same list. See the note on `teams` in AccountProvider. */
+  const { teams, mail, problem: teamsProblem, refresh: loadTeams } = useTeams();
   const [openId, setOpenId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
@@ -169,17 +154,6 @@ export const TeamView = () => {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [armed, setArmed] = useState<string | null>(null);
 
-  const loadTeams = useCallback(async () => {
-    try {
-      const body = await call<{ teams: TeamRow[]; mail?: MailState }>('');
-      setTeams(body.teams);
-      setMail(body.mail ?? null);
-    } catch (err) {
-      setSaid({ text: err instanceof Error ? err.message : 'your teams could not be read', kind: 'bad' });
-      setTeams([]);
-    }
-  }, []);
-
   const loadDetail = useCallback(async (id: string) => {
     try {
       setDetail(await call<Detail>(`?id=${encodeURIComponent(id)}`));
@@ -188,8 +162,6 @@ export const TeamView = () => {
       setSaid({ text: err instanceof Error ? err.message : 'that team could not be read', kind: 'bad' });
     }
   }, []);
-
-  useEffect(() => { void loadTeams(); }, [loadTeams]);
 
   /* The panel's contents are read when it opens and dropped when it closes, rather than kept for the team
    * you last looked at. A stale roster under a fresh title is the shape of "I removed them and they are
@@ -575,8 +547,16 @@ export const TeamView = () => {
               </div>
             )}
 
+            {/* Nothing renders "you are not in a team" off a list that has not arrived - that is what the
+                empty state above is for, and it asks `teams &&`. A read that FAILED says so: it used to set
+                the list to [] and show the empty state, which told somebody with four teams that they had
+                none. */}
             {!teams && (
-              <Typography variant="span" className="text-ink-inactive text-[0.85rem]">Reading…</Typography>
+              <Typography variant="span" className="text-ink-inactive text-[0.85rem]">
+                {teamsProblem
+                  ? `Your teams could not be read: ${teamsProblem}`
+                  : 'Reading…'}
+              </Typography>
             )}
           </div>
         </div>

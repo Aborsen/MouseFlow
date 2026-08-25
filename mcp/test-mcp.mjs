@@ -758,6 +758,7 @@ check('and the roster stays whole while the counting narrows, or the filter is a
 check('the range presets are Today, 7 days and Custom', /const RANGES = \[7\];/.test(dash));
 
 const teamView = read('../web/src/features/team/TeamView.tsx');
+const skillsInsights = read('../web/src/features/insights/InsightsView.tsx');
 /* The first column is the tick, added when the list learned to select several teams at once. Named in the
  * template rather than left implicit: the header draws a spacer for it, and a header that forgets is every
  * label one column out. */
@@ -784,6 +785,51 @@ check('and a rename is told from a role change by what the body carries, not by 
  * so every request that filtered the dashboard to one person answered 500. It survived a browser check
  * because the dev fixture answers /api/insights itself — the page was exercised, this file was not. It is
  * a pure function now, so the suite can simply run it. */
+/* The list was read per screen and per visit: this page and the dashboard's scope picker each had their own
+ * fetch, so opening both read it twice and coming back to either read it again - 0.4-0.7s of function boot
+ * plus two Neon round trips, spent on a list that had not changed, with "Reading…" on screen throughout. */
+group('the team list is read once and kept, not once per visit');
+/* `provider` is already read above, so this group uses that one. Every pattern here is single-line, which
+ * is why the older raw read is fine for them - see the CRLF note by `read`. */
+const teamsLib = read('../web/src/lib/teams.ts');
+check('the endpoint has one module for its shapes and its transport',
+  /export interface TeamRow/.test(teamsLib) && /export const callTeams/.test(teamsLib));
+/* Two error shapes - `{error: "words"}` and `{error: {message}}` - and reading only the first printed
+ * "[object Object]" at somebody. Worked out once, where both callers get it. */
+check('and the two error shapes are untangled there rather than per caller',
+  /typeof said === 'string'/.test(teamsLib) && /nested = /.test(teamsLib));
+check('neither screen keeps its own copy of the row any more',
+  !/interface TeamRow/.test(teamView) && !/interface MailState/.test(teamView));
+check('and neither screen fetches the list itself',
+  !/fetch\('\/api\/team'/.test(teamView) && !/fetch\('\/api\/team'/.test(skillsInsights));
+
+check('the provider holds it, and null means not-read rather than empty',
+  /teams: TeamRow\[\] \| null;/.test(provider));
+/* LAZY: most of the app never mentions a team, so a read on mount would be paid by everybody for two
+ * screens. `startedTeams` is a ref because two consumers mounting in one commit would both read a `false`
+ * piece of state and both fetch. */
+check('it is read on the first screen that asks, not on every page load',
+  /const startedTeams = useRef\(false\)/.test(provider)
+    && /if \(startedTeams\.current\) return;/.test(provider));
+check('and asking is what the hook does, so no screen can read a null nobody is filling',
+  /export const useTeams = \(\)/.test(provider)
+    && /useEffect\(\(\) => \{ void ensureTeams\(\); \}, \[ensureTeams\]\)/.test(provider));
+/* A change re-reads. Nothing else does - a list expiring on a timer would put "Reading…" back for no reason
+ * anybody could see. */
+check('a change to the list is what re-reads it',
+  /refresh: refreshTeams/.test(provider) && /refresh: loadTeams/.test(teamView));
+/* The failure that mattered: the old loader set the list to [] and the page then showed "You are not in a
+ * team yet" to somebody with four of them. */
+check('and a read that failed says so instead of reporting an empty account',
+  /setTeamsProblem\(/.test(provider)
+    && !/setTeams\(\[\]\)/.test(provider)
+    && /could not be read: \$\{teamsProblem\}/.test(teamView));
+/* On the dashboard it stays a silent failure, and that is the right answer for a CONTROL: the page is not
+ * broken by a list it does not need to show numbers. */
+check('the dashboard still fails silently, because the picker is not the content',
+  /const \{ teams: allTeams \} = useTeams\(\)/.test(skillsInsights)
+    && /\(allTeams \?\? \[\]\)\.filter/.test(skillsInsights));
+
 group('the dashboard can say whose numbers it is showing');
 const { shapeScope } = await import('../api/insights.js');
 const roster = new Map([

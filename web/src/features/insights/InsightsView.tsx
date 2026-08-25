@@ -48,6 +48,7 @@ import { DateRangePicker } from '@insightis/ui/Datepicker';
 import type { DateRange } from 'react-day-picker';
 import { ChatView } from '@/features/chat/ChatView';
 import { usePageChrome } from '@/shell/Surface';
+import { useTeams } from '@/shell/AccountProvider';
 import { openingQuestion, takeAsk } from '@/features/chat/ask-about';
 
 /* ------------------------------------------------------------------ the endpoint's shape
@@ -692,21 +693,18 @@ export const InsightsView = () => {
    * is not offered a switch at all, because the only thing it could do is be refused - and their own
    * numbers are already what they are looking at.
    *
-   * Failure is silence on purpose. This is a control, not the content: a dashboard that renders an error
-   * because the team list could not be read would be broken by something it does not need. */
-  const [teams, setTeams] = useState<{ id: string; name: string; role: string }[]>([]);
-  useEffect(() => {
-    const stop = new AbortController();
-    (async () => {
-      try {
-        const res = await fetch('/api/team', { credentials: 'same-origin', signal: stop.signal });
-        if (!res.ok) return;
-        const body = (await res.json()) as { teams?: { id: string; name: string; role: string }[] };
-        setTeams((body.teams ?? []).filter((t) => t.role === 'owner' || t.role === 'admin'));
-      } catch (_) { /* see above */ }
-    })();
-    return () => stop.abort();
-  }, []);
+   * Failure is still silence, and now it is the provider's silence: `teams` stays null and this reads as an
+   * empty list, so the picker is simply not offered. That is the right answer for a CONTROL - a dashboard
+   * that renders an error because the team list could not be read would be broken by something it does not
+   * need.
+   *
+   * The fetch that used to be here was the second copy of the same read: this page and the Teams page each
+   * had one, so opening both read the list twice and returning to either read it again. */
+  const { teams: allTeams } = useTeams();
+  const teams = useMemo(
+    () => (allTeams ?? []).filter((t) => t.role === 'owner' || t.role === 'admin'),
+    [allTeams],
+  );
   /* The calendar is a panel rather than a mode: it opens over the controls, sets a range and closes. */
   const [picking, setPicking] = useState(false);
   const [draft, setDraft] = useState<DateRange | undefined>(undefined);
