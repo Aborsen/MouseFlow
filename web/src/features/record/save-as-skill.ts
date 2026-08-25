@@ -106,8 +106,14 @@ export interface GoalParam {
  * `kind: 'created'` - не украшение: structureOf() читает именно его, чтобы отдать параметры вместо
  * repeat/speed, и без него скилл приедет к модели как макрос без аргументов.
  */
+/* WHAT IT READS OF THE RECORDING, and it is four fields - stated as a Pick rather than as `Recording`
+ * because the caller is not always holding one. The transcript panel opens this wizard for a recording
+ * that may not be in this browser at all, and fabricating an empty `events` array to satisfy a type
+ * that is never read would be a lie the next reader has to disprove. */
+export type GoalSkillSource = Pick<Recording, 'id' | 'name' | 'created' | 'windows'>;
+
 export async function saveAsGoalSkill(
-  rec: Recording,
+  rec: GoalSkillSource,
   said: { name: string; goal: string; params: GoalParam[]; steps: { name: string; input: string | null }[] },
 ): Promise<void> {
   const title = (said.name || rec.name).slice(0, 80);

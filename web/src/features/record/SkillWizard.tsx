@@ -38,8 +38,7 @@ import { CheckCheck, Keyboard, Loader2, X } from 'lucide-react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
-import type { Recording } from '@/lib/store';
-import { saveAsGoalSkill } from './save-as-skill';
+import { type GoalSkillSource, saveAsGoalSkill } from './save-as-skill';
 /* Which typing runs are fields and which are somebody pressing Enter. Lives beside the API rather than here
  * because the suite runs it for real against measured recordings, and a .tsx cannot be imported by Node. */
 import { classifyTyping, type TypingVerdict } from './typing';
@@ -386,7 +385,7 @@ const WhatWasTyped = ({ blank, onEdit }: {
           )}
         />
 
-        <div className="mt-2.5 grid gap-1.5">
+        <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)] gap-1.5">
           {([
             ['fixed', 'Type this every time'],
             ['ask', 'Ask each time it runs'],
@@ -436,7 +435,9 @@ const WhatWasTyped = ({ blank, onEdit }: {
 const STAGES = ['What it did', 'Instructions', 'Name it'] as const;
 
 interface Props {
-  rec: Recording;
+  /** Four fields, not a whole Recording - see GoalSkillSource. The steps come from
+   *  /api/transcript, keyed on rec.id, so this works for a recording this browser does not hold. */
+  rec: GoalSkillSource;
   onClose: () => void;
   onSaved: (name: string) => void;
 }
@@ -827,7 +828,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     {' '}Record the work you want repeated, then make a skill from that.
                   </Typography>
                 )}
-                <ul className="grid gap-1">
+                <ul className="grid grid-cols-[minmax(0,1fr)] gap-1">
                   {shown.map((line) => {
                     const isTyping = line.action === 'type';
                     const on = kept.has(line.n);
@@ -844,13 +845,16 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                       <li
                         key={line.n}
                         className={cn(
-                          'flex items-start gap-2 rounded-lg px-2.5 py-1.5',
+                          /* Wrapping below `sm`: the chip that says what a step types does not shrink, and
+                             beside it the step's own description was squeezed to 56px in the panel. There
+                             the chip goes under the line it belongs to. */
+                          'flex flex-wrap items-start gap-2 rounded-lg px-2.5 py-1.5',
                           'hover:bg-state-hover',
                           isTyping && 'bg-brand-primary/10',
                           !on && 'opacity-45',
                         )}
                       >
-                        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5">
+                        <label className="flex min-w-0 flex-1 basis-full cursor-pointer items-start gap-2.5 sm:basis-auto">
                           <input
                             type="checkbox"
                             checked={on}
@@ -921,7 +925,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   *
                   * It goes into the goal, which for a skill made here is the sentence a model reads and
                   * carries out. So this is executed rather than filed. */}
-                <div className="grid gap-1.5">
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5">
                   <Typography variant="span" weight="semibold" className="text-[0.86rem]">
                     Anything else it should know
                   </Typography>
@@ -988,7 +992,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     </Typography>
                   )}
 
-                  <div className="grid gap-2.5">
+                  <div className="grid grid-cols-[minmax(0,1fr)] gap-2.5">
                     {fields.map((b) => (
                       <div key={b.n} className="rounded-lg border border-stroke p-3">
                         <div className="mb-2 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -1104,7 +1108,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                       </Button>
                     </div>
                     {showAside && (
-                      <ul className="mt-2 grid gap-1 border-stroke border-t pt-2">
+                      <ul className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-1 border-stroke border-t pt-2">
                         {aside.map((b) => (
                           <li key={b.n} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                             <span className="text-[0.78rem] text-ink-inactive tabular-nums">step {b.n}</span>
@@ -1154,7 +1158,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                       is not in the recording and cannot be. Each card above is one place the recording knows
                       you typed something and cannot know what.
                     </Typography>
-                    <ul className="grid gap-0.5 text-[0.8rem] text-ink-inactive leading-relaxed">
+                    <ul className="grid grid-cols-[minmax(0,1fr)] gap-0.5 text-[0.8rem] text-ink-inactive leading-relaxed">
                       <li><span className="text-ink-body">Ask each time</span> — becomes an input on the
                         skill; whoever runs it has to supply the text.</li>
                       <li><span className="text-ink-body">Always the same</span> — you write it once here and
@@ -1168,8 +1172,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
             )}
 
             {lines && stage === 2 && (
-              <div className="grid gap-3">
-                <label className="grid gap-1">
+              <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
+                <label className="grid grid-cols-[minmax(0,1fr)] gap-1">
                   <span className="text-[0.8rem] text-ink-secondary">Name</span>
                   <input
                     value={name}
@@ -1177,7 +1181,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                     className="h-10 rounded-lg border border-stroke bg-surface-card2 px-3 text-[0.9rem] text-ink-primary focus:border-brand-primary focus:outline-none"
                   />
                 </label>
-                <label className="grid gap-1">
+                <label className="grid grid-cols-[minmax(0,1fr)] gap-1">
                   <span className="text-[0.8rem] text-ink-secondary">
                     What it will do — edit it freely, this is what the skill carries out
                   </span>
@@ -1195,7 +1199,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   * is shown because BOTH survive - the recorded step was not rewritten, deliberately - so
                   * the only way the person learns their sentence disagreed with the recording is here. */}
                 {plan && (plan.conflicts.length > 0 || plan.unplaced.length > 0) && (
-                  <div className="grid gap-2 rounded-lg border border-fb-attention/40 bg-fb-attention/5 px-3 py-2.5">
+                  <div className="grid grid-cols-[minmax(0,1fr)] gap-2 rounded-lg border border-fb-attention/40 bg-fb-attention/5 px-3 py-2.5">
                     {plan.conflicts.map((c) => (
                       <div key={`c${c.n}`} className="text-[0.82rem] leading-relaxed">
                         <span className="text-ink-body">You wrote “{c.note}”</span>

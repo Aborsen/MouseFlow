@@ -14,10 +14,12 @@
  *
  * Two things it does NOT read from the transcript, deliberately:
  *
- *   the raw events    the transcript describes a recording, it does not carry the events that replay it,
- *                     so Create skill fetches the flow itself from /api/sync. That is a whole-account
- *                     read for one payload, which is the cost of there being no per-flow read; it happens
- *                     on the press, not on open.
+ *   the raw events    the transcript describes a recording, it does not carry the events that replay it.
+ *                     So Create skill does not make one here: it asks the caller, which opens SkillWizard -
+ *                     the one flow in the product that makes a skill, where the steps are chosen and the
+ *                     typed text is supplied. This panel used to build a skill itself, with its own copy of
+ *                     the skill format and its own push, which made three ways to create one and two of
+ *                     them silent about the steps.
  *   the step numbers  POST /api/transcript can drop steps, and the assistant on the dashboard is where
  *                     that is driven from ("remove those steps"). The Remove in this footer deletes the
  *                     whole recording, which is a different act, and it is armed in the button rather
@@ -39,8 +41,7 @@ import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { Said } from '@/components/Said';
-import { pull, push } from '@/lib/api';
-import { SKILL_ROLE } from '@/lib/flow-role';
+import { push } from '@/lib/api';
 
 /* ---------------------------------------------------------------- the endpoint's shape
  *
@@ -219,108 +220,6 @@ const capturedNote = (captured: unknown): string | null => {
   }
   return null;
 };
-
-/* ------------------------------------------------------------------ a skill, locally
- *
- * A COPY of extension/skills.js. That module is the definition of the skill format and this must not
- * drift from it: the extension reads the same skill back out of the account (see flowFromSkill and
- * importSkills in extension/background.js), so a field invented or dropped here is a skill the other
- * half cannot read.
- *
- * Why a copy rather than the import the format deserves: `../../../../extension/skills.js` resolves as a
- * path but not as types - it is plain JavaScript outside this project's tsconfig `include`, so tsc
- * reports TS7016 under strict and `npm run build` runs `tsc --noEmit` first. Turning on allowJs, or
- * writing a declaration for it, changes the project's own configuration for the sake of one call.
- */
-
-const SKILL_FORMAT = 'mouseflow.skill/1';
-
-const skillId = () => Math.random().toString(36).slice(2, 10);
-
-interface WebEventish {
-  action?: string;
-  points?: { dt?: number }[];
-}
-
-interface Skill {
-  format: string;
-  id: string;
-  kind: 'recorded';
-  name: string;
-  description: string;
-  created: string;
-  origins: string[];
-  tabs: number;
-  events: unknown[];
-  params: unknown[];
-}
-
-/** What a recording contains, in the terms someone reading a listing would want. The same behaviour as
- *  describeRecording, action names included - and it recognises the EXTENSION's action names only, which
- *  is why a desktop recording is described from the transcript instead (see create() below). */
-function describeRecording(events: unknown[], tabs: number): string {
-  let clicks = 0;
-  let moveMs = 0;
-  let scrolls = 0;
-  let pages = 0;
-  for (const raw of events) {
-    const event = (raw ?? {}) as WebEventish;
-    if (event.action === 'click' || event.action === 'dblclick') clicks++;
-    else if (event.action === 'path') {
-      moveMs += list(event.points).reduce((n, point) => n + Math.max(0, point?.dt ?? 0), 0);
-    } else if (event.action === 'scroll') scrolls++;
-    else if (event.action === 'focus' || event.action === 'navigate') pages++;
-  }
-  const parts = [`${clicks} click${clicks === 1 ? '' : 's'}`];
-  if (moveMs >= 100) parts.push(`${(moveMs / 1000).toFixed(1)}s of movement`);
-  if (scrolls) parts.push(`${scrolls} scroll${scrolls === 1 ? '' : 's'}`);
-  if (pages) parts.push(`${pages} page change${pages === 1 ? '' : 's'}`);
-  if (tabs > 1) parts.push(`${tabs} tabs`);
-  return parts.join(' · ');
-}
-
-function skillFromRecording(
-  rec: { name?: string | null; events?: unknown[]; origins?: string[]; tabs?: number },
-  now: string,
-): Skill {
-  const events = list(rec.events);
-  // `rec.tabs || 1` there, and the same here: a stored 0 must not travel as a tab count of 0.
-  const tabs = rec.tabs && rec.tabs > 0 ? rec.tabs : 1;
-  return {
-    format: SKILL_FORMAT,
-    id: skillId(),
-    kind: 'recorded',
-    /* The extension falls back to suggestName('recording'), which for that input returns exactly
-     * 'recording'. Copying the whole naming function for one constant would be the drift, not this. */
-    name: str(rec.name) ?? 'recording',
-    description: describeRecording(events, tabs),
-    created: now,
-    origins: list(rec.origins),
-    tabs,
-    events,
-    params: [],
-  };
-}
-
-/** The description for a desktop recording. describeRecording answers "0 clicks" for one - it reads the
- *  extension's action names and a desktop event carries Mini Mouse Macro's - and a skill that states it
- *  contains nothing is worse than one with a plain description. These counts are the endpoint's. */
-function describeFromSummary(summary: Summary | undefined): string {
-  const parts: string[] = [];
-  const clicks = count(summary?.clicks);
-  const drags = count(summary?.drags);
-  const scrolls = count(summary?.scrolls);
-  const seconds = count(summary?.seconds);
-  const events = count(summary?.events);
-  if (clicks != null) parts.push(`${clicks} click${clicks === 1 ? '' : 's'}`);
-  if (drags) parts.push(`${drags} drag${drags === 1 ? '' : 's'}`);
-  if (scrolls) parts.push(`${scrolls} scroll${scrolls === 1 ? '' : 's'}`);
-  if (seconds) parts.push(`${fmtSeconds(seconds)} in all`);
-  if (!parts.length && events != null) {
-    parts.push(`${events} recorded action${events === 1 ? '' : 's'}`);
-  }
-  return parts.join(' · ') || 'A recorded desktop macro.';
-}
 
 /* -------------------------------------------------------------------------- furniture */
 
@@ -518,10 +417,14 @@ interface Props {
   /** Hand this recording to the assistant on the Dashboard. The panel does not navigate itself - the caller
    * owns the router - it just says when. */
   onAnalyze?: () => void;
+  /** Make a skill of this recording: the panel says when, the caller opens SkillWizard. A promise for the
+   * same reason onRestore is one - the caller may have to read the account first, and the button that was
+   * pressed is the right place to show that it is working. */
+  onMakeSkill?: () => Promise<void>;
 }
 
 export const TranscriptPanel = ({
-  flowId, name, onClose, onRemoved, onRestore, onAnalyze,
+  flowId, name, onClose, onRemoved, onRestore, onAnalyze, onMakeSkill,
 }: Props) => {
   const [data, setData] = useState<Transcript | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -531,9 +434,8 @@ export const TranscriptPanel = ({
   const [attempt, setAttempt] = useState(0);
 
   const [note, setNote] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
-  const [making, setMaking] = useState(false);
   const [restoring, setRestoring] = useState(false);
-  const [made, setMade] = useState(false);
+  const [making, setMaking] = useState(false);
   const [armed, setArmed] = useState(false);
   const [removing, setRemoving] = useState(false);
 
@@ -542,13 +444,12 @@ export const TranscriptPanel = ({
    *
    * This cleared the notes and left `data` alone, which was the one thing on screen a reader would act on:
    * switching recordings kept the previous transcript up - its name, its counts, its steps, dimmed but
-   * readable - while the footer's Remove already pointed at the new flowId, and Create skill described the
-   * new recording with the old one's numbers. Keyed on flowId only, so `attempt` re-reads the same
+   * readable - while the footer's Remove already pointed at the new flowId. Keyed on flowId only, so
+   * `attempt` re-reads the same
    * recording without blanking the transcript the reader still has in front of them. */
   useEffect(() => {
     setData(null);
     setNote(null);
-    setMade(false);
     setArmed(false);
   }, [flowId]);
 
@@ -627,76 +528,6 @@ export const TranscriptPanel = ({
   const keys = count(summary?.keys);
   const typedSeconds = count(summary?.typedSeconds);
 
-  const create = useCallback(async () => {
-    setMaking(true);
-    setNote(null);
-    try {
-      /* The events, from the flow itself. The transcript describes a recording and does not carry the
-       * events that replay it, and a skill without them is a name with nothing behind it. /api/sync is
-       * the only read that returns a payload, so this is a whole-account read for one flow - paid on the
-       * press rather than on every open. */
-      const account = await pull();
-      const mine = list(account.flows).find((candidate) => candidate.id === flowId);
-      if (!mine) throw new Error('this recording is no longer on your account');
-
-      const raw = (mine.payload ?? {}) as { events?: unknown[]; tabs?: unknown };
-      const events = list(raw.events);
-      if (!events.length) {
-        throw new Error('this recording holds no events, so there would be nothing to replay');
-      }
-
-      const skill = skillFromRecording(
-        {
-          name: str(mine.name) ?? title,
-          events,
-          origins: list(mine.origins),
-          tabs: count(raw.tabs) ?? 1,
-        },
-        new Date().toISOString(),
-      );
-      if (mine.source === 'desktop') skill.description = describeFromSummary(summary);
-
-      const body = await push({
-        flows: [
-          {
-            /* The skill's own id, as extension/background.js's flowFromSkill uses it. A prefix of our own
-             * would leave the extension's sync unable to recognise the flow as the skill inside it, and it
-             * would push the same skill straight back under a second id. */
-            id: skill.id,
-            /* Carried from the recording, never guessed: `desktop` steps are screen coordinates, and the
-             * extension must not be offered a Run that clicks at meaningless positions in a page. */
-            source: mine.source,
-            /* `recorded`, the same as Save as skill on the Record screen. `created` means a skill the
-             * agent re-runs from a goal, and this is a macro - calling it created would put a Run button
-             * in front of it that no agent can honour. */
-            kind: 'recorded',
-            name: skill.name.slice(0, 80),
-            description: skill.description.slice(0, 400),
-            origins: skill.origins.slice(0, 12),
-            created: skill.created,
-            // Stamped as a skill, so the Skills page lists it and the Record page does not.
-            payload: { ...skill, role: SKILL_ROLE },
-          },
-        ],
-      });
-      const problems = list(body.problems);
-      if (problems.length) throw new Error(problems.join('; '));
-
-      setMade(true);
-      setNote({
-        text: `Saved "${skill.name}" as a skill. It is in Skills, on this and any other browser you sign in from.`,
-        kind: 'good',
-      });
-    } catch (err) {
-      setNote({
-        text: `No skill was made: ${err instanceof Error ? err.message : 'unknown error'}`,
-        kind: 'bad',
-      });
-    } finally {
-      setMaking(false);
-    }
-  }, [flowId, summary, title]);
-
   const remove = useCallback(async () => {
     /* Asked in the button, the way MyAccountScreen asks. A confirm() is easy to click through without
      * reading and a second dialog is easy to lose behind the first; turning the button into the
@@ -753,17 +584,24 @@ export const TranscriptPanel = ({
             * close it. They used to be a strip along the bottom, which is a permanent border and a permanent
             * padding across the part of the panel where the text is read. */}
           <div className="flex shrink-0 items-center gap-1.5">
-            <Button
-              size="sm"
-              leftSlot={<Sparkles className="size-4" />}
-              isLoading={making}
-              /* Disabled once it has been made rather than left pressable: a second press would put a
-                * second copy of the same macro on the account under a new id. */
-              disabled={made || removing || !!problem}
-              onClick={() => void create()}
-            >
-              {made ? 'Skill created' : 'Create skill'}
-            </Button>
+            {/* ONE flow, and it is not in here. This used to build a skill on the press - a literal macro,
+              * no steps chosen, no typed text asked for - which is a different thing from what the wizard
+              * makes, under the same words. Now it opens the wizard, so "Create skill" means the same act
+              * wherever it is pressed. */}
+            {onMakeSkill && (
+              <Button
+                size="sm"
+                leftSlot={<Sparkles className="size-4" />}
+                isLoading={making}
+                disabled={removing || !!problem}
+                onClick={() => {
+                  setMaking(true);
+                  void onMakeSkill().finally(() => setMaking(false));
+                }}
+              >
+                Create skill
+              </Button>
+            )}
 
             {/* The way out of a cocked delete. `armed` has no timer, so without this the only ways back were
               * pressing the destructive button again or closing the panel. */}

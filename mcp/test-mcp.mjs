@@ -1279,9 +1279,12 @@ check('the chip shows the current answer, so nothing is set without saying so',
     && /types nothing/.test(wizard));
 /* A button inside the row's <label> would toggle the checkbox on every click: the step would drop out of
  * the skill at the moment somebody opened the popover to say what it types. */
+/* Asserted as STRUCTURE, not as a class list. This pinned the label's exact className, which made it a
+ * test of cosmetics: it failed the day the row learned to wrap on a narrow panel, and it would have passed
+ * had the chip been moved inside the label with the classes left alone - the one thing it exists to catch. */
 check('the control sits outside the label, so opening it does not untick the step',
   /The chip sits OUTSIDE the label/.test(wizard)
-    && /<label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2\.5">/.test(wizard));
+    && /<\/label>\s*\{askable[\s\S]{0,80}<WhatWasTyped/.test(wizard));
 /* A run that is NOT a field gets a chip too, and that is a fix rather than a decoration: without one the
  * row looked identical to a field's and simply had nowhere to answer. The first person to see the screen
  * asked why some typing rows could be filled in and others could not — the screen knew and was not saying. */

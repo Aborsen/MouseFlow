@@ -12,7 +12,7 @@
  */
 import { useNavigate } from '@tanstack/react-router';
 import { Play, Square } from 'lucide-react';
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
@@ -26,7 +26,7 @@ import {
   replayStatus,
   windows,
 } from '@/lib/agent';
-import { type Flow, push } from '@/lib/api';
+import { type Flow, pull, push } from '@/lib/api';
 import { askAbout } from '@/features/chat/ask-about';
 import { SKILL_ROLE, roleOf } from '@/lib/flow-role';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
@@ -44,6 +44,7 @@ import {
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
 import { SkillWizard } from './SkillWizard';
+import type { GoalSkillSource } from './save-as-skill';
 import { WaitingForThisMac } from './WaitingForThisMac';
 import { flowFor } from './flow-for';
 
@@ -744,6 +745,15 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
   /* Which recording's transcript is open. One at a time, and owned here rather than in the table, because the
    * panel is a sibling of the whole page rather than of a row. */
   const [viewing, setViewing] = useState<string | null>(null);
+  /* The name of the recording being looked at, in one place. Three things ask for it - the panel's own
+   * heading, the assistant's subject, and the wizard's fallback name - and a PART of a long session is
+   * deliberately not among the local recordings, so the session ledger is the second place to look.
+   * Written out three times before this, and the third copy is what a fourth reader would have copied. */
+  const viewingName = useMemo(() => (viewing
+    ? state.recordings.find((rec) => rec.id === viewing)?.name
+      ?? (state.sessions as Session[]).flatMap((s) => s.parts).find((p) => p.id === viewing)?.name
+      ?? 'Recording'
+    : 'Recording'), [viewing, state.recordings, state.sessions]);
 
   /* Play one recording now. A row is a one-step flow, which is why its repeat and speed are the step's - the
    * alternative was a second replay path that could disagree with the flow builder's. */
@@ -819,8 +829,40 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
   }, [playing, port]);
 
   /* Which recording the wizard is open over. It replaced a window.prompt() for a name and a one-press
-   * literal copy: the row has one skill button now, and it opens this. */
-  const [wizardFor, setWizardFor] = useState<Recording | null>(null);
+   * literal copy: the row has one skill button now, and it opens this - and so does Create skill in the
+   * transcript panel, which used to make a skill of its own instead.
+   *
+   * GoalSkillSource, not Recording, because the second caller may not have one: a recording opened from a
+   * session ledger is on the account and not in this browser. See openWizard below. */
+  const [wizardFor, setWizardFor] = useState<GoalSkillSource | null>(null);
+
+  /* Open the wizard for a recording named by id, wherever that recording is.
+   *
+   * In the store when this browser holds it, which is the ordinary case and costs nothing. Pulled from the
+   * account when it does not: a part of a long session is pushed up and never kept locally, and its
+   * transcript is openable, so Create skill has to work there too. The panel's own builder used to do this
+   * same read on the same press - the cost has not moved, only what it is spent on.
+   *
+   * `origins` and not payload.windows: the flow states where it ran in its own field, and the payload's
+   * `windows` is the browser half's and is empty for a desktop recording. Only the titles are read. */
+  const openWizard = useCallback(async (flowId: string, fallbackName: string) => {
+    const here = state.recordings.find((rec) => rec.id === flowId);
+    if (here) { setWizardFor(here); return; }
+    setNote(null);
+    try {
+      const account = await pull();
+      const flow = (account.flows ?? []).find((candidate) => candidate.id === flowId);
+      if (!flow) throw new Error('this recording is no longer on your account');
+      setWizardFor({
+        id: flow.id,
+        name: flow.name || fallbackName,
+        created: flow.created ?? new Date().toISOString(),
+        windows: (flow.origins ?? []).map((title) => ({ title, process: '' })),
+      });
+    } catch (err) {
+      setNote(`No skill was started: ${err instanceof Error ? err.message : 'the account could not be read'}`);
+    }
+  }, [state.recordings]);
 
   const importFiles = useCallback(async (files: FileList) => {
     let added = 0;
@@ -1095,24 +1137,18 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
         <aside className="fixed inset-y-0 right-0 z-40 flex w-[34rem] max-w-full flex-col border-stroke border-l bg-surface-card2 shadow-dropdown">
           <TranscriptPanel
             flowId={viewing}
-            /* A part is not among the local recordings - deliberately - so its name comes from the session
-              * ledger. Without this every part's transcript was headed "Recording". */
-            name={state.recordings.find((rec) => rec.id === viewing)?.name
-              ?? (state.sessions as Session[])
-                .flatMap((s) => s.parts).find((p) => p.id === viewing)?.name
-              ?? 'Recording'}
+            name={viewingName}
             /* Offered only when this browser actually holds the events. Without them there is nothing to put
              * back, and a button that cannot work is worse than the plain 404. */
             onRestore={state.recordings.some((rec) => rec.id === viewing)
               ? () => restore(viewing)
               : undefined}
             onAnalyze={() => {
-              askAbout(viewing, state.recordings.find((rec) => rec.id === viewing)?.name
-                ?? (state.sessions as Session[])
-                  .flatMap((s) => s.parts).find((p) => p.id === viewing)?.name
-                ?? 'Recording');
+              askAbout(viewing, viewingName);
               void navigate({ to: '/dashboard' });
             }}
+            /* One flow, and it is the same one the row's skill button opens. */
+            onMakeSkill={() => openWizard(viewing, viewingName)}
             onClose={() => setViewing(null)}
             onRemoved={() => {
               /* Removed on the account, so it goes from the browser too - otherwise the row stays, View
@@ -1131,6 +1167,10 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
           onClose={() => setWizardFor(null)}
           onSaved={(made) => {
             setWizardFor(null);
+            /* And the transcript with it, when that is where this started. The note below is on the page,
+               and the panel covers the page - so leaving it open means saving a skill and being shown the
+               same transcript with nothing said about it. Harmless from a row, where nothing is open. */
+            setViewing(null);
             void reload();
             setNote(`"${made}" is a skill now — it asks for what it needs and types it. `
               + 'The recording is untouched.');
