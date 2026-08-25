@@ -40,12 +40,26 @@ const yaml = (value) => `'${String(value || '').replace(/\s+/g, ' ').trim().repl
 
 const cell = (value) => String(value == null ? '' : value).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
 
-/** The numbered goal, back as lines. `goalTemplate` is written by the wizard as "opening\n1. …\n2. …". */
+/* The goal, back as lines. The wizard writes it as "opening\n1. …\n2. …", and then, when somebody added
+ * notes in their own words, "\nAlso:\n<what they wrote>".
+ *
+ * THE THIRD PIECE USED TO BE DROPPED. Only the first non-numbered row became `opening` and only the
+ * numbered rows survived, so everything after the list went in the bin - and that is precisely the half a
+ * recording could never have produced. api/_compose.mjs exists because notes carry the knowledge the
+ * screen did not: "finish with Send, not Save", "if a row already exists, stop and say so". The wizard
+ * merges them into the goal so a runner executes them; the exported file threw them away, so a skill
+ * carried out through MouseFlow and the same skill handed to another agent did DIFFERENT WORK, and
+ * nothing said so.
+ */
 function goalLines(goalTemplate) {
   const rows = String(goalTemplate || '').split('\n').map((l) => l.trim()).filter(Boolean);
   const numbered = rows.filter((l) => /^\d+\./.test(l));
   const opening = rows.find((l) => !/^\d+\./.test(l)) || '';
-  return { opening, numbered };
+  /* Everything after the LAST numbered row: what was appended, not what introduced. With no numbered rows
+   * at all - a goal written or dictated as prose - there is nothing trailing, because it is all opening. */
+  const last = rows.map((l) => /^\d+\./.test(l)).lastIndexOf(true);
+  const trailing = last === -1 ? [] : rows.slice(last + 1);
+  return { opening, numbered, trailing };
 }
 
 const TYPE_WORD = { email: 'an email address', url: 'a URL', quoted: 'text' };
@@ -148,7 +162,7 @@ export function skillMarkdown(structure, flow, written = {}, opts = {}) {
   const created = s.kind === 'created';
   const params = Array.isArray(s.params) ? s.params : [];
   const origins = Array.isArray(s.origins) ? s.origins : [];
-  const { opening, numbered } = goalLines(s.goalTemplate);
+  const { opening, numbered, trailing } = goalLines(s.goalTemplate);
   /* PORTABLE: the same steps, carried out by whatever browser tools the agent reading this already has, on
    * its own machine. No MouseFlow at run time - no agent, no worker, no MCP tool.
    *
@@ -308,6 +322,12 @@ export function skillMarkdown(structure, flow, written = {}, opts = {}) {
     out.push('');
     for (const line of numbered) out.push(line);
     out.push('');
+    /* What the person added in their own words, kept WITH the steps rather than in a section of its own.
+     * It is not commentary about the steps - it is part of the instruction, and the runner executes it. */
+    if (trailing.length) {
+      for (const line of trailing) out.push(line);
+      out.push('');
+    }
   }
 
   out.push('## What can go wrong');

@@ -1288,6 +1288,23 @@ check('and recorded addresses are never presented as inferred ones',
     { portable: true, urls: ['https://example.com'], inferredUrls: ['https://guess.example'] },
   )));
 
+/* The notes somebody writes by hand are the only channel for knowledge the recording could not have -
+ * "finish with Send, not Save". The wizard merges them into the goal so the runner executes them, and the
+ * exporter dropped every line that was not numbered. The same skill then did DIFFERENT WORK depending on
+ * which agent carried it out, and nothing said so. */
+const WITH_NOTES = skillMd.skillMarkdown(
+  {
+    kind: 'created',
+    goalTemplate: 'In Gmail, do this:\n1. Click "Compose".\n\nAlso:\nFinish by pressing Send, not Save.',
+    params: [], origins: [],
+  },
+  { name: 'Send', source: 'desktop' }, {}, { portable: true, urls: [] },
+);
+check('what somebody added in their own words survives the export',
+  /Finish by pressing Send, not Save/.test(WITH_NOTES));
+check('and it stays with the steps it modifies, not in a section of its own',
+  WITH_NOTES.indexOf('Finish by pressing Send') > WITH_NOTES.indexOf('1. Click "Compose"'));
+
 check('and the route reads the source recording rather than guessing',
   /where user_id = \$\{who\.id\} and client_id = \$\{cameFrom\}/.test(read('../api/skill-md.js'))
   && /portability\(flow, trail\)/.test(read('../api/skill-md.js')));

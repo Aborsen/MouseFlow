@@ -203,7 +203,17 @@ async function handler(req, res) {
       inferredUrls: portable && !portably.urls.length && Array.isArray(written.webAddresses)
         ? written.webAddresses.slice(0, 3)
         : [],
-      desktopOnly: portable && !!written.desktopOnly,
+      /* ABSENCE OF AN ANSWER IS NOT A NEGATIVE ANSWER, and this is the seam where that mattered. The
+       * caveat used to be `!!written.desktopOnly` alone - so when the model call failed, `written` stayed
+       * empty, the flag came out false, and a recording made on somebody's Dock exported as browser work
+       * with no warning at all. Silence read as a claim, exactly when the deployment was least able to
+       * make one.
+       *
+       * So the fallback is computed HERE, from what this side knows: desktop-made, no address ever
+       * recorded, and nobody available to judge otherwise. The model can clear the warning by answering;
+       * it cannot clear it by being unreachable. */
+      desktopOnly: portable && (written.desktopOnly === true
+        || (!written.description && !portably.urls.length && flow.source === 'desktop')),
     }),
   });
 }
