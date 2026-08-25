@@ -47,6 +47,10 @@
  * reachable.
  */
 
+/* Имя элемента без приписки приложения - см. api/_names.mjs. Определение одно: его же читает мастер,
+ * скилл и всё, что смотрит на записанный контекст. */
+import { plainName } from './_names.mjs';
+
 /* A pause longer than this is somebody away from the machine, not work. The part past it is dropped
  * from every number here and reported in `gaps`, exactly as api/insights.js does - the constant is
  * EVENT_GAP_MAX_MS there. It is duplicated rather than imported because api/insights.js is a ROUTE:
@@ -533,8 +537,12 @@ function ctxOf(raw) {
   const app = oneLine(src.app, CTX_MAX);
   /* The two a person reads as NAMES, shortened on a word rather than on a character. Consistently, so the
    * segment key built from them still matches: two events on the same long title shorten identically. */
-  const window = shorten(src.window, CTX_MAX);
-  const control = shorten(src.control, CTX_MAX);
+  /* plainName ПЕРЕД shorten, и порядок тут существенный. Chrome отдаёт имя вкладки предложением с
+   * расходом памяти внутри - «Вкладка "Home - Google Drive" использует 448 МБ памяти», - и обрезать это по
+   * длине значило бы обрезать приписку, оставив её начало. Сперва имя, потом длина. Определение одно, в
+   * api/_names.mjs; здесь оно применяется к тому, что ЧИТАЮТ. */
+  const window = shorten(plainName(src.window), CTX_MAX);
+  const control = shorten(plainName(src.control), CTX_MAX);
   const type = oneLine(src.type, 40);
   /* The four the agent has written since 0.8.0 and nothing read until now. `role` and `subrole` are the
    * UNLOCALISED kind of the thing that was actually hit, which is what lets an application that names none
@@ -545,7 +553,7 @@ function ctxOf(raw) {
   const role = oneLine(src.role, 40);
   const subrole = oneLine(src.subrole, 40);
   const container = oneLine(src.container ?? src.in, 40);
-  const containerName = shorten(src.containerName ?? src.inName, CTX_MAX);
+  const containerName = shorten(plainName(src.containerName ?? src.inName), CTX_MAX);
   /* A type on its own is not context: "a button" with no name and no application says nothing a reader
    * could act on, and keeping it would make a step look resolved when it was not. */
   if (!app && !window && !control) return null;

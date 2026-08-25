@@ -21,6 +21,9 @@
  * through a shim that keeps its TypeScript types, and there is still exactly one parser. The alternative was
  * a second parser for the same format, which is the thing this arrangement exists to prevent.
  */
+
+/* Имя без приписки приложения. Одно определение на всех читателей - см. api/_names.mjs. */
+import { plainName } from './_names.mjs';
 export function parseMacro(text) {
   const events = [];
   const problems = [];
@@ -118,9 +121,20 @@ export function flowBody(flow, recordings, opts) {
         if (e.context.app)
           fields.push(`app=${e.context.app}`);
         if (e.context.window)
-          fields.push(`window=${e.context.window}`);
+          fields.push(`window=${plainName(e.context.window)}`);
+        /* ИМЯ, ПО КОТОРОМУ БУДУТ ЦЕЛИТЬСЯ, - без приписки, которую приложение к нему приклеило.
+         *
+         * Выше сказано, что разбор ничего не редактирует, и это остаётся правдой: там имя КЛАДЁТСЯ в
+         * объект как пришло. Здесь оно ДОСТАЁТСЯ, чтобы агент нашёл по нему живой элемент, и это другая
+         * операция. Chrome пишет в имя вкладки расход памяти, а число мегабайт меняется каждую минуту -
+         * значит записанное «448 МБ» не совпадёт с живым «512 МБ», и прицел, написанный ради вкладок, на
+         * вкладках отказывал. Обрезанное имя совпадает по префиксу, который sameName в агенте и проверяет.
+         *
+         * Форму «X - Memory usage - 299 MB» это чинит целиком. Форму «Вкладка "X" использует 448 МБ» - нет:
+         * там приписка стоит и СЛЕВА, так что префикс не сойдётся, пока агент не чистит живое имя тоже.
+         * Это правка в агенте, и она ждёт своей версии. */
         if (e.context.control)
-          fields.push(`control=${e.context.control}`);
+          fields.push(`control=${plainName(e.context.control)}`);
         if (e.context.type)
           fields.push(`type=${e.context.type}`);
         /* Written back under the wire names the agent uses, so a body this produced and a body the agent
@@ -157,7 +171,7 @@ export function exportMacro(rec) {
       const fields = [
         e.context.app && `app=${e.context.app}`,
         e.context.window && `window=${e.context.window}`,
-        e.context.control && `control=${e.context.control}`,
+        e.context.control && `control=${plainName(e.context.control)}`,
         e.context.type && `type=${e.context.type}`,
       ].filter(Boolean);
       if (fields.length)

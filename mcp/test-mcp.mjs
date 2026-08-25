@@ -2315,6 +2315,71 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------------------------ имя без приписки приложения */
+
+/* Пришло как жалоба на внешний вид - «убери "использует 411 МБ памяти" из названия вкладок», - и оказалось
+ * не про вид. Записанное имя это то, ПО ЧЕМУ ЦЕЛИТСЯ ПОВТОР: агент ищет в живом дереве элемент с таким же
+ * именем, потому что полоса вкладок перекладывается. Число мегабайт меняется каждую минуту, значит
+ * записанное имя не совпадёт с живым никогда - и прицел, написанный ради вкладок, на вкладках отказывал.
+ *
+ * Строки здесь настоящие: сняты с аккаунта, двенадцать таких из ста восьмидесяти трёх имён. */
+group('имя вкладки читается без того, что браузер к нему приписал');
+{
+  const { plainName } = await import(new URL('../api/_names.mjs', import.meta.url));
+
+  /* Форма первая: заголовок ЗАВЁРНУТ - приписка стоит и слева, и справа. Так пишет локализованный Chrome. */
+  check('русский Chrome: заголовок достаётся из кавычек',
+    plainName('Вкладка "Home - Google Drive" использует 448 МБ памяти') === 'Home - Google Drive',
+    plainName('Вкладка "Home - Google Drive" использует 448 МБ памяти'));
+  check('и вторая его формулировка тоже',
+    plainName('Вкладка "(1) Chat / Margaryta Kashuba / Microsoft Teams" использует много памяти: 962 МБ')
+      === '(1) Chat / Margaryta Kashuba / Microsoft Teams');
+  check('заголовок с тире внутри не рассыпается',
+    plainName('Вкладка "All Dashboards — kuswise — Sentry" использует 623 МБ памяти')
+      === 'All Dashboards — kuswise — Sentry');
+
+  /* Форма вторая: приписка ХВОСТОМ. Отрезается вместе со словом «память» - иначе осталось бы
+   * «- Memory usage», - и вместе со всем, что стоит за ней: имя профиля тоже не часть имени. */
+  check('английский Chrome: хвост отрезается вместе со словом про память',
+    plainName('webmachinelearning/webmcp: WebMCP - Memory usage - 299 MB')
+      === 'webmachinelearning/webmcp: WebMCP');
+  check('и всё, что стоит ЗА припиской, тоже уходит',
+    plainName('Входящие - Viktor Horlenko - Outlook - High memory usage - 815 MB - Vic')
+      === 'Входящие - Viktor Horlenko - Outlook');
+  check('заголовок из дефисов без пробелов не режется по ним',
+    plainName('Продуктовый-фреймворк-Devart-21 - High memory usage - 1.4 GB')
+      === 'Продуктовый-фреймворк-Devart-21');
+
+  /* И ГЛАВНОЕ - чего оно НЕ делает. Переименованная кнопка это кнопка, которую повтор не найдёт в живом
+   * дереве и кликнет по координате. Правило, написанное чинить прицел, не имеет права его ломать.
+   *
+   * Третья форма - «отрезать по самому числу, когда нет ни кавычек, ни разделителя» - была написана и
+   * убрана именно из-за этих строк: на настоящих именах она не сработала ни разу, а «Upgrade to 200 GB
+   * storage» превратила в «Upgrade to». */
+  for (const safe of [
+    'Send', 'MouseFlow', 'Адресная строка и строка поиска', 'D8', 'New mail',
+    'Upgrade to 200 GB storage', 'Free up 2 GB now', 'Storage: 15 GB used',
+    'Buy 2 GB plan', 'Download 15 GBP invoice', 'Play MP3', 'Reply to "Ann"',
+  ]) {
+    check(`имя без приписки не трогается: ${safe}`, plainName(safe) === safe, plainName(safe));
+  }
+
+  check('и не-строка не роняет его', plainName(null) === '' && plainName(undefined) === '');
+
+  /* Одно определение на всех читателей: транскрипт показывает имя человеку, flowBody отдаёт его агенту
+   * как цель прицела. Обе стороны обязаны видеть одно и то же имя, иначе человек читает одно, а повтор
+   * ищет другое. */
+  const transcript = read('../api/_transcript.js');
+  const macro = read('../api/_macro.mjs');
+  check('его читает транскрипт', /shorten\(plainName\(src\.control\)/.test(transcript));
+  check('и окно тоже, потому что заголовок окна несёт ту же приписку',
+    /shorten\(plainName\(src\.window\)/.test(transcript));
+  check('и тело повтора отдаёт агенту очищенное имя',
+    /control=\$\{plainName\(e\.context\.control\)\}/.test(macro));
+  check('оба берут его из одного файла, а не пишут своё',
+    /from '\.\/_names\.mjs'/.test(transcript) && /from '\.\/_names\.mjs'/.test(macro));
+}
+
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));
 const imgDir = fileURLToPath(new URL('../docs/img/', import.meta.url));
