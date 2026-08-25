@@ -713,7 +713,12 @@ check('and it is readable with no account, or it is a door that opens from insid
  */
 
 group('teams are a module, and the dashboard can be scoped to one');
-const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+/* CRLF folded to LF on the way in. Every pattern below that spans a line break has a newline in it, and a
+   Windows checkout stores these files with a carriage return before that newline - so three checks here
+   failed on Windows while the source they describe was perfectly correct. Normalised in the one place a
+   file is read, so no individual assertion has to think about it. */
+const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
+  .replace(/\r\n/g, '\n');
 const mainTsx = read('../web/src/main.tsx');
 const sidebar = read('../web/src/shell/AppSidebar.tsx');
 const settings = read('../web/src/shell/SettingsDialog.tsx');

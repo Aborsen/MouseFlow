@@ -17,7 +17,11 @@ import { fileURLToPath } from 'node:url';
  * absolute Windows path, which is exactly the kind of thing that makes a test useless the moment the work
  * moves to another machine. */
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
-const read = (p) => readFileSync(ROOT + p, 'utf8');
+/* CRLF folded to LF. The checks below match multi-line shapes with a newline in the pattern, and a Windows
+   checkout stores these files with a carriage return before it - so without this they fail on the one
+   platform the Windows agent runs on, while the source they describe is perfectly correct. See
+   mcp/test-mcp.mjs, which lost three checks to exactly this. */
+const read = (p) => readFileSync(ROOT + p, 'utf8').replace(/\r\n/g, '\n');
 
 const protocol = read('agent/PROTOCOL.md');
 const ps = read('agent/mouseflow-agent.ps1');

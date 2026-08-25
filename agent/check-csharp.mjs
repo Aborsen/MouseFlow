@@ -13,7 +13,12 @@ import { fileURLToPath } from 'node:url';
 
 /* Relative to this file, and through fileURLToPath rather than by hand: this directory has a space in its
  * path, and a URL pathname percent-encodes it. */
-const src = readFileSync(fileURLToPath(new URL('mouseflow-agent.ps1', import.meta.url)), 'utf8');
+/* Newlines normalised on the way in, and that is not tidiness: every pattern below is anchored on a bare
+   newline - the here-string fence, the eight-space member indent, the split. On a WINDOWS checkout git hands
+   this file back with CRLF, so the fence stops matching and the whole check dies reading [1] of null. A
+   compiler proxy that cannot run on the one platform it exists to protect is worse than no check at all. */
+const src = readFileSync(fileURLToPath(new URL('mouseflow-agent.ps1', import.meta.url)), 'utf8')
+  .replace(/\r\n/g, '\n');
 const cs = /-TypeDefinition @'\n([\s\S]*?)\n'@/.exec(src)[1];
 const code = cs.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
