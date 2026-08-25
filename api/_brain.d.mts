@@ -64,7 +64,10 @@ export function openList(windows: WindowLike[] | null | undefined): string | nul
 export function screenMessage(frame: ShotLike, open: string | null): Message;
 export function forgetOldPictures<T extends { content?: unknown }>(messages: T[]): T[];
 /** What one action did, in the words both drivers use. `moved === false` means the screen stood still. */
-export function actionReport(moved: boolean | undefined): string;
+export function actionReport(moved: boolean | undefined, streak?: number): string;
+export const STILL_WARN: number;
+export const STILL_GIVE_UP: number;
+export function stillStopped(streak: number): string;
 export const STILL_NOTE: string;
 
 export function waitReport(outcome: { quiet?: boolean; waited?: number; quietFor?: number }): string;

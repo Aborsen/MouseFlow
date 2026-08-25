@@ -53,6 +53,8 @@ import {
   toolsFor,
   truncatedAt,
   actionReport,
+  STILL_GIVE_UP,
+  stillStopped,
   waitReport,
 } from '../../../api/_brain.mjs';
 import type { ShotFrame } from '../../../api/_brain.d.mts';
@@ -309,6 +311,10 @@ async function runWave(o: {
   let stepNo = o.stepFrom;
   let shotWidth = DEFAULT_SHOT_W;
 
+  /* Сколько действий подряд не сдвинули экран. Живёт через ходы: три неподвижных в одном ходе и три в
+   * следующем - это шесть подряд, и человек, глядя на это, считал бы именно так. */
+  let still = 0;
+
   for (let turn = 0; turn < WAVE_TURNS; turn++) {
     if (isAborted()) return { stepNo };
 
@@ -358,6 +364,18 @@ async function runWave(o: {
 
     const cutoff = new AbortController();
     const shotMs = Date.now() - shotAt;
+
+    /* NOTHING HAS MOVED FOR SIX ACTIONS, so the next decision is not bought.
+     *
+     * Warned three times already in the results, each warning costing a step of several seconds. A model
+     * that has not changed approach after those will not on the seventh - the run watched live spent a
+     * minute proving it, ten identical attempts ended by a person who was watching. This is that person's
+     * judgement, made by the loop instead. */
+    if (still >= STILL_GIVE_UP) {
+      const why = stillStopped(still);
+      onEvent({ type: 'text', text: why });
+      return { stepNo, result: { ok: false, error: why, steps } };
+    }
 
     const timer = setTimeout(() => cutoff.abort(), MODEL_TIMEOUT_MS);
     const modelAt = Date.now();
@@ -562,13 +580,16 @@ async function runWave(o: {
          * a click on something already selected - so this reports what was observed and leaves the reading
          * to the model. Saying "that failed" would be this loop guessing about applications it cannot see
          * inside, which is how a working step gets abandoned. */
-        const still = before && after && !moved(before, after);
+        const inert = !!(before && after && !moved(before, after));
+        /* "In a row", not "in total": a run that changed something is a run getting somewhere, however
+         * many inert clicks it took along the way. */
+        still = inert ? still + 1 : 0;
         results.push({
           type: 'tool_result',
           tool_use_id: use.id,
           /* The words live in the brain, like waitReport's: the two drivers must tell the model the same
            * thing, or one of them teaches it a habit the other punishes. */
-          content: actionReport(still ? false : true),
+          content: actionReport(inert ? false : true, still),
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'failed';

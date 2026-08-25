@@ -50,6 +50,8 @@ import {
   toolsFor,
   truncatedAt,
   actionReport,
+  STILL_GIVE_UP,
+  stillStopped,
   waitReport,
 } from './_brain.mjs';
 import { DEFAULT_SHOT_W } from './_brain.mjs';
@@ -89,6 +91,10 @@ export function startLoop({ goal, model, success = null }) {
      * model was told about in wave one would otherwise be forgotten by wave two - which is precisely the
      * wave where it is closest to finishing and most likely to declare victory. */
     success: success ? String(success) : null,
+    /* Сколько действий подряд не сдвинули экран. На цикле, а не в переменной хода: три неподвижных
+     * действия в одном ходе и три в следующем - это шесть подряд, и человек, глядя на это, считал бы
+     * именно так. */
+    still: 0,
     messages: [openingMessage(String(goal || ''), null, null, success ? String(success) : null)],
     pending: [],
     mine: [],
@@ -123,9 +129,20 @@ async function defaultAsk(body) {
  *
  * A pending action with no result is an error rather than an omission: the model has to know its click did
  * not happen, and a missing tool_result is not a thing the API will accept in any case. */
-function resultBlocks(pending, said) {
+/* @param {{still: number}} loop  counted across turns, so a streak spanning two of them is still a streak */
+function resultBlocks(pending, said, loop) {
   const bySaid = new Map();
   for (const r of Array.isArray(said) ? said : []) bySaid.set(String(r && r.id), r);
+  /* Counted in the order the machine carried them out, and reset by the first thing that moved anything -
+   * `still` is "in a row", not "in total", because a run that changed something is a run getting somewhere
+   * however many inert clicks it took along the way. */
+  for (const p of pending) {
+    const got = bySaid.get(String(p.id));
+    if (!got || p.name === 'wait') continue;
+    if (got.moved === false) { loop.still += 1; got.streak = loop.still; } else if (got.moved === true) {
+      loop.still = 0;
+    }
+  }
   return pending.map((p) => {
     const got = bySaid.get(String(p.id));
     if (!got) {
@@ -143,7 +160,7 @@ function resultBlocks(pending, said) {
     const content = p.name === 'wait' && got.quiet !== undefined
       ? waitReport(got)
       : got.output === 'done' || got.output == null
-        ? actionReport(got.moved === false ? false : undefined)
+        ? actionReport(got.moved === false ? false : undefined, got.streak || 0)
         : String(got.output).slice(0, 2000);
     return { type: 'tool_result', tool_use_id: p.id, content, is_error: got.isError === true };
   });
@@ -194,10 +211,24 @@ export async function advance({ loop, shot, windows, results, ask }) {
   });
 
   // 1. What the agent did with what it was last told to do.
-  const answered = (loop.mine || []).concat(resultBlocks(loop.pending || [], results));
+  if (typeof loop.still !== 'number') loop.still = 0;      // a loop stored before this counter existed
+  const answered = (loop.mine || []).concat(resultBlocks(loop.pending || [], results, loop));
   if (answered.length) loop.messages.push({ role: 'user', content: answered });
   loop.mine = [];
   loop.pending = [];
+
+  /* NOTHING HAS MOVED FOR SIX ACTIONS. Ended here, before another decision is bought.
+   *
+   * Warned three times already, in the results above, and each warning cost a step of about eight seconds.
+   * A model that has not changed approach after those is not going to on the seventh, and the run watched
+   * live spent a minute proving it - ten identical attempts, ended by a person who was watching. This is
+   * that person's judgement, made by the loop instead.
+   *
+   * A failure, and it says so in the run's own words: what was reached before this stands, and the reason
+   * names the thing that actually went wrong rather than blaming the step it stopped on. */
+  if (loop.still >= STILL_GIVE_UP) {
+    return over({ ok: false, error: stillStopped(loop.still), said: stillStopped(loop.still) });
+  }
 
   /* A finish that arrived behind other actions in the same turn. Those actions were sent and have now been
    * carried out; the ending was always the answer and is honoured here rather than being dropped. */

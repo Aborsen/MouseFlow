@@ -168,6 +168,52 @@ group('an action that changed nothing says so');
     !/screen looks exactly/.test(JSON.stringify(seen.seen[0].messages)));
 }
 
+/* One action that changed nothing is ordinary. Six in a row is the run watched live: ten identical
+ * attempts to rename a spreadsheet, a minute of it, ended by a person who was watching. This is that
+ * person's judgement made by the loop - warned at three, stopped at six. */
+group('a run that has stopped moving stops');
+{
+  const loop = start();
+  const told = [];
+  let out;
+  for (let i = 1; i <= 6; i++) {
+    const ask = scripted([answer([use('click', { x: 1, y: 2 }, `c${i}`)])]);
+    out = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+    if (out.done) break;
+    const seen = scripted([answer([use('click', { x: 1, y: 2 }, `d${i}`)])]);
+    out = await advance({
+      loop, shot: SHOT, windows: WINDOWS,
+      results: [{ id: `c${i}`, output: 'done', moved: false }], ask: seen,
+    });
+    /* The last turn ends the run before the model is asked, so there is nothing to record for it. */
+    if (seen.seen[0]) told.push(JSON.stringify(seen.seen[0].messages));
+    if (out.done) break;
+  }
+  check('by the third it is told plainly to try something different',
+    told.some((m) => /actions in a row that have changed nothing/.test(m)));
+  check('and it ends rather than buying another decision', !!out.done);
+  check('as a failure, saying what actually went wrong',
+    out.done && out.done.ok === false && /Nothing on screen has changed for/.test(String(out.done.error)));
+}
+{
+  /* The counter is "in a row". A run that moves something is getting somewhere, however many inert
+   * clicks it took along the way. */
+  const loop = start();
+  const first = scripted([answer([use('click', { x: 1, y: 2 }, 'a1')])]);
+  await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask: first });
+  const second = scripted([answer([use('click', { x: 1, y: 2 }, 'a2')])]);
+  await advance({
+    loop, shot: SHOT, windows: WINDOWS,
+    results: [{ id: 'a1', output: 'done', moved: false }], ask: second,
+  });
+  const third = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  await advance({
+    loop, shot: SHOT, windows: WINDOWS,
+    results: [{ id: 'a2', output: 'done', moved: true }], ask: third,
+  });
+  check('one that moves resets the count', loop.still === 0);
+}
+
 group('a step says what it cost');
 {
   const slow = async () => {

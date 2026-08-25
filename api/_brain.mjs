@@ -336,8 +336,36 @@ export const STILL_NOTE = 'done — but the screen looks exactly as it did befor
   + 'you expected, the action may not have reached where you aimed it: check that the thing you meant to '
   + 'type into actually has the caret, rather than doing the same thing again.';
 
+/* СКОЛЬКО РАЗ ПОДРЯД НИЧЕГО НЕ ПРОИСХОДИЛО - и что на каком счёте сказать.
+ *
+ * Одно действие, не изменившее экран, - обычное дело: копирование в буфер, клик по уже выбранному. Три
+ * подряд - уже нет. Прогон, который смотрели живьём, десять раз пытался переименовать таблицу; человек
+ * следил за этим минуту и нажал стоп. Считать подряд идущие неподвижные действия - это и есть тот счёт,
+ * который человек вёл в голове.
+ *
+ * Два порога, а не один. На третьем - сказать сильнее, потому что модель ещё может выпутаться сама и
+ * оборвать её здесь значило бы бросать поправимое. На шестом - закончить: если пять предыдущих слов не
+ * помогли, шестое не поможет тоже, а стоит каждое из них секунд восемь. */
+export const STILL_WARN = 3;
+export const STILL_GIVE_UP = 6;
+
 /** What one action did, in the words both drivers use. `moved` absent means the agent could not tell. */
-export const actionReport = (moved) => (moved === false ? STILL_NOTE : 'done');
+export const actionReport = (moved, streak = 0) => {
+  if (moved !== false) return 'done';
+  if (streak >= STILL_WARN) {
+    return `done — and that is ${streak} actions in a row that have changed nothing on screen. Something `
+      + 'about where you are aiming is wrong, not about how many times you try it. Look at the screenshot '
+      + 'again and do something DIFFERENT — a different control, a different route to the same thing — or '
+      + 'finish with ok false and say what you could not reach.';
+  }
+  return STILL_NOTE;
+};
+
+/** Why a run that stopped moving is ended. Said in the run's own words, not as a crash. */
+export const stillStopped = (streak) =>
+  `Nothing on screen has changed for ${streak} actions in a row. Stopping rather than going on: whatever `
+  + 'is being aimed at is not receiving this, and repeating it costs a step each time without getting '
+  + 'closer. What was reached before this is unchanged.';
 
 /* --------------------------------------------------------------------------- reading the answer */
 
