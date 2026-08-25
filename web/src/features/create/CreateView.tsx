@@ -806,7 +806,24 @@ export const CreateView = () => {
                         keep it on this computer
                       </button>
                     </>
-                  ) : `dictation is sent to Google to be recognised · ${langName(dictation.lang)}`}
+                  ) : 'dictation is sent to Google to be recognised'}
+                {/* ЯЗЫК ВЫБИРАЕТСЯ, а не берётся из браузера молча. `navigator.language` - это список
+                  * предпочитаемых языков, а не язык, на котором говорят вслух: на первой же живой машине
+                  * интерфейс был русский, а оттуда пришёл английский, и русская речь распозналась как
+                  * английская. Выбор запоминается на этой машине. */}
+                <select
+                  value={dictation.lang}
+                  onChange={(ev) => dictation.setLang(ev.target.value)}
+                  aria-label="Language to dictate in"
+                  className={cn(
+                    'rounded border-stroke border bg-surface-card2 px-1 py-0.5 text-[0.72rem]',
+                    'text-ink-body',
+                  )}
+                >
+                  {dictation.choices.map((tag) => (
+                    <option key={tag} value={tag}>{langName(tag)}</option>
+                  ))}
+                </select>
               </span>
             )}
             {/* A run is meant to be left alone - the agent drives the real desktop, so the tab is behind

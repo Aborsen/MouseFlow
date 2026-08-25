@@ -88,23 +88,43 @@ export function urlTrail(payload) {
   return out;
 }
 
-/* Can this recording become a file that runs WITHOUT MouseFlow - on whatever browser tools the agent
- * reading it already has?
+/* Can this become a file that runs WITHOUT MouseFlow - on whatever browser tools the agent reading it
+ * already has?
  *
- * The test is not "was this a browser" but "do we know the addresses". A browser recording with no URLs
- * would have to start "find the window called …", which is not something a cloud agent can do and not a
- * step anybody should ship. One rule, and it turns true on its own the day the agents write a URL. */
-export function portability(flow) {
-  const urls = urlTrail((flow && flow.payload) || {});
+ * The test is not "was this a browser" but "do we know the addresses". A recording with no URLs would have
+ * to start "find the window called …", which is not something a cloud agent can do and not a step anybody
+ * should ship.
+ *
+ * WHY THE URLS ARE PASSED IN. A skill-GOAL has no `events` of its own - it carries the goal, its parameters
+ * and the steps of one run as evidence - so reading `payload.events` returned nothing for every one of
+ * them, always, whatever had actually been recorded. Since that became the only kind of skill anybody can
+ * make, this answered "not portable" by construction and then explained it with a reason about the
+ * recorder, which sent the reader to look in the wrong place. The caller knows which flow the skill was
+ * made from and can read ITS trail; this stays a pure function that judges what it is handed.
+ *
+ * The old reason said the desktop agent does not write web addresses. It DOES - since it learned to read
+ * AXWebArea - and desktop recordings on real accounts carry them. That sentence was true once and was never
+ * revisited, which is the failure mode a comment like this exists to prevent.
+ */
+export function portability(flow, knownUrls) {
+  const urls = Array.isArray(knownUrls) && knownUrls.length
+    ? knownUrls
+    : urlTrail((flow && flow.payload) || {});
   if (urls.length) return { ok: true, urls, why: '' };
+
+  const created = flow && flow.payload && flow.payload.kind === 'created';
+  const fromRun = created && flow.payload.fromRun;
   return {
     ok: false,
     urls,
-    why: (flow && flow.source) === 'desktop'
-      ? 'this was recorded by the desktop agent, which does not write down web addresses yet — so there is '
-        + 'nothing for another agent to open. A recording made by the browser extension can be exported '
-        + 'this way today.'
-      : 'no web addresses were recorded, so there is nothing for another agent to open.',
+    why: fromRun
+      ? 'this skill was made from a flow carried out on the desktop, where the agent works from what is on '
+        + 'screen rather than from addresses — so no web address was recorded and there is nothing for '
+        + 'another agent to open. A skill made from a recording that visited a page can be exported this way.'
+      : created
+        ? 'the recording this skill was made from visited no web address, so there is nothing for another '
+          + 'agent to open.'
+        : 'no web addresses were recorded, so there is nothing for another agent to open.',
   };
 }
 

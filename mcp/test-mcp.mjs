@@ -1237,10 +1237,29 @@ check('and a non-web address is not one an agent can open, so it is not listed',
 /* The gate is "do we know the addresses", not "did this look like a browser": a browser recording with no
  * urls would have to begin "find the window called …", which a cloud agent cannot do. */
 check('a recording with addresses can be exported this way', skillMd.portability(EXT_FLOW).ok);
-check('one without them cannot, and is told why in terms of the recorder that made it',
-  skillMd.portability({ source: 'desktop', payload: { events: [] } }).ok === false
-    && /does not write down web addresses yet/.test(
-      skillMd.portability({ source: 'desktop', payload: { events: [] } }).why));
+check('one without them cannot',
+  skillMd.portability({ source: 'desktop', payload: { events: [] } }).ok === false);
+
+/* THE BUG THIS REPLACES. A skill-goal carries no events of its own - goal, params, and one run's steps as
+ * evidence - so reading its own payload answered "no addresses" for every skill ever made, whatever had
+ * been recorded. Since that is now the only kind of skill anybody can make, Portable was refused by
+ * construction, and the refusal blamed the desktop recorder for something it does do. */
+const GOAL_SKILL = {
+  source: 'desktop',
+  payload: { kind: 'created', goalTemplate: 'send a test email', fromRecording: 'r_1', steps: [] },
+};
+check('a skill made from a recording is judged on THAT recording’s addresses, passed in',
+  skillMd.portability(GOAL_SKILL).ok === false
+    && skillMd.portability(GOAL_SKILL, ['https://mail.google.com']).ok === true);
+check('and it no longer claims the desktop agent cannot write addresses, because it can',
+  !/does not write down web addresses/.test(skillMd.portability(GOAL_SKILL).why)
+  && !/does not write down web addresses/.test(read('../api/_skill-md.mjs').split('export function portability')[1]));
+check('a dictated flow is refused for the reason that is actually true of it',
+  /works from what is on screen rather than from addresses/.test(
+    skillMd.portability({ source: 'desktop', payload: { kind: 'created', fromRun: 'dr_1' } }).why));
+check('and the route reads the source recording rather than guessing',
+  /where user_id = \$\{who\.id\} and client_id = \$\{cameFrom\}/.test(read('../api/skill-md.js'))
+  && /portability\(flow, trail\)/.test(read('../api/skill-md.js')));
 
 const portableMd = skillMd.skillMarkdown(MD_STRUCTURE, { name: 'Reply' }, {},
   { portable: true, urls: skillMd.urlTrail(EXT_FLOW.payload) });
@@ -1922,8 +1941,17 @@ check('and processLocally is only set once that answer said the language is here
   /if \(where === 'on-this-computer'\) rec\.processLocally = true;/.test(speech));
 check('a failed check does not get to claim the audio stays local',
   /catch \(_\) \{[\s\S]{0,160}setWhere\('a-server'\)/.test(speech));
-check('the language comes from the browser, or Russian speech is recognised as English',
-  /rec\.lang = lang;/.test(speech) && /navigator\.language/.test(speech));
+/* The browser only SEEDS it. navigator.language is the preferred-languages list, not the language somebody
+ * speaks: on the first real machine the interface was Russian and it returned English, so Russian speech
+ * came back recognised as English - which reads as broken recognition, not as a wrong setting. */
+check('the language is a remembered choice, seeded by the browser rather than dictated by it',
+  /rec\.lang = lang;/.test(speech)
+  && /localStorage\.getItem\(LANG_KEY\)/.test(speech)
+  && /localStorage\.setItem\(LANG_KEY, tag\)/.test(speech));
+check('and changing it stops recognition, so the control cannot show one language while hearing another',
+  /const setLang = useCallback\(\(tag: string\) => \{[\s\S]{0,120}live\.current\?\.abort\(\)/.test(speech));
+check('the choices are deduped by base language, so "ru" and "ru-RU" are not two lines',
+  /have\.split\('-'\)\[0\] === base/.test(speech));
 check('where the audio goes is on screen before the microphone is pressed',
   /dictation is sent to Google to be recognised/.test(read('../web/src/features/create/CreateView.tsx'))
   && /dictation stays on this computer/.test(read('../web/src/features/create/CreateView.tsx')));

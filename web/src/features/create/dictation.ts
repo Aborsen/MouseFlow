@@ -55,13 +55,50 @@ const Speech = (): RecognitionClass | null => {
 /** Where the audio goes. `unknown` until asked - never assumed, because the answer decides what we say. */
 export type Where = 'unknown' | 'on-this-computer' | 'a-server' | 'downloadable' | 'no';
 
-/* Язык, на котором человек говорит.
+/* Язык, на котором человек говорит. ВЫБОР, А НЕ ДОГАДКА.
  *
- * Берётся из браузера, а не задаётся константой: без явного `lang` Chrome распознаёт как английский, и
- * русская речь превращается в кашу, которая выглядит как поломка распознавания, а не как неверная
- * настройка. Отдельного выбора языка тут пока нет - если браузер и речь разойдутся, это будет видно
- * сразу же по первому слову, а не спрятано. */
-export const dictationLang = () => navigator.language || 'en-US';
+ * Сначала здесь стоял просто `navigator.language`, и это оказалось неверно на первой же живой машине:
+ * интерфейс Chrome по-русски, а `navigator.language` вернул английский - он отражает список
+ * предпочитаемых языков, а не язык, на котором человек говорит вслух. Результат - русская речь,
+ * распознанная как английская, что выглядит как сломанное распознавание, а не как неверная настройка.
+ *
+ * Поэтому браузер даёт лишь НАЧАЛЬНОЕ значение, а выбранное запоминается. Ключ локальный: язык диктовки -
+ * свойство этого человека за этой машиной, а не аккаунта, и синхронизировать его между машинами значило бы
+ * менять язык на чужой из-за того, что кто-то один переключил. */
+const LANG_KEY = 'mf.dictation.lang';
+
+export function dictationLang(): string {
+  try {
+    const kept = localStorage.getItem(LANG_KEY);
+    if (kept) return kept;
+  } catch (_) {
+    /* Приватный режим или отключённое хранилище - не повод не диктовать. */
+  }
+  return navigator.language || 'en-US';
+}
+
+export function rememberDictationLang(tag: string) {
+  try { localStorage.setItem(LANG_KEY, tag); } catch (_) { /* см. выше */ }
+}
+
+/* Что предложить в списке.
+ *
+ * Сначала то, что человек НАСТРОИЛ в браузере - если русский есть в его списке, он будет наверху, - потом
+ * несколько распространённых. Порядок не алфавитный: первым идёт то, что вероятнее всего верно. */
+const COMMON = ['en-US', 'ru-RU', 'uk-UA', 'de-DE', 'fr-FR', 'es-ES', 'pl-PL'];
+
+export function dictationChoices(current: string): string[] {
+  const out: string[] = [];
+  for (const tag of [current, ...(navigator.languages ?? []), ...COMMON]) {
+    if (!tag) continue;
+    /* По базовому языку, а не по полному тегу: "ru" из настроек и "ru-RU" из списка - один и тот же выбор,
+     * и две строки «русский» подряд читаются как ошибка. */
+    const base = tag.split('-')[0];
+    if (out.some((have) => have.split('-')[0] === base)) continue;
+    out.push(tag);
+  }
+  return out;
+}
 
 /* Название языка словами, для строки, которую читают. Intl уже умеет это на языке самого интерфейса. */
 export function langName(tag: string): string {
@@ -82,6 +119,9 @@ export interface Dictation {
   interim: string;
   start: () => void;
   stop: () => void;
+  /** Сменить язык. Пересчитывает и то, где распознавание может произойти. */
+  setLang: (tag: string) => void;
+  choices: string[];
   /** Скачать языковой пакет, чтобы уйти с сервера на устройство. */
   install: () => Promise<void>;
 }
@@ -107,7 +147,7 @@ function inWords(code: string): string {
  */
 export function useDictation(onText: (text: string) => void): Dictation {
   const Klass = Speech();
-  const lang = dictationLang();
+  const [lang, setLangState] = useState(dictationLang);
   const [listening, setListening] = useState(false);
   const [where, setWhere] = useState<Where>('unknown');
   const [problem, setProblem] = useState<string | null>(null);
@@ -190,6 +230,19 @@ export function useDictation(onText: (text: string) => void): Dictation {
     }
   }, [Klass, lang, where]);
 
+  /* Смена языка ОСТАНАВЛИВАЕТ диктовку: распознавание уже запущено с прежним языком, и молча оставить его
+   * работать значило бы, что переключатель показывает одно, а слушает другое. */
+  const setLang = useCallback((tag: string) => {
+    live.current?.abort();
+    live.current = null;
+    setListening(false);
+    setInterim('');
+    setProblem(null);
+    setWhere('unknown');
+    rememberDictationLang(tag);
+    setLangState(tag);
+  }, []);
+
   const install = useCallback(async () => {
     if (!Klass?.install) return;
     setProblem(null);
@@ -207,5 +260,6 @@ export function useDictation(onText: (text: string) => void): Dictation {
   return {
     supported: !!Klass && where !== 'no',
     listening, where, lang, problem, interim, start, stop, install,
+    setLang, choices: dictationChoices(lang),
   };
 }

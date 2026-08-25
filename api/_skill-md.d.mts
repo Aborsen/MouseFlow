@@ -13,9 +13,13 @@ export interface SkillMdStructure {
 /** What a portable file needs and cannot invent: the addresses, query and fragment already dropped. */
 export function urlTrail(payload: unknown): string[];
 
-/** Whether this recording can become a file that runs with no MouseFlow at all. */
-export function portability(flow: { source?: string; payload?: unknown }):
-  { ok: boolean; urls: string[]; why: string };
+/** Whether this can become a file that runs with no MouseFlow at all.
+ *  `knownUrls` is the trail the caller found - a skill-goal has none of its own, so the caller reads it off
+ *  the recording the skill was made from. Omitted, the flow's own payload is read. */
+export function portability(
+  flow: { source?: string; payload?: unknown },
+  knownUrls?: readonly string[],
+): { ok: boolean; urls: string[]; why: string };
 
 export function skillSlug(name: string): string;
 export function skillFileName(name: string): string;

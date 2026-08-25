@@ -18,7 +18,7 @@ import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { ask, DEFAULT_MODEL, ProviderError } from './_provider.js';
 import { structureOf } from './_skill-schema.mjs';
-import { portability, skillFileName, skillMarkdown, skillSlug } from './_skill-md.mjs';
+import { portability, skillFileName, skillMarkdown, skillSlug, urlTrail } from './_skill-md.mjs';
 import { report, wrap } from './_report.js';
 
 const TRIGGER_TOOL = {
@@ -113,8 +113,23 @@ async function handler(req, res) {
 
   /* Gated on whether the addresses are KNOWN, not on whether it looked like a browser. A browser recording
    * with no URLs would have to begin "find the window called …", which a cloud agent cannot do and nobody
-   * should ship. One rule, and it turns true on its own the day the agents write a URL down. */
-  const portably = portability(flow);
+   * should ship.
+   *
+   * A SKILL IS ASKED ABOUT THE RECORDING IT CAME FROM. A skill-goal has no events of its own, so looking
+   * only at its own payload answered "no addresses" for every skill ever made, and then blamed the
+   * recorder. The recording it was made from is one row away and is where the trail actually is - scoped to
+   * the same account, like every other read here, and a missing or deleted source simply leaves the trail
+   * empty rather than failing the request. */
+  let trail = urlTrail(flow.payload || {});
+  const cameFrom = flow.payload && flow.payload.fromRecording;
+  if (!trail.length && cameFrom) {
+    const source = await sql`
+      select payload from user_flow
+      where user_id = ${who.id} and client_id = ${cameFrom} and deleted_at is null
+      limit 1`;
+    if (source.length) trail = urlTrail(source[0].payload || {});
+  }
+  const portably = portability(flow, trail);
   if (portable && !portably.ok) {
     return res.status(200).json({ ok: false, portable: true, why: portably.why });
   }
