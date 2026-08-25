@@ -299,7 +299,15 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.9.2 is the build that no longer needs a second program installed beside it.
+/* 0.9.3 is the build that can read the name of a browser tab.
+ *
+ * Before it, a click on a tab strip came back as "clicked on something Google Chrome did not name", so a
+ * recording of tab clicks produced a skill with no steps in it, and a replay went on clicking a coordinate
+ * that had moved. Nothing on 0.9.2 says which 0.9.2 it is - the fix shipped under the same number for a few
+ * hours - and this nudge is the only thing that tells somebody holding the older one to fetch the newer.
+ *
+ * The previous note, kept because the reason still holds. 0.9.2 is the build that no longer needs a second
+ * program installed beside it.
  *
  * Before it, a goal skill - the kind the wizard makes - could only run on a machine that also had
  * mcp/worker.mjs running, because the decision loop talked to 127.0.0.1. From 0.9.0 the agent carries the
@@ -310,7 +318,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.9.2';
+export const AGENT_WANTS = '0.9.3';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {
