@@ -212,6 +212,8 @@ async function ask(body: unknown, signal?: AbortSignal) {
 
 interface Options {
   goal: string;
+  /** Что автор назвал признаком готовности. Отсутствует - цикл о нём просто не заговаривает. */
+  success?: string | null;
   /** Какой компьютер вести. Раньше здесь стоял номер порта - см. Machine в agent.ts. */
   machine: Machine;
   onEvent: (event: RunEvent) => void;
@@ -225,7 +227,7 @@ interface Options {
 }
 
 export async function runOnDesktop({
-  goal, machine, onEvent, isAborted, checkpoints, onCheckpoint,
+  goal, success, machine, onEvent, isAborted, checkpoints, onCheckpoint,
 }: Options): Promise<RunResult> {
   /* Шлюз работает только когда есть и план, и кто-то, кто ответит. Одно без другого - это либо инструмент,
    * объявляющий чекпоинты, которых нет, либо пауза, из которой никто не выпустит. */
@@ -251,7 +253,7 @@ export async function runOnDesktop({
         + 'the plan was your intention, not an instruction you are bound to.'
       : '';
 
-    const messages: unknown[] = [openingMessage(goal, planText, handoff)];
+    const messages: unknown[] = [openingMessage(goal, planText, handoff, success ?? null)];
     if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
 
     const outcome = await runWave({

@@ -71,4 +71,6 @@ export function openingMessage(
   goal: string,
   planText: string | null,
   handoff: string | null,
+  /** What the author said done looks like. Its own paragraph, never folded into the goal. */
+  success?: string | null,
 ): Message;

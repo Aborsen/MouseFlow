@@ -330,6 +330,22 @@ export function skillMarkdown(structure, flow, written = {}, opts = {}) {
     }
   }
 
+  /* WHAT DONE LOOKS LIKE, before what can go wrong - a reader needs the target before the hazards.
+   *
+   * Written in the author's words and marked as a check rather than a step, because an agent handed a
+   * condition among instructions will try to bring it about: told "the message appears in Sent", it opens
+   * the Sent folder to make the sentence true. The test is what it is for, not something to achieve. */
+  if (s.success) {
+    out.push('## What done looks like');
+    out.push('');
+    out.push(String(s.success));
+    out.push('');
+    out.push('**Check this, do not carry it out.** It is how the person who recorded this could tell it had '
+      + 'worked. If it is not true at the end, say so rather than reporting success - a run that stopped '
+      + 'short is more use than one that claims something nobody can disagree with.');
+    out.push('');
+  }
+
   out.push('## What can go wrong');
   out.push('');
   out.push('| What you get back | What it means |');

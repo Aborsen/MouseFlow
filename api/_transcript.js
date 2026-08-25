@@ -1347,7 +1347,17 @@ function deriveDesktop(events, seen) {
         && Math.abs(event.y - previous.y) <= DOUBLE_PX) {
         mergeDouble(state, previous, step, apart, event,
           actWords('double-clicked', event.ctx, point(event)));
+        /* All THREE counters, or the summary contradicts itself in print.
+         *
+         * Two presses become one double-click, so the click count goes down - but the context counters were
+         * incremented once per press and were left alone, and the sentence they feed says "for N of the M
+         * clicks the agent also read what was under the pointer". With one double-click in a recording that
+         * read "for 10 of the 9 clicks", which is the kind of arithmetic a reader notices immediately and
+         * cannot unsee. The folded press had its own context, and it is the same context: one click, landing
+         * on one thing. */
         counts.clicks--;
+        if (event.ctx) counts.ctxClicks--;
+        if (event.ctx && event.ctx.control) counts.ctxNamed--;
       } else {
         step.button = event.button;
         step.x = event.x;

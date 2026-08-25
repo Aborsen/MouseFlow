@@ -8,6 +8,8 @@ export interface SkillMdStructure {
   description?: string;
   params?: readonly { name: string; type: string; example?: string | null }[];
   origins?: readonly string[];
+  /** What the author said done looks like. Checked, never carried out. */
+  success?: string | null;
 }
 
 /** What a portable file needs and cannot invent: the addresses, query and fragment already dropped. */

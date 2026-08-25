@@ -181,6 +181,14 @@ export function structureOf(flow) {
         ? 'the local agent, replaying the recorded sequence by screen position'
         : 'the extension, replaying the recorded sequence against page elements'),
     goalTemplate,
+    /* WHAT DONE LOOKS LIKE, in the author's words.
+     *
+     * Not verification, and it must not be sold as such: nothing compares the screen before and after, and
+     * the loop cannot - it keeps only the newest picture. What it changes is what `ok` MEANS. Without it a
+     * run succeeds because the model says so, which is unfalsifiable; with it the model is asserting a
+     * named condition, and a person reading the log can say "that did not happen". A claim somebody can
+     * disagree with is worth more than a claim nobody can. */
+    success: str(payload.success) ?? null,
     params,
     steps: stepsOf(payload),
     events,

@@ -591,7 +591,8 @@ group('a goal can be carried out by an agent with no worker behind it');
   check('and a missing parameter fails the job instead of running a sentence with a hole in it',
     /const missing = missingParams\(skill, args\)/.test(route));
   check('the model is resolved once per run, not per step',
-    /startLoop\(\{ goal, model \}\)/.test(route) && /settings\['model\.desktop'\]/.test(route));
+    /startLoop\(\{ goal, model, success: payload\.success \|\| null \}\)/.test(route)
+    && /settings\['model\.desktop'\]/.test(route));
   check('the run reaches the account log like any other',
     /insert into user_run/.test(route));
   /* claimed_at is moved on by every step so that staleness means "not heard from". Using it as the start
@@ -2017,6 +2018,32 @@ check('the wizard can build an instruction from it without a control name',
   /case 'press': return line\.pressed/.test(read('../web/src/features/record/SkillWizard.tsx'))
   && /if \(line\.action === 'press'\) return !!line\.pressed;/.test(
     read('../web/src/features/record/SkillWizard.tsx')));
+
+/* Two presses become one double-click, and the click count went down while the two context counters did
+ * not - so a recording with one double-click printed "for 10 of the 9 clicks". Asserted as the invariant
+ * rather than as those numbers: what must hold is that you cannot have read more clicks than there were. */
+{
+  const ctx = { app: 'Google Chrome', window: 'MouseFlow', control: 'MouseFlow', type: 'link' };
+  const at = (action, delayMs, x = 400, y = 300) => ({ x, y, delayMs, action, context: ctx });
+  const doubled = transcribe({
+    source: 'desktop', kind: 'recorded', name: 'dbl',
+    payload: {
+      events: [
+        at('Focus', 0),
+        at('Left Click Down', 300), at('Left Click Release', 20),
+        at('Left Click Down', 90), at('Left Click Release', 20),
+        at('Left Click Down', 900, 500, 400), at('Left Click Release', 20, 500, 400),
+      ],
+    },
+  });
+  const said = JSON.stringify(doubled);
+  const counted = /(\d+) of the (\d+) click/.exec(said);
+  check('a double click cannot leave more named clicks than clicks',
+    !!counted && Number(counted[1]) <= Number(counted[2]),
+    counted ? counted[0] : 'phrase missing');
+  check('and it is folded, so three presses read as two clicks',
+    doubled.summary && doubled.summary.clicks === 2, String(doubled.summary?.clicks));
+}
 
 /* Pressing Return after typing is what a person does to a BOX. Nobody commits a canvas or a game that
  * way, so a run terminated by one is a field as a matter of fact - which matters most on Windows, whose

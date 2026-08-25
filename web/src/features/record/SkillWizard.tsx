@@ -467,6 +467,12 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   const [goal, setGoal] = useState('');
   /* Anything the recording could not say. Free text, in the person's own words, appended to the goal. */
   const [notes, setNotes] = useState('');
+  /* Как понять, что получилось. Отдельно от заметок и НЕ в тексте цели.
+   *
+   * Заметки исполняются - они дописываются в цель, и модель делает то, что там написано. Признак
+   * готовности исполнять нельзя: это проверка, а не шаг, и модель, получившая её одной строкой вместе с
+   * целью, начнёт её выполнять. Поэтому своё поле и своя дорога до самого низа. */
+  const [success, setSuccess] = useState('');
   const [touchedGoal, setTouchedGoal] = useState(false);
   /* The folded-away keypresses, shut by default. Open is the exception - it exists so a wrong classification
    * is correctable, not so everybody reads a list of Enters. */
@@ -736,7 +742,9 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
       const steps = lines
         .filter((l) => kept.has(l.n))
         .map((l) => ({ name: l.what || l.action, input: l.control }));
-      await saveAsGoalSkill(rec, { name: name.trim() || rec.name, goal: goal.trim(), params, steps });
+      await saveAsGoalSkill(rec, {
+        name: name.trim() || rec.name, goal: goal.trim(), params, steps, success: success.trim() || null,
+      });
       onSaved(name.trim() || rec.name);
     } catch (err) {
       setProblem(err instanceof Error ? err.message : 'It could not be saved.');
@@ -976,6 +984,34 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   />
                   <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
                     This is added to the skill’s instructions, which you can read and edit on the next step.
+                  </Typography>
+                </div>
+
+                {/* НЕ инструкция, а проверка - поэтому отдельное поле, а не ещё один абзац в заметках.
+                  *
+                  * Что оно даёт и чего не даёт, стоит держать в голове: сравнивать экран до и после никто
+                  * не будет, цикл этого не умеет. Меняется смысл слова «получилось»: без этого поля прогон
+                  * успешен потому, что так сказала модель, и опровергнуть это нечем; с ним модель
+                  * утверждает названное условие, и человек, читающий журнал, может сказать «нет, этого не
+                  * произошло». */}
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5">
+                  <Typography variant="span" weight="semibold" className="text-[0.86rem]">
+                    How you can tell it worked
+                  </Typography>
+                  <Typography variant="p" className="text-ink-inactive text-[0.82rem] leading-relaxed">
+                    Optional, and it is checked rather than carried out — one thing that is true at the end
+                    and was not true at the start.
+                  </Typography>
+                  <textarea
+                    value={success}
+                    onChange={(e) => setSuccess(e.target.value.slice(0, 400))}
+                    rows={2}
+                    placeholder={'For example: the message appears in Sent, with today’s date.'}
+                    className="w-full resize-y rounded-lg border border-stroke bg-surface-card2 px-3 py-2 text-[0.86rem] text-ink-primary leading-relaxed placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
+                  />
+                  <Typography variant="span" className="text-[0.78rem] text-ink-inactive">
+                    The agent is told this before it starts and checks it before saying it finished. It does
+                    not compare the screen for you — it makes “done” a claim you can disagree with.
                   </Typography>
                 </div>
 

@@ -359,12 +359,26 @@ export const HANDOFF_SYSTEM =
   'You are handing an unfinished task to someone who will continue it. Be concrete and brief.';
 
 /** Первое сообщение волны: цель, план (если он есть) и записка от предыдущей волны. */
-export function openingMessage(goal, planText, handoff) {
+/* @param {string|null} [success] what the author said done looks like, when they said it. */
+export function openingMessage(goal, planText, handoff, success = null) {
+  /* SAID AT THE TOP, not only in the finish tool.
+   *
+   * The tool description is read when the model is deciding how to STOP; this is read while it is deciding
+   * what to do, which is when knowing the destination changes the route. Both, therefore - the same
+   * sentence in the two places it is used differently.
+   *
+   * Its own paragraph and its own words, never folded into the goal: the goal is what to do and this is
+   * how to tell it worked, and a model handed one sentence containing both will carry out the test as
+   * though it were a step. */
+  const done = success
+    ? `\n\nDone looks like this: ${success}\nBefore you finish, check that. If it is not true, say so `
+      + 'and finish with ok false - a run that stopped early is more use than one that claims success.'
+    : '';
   return {
     role: 'user',
     content: handoff
-      ? `${goal}${planText || ''}\n\nThis is a continuation. Earlier work on this same goal reported:\n`
+      ? `${goal}${planText || ''}${done}\n\nThis is a continuation. Earlier work on this same goal reported:\n`
         + `${handoff}\n\nCarry on from there. Look at the screen before assuming anything about it.`
-      : `${goal}${planText || ''}`,
+      : `${goal}${planText || ''}${done}`,
   };
 }

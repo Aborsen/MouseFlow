@@ -72,7 +72,12 @@ export type GoalSkillSource = Pick<Recording, 'id' | 'name' | 'created' | 'windo
 
 export async function saveAsGoalSkill(
   rec: GoalSkillSource,
-  said: { name: string; goal: string; params: GoalParam[]; steps: { name: string; input: string | null }[] },
+  said: {
+    name: string; goal: string; params: GoalParam[];
+    steps: { name: string; input: string | null }[];
+    /** Признак готовности. Проверяется, а не исполняется - см. поле в визарде и openingMessage(). */
+    success?: string | null;
+  },
 ): Promise<void> {
   const title = (said.name || rec.name).slice(0, 80);
   const where = rec.windows.map((w) => w.title).filter(Boolean);
@@ -101,6 +106,10 @@ export async function saveAsGoalSkill(
         description,
         /* То, что подставляется и выполняется. fillGoal() читает goalTemplate, missingParams() - params. */
         goalTemplate: said.goal,
+        /* ОТДЕЛЬНО ОТ goalTemplate, и это существенно. Цель исполняется по шагу за раз; признак готовности
+         * проверяется в конце. Слитые в одну строку, они дают модель, которая выполняет проверку как
+         * очередное действие - открывает папку «Отправленные», чтобы «сделать» условие истинным. */
+        success: said.success || null,
         params: said.params,
         /* Свидетельство, а не то, что повторяется: шаги записи, из которой это сделано. structureOf()
          * показывает их как «что сделал один удачный прогон». */
@@ -146,7 +155,7 @@ export const hasSkillForRun = (flows: Flow[], runId: string) =>
 
 export async function saveDictatedAsGoalSkill(
   run: DictatedRun,
-  said: { name: string; goal: string; params: GoalParam[] },
+  said: { name: string; goal: string; params: GoalParam[]; success?: string | null },
 ): Promise<void> {
   const title = said.name.slice(0, 80);
   const asks = said.params.length
@@ -171,6 +180,7 @@ export async function saveDictatedAsGoalSkill(
         name: title,
         description,
         goalTemplate: said.goal,
+        success: said.success || null,
         params: said.params,
         /* Шаги прогона, обрезанные так же, как у записи. Читаются как «что сделал один удачный прогон» -
          * ровно та роль, которую structureOf() им отводит. */

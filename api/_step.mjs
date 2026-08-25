@@ -68,7 +68,7 @@ export const MAX_STEPS = WAVE_TURNS * MAX_WAVES;
 export const MODEL_TIMEOUT_MS = 75_000;
 
 /** A run at its first step: the goal, and nothing seen yet. */
-export function startLoop({ goal, model }) {
+export function startLoop({ goal, model, success = null }) {
   return {
     v: LOOP_VERSION,
     goal: String(goal || ''),
@@ -84,7 +84,11 @@ export function startLoop({ goal, model }) {
     turn: 0,
     stepNo: 0,
     shotWidth: DEFAULT_SHOT_W,
-    messages: [openingMessage(String(goal || ''), null, null)],
+    /* Kept on the loop, not only used once: a wave rebuilds the conversation from scratch, and a test the
+     * model was told about in wave one would otherwise be forgotten by wave two - which is precisely the
+     * wave where it is closest to finishing and most likely to declare victory. */
+    success: success ? String(success) : null,
+    messages: [openingMessage(String(goal || ''), null, null, success ? String(success) : null)],
     pending: [],
     mine: [],
     ending: null,
@@ -205,7 +209,7 @@ export async function advance({ loop, shot, windows, results, ask }) {
     }
     loop.wave += 1;
     loop.turn = 0;
-    loop.messages = [openingMessage(loop.goal, null, handed.note)];
+    loop.messages = [openingMessage(loop.goal, null, handed.note, loop.success || null)];
   }
 
   // 3. The picture.

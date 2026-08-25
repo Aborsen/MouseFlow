@@ -1070,7 +1070,9 @@ async function workerRoute(action, req, res, sql, who) {
       const settings = await readSettings(sql).catch(() => ({}));
       const wanted = settings['model.desktop'];
       const model = wanted && ALLOWED_MODELS.has(wanted) ? wanted : [...ALLOWED_MODELS][0];
-      loop = startLoop({ goal, model });
+      /* What the author said done looks like, carried from the skill into the run. Null when they said
+       * nothing, which is most skills and is fine - the loop simply does not mention it. */
+      loop = startLoop({ goal, model, success: payload.success || null });
       /* Who is driving. A worker runs the loop itself and never writes here; recorded so that a machine
        * with both cannot end up driving one mouse twice. */
       await sql`update run_queue set stepping = true where id = ${id} and user_id = ${who.id}`;
