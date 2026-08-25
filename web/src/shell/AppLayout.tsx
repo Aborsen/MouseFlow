@@ -5,10 +5,11 @@
  * panel over the page you are working on.
  */
 import { Outlet, useRouterState } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { cn } from '@insightis/ui/cn';
 import { Typography } from '@insightis/ui/Typography';
 import { AGENT_WANTS, type LoopbackTrouble } from '@/lib/agent';
+import { watchForNewBuild } from '@/lib/build';
 import { askAgent, useAgent } from '@/lib/store';
 import { AccountProvider, isAuthPath, isPublicPath } from './AccountProvider';
 import { AppSidebar } from './AppSidebar';
@@ -91,6 +92,10 @@ const ShellFrame = () => {
   const { health, stale, asked, trouble } = useAgent();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const away = quiet(asked, trouble);
+  /* Whether a newer build of this page exists. Said, never acted on: reloading somebody's page for them
+   * throws away a half-typed goal to deliver a change they did not ask for. */
+  const [updated, setUpdated] = useState(false);
+  useEffect(() => watchForNewBuild(() => setUpdated(true)), []);
 
   return (
     <div className="page-glow flex min-h-screen items-stretch bg-surface-page">
@@ -102,6 +107,25 @@ const ShellFrame = () => {
           <Typography variant="h1" weight="semibold" className="text-[0.98rem]">
             {TITLES[path] ?? 'MouseFlow'}
           </Typography>
+
+          {/* Beside the agent pill, because they answer the same question - "is what I am looking at
+            * current" - and the one that was wrong was wrong BECAUSE this one was missing: a page a
+            * version behind cannot tell anybody their agent is a version behind. */}
+          {updated && (
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              title="A newer version of MouseFlow has been deployed. Reloading gets it; nothing you have
+                already saved is affected."
+              className={cn(
+                'ms-auto inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[0.8rem]',
+                'border-fb-attention/50 text-fb-attention hover:border-stroke-hover',
+              )}
+            >
+              <span className="size-[7px] rounded-full bg-fb-attention" />
+              Update available · Reload
+            </button>
+          )}
 
           <button
             type="button"
@@ -120,7 +144,8 @@ const ShellFrame = () => {
                   : away.title
             }
             className={cn(
-              'ms-auto inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[0.8rem]',
+              'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[0.8rem]',
+              !updated && 'ms-auto',
               'hover:border-stroke-hover',
               health && !stale && 'border-stroke text-ink-body',
               stale && 'border-fb-attention/50 text-fb-attention',

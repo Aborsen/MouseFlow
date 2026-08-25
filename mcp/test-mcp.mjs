@@ -2019,6 +2019,24 @@ check('the wizard can build an instruction from it without a control name',
   && /if \(line\.action === 'press'\) return !!line\.pressed;/.test(
     read('../web/src/features/record/SkillWizard.tsx')));
 
+/* An open tab never re-fetches its own JavaScript, so a deployment reaches nobody who already has the page
+ * up - and every constant baked into it stays as it was, AGENT_WANTS included. Somebody sat looking at a
+ * pill saying their agent was current while a newer one had been out for an hour, because the page whose
+ * job it was to say so was itself a version behind and could not know. */
+group('a page that has fallen behind can say so');
+const buildLib = read('../web/src/lib/build.ts');
+check('the check is not answered by the copy it is checking',
+  /cache: 'no-store'/.test(buildLib));
+check('and it only ever reports a build that is DIFFERENT, never the one it already is',
+  /if \(said && said !== BUILD\) deployed = said;/.test(buildLib));
+check('it never reloads on its own — a half-typed goal is not ours to throw away',
+  !/location\.reload/.test(buildLib));
+check('the stamp is baked in at build time and served as a file',
+  /__BUILD__/.test(read('../web/vite.config.ts'))
+  && /fileName: 'build\.json'/.test(read('../web/vite.config.ts')));
+check('and the notice sits beside the agent pill, which is the claim it was making wrongly',
+  /Update available · Reload/.test(read('../web/src/shell/AppLayout.tsx')));
+
 /* A reporting script that runs against the production database, so the thing worth holding is that it can
  * only ever read - and that it does not print what a run was FOR. Measuring the pace is not a reason to put
  * somebody's goal text on a terminal. */

@@ -58,10 +58,33 @@ const DESIGN_SYSTEM = [
   { find: /^@\/hooks\/(.+)$/, replacement: ui('src/hooks/$1') },
 ];
 
+/* The build stamp as a tiny file, because a running page cannot ask its own bundle what it is. Written at
+ * build time and fetched with cache: 'no-store' - the service worker is network-first, so this reaches the
+ * network like everything else. */
+function buildStamp(): Plugin {
+  return {
+    name: 'mouseflow-build-stamp',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const build = (process.env.VERCEL_GIT_COMMIT_SHA || 'dev').slice(0, 7);
+      // eslint-disable-next-line no-param-reassign
+      bundle['build.json'] = {
+        type: 'asset',
+        fileName: 'build.json',
+        name: undefined,
+        needsCodeReference: false,
+        originalFileName: null,
+        source: JSON.stringify({ build }),
+      } as never;
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     react(),
     mockPlugin(),
+    buildStamp(),
     /* Last, because it reads what the others produced. `filesToDeleteAfterUpload` is the half that keeps
      * the maps off the CDN: they are written, sent to Sentry, then removed from dist. */
     ...(uploadingMaps
@@ -89,6 +112,19 @@ export default defineConfig({
     proxy: process.env.MOCK_API === '1'
       ? undefined
       : { '/api': { target: 'https://mouse-agent.vercel.app', changeOrigin: true, secure: true } },
+  },
+  /* WHICH BUILD THIS IS, baked in and also served as a file.
+   *
+   * An open tab never re-fetches its own JavaScript, so a deployment reaches nobody who already has the app
+   * on screen - and every constant in it stays as it was, including AGENT_WANTS. Somebody sat looking at a
+   * pill saying their agent was current while a newer one had been out for an hour, because the page
+   * telling them was itself a version behind. The page could not know, because nothing in it said which
+   * version it was.
+   *
+   * The commit is the stamp on Vercel and `dev` everywhere else, which makes the check inert in
+   * development rather than noisy. */
+  define: {
+    __BUILD__: JSON.stringify((process.env.VERCEL_GIT_COMMIT_SHA || 'dev').slice(0, 7)),
   },
   build: {
     outDir: 'dist',
