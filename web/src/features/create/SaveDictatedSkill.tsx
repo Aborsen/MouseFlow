@@ -54,6 +54,10 @@ interface Props {
 export const SaveDictatedSkill = ({ run, goal: dictated, onClose, onSaved }: Props) => {
   const [goal, setGoal] = useState(dictated);
   const [name, setName] = useState(() => firstLineOf(dictated));
+  /* Признак готовности - отдельно от цели, как и в визарде записи. Цель исполняется по шагу за раз;
+   * это проверяется в конце, и слитые в одну строку они дают модель, которая выполняет проверку как
+   * очередное действие. */
+  const [success, setSuccess] = useState('');
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -70,6 +74,7 @@ export const SaveDictatedSkill = ({ run, goal: dictated, onClose, onSaved }: Pro
         /* `quoted` и без примера: подстановка в надиктованном тексте — это значение, которое спрашивают
          * каждый раз. Пример — личное значение автора, и подставлять его молча за него нельзя. */
         params: params.map((p): GoalParam => ({ name: p, type: 'quoted', example: null })),
+        success: success.trim() || null,
       });
       onSaved(name.trim());
     } catch (err) {
@@ -129,6 +134,27 @@ export const SaveDictatedSkill = ({ run, goal: dictated, onClose, onSaved }: Pro
                 className={cn(
                   'resize-y rounded-md border-stroke border bg-surface-card2 px-2.5 py-2',
                   'font-mono text-[0.84rem] text-ink-primary',
+                )}
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <Typography variant="span" className="text-ink-body text-[0.86rem]">
+                How you can tell it worked
+              </Typography>
+              <Typography variant="p" className="max-w-[64ch] text-ink-inactive text-[0.82rem]">
+                Optional, and it is checked rather than carried out — one thing that is true at the end and
+                was not true at the start. The agent is told it before it starts and again when it decides
+                it has finished.
+              </Typography>
+              <textarea
+                value={success}
+                onChange={(ev) => setSuccess(ev.target.value.slice(0, 400))}
+                rows={2}
+                placeholder="For example: the message appears in Sent, with today’s date."
+                className={cn(
+                  'resize-y rounded-md border-stroke border bg-surface-card2 px-2.5 py-2',
+                  'text-[0.86rem] text-ink-primary',
                 )}
               />
             </label>

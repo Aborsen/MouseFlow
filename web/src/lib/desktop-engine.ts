@@ -269,7 +269,7 @@ export async function runOnDesktop({
     if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
 
     const outcome = await runWave({
-      messages, gate, plan, machine, onEvent, isAborted, steps, wave, stepFrom: stepNo,
+      messages, success, gate, plan, machine, onEvent, isAborted, steps, wave, stepFrom: stepNo,
     });
     stepNo = outcome.stepNo;
     if (outcome.result) return outcome.result;
@@ -292,6 +292,9 @@ export async function runOnDesktop({
 }
 
 async function runWave(o: {
+  /** Что автор назвал признаком готовности. Дописывается в описание `finish`, потому что читают его
+   *  в момент решения остановиться, а не в начале прогона. */
+  success?: string | null;
   messages: unknown[];
   gate?: Options['onCheckpoint'];
   plan?: Options['checkpoints'];
@@ -365,7 +368,7 @@ async function runWave(o: {
         model: runModel,
         max_tokens: MAX_TOKENS,
         system: SYSTEM,
-        tools: toolsFor(!!o.gate),
+        tools: toolsFor(!!o.gate, o.success ?? null),
         messages,
       }, cutoff.signal));
     } catch (err) {

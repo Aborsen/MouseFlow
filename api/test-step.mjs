@@ -115,6 +115,30 @@ group('a finish that does not claim success is a failure that said why');
  * the caret was never in the field and nothing told it. The screen fingerprint costs thirty milliseconds
  * and is the signal that was missing - stated as an observation, because some actions correctly change
  * nothing and calling those failures would abandon working steps. */
+/* The condition belongs in BOTH places. The opening message is read while the model is choosing a route;
+ * the `finish` description is read when it decides to stop - and the check matters in the second. Telling
+ * it once at the start of a twenty-step run and hoping it is remembered is relying on attention where a
+ * repetition costs nothing. */
+group('what done looks like reaches the run, twice');
+{
+  const ask = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  const loop = startLoop({
+    goal: 'send the note', model: 'claude-opus-5',
+    success: 'the message appears in Sent',
+  });
+  await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  const sent = ask.seen[0];
+  check('it is in the opening message, its own paragraph',
+    /Done looks like this: the message appears in Sent/.test(JSON.stringify(sent.messages)));
+  check('and in the finish tool, where stopping is decided',
+    /done looks like this: the message appears in Sent/i
+      .test(JSON.stringify(sent.tools.find((t) => t.name === 'finish'))));
+  check('a skill that said nothing gets neither, rather than an empty sentence', (() => {
+    const quiet = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+    return startLoop({ goal: 'x', model: 'm' }).success === null && !!quiet;
+  })());
+}
+
 group('an action that changed nothing says so');
 {
   const ask = scripted([answer([use('click', { x: 1, y: 2 }, 'c1')])]);

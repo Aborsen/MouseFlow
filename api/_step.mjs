@@ -254,7 +254,7 @@ export async function advance({ loop, shot, windows, results, ask }) {
       model: loop.model, max_tokens: MAX_TOKENS, system: SYSTEM,
       /* No checkpoint tool on this path: a checkpoint stops the run until a person answers, and on this
        * path there is no one at the other end of it - the request came from a machine. */
-      tools: toolsFor(false), messages: loop.messages,
+      tools: toolsFor(false, loop.success || null), messages: loop.messages,
     });
   } catch (err) {
     return over({ ok: false, error: `The model could not be reached at step ${loop.stepNo}: ${err && err.message}` });
