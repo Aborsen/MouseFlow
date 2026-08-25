@@ -1911,6 +1911,24 @@ check('and "Agent offline" is no longer the answer to four different questions',
   /Blocked by browser/.test(read('../web/src/shell/AppLayout.tsx'))
   && /Check for agent/.test(read('../web/src/shell/AppLayout.tsx')));
 
+/* A click on a browser tab came back as "something Google Chrome did not name", so a recording of tab
+ * clicks produced a skill with no steps in it. Chrome's own native tree says why: the hit test lands on
+ * TabStrip::TabDragContextImpl, which covers the tabs exactly and has NO children, while the tab itself is
+ * a level below that node's SIBLING. Descending from the hit can never reach it. */
+const macAgent = read('../agent/mouseflow-agent.swift');
+check('naming climbs out of a dead end rather than believing an empty node',
+  /private static func namedAround/.test(macAgent)
+  && /node = elementAttr\(here, kAXParentAttribute\)/.test(macAgent));
+check('and considers every child that contains the point, not only the smallest',
+  /private static func childrenAt/.test(macAgent)
+  && /hits\.sorted \{ \$0\.area < \$1\.area \}/.test(macAgent));
+check('aiming by name searches downward too, which is the case it was written for',
+  /return namedDeep\(parent, matching: name, kind: kind\)/.test(macAgent));
+check('and both searches are bounded, because this runs while somebody is working',
+  /guard depth < 4 else \{ return nil \}/.test(macAgent)
+  && /guard depth < 5, budget\.spend\(\) else \{ return nil \}/.test(macAgent)
+  && /final class Budget/.test(macAgent));
+
 /* The two agents answered the same question differently in the one header that decides whether a browser
  * will talk to them at all. */
 check('both agents echo the caller origin rather than a bare star, and vary on it',

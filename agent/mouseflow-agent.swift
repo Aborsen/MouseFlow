@@ -804,6 +804,21 @@ final class Recorder {
  *     placeholder, and serialize() omits the field. A transcript has to keep that difference.
  */
 /// What a climb found: the name, and the tokens that say what and where it was.
+/* A hard ceiling on how much of a tree one search may look at.
+ *
+ * Depth alone cannot bound a search whose fan-out is unknown - five levels of sixty children is millions of
+ * nodes, and this runs on the input path where seconds are not available. Counting visits bounds it whatever
+ * shape the application turns out to have. */
+final class Budget {
+    private var left: Int
+    init(_ nodes: Int = 400) { left = nodes }
+    func spend() -> Bool {
+        if left <= 0 { return false }
+        left -= 1
+        return true
+    }
+}
+
 struct Named {
     var control: String?
     var type: String?
@@ -1087,6 +1102,68 @@ enum Accessibility {
     /// containing frame wins, not the first listed: kAXChildren order is source order, and an unnamed
     /// container routinely leads with a full-bleed background child whose frame contains every point -
     /// the most specific frame is the thing a person actually sees. Hidden children do not count.
+    /* EVERY child that contains the point, smallest first - not just the smallest one.
+     *
+     * Chrome's tab strip is why this is a list. TabStrip has two children with the IDENTICAL rectangle:
+     * TabContainerImpl, which holds the tabs, and TabStrip::TabDragContextImpl, which holds nothing at all.
+     * Choosing between them by area is a coin toss, and the losing side is a dead end - which is how a click
+     * on a browser tab came back as "clicked on something Google Chrome did not name" while a click inside
+     * the page it opened named itself perfectly well. Read off Chrome's own native tree at
+     * chrome://accessibility, and confirmed from the outside: aiming at a tab by name could not find it.
+     */
+    private static func childrenAt(_ element: AXUIElement, x: Double, y: Double) -> [AXUIElement] {
+        var hits: [(element: AXUIElement, area: Double)] = []
+        for child in childrenOf(element).prefix(60) {
+            if let hidden = copyAttr(child, kAXHiddenAttribute) as? Bool, hidden { continue }
+            guard let origin = pointAttr(child, kAXPositionAttribute),
+                  let size = sizeAttr(child, kAXSizeAttribute),
+                  size.width > 1, size.height > 1 else { continue }
+            guard x >= origin.x, x <= origin.x + size.width,
+                  y >= origin.y, y <= origin.y + size.height else { continue }
+            hits.append((child, Double(size.width) * Double(size.height)))
+        }
+        return hits.sorted { $0.area < $1.area }.map { $0.element }
+    }
+
+    /* The first named thing UNDER a point.
+     *
+     * Depth four, not two. A Chrome tab sits three levels below the strip's region view
+     * - TabStripRegionView, TabStrip, TabContainerImpl, Tab - so a two-step descent stopped one short of
+     * the only element in that chain carrying a name, every time.
+     *
+     * Bounded on purpose, and the bounds are the point: this runs while somebody is working, and walking an
+     * application's whole tree costs seconds. Four levels, the three smallest candidates at each, first
+     * name wins.
+     */
+    private static func namedUnder(_ element: AXUIElement, x: Double, y: Double, depth: Int = 0) -> Named? {
+        guard depth < 4 else { return nil }
+        for child in childrenAt(element, x: x, y: y).prefix(3) {
+            let read = nameByClimbing(child)
+            if read.control != nil { return read }
+            if let deeper = namedUnder(child, x: x, y: y, depth: depth + 1) { return deeper }
+        }
+        return nil
+    }
+
+    /* Descend from the hit element; if that dead-ends, step OUT one level and descend again, twice.
+     *
+     * The dead end is the whole bug, and it is not hypothetical. In Chrome the hit test inside a tab strip
+     * lands on TabStrip::TabDragContextImpl - a node covering the tabs exactly, with NO children at all -
+     * so descending from it finds nothing at any depth. The tab container is its sibling and the tab is one
+     * step below that. Taken from Chrome's own native tree at chrome://accessibility and replayed over that
+     * tree: from the drag context, descending alone finds nothing and climbing one level finds the tab.
+     */
+    private static func namedAround(_ hit: AXUIElement, x: Double, y: Double) -> Named? {
+        var node: AXUIElement? = hit
+        for _ in 0..<3 {
+            guard let here = node else { break }
+            if let found = namedUnder(here, x: x, y: y) { return found }
+            node = elementAttr(here, kAXParentAttribute)
+        }
+        return nil
+    }
+
+    /* One element under a point, for callers that want a place rather than a name. */
     private static func childAt(_ element: AXUIElement, x: Double, y: Double) -> AXUIElement? {
         var best: AXUIElement?
         var bestArea = Double.greatestFiniteMagnitude
@@ -1143,6 +1220,42 @@ enum Accessibility {
             }
             guard let centre = centreOf(sibling), Desktop.contains(x: centre.x, y: centre.y) else { continue }
             return centre
+        }
+
+        /* Siblings were not enough, and a browser tab is the case that proves it.
+         *
+         * The hit test inside a tab strip lands on TabStrip's drag-context child, whose siblings are the
+         * drag context and the tab CONTAINER - the tabs themselves are one level further down, so a
+         * sibling-only scan could never see them. That is not a small gap: aiming by name exists precisely
+         * because a tab strip re-lays out when the number of tabs changes, so the ONE case this was written
+         * for was the one case it silently declined - and a replay went on clicking a coordinate that now
+         * belongs to a different tab, reporting success.
+         *
+         * Bounded the same way as the naming descent, and only reached when the cheap answer failed. */
+        return namedDeep(parent, matching: name, kind: kind)
+    }
+
+    /* An element with this name anywhere in a bounded part of the subtree, and where its centre is.
+     *
+     * Depth three from the hit element's parent, sixty children a level, first match wins. Deliberately not
+     * a full walk: this runs on the input path, where seconds are not available. */
+    private static func namedDeep(_ element: AXUIElement, matching name: String, kind: String?,
+                                  depth: Int = 0, budget: Budget = Budget()) -> CGPoint? {
+        guard depth < 5, budget.spend() else { return nil }
+        for child in childrenOf(element).prefix(60) {
+            if let title = nameOf(child), sameName(title, name) {
+                let kindAgrees: Bool = {
+                    guard let wanted = kind, !wanted.isEmpty,
+                          let role = stringAttr(child, kAXRoleDescriptionAttribute) else { return true }
+                    return sameName(role, wanted)
+                }()
+                if kindAgrees, let centre = centreOf(child), Desktop.contains(x: centre.x, y: centre.y) {
+                    return centre
+                }
+            }
+            if let found = namedDeep(child, matching: name, kind: kind, depth: depth + 1, budget: budget) {
+                return found
+            }
         }
         return nil
     }
@@ -1218,14 +1331,8 @@ enum Accessibility {
          * empty: among the hit element's children, the one whose frame contains the point, twice at most.
          * Not a tree walk - two frame-checked steps, and only after the climb and the awaken retry both
          * said nothing. */
-        if named.control == nil {
-            var node = hit
-            for _ in 0..<2 {
-                guard let child = childAt(node, x: job.x, y: job.y) else { break }
-                let read = nameByClimbing(child)
-                if read.control != nil { named = read; break }
-                node = child
-            }
+        if named.control == nil, let found = namedAround(hit, x: job.x, y: job.y) {
+            named = found
         }
 
         job.target.app = appName(of: hit)
