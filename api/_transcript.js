@@ -321,6 +321,10 @@ function emit(state, spec) {
      * publicStep, like `segment` and `from`. */
     ctx: spec.ctx || null,
     keys: clamp0(num(spec.keys)),
+    /* The key's own name. Listed here because this object is built field by field: anything a caller
+     * passes and this does not name is dropped, silently, and the step arrives looking like an anonymous
+     * keystroke - which is exactly what it is not. */
+    pressed: spec.pressed == null || spec.pressed === '' ? null : oneLine(spec.pressed, 40),
     notches: clamp0(num(spec.notches)),
     px: clamp0(num(spec.px)),
     direction: spec.direction || null,
@@ -650,6 +654,8 @@ function deskEvent(raw) {
   let kind = 'other';
   let button = null;
   let direction = null;
+  /** The key's own name, when it had one. Null for anonymous typing, which is most of them. */
+  let pressed = null;
   /* Order matters: "Scroll Up" and "Scroll Left" both carry a word that also names a button state, so
    * the wheel has to be recognised before anything looks for one. */
   if (low === 'focus') {
@@ -667,11 +673,27 @@ function deskEvent(raw) {
     button = /right/.test(low) ? 'right' : /middle/.test(low) ? 'middle' : 'left';
     kind = /release|up/.test(low) ? 'up' : /down|press/.test(low) ? 'down' : 'other';
   } else if (/key|type/.test(low)) {
-    kind = 'key';
+    /* A key recorded BY NAME is its own kind, and the distinction is the point.
+     *
+     * "Key Down" is anonymous typing - a key was pressed, never which - and a hundred of them are one
+     * step saying how long and how many. "Key Enter" is a different animal: it is the moment the work was
+     * committed, and folding it into "typed for 3.4s - 22 keystrokes" is how a skill made from a recording
+     * came to stop one step short of doing the job.
+     *
+     * The exclusion of "Key Down" is load-bearing, exactly as it is in the agent's replay: read as a name,
+     * that legacy action is a key called "Down", and every keystroke somebody typed would read as pressing
+     * the down arrow. */
+    if (/^key\s+/i.test(action) && action !== 'Key Down') {
+      kind = 'press';
+      pressed = action.slice(4).trim() || null;
+    } else {
+      kind = 'key';
+    }
   }
   return {
     action,
     kind,
+    pressed,
     button,
     direction,
     x: num(event.x),
@@ -1413,6 +1435,35 @@ function deriveDesktop(events, seen) {
      * One line per keystroke would bury a recording - a hundred and thirty of them for one email - and
      * would say nothing a reader wants, since no line can say which key. What is worth having is the
      * shape: how long, how many, and where. */
+    /* A key that was named: one step, never folded into a run.
+     *
+     * Two presses of Return are two things that happened, and a reader wants both. It also carries where it
+     * went - "pressed Enter into the Search box" - because a commit is only an instruction when it says
+     * what it committed. */
+    if (event.kind === 'press') {
+      counts.keys += 1;
+      enter(event.ctx);
+      const into = event.ctx && event.ctx.control
+        ? ' in the "' + event.ctx.control + '"'
+          + (event.ctx.type && !CTX_VAGUE.has(event.ctx.type.toLowerCase()) ? ' ' + event.ctx.type : '')
+        : '';
+      emit(state, {
+        action: 'press',
+        ctx: event.ctx,
+        keys: 1,
+        pressed: event.pressed,
+        what: 'pressed ' + (event.pressed || 'a key') + into + inApp(event.ctx),
+        target: null,
+        note: 'this key carries no text - Return, Tab, Escape and the arrows spell nothing, and a chord '
+          + 'held with Command is an instruction to the application. Which is why it can be named at all, '
+          + 'where the letters somebody typed cannot.',
+        own: 0,
+        events: [i],
+      });
+      i += 1;
+      continue;
+    }
+
     if (event.kind === 'key') {
       const group = [i];
       let own = 0;
@@ -2088,6 +2139,9 @@ function publicStep(step) {
     note: step.note,
     control: ctx && ctx.control ? ctx.control : null,
     controlType: ctx && ctx.type ? ctx.type : null,
+    /* Carried out to the client, because the wizard turns it into an instruction - "press Enter" - and a
+     * step that lost its name here becomes undescribable for a reason nothing on screen could explain. */
+    pressed: step.pressed || null,
     /* The UNLOCALISED role, which is the only one of the three a machine can reason about: `type` is what
      * the platform calls the thing in the user's own language, and this account alone has produced Russian
      * and Ukrainian for it. api/_typing.mjs classifies a typing run on this and falls back to guessing when

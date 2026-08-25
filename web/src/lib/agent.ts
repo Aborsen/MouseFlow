@@ -299,7 +299,19 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.9.3 is the build that can read the name of a browser tab.
+/* 0.9.4 is the build that knows the work ended by pressing Send.
+ *
+ * Before it, every keystroke was anonymous - a key was pressed, never which - so a recording could not say
+ * that anything was committed, and a skill made from one typed the message and never sent it. The keys
+ * that cannot spell anything are named now: Return, Tab, Escape, the arrows, and chords held with Command
+ * or Control. Letters stay anonymous, which is the promise that was never up for negotiation.
+ *
+ * This nudge is the only thing that tells somebody holding the older build to fetch the newer, and it went
+ * out under 0.9.3 for a few hours because the fix landed after that number was already taken - the same
+ * mistake this note was added to prevent, made twice in one day.
+ *
+ * The previous note, kept because the reason still holds. 0.9.3 is the build that can read the name of a
+ * browser tab.
  *
  * Before it, a click on a tab strip came back as "clicked on something Google Chrome did not name", so a
  * recording of tab clicks produced a skill with no steps in it, and a replay went on clicking a coordinate
@@ -318,7 +330,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.9.3';
+export const AGENT_WANTS = '0.9.4';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

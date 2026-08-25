@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.3"
+let VERSION = "0.9.4"
 
 // ---------------------------------------------------------------- arguments
 

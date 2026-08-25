@@ -58,6 +58,8 @@ interface TStep {
    *  is useless to classify on - see api/_typing.mjs. Absent on Windows, whose agent writes no role. */
   role?: string | null;
   keys?: number;
+  /** The key's own name, for a step the recorder could name. Absent for anonymous typing. */
+  pressed?: string | null;
 }
 
 interface TSegment {
@@ -83,6 +85,7 @@ interface Line {
   role: string | null;
   keys: number;
   where: string | null;
+  pressed: string | null;
 }
 
 /* ------------------------------------------------------------------ what the wizard decides */
@@ -157,6 +160,9 @@ const TYPE_LABEL: Record<Blank['type'], string> = {
 function describable(line: Line): boolean {
   if (line.action === 'type') return true;
   if (line.action === 'scroll') return true;
+  /* No control needed. Every other action here has to say what it landed on, because a click with no name
+   * is a coordinate. A named key is not: "press Enter" determines itself. */
+  if (line.action === 'press') return !!line.pressed;
   return !!line.control && ['click', 'dblclick', 'tab', 'drag', 'page'].includes(line.action);
 }
 
@@ -215,8 +221,17 @@ function instruction(line: Line, blank: Blank | undefined): string | null {
     case 'drag': return named ? `drag ${named}` : null;
     case 'page': return named ? `open ${named}` : null;
     case 'scroll': return 'scroll to bring the next part into view';
+    /* A key that was NAMED is an instruction, and usually the most important one in the recording: it is
+     * where the work was committed. Without it a skill types the message and never sends it, which is a
+     * failure nobody sees until it runs on a real machine.
+     *
+     * It stands without a control name, unlike a click. "Press Enter" is complete; "click" is not - a click
+     * needs to say what it landed on, and that is why every other branch here returns null without one. */
+    case 'press': return line.pressed
+      ? `press ${line.pressed}${line.control ? ` in "${line.control}"` : ''}`
+      : null;
     /* `wait`, `move`, `key` and `other` are things that HAPPENED, not things to do. A goal that told a model
-     * to reproduce a pause would spend a step on it. */
+     * to reproduce a pause would spend a step on it - and anonymous typing cannot say what to type. */
     default: return null;
   }
 }
@@ -499,6 +514,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
               controlType: step.controlType ?? null,
               role: step.role ?? null,
               keys: step.keys ?? 0,
+              pressed: step.pressed ?? null,
               where,
             });
           }

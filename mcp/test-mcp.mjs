@@ -1978,6 +1978,46 @@ check('and "Agent offline" is no longer the answer to four different questions',
   /Blocked by browser/.test(read('../web/src/shell/AppLayout.tsx'))
   && /Check for agent/.test(read('../web/src/shell/AppLayout.tsx')));
 
+/* A recording could not say that the work ended by pressing Send, so a skill made from it stopped one step
+ * short - and nobody found out until it ran. The agent now names the keys that cannot spell anything; these
+ * check the rest of the journey, which is where it can be lost silently.
+ *
+ * Run against the real transcript builder rather than asserted over source: the first attempt at this
+ * passed every regex and still delivered `pressed: null` to the wizard, because emit() builds a step from
+ * an explicit list of fields and quietly drops anything not on it. */
+group('a key that was named survives all the way to an instruction');
+const { transcribe } = await import(new URL('../api/_transcript.js', import.meta.url).href);
+const keyEv = (action, delayMs) => ({
+  x: 400, y: 300, delayMs, action,
+  context: { app: 'Gmail', window: 'Compose', control: 'Message body', type: 'text field' },
+});
+const typed = transcribe({
+  source: 'desktop', kind: 'recorded', name: 'send it',
+  payload: {
+    events: [
+      keyEv('Focus', 0), keyEv('Left Click Down', 300), keyEv('Left Click Release', 40),
+      ...Array.from({ length: 8 }, () => keyEv('Key Down', 90)),
+      keyEv('Key Backspace', 200), keyEv('Key Cmd+Enter', 250),
+    ],
+  },
+});
+const keySteps = (typed.segments ?? []).flatMap((s) => s.steps ?? []);
+check('anonymous typing is still one step saying how long and how many',
+  keySteps.filter((s) => s.action === 'type').length === 1
+  && keySteps.some((s) => s.action === 'type' && s.keys === 8));
+check('a named key is its own step, never folded into the run',
+  keySteps.filter((s) => s.action === 'press').length === 2);
+check('and it carries its NAME out to the client, which emit() would otherwise drop',
+  keySteps.filter((s) => s.action === 'press').every((s) => !!s.pressed)
+  && keySteps.some((s) => s.pressed === 'Cmd+Enter')
+  && keySteps.some((s) => s.pressed === 'Backspace'));
+check('deleting is visible as deleting, rather than as more typing',
+  keySteps.some((s) => /pressed Backspace/.test(s.what)));
+check('the wizard can build an instruction from it without a control name',
+  /case 'press': return line\.pressed/.test(read('../web/src/features/record/SkillWizard.tsx'))
+  && /if \(line\.action === 'press'\) return !!line\.pressed;/.test(
+    read('../web/src/features/record/SkillWizard.tsx')));
+
 /* Dictation sends the user's voice somewhere. Which somewhere is a product decision, not a detail, and
  * these hold it: local first, and said out loud either way. */
 group('dictation prefers the machine, and says so when it cannot');
