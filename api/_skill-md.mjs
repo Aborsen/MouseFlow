@@ -346,6 +346,32 @@ export function skillMarkdown(structure, flow, written = {}, opts = {}) {
     out.push('');
   }
 
+  /* WHAT ONE RUN ACTUALLY DID, which is the one thing here that is not a description.
+   *
+   * The skill format has carried these since goal skills existed - `payload.steps`, the steps of the
+   * recording or the run this was made from - and nothing rendered them. `grep -n "\.steps"` over this file
+   * returned nothing at all. So a receiving agent got the instruction and no evidence, while the account
+   * held a list of exactly what happened the time it worked.
+   *
+   * Below the instruction and clearly labelled, because it is NOT the instruction: the steps above are what
+   * to do, and these are what one run did on somebody else's screen. An agent that followed these instead
+   * would be replaying a stranger's session rather than carrying out the goal - which is the same confusion
+   * "Repeat it exactly" was removed for. */
+  const evidence = Array.isArray(s.steps) ? s.steps.filter((step) => step && step.name) : [];
+  if (evidence.length) {
+    out.push('## What one run did');
+    out.push('');
+    out.push('Evidence, not instructions. This is the sequence the person who made this skill actually '
+      + 'carried out, on their screen, the time it worked — useful for telling whether a step above has '
+      + 'gone missing, and for nothing else. Do not replay it.');
+    out.push('');
+    for (const step of evidence.slice(0, 60)) {
+      out.push(`- ${cell(step.name)}${step.input ? ` — ${cell(step.input)}` : ''}`);
+    }
+    if (evidence.length > 60) out.push(`- …and ${evidence.length - 60} more`);
+    out.push('');
+  }
+
   out.push('## What can go wrong');
   out.push('');
   out.push('| What you get back | What it means |');

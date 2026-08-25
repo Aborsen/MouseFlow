@@ -2019,6 +2019,35 @@ check('the wizard can build an instruction from it without a control name',
   && /if \(line\.action === 'press'\) return !!line\.pressed;/.test(
     read('../web/src/features/record/SkillWizard.tsx')));
 
+/* The skill format has carried `payload.steps` since goal skills existed - the sequence of the recording or
+ * the run it was made from - and nothing rendered them, so a receiving agent got the instruction and no
+ * evidence at all. */
+{
+  const withSteps = skillMd.skillMarkdown(
+    {
+      kind: 'created', goalTemplate: 'In Gmail, do this:\n1. Click "Compose".', params: [], origins: [],
+      steps: [{ name: '1. click', input: null }, { name: '2. type_text', input: 'the note' }],
+    },
+    { name: 'Send it', source: 'desktop' }, {}, { portable: true, urls: ['https://mail.google.com'] },
+  );
+  check('what one run did is in the exported file',
+    /## What one run did/.test(withSteps) && /2\. type_text — the note/.test(withSteps));
+  check('and it is labelled as evidence, not as the thing to carry out',
+    /Evidence, not instructions/.test(withSteps) && /Do not replay it/.test(withSteps));
+  check('a skill with no steps gets no empty section',
+    !/## What one run did/.test(skillMd.skillMarkdown(
+      { kind: 'created', goalTemplate: 'x', params: [], origins: [], steps: [] },
+      { name: 'x' }, {}, { portable: true, urls: ['https://e.com'] },
+    )));
+}
+
+/* The goal field capped typing at 4,000 while the DERIVED goal has no cap at all, so a long recording
+ * arrived already over the line and the first keystroke threw the rest away. The fix has to refuse growth
+ * rather than trim - the first attempt at it still cut 25,000 down to 20,000 on one keypress. */
+check('editing a goal that is already long cannot silently shorten it',
+  /if \(was\.length > GOAL_MAX\) return next\.length <= was\.length \? next : was;/
+    .test(read('../web/src/features/record/SkillWizard.tsx')));
+
 /* An open tab never re-fetches its own JavaScript, so a deployment reaches nobody who already has the page
  * up - and every constant baked into it stays as it was, AGENT_WANTS included. Somebody sat looking at a
  * pill saying their agent was current while a newer one had been out for an hour, because the page whose

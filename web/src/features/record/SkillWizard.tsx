@@ -257,6 +257,29 @@ function goalParts(lines: Line[], kept: Set<number>, blanks: Blank[]) {
   return { opening, steps };
 }
 
+/* A ceiling on the goal, and one that cannot bite the thing it is meant to protect.
+ *
+ * The field capped typing at 4,000 characters while the DERIVED goal has no cap at all: buildGoal joins
+ * however many steps were ticked. A long recording therefore arrived in the box already over the line, and
+ * the first keystroke anywhere in it silently threw away everything past 4,000 - steps the person had just
+ * chosen, gone, with no way to tell from the screen.
+ *
+ * So it only ever stops the text GROWING past the limit. Text that is already longer can still be edited,
+ * shortened and rearranged; what it cannot do is get longer. The limit itself is generous enough that
+ * nothing derived reaches it - it is a guard against a paste of a novel, not a budget. */
+const GOAL_MAX = 20_000;
+
+const capped = (next: string, was: string) => {
+  if (next.length <= GOAL_MAX) return next;
+  /* Already over the line before this keystroke. Editing, shortening and rearranging all still work;
+   * growth is REFUSED rather than trimmed, because trimming here is the original bug at a higher number -
+   * the first version of this fix still cut 25,000 characters down to 20,000 on one keypress. */
+  if (was.length > GOAL_MAX) return next.length <= was.length ? next : was;
+  /* It was under, and this one change put it over: a paste of something enormous. Trimmed rather than
+   * refused, so something visibly arrives instead of the field appearing to ignore the paste. */
+  return next.slice(0, GOAL_MAX);
+};
+
 function buildGoal(lines: Line[], kept: Set<number>, blanks: Blank[]): string {
   const { opening, steps } = goalParts(lines, kept, blanks);
   if (!steps.length) return '';
@@ -1254,7 +1277,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   </span>
                   <textarea
                     value={goal}
-                    onChange={(e) => { setTouchedGoal(true); setGoal(e.target.value.slice(0, 4000)); }}
+                    onChange={(e) => { setTouchedGoal(true); setGoal(capped(e.target.value, goal)); }}
                     rows={10}
                     className="rounded-lg border border-stroke bg-surface-card2 p-3 font-mono text-[0.82rem] text-ink-primary leading-relaxed focus:border-brand-primary focus:outline-none"
                   />
