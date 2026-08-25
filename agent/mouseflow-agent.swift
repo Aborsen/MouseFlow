@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.4"
+let VERSION = "0.9.5"
 
 // ---------------------------------------------------------------- arguments
 
@@ -332,6 +332,14 @@ func commandLetter(_ event: CGEvent) -> String? {
  */
 let INJECTED_MARK: Int64 = 0x4D4F5553_45464C4F  // "MOUSEFLO"
 
+/* How often the front window's TITLE is asked for, and how long a new one must hold before it is believed.
+ *
+ * 400ms because the question costs an accessibility round trip and its answer changes a few times a
+ * minute; 700ms because a page in flight shows two or three titles on the way to the one it settles on,
+ * and marking each would put places in a recording that nobody visited. */
+let TITLE_LOOK_MS = 400
+let TITLE_SETTLE_MS = 700
+
 final class Recorder {
     static let shared = Recorder()
 
@@ -393,6 +401,15 @@ final class Recorder {
     private var resolverStop = false
     private var resolverRunning = false
     private var lastFrontPid: pid_t = 0
+    /* The window title the last marker named, and a candidate waiting to prove it is real.
+     *
+     * A recording knew when the work moved to a different APPLICATION and never when the same one changed
+     * what it was showing - so a browser navigating from one page to the next left no trace, and a
+     * transcript could say which link was clicked but never where it led. */
+    private var lastFrontTitle: String? = nil
+    private var titleCandidate: String? = nil
+    private var titleCandidateAt: Int = 0
+    private var lastTitleLook: Int = 0
 
     // ---------------------------------------------------------------- clock
 
@@ -432,6 +449,8 @@ final class Recorder {
         /* Zeroed, not carried: the first Focus event of a recording should name where the recording STARTED,
          * and a value left over from the last one would suppress it. */
         lastFrontPid = 0
+        lastFrontTitle = nil
+        titleCandidate = nil
         held = 0
         resolveGate.unlock()
 
@@ -797,12 +816,19 @@ final class Recorder {
         let same = pid == lastFrontPid
         let live = recording
         let gesture = held > 0
-        if !live || same { lastFrontPid = pid; gate.unlock(); return }
+        if !live { lastFrontPid = pid; lastFrontTitle = nil; titleCandidate = nil; gate.unlock(); return }
         /* Never during a gesture. A click that gives a window focus fires this watcher while the button is
          * still down, and a marker inserted there turns one click into an unreleased press and a stray
          * release. lastFrontPid is deliberately NOT updated, so the change is noticed again next tick once
          * the button is up. */
         if gesture { gate.unlock(); return }
+        /* THE TITLE IS READ ON A CLOCK, the application on every tick. This watcher runs on the resolver
+         * thread every 15ms while it is idle, and frontWindowTitle() is an accessibility round trip - asking
+         * sixty-six times a second would spend the recorder's budget on a question whose answer changes a
+         * few times a minute. A foreground change stays immediate; only the title waits its turn. */
+        let now = elapsedMs
+        if same && now - lastTitleLook < TITLE_LOOK_MS { gate.unlock(); return }
+        lastTitleLook = now
         gate.unlock()
 
         /* Named BEFORE it is buffered. Writing onto an event already in the buffer races a drain that may be
@@ -816,18 +842,51 @@ final class Recorder {
 
         gate.lock()
         // Re-checked under the lock: naming took a moment, and a button may have gone down in it.
-        if recording && held == 0 && pid != lastFrontPid {
-            let now = elapsedMs
-            let e = Ev()
-            e.x = lastX
-            e.y = lastY
-            e.delayMs = buffer.isEmpty ? 0 : (now - lastStamp)
-            e.action = "Focus"
-            e.app = appName.isEmpty ? nil : appName
-            e.window = title
-            buffer.append(e)
-            lastStamp = now
-            lastFrontPid = pid
+        if recording && held == 0 {
+            let moved = pid != lastFrontPid
+            let settled = clip(title ?? "", 120)
+            /* A NEW TITLE HAS TO HOLD STILL BEFORE IT COUNTS.
+             *
+             * A page in flight is a sequence of titles - the old one, then the address, then "Loading", then
+             * the real one - and marking each would fill a recording with places nobody visited. So a title
+             * that differs from the last marked one becomes a candidate, and only becomes a marker once it
+             * is still saying the same thing a moment later. A page that settles gets one marker; a page
+             * that flickers gets none until it stops.
+             *
+             * An application change is NOT delayed this way: that one is a fact the moment it happens. */
+            var titled = false
+            if !moved && !settled.isEmpty && settled != (lastFrontTitle ?? "") {
+                if titleCandidate == settled, elapsedMs - titleCandidateAt >= TITLE_SETTLE_MS {
+                    titled = true
+                } else if titleCandidate != settled {
+                    titleCandidate = settled
+                    titleCandidateAt = elapsedMs
+                }
+            } else if settled == (lastFrontTitle ?? "") {
+                titleCandidate = nil
+            }
+
+            if moved || titled {
+                let stamp = elapsedMs
+                let e = Ev()
+                e.x = lastX
+                e.y = lastY
+                e.delayMs = buffer.isEmpty ? 0 : (stamp - lastStamp)
+                /* The same action for both, deliberately. Downstream a Focus opens a segment and emits no
+                 * step of its own, which is exactly what a navigation wants - and every reader that exists,
+                 * including older builds and imported files, already handles it. A new action value would
+                 * have arrived at those readers as "not one of the actions this agent records". What
+                 * widened is the meaning: the foreground WINDOW changed, whether because a different
+                 * application came forward or because the same one changed what it is showing. */
+                e.action = "Focus"
+                e.app = appName.isEmpty ? nil : appName
+                e.window = title
+                buffer.append(e)
+                lastStamp = stamp
+                lastFrontPid = pid
+                lastFrontTitle = settled.isEmpty ? nil : settled
+                titleCandidate = nil
+            }
         }
         gate.unlock()
     }

@@ -332,8 +332,21 @@ Five action words come from the mouse (`Mouse Movement`, `Left/Right/Middle Clic
 3 | 0 | 0 | 120 | Key Down
 ```
 
-`Focus` — **the foreground window changed.** Not an action; a marker saying the work moved, so a step that
-hit-tests nothing can still be placed. It is the only per-step answer for a scroll, a wait or a run of
+`Focus` — **the foreground window changed**, either because a different application came forward *or
+because the same one changed what it is showing.* Not an action; a marker saying the work moved, so a step
+that hit-tests nothing can still be placed.
+
+The second half arrived at 0.9.5 and is the reason a transcript can now say where a link led. A browser
+navigating from one page to the next keeps the same window and the same process, so nothing fired: a
+recording could name the link that was clicked and never the page it opened, and a run that ended on a
+search results page ended, as far as the transcript knew, on the page before it.
+
+So the title is watched too, on two clocks and never on the tick. It is read at most every **400 ms** — on
+macOS the question is an accessibility round trip, and the resolver polls sixty-six times a second — and a
+title that differs must still be saying the same thing **700 ms** later before it is marked. A page in
+flight shows two or three titles on the way to the one it keeps, and marking each would put places in a
+recording that nobody visited. An application change is never delayed this way: that one is a fact the
+moment it happens. It is the only per-step answer for a scroll, a wait or a run of
 typing, and without it those sit in whichever segment a click last opened. The Windows agent polls
 `GetForegroundWindow` on the resolver thread, which is already awake between clicks, rather than adding a
 second hook and a second message pump. Two rules: never emit one **between a press and its release** — the

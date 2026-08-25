@@ -398,7 +398,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.4";
+        public const string Version = "0.9.5";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -842,15 +842,36 @@ namespace MouseFlow
          */
         static IntPtr _lastFront = IntPtr.Zero;
 
+        /* How often the title is asked for, and how long a new one must hold before it is believed. Same
+           numbers as the macOS agent, because the two produce one format and a recording should not read
+           differently depending on which machine made it. GetWindowText is cheap where the mac's
+           accessibility round trip is not, but the SETTLE is not about cost - a page in flight shows two or
+           three titles on the way to the one it keeps, and marking each puts places in a recording that
+           nobody visited. */
+        const int TitleLookMs = 400;
+        const int TitleSettleMs = 700;
+        static string _lastFrontTitle = null;
+        static string _titleCandidate = null;
+        static long _titleCandidateAt = 0;
+        static long _lastTitleLook = 0;
+
         static void NoteForeground()
         {
             IntPtr front = Native.GetForegroundWindow();
-            if (front == IntPtr.Zero || front == _lastFront) return;
+            if (front == IntPtr.Zero) return;
+            bool moved = front != _lastFront;
 
             Ev e = null;
+            bool titled = false;
             lock (Gate)
             {
-                if (!_recording) { _lastFront = front; return; }
+                if (!_recording)
+                {
+                    _lastFront = front;
+                    _lastFrontTitle = null;
+                    _titleCandidate = null;
+                    return;
+                }
                 /* Never during a gesture. A click that gives a window focus fires this watcher while the
                  * button is still down, and a marker inserted there turns one click into an unreleased press
                  * and a stray release - two wrong steps out of a note that was only meant to add context.
@@ -865,6 +886,36 @@ namespace MouseFlow
                 if (_held > 0) return;
 
                 long now = _clock.ElapsedMilliseconds;
+                /* A WINDOW THAT CHANGED WHAT IT IS SHOWING, not only a different window coming forward.
+                 *
+                 * `_lastFront` is a handle, and a browser navigating from one page to the next keeps the
+                 * same one - so a recording could say which link was clicked and never where it led. The
+                 * title is the only thing that moves, and it is read on a clock rather than every tick. */
+                if (!moved)
+                {
+                    if (now - _lastTitleLook < TitleLookMs) return;
+                    _lastTitleLook = now;
+                    string seen = TitleOf(front);
+                    string had = _lastFrontTitle == null ? "" : _lastFrontTitle;
+                    if (seen != null && seen.Length > 0 && seen != had)
+                    {
+                        if (_titleCandidate == seen && now - _titleCandidateAt >= TitleSettleMs)
+                        {
+                            titled = true;
+                        }
+                        else if (_titleCandidate != seen)
+                        {
+                            _titleCandidate = seen;
+                            _titleCandidateAt = now;
+                        }
+                    }
+                    else if (seen == had)
+                    {
+                        _titleCandidate = null;
+                    }
+                    if (!titled) return;
+                }
+
                 e = new Ev();
                 e.X = _lastX;
                 e.Y = _lastY;
@@ -874,6 +925,8 @@ namespace MouseFlow
                 _lastStamp = now;
             }
             _lastFront = front;
+            _lastFrontTitle = TitleOf(front);
+            _titleCandidate = null;
             /* Window only. A foreground change has no control under it, and inventing one from the pointer -
              * which is wherever it was left - would attribute a name to a step it had nothing to do with. */
             DescribeWindow(e, front);

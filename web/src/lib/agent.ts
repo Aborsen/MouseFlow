@@ -299,7 +299,15 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.9.4 is the build that knows the work ended by pressing Send.
+/* 0.9.5 is the build that notices where a page went.
+ *
+ * A recording knew when the work moved to a different APPLICATION and never when the same one changed what
+ * it was showing - so a browser navigating from one page to the next left no trace, and a transcript could
+ * say which link was clicked but never where it led. It marks a settled title now, which is what makes a
+ * segment carry the page rather than the page it came from.
+ *
+ * The previous note, kept because the reason still holds. 0.9.4 is the build that knows the work ended by
+ * pressing Send.
  *
  * Before it, every keystroke was anonymous - a key was pressed, never which - so a recording could not say
  * that anything was committed, and a skill made from one typed the message and never sent it. The keys
@@ -330,7 +338,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.9.4';
+export const AGENT_WANTS = '0.9.5';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {
