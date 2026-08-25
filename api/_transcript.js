@@ -2062,7 +2062,20 @@ export function transcribe(flow) {
         + (counts.keys > 0
           ? counts.keys + ' keystroke' + (counts.keys === 1 ? '' : 's') + ' over '
             + spanText(counts.typedMs) + ', counted and timed but never read: which key was pressed is '
-            + 'not recorded anywhere, so this carries no text. '
+            + 'not recorded anywhere. '
+            /* THE SECOND HALF OF THAT SENTENCE USED TO SAY "so this carries no text", AND IT WAS FALSE.
+             *
+             * The keyboard half is true and has always been true. But text does not only arrive through a
+             * keyboard: when a click lands on a text field, the agent reads the accessibility value to name
+             * what was clicked, and a text field's value IS its contents. Checked against real recordings on
+             * this account - a search somebody typed into Google is sitting in one of them as a control
+             * name, three times over.
+             *
+             * So the claim was accurate about the mechanism it described and wrong about the thing anybody
+             * reads it for. A promise like this is read as "my typing is not in here", and it has to be
+             * true of the recording rather than of one route into it. */
+            + 'Text can still appear: where a click landed on a field, what was in that field is recorded '
+            + 'as the name of the thing clicked. '
           /* Three different sentences, because "no typing" has three different meanings and only the
            * recorder's own answer separates them. Saying the first one unconditionally was a claim this
            * file had no way to support. */
