@@ -148,7 +148,7 @@ anything.
 **Nothing goes back.** A job a machine took and lost is expired by the claim age, never returned to the
 pool: a run that may be half-done must not be repeated blind.
 
-**`loop` never holds a picture.** A goal is a model deciding one action at a time from a screenshot, and a
+**`loop` never holds a picture.** A goal is a model deciding what to do next from a screenshot, and a
 serverless function has nowhere to keep a conversation between two requests — the instance that decided step
 4 may not be the one that decides step 5. So the conversation lives in the row. But at 161 KB a step and up
 to 240 steps a run, keeping the images would turn the queue into a picture album, so `api/_step.mjs` strips

@@ -53,6 +53,9 @@ import {
   toolsFor,
   truncatedAt,
   actionReport,
+  AFTER_CUT,
+  notBatched,
+  sameTurn,
   STILL_GIVE_UP,
   stillStopped,
   waitReport,
@@ -467,6 +470,19 @@ async function runWave(o: {
     }
 
     const results: unknown[] = [];
+    /* ОДИН СЧЁТ НА ХОД, а не на действие - см. STILL_WARN в api/_brain.mjs. Здесь результаты кладутся по
+     * ходу дела, а итог хода известен только в конце, поэтому неподвижные ответы запоминаются и слова в
+     * них дописываются после цикла: назвать счёт первому из них раньше значило бы назвать его наугад. */
+    const inertSaid: { content: string }[] = [];
+    let judged = false;
+    let stirred = false;
+    /* The machine actions this turn has already taken, in order - what sameTurn reads. See the note on it
+     * in api/_brain.mjs: a turn carries one aimed action and then the typing that follows from it. */
+    const ran: string[] = [];
+    /* Отрезано, а не отфильтровано. Ход [клик, клик, печатать] - это не «выполнить первый и третий»:
+     * печатать модель собиралась в то, что откроет ВТОРОЙ клик. Первый отказ закрывает ход целиком, и
+     * каждому отказанному вызову всё равно отвечают - API требует результат на каждый tool_use. */
+    let cut = false;
     for (const use of uses) {
       /* Per action, not per turn: a turn can pair a long wait with the click that follows it, and Stop
        * during the wait used to let that click land on a live desktop afterwards. */
@@ -478,6 +494,11 @@ async function runWave(o: {
       /* Шлюз. Объявление стоит шага - оно и есть turn - поэтому попадает и в steps, и в фид, как всякое
        * другое действие. Разница одна: цикл после него СТОИТ, пока человек не ответит. */
       if (use.name === 'reached_checkpoint') {
+        /* Заявление о достигнутом чекпоинте после обрезанного хода опирается на действия, которых не было. */
+        if (cut) {
+          results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: AFTER_CUT });
+          continue;
+        }
         const n = Math.max(1, Math.min(o.plan?.length ?? 99, Number(use.input?.n) || 1));
         const title = o.plan?.[n - 1]?.title ?? `checkpoint ${n}`;
         const claimed = String(use.input?.said ?? '').trim() || 'no words with it';
@@ -509,10 +530,20 @@ async function runWave(o: {
           content: 'The user looked and said to carry on. Continue from where you are, and announce the next '
             + 'checkpoint when it is true.',
         });
+        /* И ход на этом закрыт. Между объявлением и ответом человека проходит сколько угодно времени - за
+         * него экран мог стать любым, - так что действие, стоявшее в том же ходе за чекпоинтом, целилось бы
+         * в картинку, которой человек уже не видит. */
+        cut = true;
         continue;
       }
 
       if (use.name === 'finish') {
+        /* Успех, обоснованный действиями, которых не было. Обрезанный ход не заканчивают зелёным - модель
+         * посмотрит на свежий снимок и решит заново. Ложный красный виден и оспорим, ложный зелёный - нет. */
+        if (cut) {
+          results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: AFTER_CUT });
+          continue;
+        }
         const closing = String(use.input?.said ?? said ?? 'Done.');
         // Success has to be claimed: anything but an explicit true is a failure that said so in words.
         const claimed = use.input?.ok === true;
@@ -520,6 +551,19 @@ async function runWave(o: {
           stepNo,
           result: { ok: claimed, said: closing, error: claimed ? undefined : closing, steps },
         };
+      }
+
+      /* THE BATCH RULE, applied before anything is counted, shown or sent. A refused action did not happen,
+       * so it is not a step and not an event - only an answer the model reads on its next turn. */
+      if (cut || !sameTurn(ran, use.name ?? '')) {
+        results.push({
+          type: 'tool_result',
+          tool_use_id: use.id,
+          is_error: true,
+          content: cut ? AFTER_CUT : notBatched(ran, use.name ?? ''),
+        });
+        cut = true;
+        continue;
       }
 
       onEvent({ type: 'tool', name: use.name, input: use.input, spent: { shot: shotMs, model: modelMs } });
@@ -539,6 +583,7 @@ async function runWave(o: {
         const outcome = await settle(machine, limit, isAborted, (waited) =>
           onEvent({ type: 'waiting', ms: waited, limit, reason: String(use.input?.reason ?? '') }));
         results.push({ type: 'tool_result', tool_use_id: use.id, content: waitReport(outcome) });
+        ran.push('wait');
         continue;
       }
 
@@ -562,8 +607,11 @@ async function runWave(o: {
           type: 'tool_result', tool_use_id: use.id, is_error: true,
           content: `no such action here: ${use.name}`,
         });
+        /* And nothing behind it either: whatever the model meant to follow this did not happen. */
+        cut = true;
         continue;
       }
+      ran.push(use.name ?? '');
 
       try {
         await machine.do(body);
@@ -581,20 +629,30 @@ async function runWave(o: {
          * to the model. Saying "that failed" would be this loop guessing about applications it cannot see
          * inside, which is how a working step gets abandoned. */
         const inert = !!(before && after && !moved(before, after));
-        /* "In a row", not "in total": a run that changed something is a run getting somewhere, however
-         * many inert clicks it took along the way. */
-        still = inert ? still + 1 : 0;
-        results.push({
+        /* «Не смог снять отпечаток» - это не «не сдвинулось», и ход, про который ничего не известно, счёт
+         * не трогает вовсе. */
+        if (before && after) {
+          judged = true;
+          if (!inert) stirred = true;
+        }
+        const report = {
           type: 'tool_result',
           tool_use_id: use.id,
           /* The words live in the brain, like waitReport's: the two drivers must tell the model the same
            * thing, or one of them teaches it a habit the other punishes. */
           content: actionReport(inert ? false : true, still),
-        });
+        };
+        results.push(report);
+        if (inert) inertSaid.push(report);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'failed';
         onEvent({ type: 'error', message: `${use.name} failed: ${message}` });
         results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: message });
+        /* И остаток хода - тоже нет. Печатать после клика, которого не было, значит печатать не туда; на
+         * этом пути это видно СРАЗУ, потому что действия выполняются здесь по одному. На облачном не видно
+         * - там пачка уже уехала агенту целиком, - и разницу закрывает правило: после activate_window,
+         * единственного прицельного действия, которое падает честно, в пачке ничего не идёт. */
+        cut = true;
       }
 
       trace.ms!.act = Date.now() - actAt;
@@ -602,6 +660,14 @@ async function runWave(o: {
       /* A moment for the screen to react before the next picture, or it shows the state before this. Skipped
        * when the comparison above already waited it out - one pause, not two. */
       if (!settled) await new Promise((done) => setTimeout(done, 350));
+    }
+
+    /* ИТОГ ХОДА, и только теперь. Ход неподвижен, только если ни одно его действие ничего не сдвинуло;
+     * сдвинуло хоть одно - счёт с нуля. Слова в неподвижных ответах дописываются здесь, потому что до
+     * конца цикла назвать в них было нечего. */
+    if (judged) {
+      still = stirred ? 0 : still + 1;
+      if (!stirred) for (const r of inertSaid) r.content = actionReport(false, still);
     }
 
     messages.push({ role: 'user', content: results });

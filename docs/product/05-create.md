@@ -188,7 +188,18 @@ Not decoration — these are the product's position on what an agent driving a r
 
 - Read the "Already open" list before opening anything; launching a second copy of a running application is
   a mess the user has to clean up.
-- One action per turn, then look again. The screen changes underneath you.
+- **One thing aimed at the screen per turn** — one click, or one scroll, or one `activate_window`, or one
+  wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
+  moment anything happens. After it, in the same turn, the typing and key presses that follow from it: those
+  go to whatever has focus, not to a place on screen. "Click the box, type the address, press Tab" is one
+  turn, not three. Up to `BATCH_MAX` actions; nothing follows a wait (the screen changed by definition) or
+  an `activate_window` (which may have found no such window, and then the typing goes to the wrong app).
+  This one is not a request — `sameTurn` in `api/_brain.mjs` enforces it, and both drivers cut the turn at
+  the first refusal rather than filtering it, because typing meant for a second click's target is typing in
+  the wrong place. What the code *cannot* enforce is the next line, because `Enter` sends an email and
+  `Enter` searches Google and nothing in a keystroke tells them apart.
+- **A one-way action is never in a batch.** A message sent, a form submitted, a file deleted, a payment
+  confirmed: look at the screen first and let that keystroke be a turn of its own.
 - Write text the way it should appear, line breaks and all, in **one** `type_text` call. Find-and-Replace
   or re-selecting to correct rarely ends well; if it came out wrong, select all and type it again.
 - In an email body a line break is Enter; in a chat box Enter *sends*, so pass `newline: "shift-enter"`.

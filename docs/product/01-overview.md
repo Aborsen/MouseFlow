@@ -7,7 +7,7 @@ Two things, sharing one account:
 1. **A recorder and replayer.** Record what you do with the mouse — on a web page or across the whole
    desktop — read it back as prose, keep it as a reusable skill, replay it, chain several into a flow.
 2. **An agent that works from a written goal.** Describe an outcome in a sentence; a model looks at the
-   screen (or at the page), decides one action at a time, and carries it out on the real machine.
+   screen (or at the page), decides what to do next, and carries it out on the real machine.
 
 Both halves produce the same kind of object — a *flow* on your account — and both are measured the same
 way on the Dashboard. Recordings are compatible with [Mini Mouse Macro](https://www.dopesoft.co.uk/)

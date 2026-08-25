@@ -50,6 +50,9 @@ import {
   toolsFor,
   truncatedAt,
   actionReport,
+  AFTER_CUT,
+  notBatched,
+  sameTurn,
   STILL_GIVE_UP,
   stillStopped,
   waitReport,
@@ -133,14 +136,24 @@ async function defaultAsk(body) {
 function resultBlocks(pending, said, loop) {
   const bySaid = new Map();
   for (const r of Array.isArray(said) ? said : []) bySaid.set(String(r && r.id), r);
-  /* Counted in the order the machine carried them out, and reset by the first thing that moved anything -
-   * `still` is "in a row", not "in total", because a run that changed something is a run getting somewhere
-   * however many inert clicks it took along the way. */
+  /* ОДИН СЧЁТ НА ХОД, а не на действие - см. STILL_WARN в _brain.mjs. Ход неподвижен, только если ни одно
+   * его действие ничего не сдвинуло; сдвинуло хоть одно - счёт с нуля. Ожидания и действия агента, который
+   * не умеет сказать `moved`, счёт не трогают: «не смог определить» это не «не сдвинулось».
+   *
+   * Сначала итог хода, потом уже слова: пока не прочитаны все результаты, неизвестно, был ли ход
+   * неподвижен, а значит и какое число называть первому из них. */
+  let judged = false;
+  let stirred = false;
   for (const p of pending) {
     const got = bySaid.get(String(p.id));
     if (!got || p.name === 'wait') continue;
-    if (got.moved === false) { loop.still += 1; got.streak = loop.still; } else if (got.moved === true) {
-      loop.still = 0;
+    if (got.moved === true) { judged = true; stirred = true; } else if (got.moved === false) judged = true;
+  }
+  if (judged) loop.still = stirred ? 0 : loop.still + 1;
+  if (judged && !stirred) {
+    for (const p of pending) {
+      const got = bySaid.get(String(p.id));
+      if (got && got.moved === false) got.streak = loop.still;
     }
   }
   return pending.map((p) => {
@@ -339,8 +352,25 @@ export async function advance({ loop, shot, windows, results, ask }) {
 
   // 5. What the machine is to do next.
   const actions = [];
+  /* The machine actions this turn has already taken, in order - what sameTurn reads. Names only: the rule
+   * is about what an action AIMS AT, and nothing else about it matters here. */
+  const ran = [];
+  /* Отрезано, а не отфильтровано.
+   *
+   * Ход [клик, клик, печатать] - это не «выполнить первый и третий». Печатать модель собиралась в то, что
+   * откроет ВТОРОЙ клик; выполнить её после первого значит напечатать не туда. Поэтому первый отказ
+   * закрывает ход целиком, и всё за ним получает свой tool_result - API требует ответ на каждый tool_use,
+   * и молчание было бы вторым способом сказать «сделано». */
+  let cut = false;
   for (const use of uses) {
     if (use.name === 'finish') {
+      /* Заявка на успех, опирающаяся на действия, которых не было. Ход обрезан - значит часть того, чем
+       * этот finish обоснован, не выполнялась, и зачесть его здесь означало бы ровно тот ложный зелёный,
+       * против которого написан весь блок выше. Модель посмотрит на свежий снимок и решит заново. */
+      if (cut) {
+        loop.mine.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: AFTER_CUT });
+        continue;
+      }
       // Success has to be claimed: anything but an explicit true is a failure that said so in words.
       const closing = String((use.input && use.input.said) || said || 'Done.');
       const claimed = use.input && use.input.ok === true;
@@ -350,6 +380,17 @@ export async function advance({ loop, shot, windows, results, ask }) {
       if (!actions.length) return over(ending);
       loop.ending = ending;
       break;
+    }
+
+    /* THE BATCH RULE, applied before anything is counted or sent. An action refused here did not happen,
+     * so it is not a step and not pending - only an answer the model reads next turn. */
+    if (cut || !sameTurn(ran, use.name || '')) {
+      loop.mine.push({
+        type: 'tool_result', tool_use_id: use.id, is_error: true,
+        content: cut ? AFTER_CUT : notBatched(ran, use.name || ''),
+      });
+      cut = true;
+      continue;
     }
 
     /* The decision belongs to the TURN and is written onto each action it produced. A turn that returned
@@ -362,6 +403,7 @@ export async function advance({ loop, shot, windows, results, ask }) {
       const ms = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input && use.input.ms) || 2000));
       actions.push({ id: use.id, kind: 'wait', ms, reason: String((use.input && use.input.reason) || '') });
       loop.pending.push({ id: use.id, name: 'wait' });
+      ran.push('wait');
       continue;
     }
 
@@ -373,10 +415,13 @@ export async function advance({ loop, shot, windows, results, ask }) {
         type: 'tool_result', tool_use_id: use.id, is_error: true,
         content: `no such action here: ${use.name}`,
       });
+      /* And nothing behind it either: whatever the model meant to follow this did not happen. */
+      cut = true;
       continue;
     }
     actions.push({ id: use.id, kind: 'do', name: use.name, body: line });
     loop.pending.push({ id: use.id, name: use.name });
+    ran.push(String(use.name || ''));
   }
 
   return { loop: pack(loop), actions, step: loop.stepNo, shotWidth: loop.shotWidth };

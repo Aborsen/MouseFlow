@@ -755,7 +755,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   /* Ask /api/compose to put the notes onto the steps, on the way to the last screen.
    *
    * Here rather than at run time, and that is the whole design: "finish by pressing Send, not Save" is a
-   * change to the PLAN, and the thing that carries a goal out decides one action at a time on somebody's
+   * change to the PLAN, and the thing that carries a goal out decides what to do next on somebody's
    * real computer - it may well have clicked Save before it reads the sentence saying not to. Done now, the
    * person who just did the work is still on screen and sees the result before it becomes a skill.
    *

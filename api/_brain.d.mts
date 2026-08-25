@@ -70,6 +70,15 @@ export const STILL_GIVE_UP: number;
 export function stillStopped(streak: number): string;
 export const STILL_NOTE: string;
 
+/* Сколько действий один ход может унести, и какие. Правило в коде, а не в промпте - см. _brain.mjs. */
+export const BATCH_MAX: number;
+/** Whether one more action may run in this turn, with no fresh screenshot in between. */
+export function sameTurn(sofar: string[], next: string): boolean;
+/** Why an action in a batch was not carried out, in the words both drivers use. */
+export function notBatched(sofar: string[], next: string): string;
+/** And for everything behind the cut: a batch is cut, not filtered. */
+export const AFTER_CUT: string;
+
 export function waitReport(outcome: { quiet?: boolean; waited?: number; quietFor?: number }): string;
 export function explainStatus(status: number, stepNo: number, detail: string): string;
 export function refusedAt(stepNo: number): string;

@@ -32,13 +32,20 @@ export const MAX_TOKENS = 8000;
 /* The ceiling on one `wait`. Waiting is free and looking is not, so it is long - but it is a cap, because
  * on the cloud path this number is how long an agent sits inside one request. */
 export const SETTLE_MAX_MS = 120000;
+/* Сколько действий один ход может унести. Здесь, а не рядом с sameTurn ниже, ровно по одной причине: это
+ * число стоит и в промпте, и в правиле, и напечатать его в промпте руками значило бы завести вторую копию,
+ * которая разойдётся с первой молча. Столько, сколько нужно на маленькую форму по Tab, и не больше - чтобы
+ * пачка, пошедшая не туда, оставалась ограниченной ошибкой. */
+export const BATCH_MAX = 6;
 
-export const SYSTEM = `You are operating a real Windows computer for the user, who described a goal in plain language. You act by looking at a screenshot and choosing one action at a time.
+export const SYSTEM = `You are operating a real Windows computer for the user, who described a goal in plain language. You act by looking at a screenshot and deciding what to do next.
 
 How to work:
 - Each turn you are given a fresh screenshot. Look at it before deciding.
 - Coordinates are in the pixels of the screenshot you were just given. Aim at the CENTRE of what you mean to click.
-- One action per turn, then look again. The screen changes underneath you.
+- ONE thing aimed at the screen per turn: one click, or one scroll, or one activate_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
+- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait or an activate_window: after a wait the screen is no longer the one you were looking at, and an activate_window may have found no such window, in which case what came next would go to the wrong application.
+- Do not put a one-way action in a batch. A message sent, a form submitted, a file deleted, a payment confirmed: look at the screen first and let that keystroke be a turn of its own, with the same care as a one-way click.
 - Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
 - Write text the way it should appear, line breaks and all, in ONE type_text call. Do not go back afterwards to fix formatting: Find and Replace, or re-selecting text to correct it, costs steps and rarely ends well. If what you typed came out wrong, select all and type it again.
@@ -339,9 +346,18 @@ export const STILL_NOTE = 'done — but the screen looks exactly as it did befor
 /* СКОЛЬКО РАЗ ПОДРЯД НИЧЕГО НЕ ПРОИСХОДИЛО - и что на каком счёте сказать.
  *
  * Одно действие, не изменившее экран, - обычное дело: копирование в буфер, клик по уже выбранному. Три
- * подряд - уже нет. Прогон, который смотрели живьём, десять раз пытался переименовать таблицу; человек
- * следил за этим минуту и нажал стоп. Считать подряд идущие неподвижные действия - это и есть тот счёт,
- * который человек вёл в голове.
+ * решения подряд, после которых экран тот же, - уже нет. Прогон, который смотрели живьём, десять раз
+ * пытался переименовать таблицу; человек следил за этим минуту и нажал стоп. Этот счёт - тот, который он
+ * вёл в голове.
+ *
+ * СЧИТАЮТСЯ ХОДЫ, А НЕ ДЕЙСТВИЯ, и до пачек это было одно и то же число. Стало разным - и правильное из
+ * двух видно сразу: застревает не клавиша, а решение. Ход «кликнуть в поле, Tab, Tab, Tab» - это одно
+ * решение, а отпечаток экрана 64x36 рамку фокуса вполне может не заметить, так что по действиям такой ход
+ * насчитал бы три неподвижных из шести и убил бы работающий прогон вдвое быстрее. Ход считается
+ * неподвижным, только если НИ ОДНО его действие ничего не сдвинуло; сдвинуло хоть одно - счёт с нуля.
+ *
+ * Ожидания не считаются вовсе, и действия агента, который не умеет сказать `moved`, - тоже: «не смог
+ * определить» это не «не сдвинулось», и ход, про который ничего не известно, счёт не трогает.
  *
  * Два порога, а не один. На третьем - сказать сильнее, потому что модель ещё может выпутаться сама и
  * оборвать её здесь значило бы бросать поправимое. На шестом - закончить: если пять предыдущих слов не
@@ -350,10 +366,11 @@ export const STILL_WARN = 3;
 export const STILL_GIVE_UP = 6;
 
 /** What one action did, in the words both drivers use. `moved` absent means the agent could not tell. */
+/* @param streak turns in a row in which nothing moved, this one included - never a count of keystrokes. */
 export const actionReport = (moved, streak = 0) => {
   if (moved !== false) return 'done';
   if (streak >= STILL_WARN) {
-    return `done — and that is ${streak} actions in a row that have changed nothing on screen. Something `
+    return `done — and that is ${streak} turns in a row now with nothing changing on screen. Something `
       + 'about where you are aiming is wrong, not about how many times you try it. Look at the screenshot '
       + 'again and do something DIFFERENT — a different control, a different route to the same thing — or '
       + 'finish with ok false and say what you could not reach.';
@@ -363,11 +380,93 @@ export const actionReport = (moved, streak = 0) => {
 
 /** Why a run that stopped moving is ended. Said in the run's own words, not as a crash. */
 export const stillStopped = (streak) =>
-  `Nothing on screen has changed for ${streak} actions in a row. Stopping rather than going on: whatever `
-  + 'is being aimed at is not receiving this, and repeating it costs a step each time without getting '
-  + 'closer. What was reached before this is unchanged.';
+  `Nothing on screen has changed through ${streak} decisions in a row. Stopping rather than going on: `
+  + 'whatever is being aimed at is not receiving this, and repeating it costs a step each time without '
+  + 'getting closer. What was reached before this is unchanged.';
 
 /* --------------------------------------------------------------------------- reading the answer */
+
+/* СКОЛЬКО ДЕЙСТВИЙ ОДИН ХОД МОЖЕТ УНЕСТИ - и почему граница проходит именно здесь.
+ *
+ * Ход стоил один скриншот и одно решение, а нёс одно действие. Модель, которой нужно кликнуть в поле,
+ * напечатать адрес и нажать Tab, платила за это три картинки и три решения - и человек, который смотрел на
+ * это живьём, видел паузы там, где ничего не решалось. Оба драйвера всегда умели выполнить несколько
+ * действий за ход; запрещал это только промпт.
+ *
+ * НО НЕ ЛЮБЫЕ НЕСКОЛЬКО. Граница не «зависит ли действие от предыдущего» - зависят все: если клик не попал,
+ * не сработает ничего. Граница в том, нужно ли УВИДЕТЬ результат предыдущего, чтобы решить следующее:
+ *
+ *   click, scroll, activate_window  - целятся в точку или в окно, а точка прочитана с картинки, которая
+ *                                     устарела в тот момент, когда что-то произошло. Только первым.
+ *   type_text, press_key            - идут туда, где каретка. Куда именно - модель решила, когда выбирала
+ *                                     первое действие, и новая картинка этого решения не меняет.
+ *   wait                            - только последним: смысл ожидания в том, что экран стал другим, а
+ *                                     значит и намерение про фокус после него - про экран, которого модель
+ *                                     не видела.
+ *
+ * И ПОСЛЕ activate_window - тоже ничего, хотя само оно ход открывать может. Это единственное прицельное
+ * действие, которое ЧЕСТНО падает: окна с таким заголовком может не быть, и агент отвечает ошибкой. Но
+ * агент, получив пачку, выполняет её до конца - он останавливается только на «стоп», не на ошибке, - так
+ * что «активируй Блокнот, напечатай заметку» с непопавшей активацией напечатало бы заметку в то, что стояло
+ * впереди. Чинить это в агенте значило бы третью переустановку на двух платформах за неделю; правило же
+ * стоит здесь и ничего не стоит. Клик и прокрутка так не падают: событие уходит и «удаётся», просто не
+ * туда, - и на это ответ не в пачке, а в счётчике неподвижных действий и в следующем снимке.
+ *
+ * И ЭТО ПРАВИЛО В КОДЕ, а не просьба в промпте, по той же причине, по которой applyNames в _params.mjs
+ * применяется кодом: промпт говорит модели, что делать, а этот файл решает, что произойдёт. Слепой второй
+ * клик - это клик по тому, что было на месте цели полсекунды назад.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ И БЫТЬ НЕ МОЖЕТ. По нажатию нельзя узнать, отправляет оно письмо или ищет в Google -
+ * Enter и там и там. Поэтому «односторонние действия отдельным ходом» остаётся правилом промпта, и сказано
+ * это честно: код держит «не целься вслепую», промпт держит «не жми вслепую то, что не отменить».
+ */
+/** Actions that go to whatever has focus, so they do not need a picture taken after the one before them. */
+const BATCHABLE = new Set(['type_text', 'press_key', 'wait']);
+
+/** And the two nothing may follow: one changes the screen by definition, the other can quietly not happen. */
+const TERMINAL = new Set(['wait', 'activate_window']);
+
+/**
+ * Whether one more action may run in this turn, with no fresh screenshot in between.
+ *
+ * @param {string[]} sofar  the machine actions already carried out this turn, in order
+ * @param {string} next     the name of the one being considered
+ */
+export function sameTurn(sofar, next) {
+  const done = Array.isArray(sofar) ? sofar : [];
+  if (!done.length) return true;                    // the first was aimed at the picture, and is always allowed
+  if (done.length >= BATCH_MAX) return false;
+  if (TERMINAL.has(done[done.length - 1])) return false;
+  return BATCHABLE.has(String(next));
+}
+
+/** Why an action in a batch was not carried out - said to the model, in the words both drivers use. */
+export function notBatched(sofar, next) {
+  const done = Array.isArray(sofar) ? sofar : [];
+  if (done.length >= BATCH_MAX) {
+    return `not carried out — ${BATCH_MAX} actions is as much as one turn carries, and this was past that. `
+      + 'The rest of the turn was dropped with it. A fresh screenshot is coming; carry on from what it shows.';
+  }
+  if (done[done.length - 1] === 'wait') {
+    return 'not carried out — it came after a wait, and the point of waiting is that the screen changed. '
+      + 'What follows a wait is decided from the screen the wait left, not from the one you were looking at. '
+      + 'The rest of the turn was dropped with it; a fresh screenshot is coming.';
+  }
+  if (done[done.length - 1] === 'activate_window') {
+    return 'not carried out — it came after activate_window, which is the one aimed action that can fail '
+      + 'outright: if no such window was found, this would have gone to whatever was in front instead. '
+      + 'Look at the fresh screenshot, check the window you asked for is there, and then act.';
+  }
+  return `not carried out — ${next} aims at a place on screen, and the picture it was aimed with is out of `
+    + 'date now that the action before it has happened. Only typing and key presses share a turn with '
+    + 'something else, because they go to whatever has focus. The rest of the turn was dropped with it; a '
+    + 'fresh screenshot is coming.';
+}
+
+/** And for everything behind the cut: a batch is cut, not filtered - see the note on sameTurn. */
+export const AFTER_CUT = 'not carried out — the turn was cut short before this one, so what you meant this '
+  + 'to follow did not happen. A fresh screenshot is coming.';
+
 
 /* What an HTTP failure means, in terms of the thing the user can do about it.
  *

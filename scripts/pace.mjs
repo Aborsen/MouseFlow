@@ -68,21 +68,58 @@ console.log('outcome     ' + [...byOutcome].map(([k, n]) => `${k} ${n}`).join(' 
 const agentRuns = rows.filter((r) => r.kind === 'agent' && Array.isArray(r.steps) && r.steps.length);
 console.log(`agent runs with a step trace: ${agentRuns.length}\n`);
 
+/* СКОЛЬКО ХОДОВ В ПРОГОНЕ, а не сколько действий.
+ *
+ * Пока ход нёс одно действие, это было одно и то же число, и делить настенное время на длину steps было
+ * честно. С пачками - нет: ход, унёсший три действия, купил одно решение и один снимок, так что «время на
+ * действие» падает само собой, ничего не ускорив. Ровно тот класс числа, который выглядит как улучшение и
+ * им не является, - а этот файл написан потому, что в прошлый раз ускорение вывели вычитанием.
+ *
+ * Выводится из таймингов, а не из счётчика: все шаги одного хода несут ОДНО время решения, потому что
+ * решались вместе. Соседние одинаковые значения - один ход. null там, где тайминга нет: прогон до
+ * инструментирования нельзя посчитать в ходах, и притворяться, что можно, здесь незачем. */
+function turnsIn(steps) {
+  let turns = 0;
+  let last = null;
+  let timed = 0;
+  for (const step of steps) {
+    const ms = step && step.ms && step.ms.model;
+    if (typeof ms !== 'number') continue;
+    timed++;
+    if (last === null || ms !== last) turns++;
+    last = ms;
+  }
+  return timed === steps.length && turns ? turns : null;
+}
+
 // ---------------------------------------------------------------- wall clock, the whole history
 const perStep = [];
+const perTurn = [];
 for (const r of agentRuns) {
   const n = r.steps.length;
   const wall = Number(r.wall);
   if (!Number.isFinite(wall) || wall <= 0 || !n) continue;
   perStep.push((wall * 1000) / n);
+  const turns = turnsIn(r.steps);
+  if (turns) perTurn.push((wall * 1000) / turns);
 }
 perStep.sort((a, b) => a - b);
-console.log('WALL CLOCK PER STEP        (every run, no instrumentation needed)');
+perTurn.sort((a, b) => a - b);
+console.log('WALL CLOCK PER ACTION      (every run, no instrumentation needed)');
 console.log(`  runs measured   ${perStep.length}`);
 console.log(`  median          ${secs(at(perStep, 50))}`);
 console.log(`  p90             ${secs(at(perStep, 90))}`);
 console.log(`  fastest         ${secs(perStep[0])}`);
-console.log(`  slowest         ${secs(perStep[perStep.length - 1])}\n`);
+console.log(`  slowest         ${secs(perStep[perStep.length - 1])}`);
+/* И то же время, поделённое на решения. С пачками эти два числа расходятся, и расходятся они РОВНО на то,
+ * что пачки дают: первое падает от того, что действий стало больше на ход, второе - только если ход
+ * действительно стал быстрее. Смотреть надо на второе. */
+if (perTurn.length) {
+  console.log(`\n  and per DECISION, where the timings allow it (${perTurn.length} runs)`);
+  console.log(`  median          ${secs(at(perTurn, 50))}`);
+  console.log(`  p90             ${secs(at(perTurn, 90))}`);
+}
+console.log('');
 
 // ---------------------------------------------------------------- the split, going forward
 const model = [];
@@ -135,12 +172,13 @@ if (!timedSteps) {
   console.log('');
 }
 
-/* HOW MANY ACTIONS A TURN RETURNED, which is the whole case for batching. One decision paid for, several
- * actions carried out - so a run where every turn returned one action is a run where batching would buy
- * exactly nothing, and a run full of pairs is one where it would halve the wall clock.
+/* HOW MANY ACTIONS A TURN RETURNED. This was written as the case FOR batching, before there was any - a run
+ * where every turn returned one action is a run batching would buy nothing on. It is now the measurement of
+ * whether it did: runs recorded after the rule in api/_brain.mjs should show pairs and triples where the
+ * model clicks a field and types into it, and should still show ones everywhere else, because the rule
+ * refuses a second aimed action.
  *
- * Derived from the timings rather than from a counter: every step of one turn carries the SAME model time,
- * because they were decided together. Identical adjacent values are one turn. */
+ * Derived from the timings rather than from a counter, by turnsIn above. */
 if (timedSteps) {
   const sizes = [];
   for (const r of agentRuns) {
@@ -157,7 +195,7 @@ if (timedSteps) {
     if (run) sizes.push(run);
   }
   const batched = sizes.filter((n) => n > 1).length;
-  console.log('ACTIONS PER DECISION       the case for batching, or against it');
+  console.log('ACTIONS PER DECISION       what batching actually bought');
   console.log(`  turns            ${sizes.length}`);
   console.log(`  returned one     ${sizes.length - batched}`);
   console.log(`  returned several ${batched}`);

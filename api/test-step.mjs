@@ -12,7 +12,7 @@
  * Run: node api/test-step.mjs
  */
 import { MAX_STEPS, MIN_SHOT_W, advance, startLoop } from './_step.mjs';
-import { SETTLE_MAX_MS, WAVE_TURNS } from './_brain.mjs';
+import { BATCH_MAX, SETTLE_MAX_MS, WAVE_TURNS } from './_brain.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -190,10 +190,61 @@ group('a run that has stopped moving stops');
     if (out.done) break;
   }
   check('by the third it is told plainly to try something different',
-    told.some((m) => /actions in a row that have changed nothing/.test(m)));
+    told.some((m) => /turns in a row now with nothing changing on screen/.test(m)));
   check('and it ends rather than buying another decision', !!out.done);
   check('as a failure, saying what actually went wrong',
-    out.done && out.done.ok === false && /Nothing on screen has changed for/.test(String(out.done.error)));
+    out.done && out.done.ok === false
+      && /Nothing on screen has changed through \d+ decisions in a row/.test(String(out.done.error)));
+}
+{
+  /* СЧИТАЮТСЯ ХОДЫ, А НЕ ДЕЙСТВИЯ - до пачек это было одно и то же число.
+   *
+   * Ход «кликнуть в поле, Tab, Tab, Tab» - это ОДНО решение, а отпечаток 64x36 рамку фокуса вполне может
+   * не заметить. По действиям такой ход насчитал бы сразу три из шести и убил бы работающий прогон вдвое
+   * быстрее, чем человек, который на него смотрит. */
+  const loop = start();
+  const ask = scripted([answer([
+    use('click', { x: 1, y: 1 }, 'b1'),
+    use('press_key', { key: 'Tab' }, 'b2'),
+    use('press_key', { key: 'Tab' }, 'b3'),
+  ])]);
+  await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  const next = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  await advance({
+    loop, shot: SHOT, windows: WINDOWS, ask: next,
+    results: [
+      { id: 'b1', output: 'done', moved: false },
+      { id: 'b2', output: 'done', moved: false },
+      { id: 'b3', output: 'done', moved: false },
+    ],
+  });
+  check('a batch of three inert actions counts as ONE turn that moved nothing', loop.still === 1,
+    String(loop.still));
+}
+{
+  /* И наоборот: сдвинуло хоть одно действие в ходе - ход не считается неподвижным вовсе. Клик, который
+   * не перерисовал ничего, и печать, которая перерисовала, - это ход, который куда-то дошёл. */
+  const loop = start();
+  loop.still = 2;
+  const ask = scripted([answer([
+    use('click', { x: 1, y: 1 }, 'm1'),
+    use('type_text', { text: 'hello' }, 'm2'),
+  ])]);
+  await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  const next = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  await advance({
+    loop, shot: SHOT, windows: WINDOWS, ask: next,
+    results: [
+      { id: 'm1', output: 'done', moved: false },
+      { id: 'm2', output: 'done', moved: true },
+    ],
+  });
+  check('one action in the batch moving something resets the whole count', loop.still === 0,
+    String(loop.still));
+  /* И слова при этом не пугают: действие, которое ничего не сдвинуло, всё ещё об этом говорит - просто
+   * без счёта, которого нет. */
+  check('and the inert action still says so, without a streak it no longer has',
+    /screen looks exactly as it did before/.test(JSON.stringify(next.seen[0].messages)));
 }
 {
   /* The counter is "in a row". A run that moves something is getting somewhere, however many inert
@@ -277,6 +328,143 @@ group('waiting is the agent\'s job, and the report of it is not');
   const back = JSON.stringify(ask2.seen[0].messages);
   check('and the model is told in the same words the browser uses',
     back.includes('The screen has been still for 3s after 5s of waiting.'), back.slice(-300));
+}
+
+/* ------------------------------------------------------------------------------------- пачки */
+
+/* Ход всегда мог унести несколько действий - оба драйвера умели это с самого начала, - и запрещал это
+ * только промпт. Что здесь проверяется, так это ГРАНИЦА: что пачка режется по правилу, а не по вкусу
+ * модели, и что отрезанное не считается сделанным. */
+
+group('a turn carries one aimed action and the typing that follows it');
+{
+  const ask = scripted([answer([
+    use('click', { x: 100, y: 200, label: 'To' }, 'c1'),
+    use('type_text', { text: 'bob@example.com' }, 't1'),
+    use('press_key', { key: 'Tab' }, 'k1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('all three go to the machine in one turn', out.actions.length === 3,
+    JSON.stringify((out.actions || []).map((a) => a.name || a.kind)));
+  check('in the order the model asked for',
+    out.actions[0].name === 'click' && out.actions[1].name === 'type_text'
+      && out.actions[2].name === 'press_key');
+  check('and all three are pending', out.loop.pending.length === 3);
+  /* Три действия за одно решение и одну картинку: ход считается один раз, и это вся экономия. */
+  check('but the turn is counted ONCE, because one decision was bought',
+    out.loop.stepNo === 1 && out.loop.turn === 1, `step ${out.loop.stepNo} turn ${out.loop.turn}`);
+}
+
+group('a second aimed action needs a picture taken after the first');
+{
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10 }, 'c1'),
+    use('click', { x: 20, y: 20 }, 'c2'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('only the first is sent', out.actions.length === 1 && out.actions[0].id === 'c1');
+  check('the second is not pending, because it will not happen', out.loop.pending.length === 1);
+  /* Не шаг: шагами считается сделанное, и отказ, попавший в лог, стал бы «шагом», за который никто
+   * не отвечал. */
+  check('and not a step either', out.loop.steps.length === 1, String(out.loop.steps.length));
+
+  const ask2 = scripted([answer([use('finish', { ok: true, said: 'ok' })])]);
+  await advance({
+    loop: out.loop, shot: SHOT, windows: WINDOWS, ask: ask2,
+    results: [{ id: 'c1', output: 'done', moved: true }],
+  });
+  const told = JSON.stringify(ask2.seen[0].messages);
+  check('and the model is told why, in words it can act on', told.includes('not carried out'));
+  check('naming the reason rather than just refusing', told.includes('aims at a place on screen'));
+}
+
+group('a batch is cut, not filtered');
+{
+  /* Печатать модель собиралась в то, что откроет ВТОРОЙ клик. Выполнить её после первого - напечатать
+   * не туда, и это хуже, чем не напечатать вовсе. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10 }, 'c1'),
+    use('click', { x: 20, y: 20 }, 'c2'),
+    use('type_text', { text: 'hello' }, 't1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the typing behind the refused click is dropped too', out.actions.length === 1,
+    JSON.stringify((out.actions || []).map((a) => a.id)));
+  check('and both refusals are answered', out.loop.mine.length === 2);
+}
+
+group('nothing follows a wait, and nothing follows an activate_window');
+{
+  const ask = scripted([answer([
+    use('wait', { ms: 5000 }, 'w1'),
+    use('type_text', { text: 'hello' }, 't1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a wait ends the turn it is in', out.actions.length === 1 && out.actions[0].kind === 'wait');
+  check('because the screen it left is not the one that was looked at',
+    JSON.stringify(out.loop.mine).includes('the point of waiting is that the screen changed'));
+
+  const ask2 = scripted([answer([
+    use('activate_window', { process: 'notepad' }, 'a1'),
+    use('type_text', { text: 'the note' }, 't2'),
+  ])]);
+  const out2 = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask: ask2 });
+  /* Единственное прицельное действие, которое падает честно - а агент, получив пачку, выполняет её до
+   * конца. Значит «активируй Блокнот, напечатай заметку» с непопавшей активацией напечатало бы заметку
+   * в то, что стояло впереди. */
+  check('and an activate_window ends it too', out2.actions.length === 1 && out2.actions[0].name === 'activate_window');
+  check('because it can find no such window and say so afterwards',
+    JSON.stringify(out2.loop.mine).includes('if no such window was found'));
+}
+
+group('a batch has a ceiling');
+{
+  const many = [use('click', { x: 1, y: 1 }, 'c0')];
+  for (let i = 1; i <= BATCH_MAX; i++) many.push(use('press_key', { key: 'a' }, 'k' + i));
+  const ask = scripted([answer(many)]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check(`at most ${BATCH_MAX} actions leave in one turn`, out.actions.length === BATCH_MAX,
+    String(out.actions.length));
+  check('and the rest are answered rather than silently dropped',
+    out.loop.mine.length === many.length - BATCH_MAX, String(out.loop.mine.length));
+}
+
+group('a finish behind a cut turn is not honoured');
+{
+  /* Ложный красный виден и оспорим, ложный зелёный - нет. Успех, обоснованный действиями, которых не
+   * было, не засчитывается: модель посмотрит на свежий снимок и решит заново. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10 }, 'c1'),
+    use('click', { x: 20, y: 20 }, 'c2'),
+    use('finish', { ok: true, said: 'Done it.' }, 'f1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the run does not end', !out.done, JSON.stringify(out.done || null));
+  check('and no ending is queued for afterwards', !out.loop.ending);
+  check('the finish is answered like anything else behind the cut',
+    out.loop.mine.length === 2 && JSON.stringify(out.loop.mine).includes('the turn was cut short'));
+}
+
+group('a finish behind a WHOLE batch is still honoured');
+{
+  /* Разница ровно в одном: здесь ничего не отрезали, значит всё, на чём стоит заявление, выполнено. */
+  const ask = scripted([
+    answer([
+      use('type_text', { text: 'the last word' }, 't1'),
+      use('press_key', { key: 'Enter' }, 'k1'),
+      use('finish', { ok: true, said: 'Sent it.' }, 'f1'),
+    ]),
+  ]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the actions go first', out.actions && out.actions.length === 2);
+  check('and the ending waits for them', out.loop.ending && out.loop.ending.ok === true);
+
+  const done = await advance({
+    loop: out.loop, shot: SHOT, windows: WINDOWS, ask: scripted([]),
+    results: [{ id: 't1', output: 'done', moved: true }, { id: 'k1', output: 'done', moved: true }],
+  });
+  check('and is honoured once they are done, without buying another decision',
+    done.done && done.done.ok === true);
 }
 
 group('an action with no wire form is answered here, not sent');
