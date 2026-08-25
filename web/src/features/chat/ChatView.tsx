@@ -770,8 +770,18 @@ export const ChatView = ({ embedded = false, opening, team, person, onMinimize, 
               flow it ran, and how it ended.
             </Typography>
             <div className="mt-3 flex flex-wrap gap-1.5">
+              {/* A Button does not wrap its own label, and one of these is a whole question - 275px of it,
+                  in the 262px the assistant gets over a side panel. Allowed to wrap and to sit left, which
+                  is how a question reads anyway. */}
               {(team ? TEAM_SUGGESTIONS : SUGGESTIONS).map((s) => (
-                <Button key={s} variant="outline" size="sm" disabled={!model || asking} onClick={() => void ask(s)}>
+                <Button
+                  key={s}
+                  variant="outline"
+                  size="sm"
+                  className="h-auto max-w-full whitespace-normal py-1.5 text-left"
+                  disabled={!model || asking}
+                  onClick={() => void ask(s)}
+                >
                   {s}
                 </Button>
               ))}

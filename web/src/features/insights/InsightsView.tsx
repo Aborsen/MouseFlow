@@ -557,6 +557,43 @@ const Meter = ({ fraction, fill }: { fraction: number; fill: string }) => (
   </div>
 );
 
+/* A table that becomes a list of cards where there is no room to be a table.
+ *
+ * Above `md` these are the same tables they were and none of this applies. Below it the SHAPE changes
+ * rather than the width: seven columns in the 260px the extension's panel can give them is not a narrow
+ * table, it is a row you scroll sideways to read, which is not reading. So the row becomes a card, every
+ * cell carries its own heading from `data-label`, and the header row goes - a heading over a stack of
+ * cards names nothing.
+ *
+ * The same change ce04fca made to the skill and member rows. Those are grids, so a `md:grid-cols-[…]` was
+ * enough; a real <table> has to have its display overridden instead, which is the rest of this. ONE
+ * constant for three tables - the alternative was a second rendering of every row, and a second copy of a
+ * row is a copy that drifts.
+ *
+ * EVERY CELL NEEDS `data-label`, and this is the one thing to get wrong: `attr()` on a missing attribute
+ * is the empty string, so a forgotten one does not fail, it renders a number with nothing naming it -
+ * worse than the table it replaced. The first cell of each row is the name, opts out by having no label,
+ * and takes the whole width above the rest.
+ */
+const CARD_ROWS_BELOW_MD = [
+  'max-md:block',
+  '[&_thead]:max-md:hidden',
+  '[&_tbody]:max-md:block',
+  /* No border below md: the row's own `border-b last:border-0` would leave the last card with none, and
+     fighting it with another border rule is two rules for one edge. A card is its background instead. */
+  '[&_tr]:max-md:mb-1.5 [&_tr]:max-md:block [&_tr]:max-md:rounded-lg [&_tr]:max-md:border-0',
+  '[&_tr]:max-md:bg-surface-card2 [&_tr]:max-md:px-3 [&_tr]:max-md:py-2',
+  '[&_tr:last-child]:max-md:mb-0',
+  '[&_td]:max-md:flex [&_td]:max-md:items-center [&_td]:max-md:justify-between [&_td]:max-md:gap-3',
+  /* break-words, because the first column is a name and a name here can be a URL: app.hubspot.com as
+     one unbreakable token was 20px past the edge of its own card. */
+  '[&_td]:max-md:w-auto [&_td]:max-md:break-words [&_td]:max-md:px-0 [&_td]:max-md:py-0.5',
+  '[&_td]:max-md:before:shrink-0 [&_td]:max-md:before:text-[0.76rem] [&_td]:max-md:before:font-normal',
+  '[&_td]:max-md:before:text-ink-inactive [&_td]:max-md:before:content-[attr(data-label)]',
+  '[&_td:first-child]:max-md:mb-1 [&_td:first-child]:max-md:block',
+].join(' ');
+
+
 /* --------------------------------------------------------------------------- the page */
 
 /* Today, 7 days, and a calendar. 30 and 90 were here and are gone: three presets plus Custom is four
@@ -913,7 +950,10 @@ export const InsightsView = () => {
           * A segmented pair while there is one team to switch to, a select past that: five teams as five
           * buttons is a control that wraps under the range picker and pushes the page down a line. */}
         {teams.length > 0 && (
-          <div className="flex items-center gap-1 rounded-lg border-stroke border bg-surface-card p-1">
+          /* Wrapping, and the selects allowed to shrink: this group is only ever three controls wide when
+            * a team is being shown, and then it was 324px of min-content in a 236px header. Two lines is
+            * the honest answer at that width; the `max-w` above keeps it one line wherever it fits. */
+          <div className="flex flex-wrap items-center gap-1 rounded-lg border-stroke border bg-surface-card p-1">
             <button
               type="button"
               onClick={() => setScope({ kind: 'mine' })}
@@ -930,7 +970,7 @@ export const InsightsView = () => {
                 onClick={() => setScope({ kind: 'team', id: teams[0].id })}
                 aria-pressed={scope.kind === 'team'}
                 title={`Everybody in ${teams[0].name}. Owners and admins only.`}
-                className={cn(PRESET, 'flex items-center gap-1.5 max-w-[14rem]',
+                className={cn(PRESET, 'flex min-w-0 items-center gap-1.5 max-w-[14rem]',
                   scope.kind === 'team' ? PRESET_ON : PRESET_OFF)}
               >
                 <Users className="size-3.5 shrink-0" />
@@ -941,7 +981,7 @@ export const InsightsView = () => {
                 value={scope.kind === 'team' ? scope.id : ''}
                 onChange={(e) => setScope(e.target.value ? { kind: 'team', id: e.target.value } : { kind: 'mine' })}
                 aria-label="Which team’s numbers"
-                className={cn(PRESET, 'max-w-[14rem] cursor-pointer',
+                className={cn(PRESET, 'min-w-0 max-w-[14rem] cursor-pointer',
                   scope.kind === 'team' ? PRESET_ON : PRESET_OFF)}
               >
                 <option value="">A team…</option>
@@ -962,7 +1002,7 @@ export const InsightsView = () => {
                   : was))}
                 aria-label="Which member’s numbers"
                 title="Narrow every number on this page to one member of the team"
-                className={cn(PRESET, 'max-w-[13rem] cursor-pointer border-stroke border-s ps-2',
+                className={cn(PRESET, 'min-w-0 max-w-[13rem] cursor-pointer border-stroke border-s ps-2',
                   personShown ? PRESET_ON : PRESET_OFF)}
               >
                 <option value="">Everybody</option>
@@ -1207,7 +1247,7 @@ export const InsightsView = () => {
                     <Quiet>This team has nobody in it yet.</Quiet>
                   ) : (
                     <div className="overflow-x-auto">
-                      <table className="w-full min-w-[620px] border-collapse text-[0.85rem]">
+                      <table className={cn('w-full border-collapse text-[0.85rem] md:min-w-[620px]', CARD_ROWS_BELOW_MD)}>
                         <thead>
                           <tr className="bg-table-header-bg text-ink-secondary">
                             <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Person</th>
@@ -1236,11 +1276,11 @@ export const InsightsView = () => {
                                     {row.role}
                                   </span>
                                 </td>
-                                <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.recordings}</td>
-                                <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.createdSkills}</td>
-                                <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">{row.runs}</td>
-                                <td className="w-[20%] px-2.5 py-2">
-                                  <div className="flex items-center gap-2">
+                                <td data-label="Recordings" className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.recordings}</td>
+                                <td data-label="Skills" className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.createdSkills}</td>
+                                <td data-label="Runs" className="px-2.5 py-2 text-right text-ink-primary tabular-nums">{row.runs}</td>
+                                <td data-label="Finished" className="px-2.5 py-2 md:w-[20%]">
+                                  <div className="flex items-center gap-2 max-md:min-w-0 max-md:flex-1">
                                     <Meter
                                       fraction={rate}
                                       fill={row.failed > 0 && rate < 0.8 ? 'bg-fb-attention' : 'bg-fb-green'}
@@ -1255,10 +1295,10 @@ export const InsightsView = () => {
                                     </span>
                                   </div>
                                 </td>
-                                <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
+                                <td data-label="Agent time" className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
                                   {row.agentHours > 0 ? `${row.agentHours.toFixed(row.agentHours >= 10 ? 0 : 1)} h` : '—'}
                                 </td>
-                                <td className="px-2.5 py-2 text-right text-ink-secondary">
+                                <td data-label="Last run" className="px-2.5 py-2 text-right text-ink-secondary">
                                   {fmtWhen(row.lastRun)}
                                 </td>
                               </tr>
@@ -1432,7 +1472,7 @@ export const InsightsView = () => {
                   ) : (
                     <>
                     <div className="overflow-x-auto">
-                      <table className="w-full min-w-[520px] border-collapse text-[0.85rem]">
+                      <table className={cn('w-full border-collapse text-[0.85rem] md:min-w-[520px]', CARD_ROWS_BELOW_MD)}>
                         <thead>
                           <tr className="bg-table-header-bg text-ink-secondary">
                             <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Where</th>
@@ -1451,15 +1491,15 @@ export const InsightsView = () => {
                                   {row.kind}
                                 </span>
                               </td>
-                              <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
+                              <td data-label="Recordings" className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
                                 {row.recordings}
                               </td>
-                              <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.runs}</td>
-                              <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
+                              <td data-label="Runs" className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.runs}</td>
+                              <td data-label="Time" className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
                                 {fmtSeconds(row.seconds)}
                               </td>
-                              <td className="w-[26%] px-2.5 py-2">
-                                <div className="flex items-center gap-2">
+                              <td data-label="Share" className="px-2.5 py-2 md:w-[26%]">
+                                <div className="flex items-center gap-2 max-md:min-w-0 max-md:flex-1">
                                   <Meter fraction={asFraction(row.share)} fill="bg-brand-primary" />
                                   <span className="shrink-0 text-[0.78rem] text-ink-inactive tabular-nums">
                                     {pct(asFraction(row.share))}
@@ -1478,13 +1518,13 @@ export const InsightsView = () => {
                               <td className="px-2.5 py-2">
                                 <span className="text-ink-secondary">Could not be placed</span>
                               </td>
-                              <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
-                              <td className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
-                              <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
+                              <td data-label="Recordings" className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
+                              <td data-label="Runs" className="px-2.5 py-2 text-right text-ink-inactive tabular-nums">—</td>
+                              <td data-label="Time" className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">
                                 {fmtSeconds(data.unattributed.seconds)}
                               </td>
-                              <td className="w-[26%] px-2.5 py-2">
-                                <div className="flex items-center gap-2">
+                              <td data-label="Share" className="px-2.5 py-2 md:w-[26%]">
+                                <div className="flex items-center gap-2 max-md:min-w-0 max-md:flex-1">
                                   <Meter fraction={asFraction(data.unattributed.share)} fill="bg-ink-inactive/45" />
                                   <span className="shrink-0 text-[0.78rem] text-ink-inactive tabular-nums">
                                     {pct(asFraction(data.unattributed.share))}
@@ -1574,7 +1614,7 @@ export const InsightsView = () => {
                   </Quiet>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[560px] border-collapse text-[0.85rem]">
+                    <table className={cn('w-full border-collapse text-[0.85rem] md:min-w-[560px]', CARD_ROWS_BELOW_MD)}>
                       <thead>
                         <tr className="bg-table-header-bg text-ink-secondary">
                           <th className="rounded-l-md px-2.5 py-2 text-left font-medium">Skill</th>
@@ -1602,13 +1642,13 @@ export const InsightsView = () => {
                                 </span>
                               </td>
                               {teamShown && !personShown && (
-                                <td className="px-2.5 py-2 text-ink-secondary">
+                                <td data-label="Whose" className="px-2.5 py-2 text-ink-secondary">
                                   {whose(row.ownerId, people)}
                                 </td>
                               )}
-                              <td className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.runs}</td>
-                              <td className="w-[24%] px-2.5 py-2">
-                                <div className="flex items-center gap-2">
+                              <td data-label="Runs" className="px-2.5 py-2 text-right text-ink-secondary tabular-nums">{row.runs}</td>
+                              <td data-label="Finished" className="px-2.5 py-2 md:w-[24%]">
+                                <div className="flex items-center gap-2 max-md:min-w-0 max-md:flex-1">
                                   <Meter
                                     fraction={rate}
                                     fill={row.failed > 0 && rate < 0.8 ? 'bg-fb-attention' : 'bg-fb-green'}
@@ -1623,10 +1663,10 @@ export const InsightsView = () => {
                                   </span>
                                 </div>
                               </td>
-                              <td className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
+                              <td data-label="Typical" className="px-2.5 py-2 text-right text-ink-primary tabular-nums">
                                 {fmtSeconds(row.medianSeconds)}
                               </td>
-                              <td className="px-2.5 py-2 text-right text-ink-secondary">
+                              <td data-label="Last run" className="px-2.5 py-2 text-right text-ink-secondary">
                                 {fmtWhen(row.lastRunAt)}
                               </td>
                             </tr>
