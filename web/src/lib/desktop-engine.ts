@@ -52,6 +52,7 @@ import {
   screenMessage,
   toolsFor,
   truncatedAt,
+  actionReport,
   waitReport,
 } from '../../../api/_brain.mjs';
 import type { ShotFrame } from '../../../api/_brain.d.mts';
@@ -520,6 +521,20 @@ async function runWave(o: {
         continue;
       }
 
+      /* THE SCREEN BEFORE THE ACTION, so the result can say whether anything happened.
+       *
+       * A run watched live spent a minute renaming a spreadsheet: it clicked the title, double-clicked it,
+       * selected all, typed, opened File → Rename and typed again - ten actions at six to nine seconds
+       * each, none of which landed, because the caret was never in the field. Nothing told it. `do` has no
+       * return value to check and never has; the only way it could tell was by reading the next screenshot,
+       * which it did, and misread, and tried again.
+       *
+       * /pulse is 64×36 grey samples and answers in about 30ms. Against a decision that costs seconds that
+       * is free, and it is the one signal that was missing. */
+      let settled = false;
+      let before: Uint8Array | null = null;
+      try { before = decodeGrid((await machine.pulse()).grid); } catch (_) { before = null; }
+
       const body = actionBody(use.name ?? '', (use.input ?? {}) as Record<string, unknown>, frame);
       if (!body) {
         results.push({
@@ -531,19 +546,38 @@ async function runWave(o: {
 
       try {
         await machine.do(body);
-        results.push({ type: 'tool_result', tool_use_id: use.id, content: 'done' });
+        /* The pause first: a screen compared the instant after a click has not had time to react, and
+         * would report every action as having changed nothing. This is the same 350ms the loop already
+         * waits before its next picture, moved above the comparison rather than added to it. */
+        await new Promise((done) => setTimeout(done, 350));
+        settled = true;
+
+        let after: Uint8Array | null = null;
+        try { after = decodeGrid((await machine.pulse()).grid); } catch (_) { after = null; }
+
+        /* STATED, NOT JUDGED. Some actions correctly change nothing on screen - a copy to the clipboard,
+         * a click on something already selected - so this reports what was observed and leaves the reading
+         * to the model. Saying "that failed" would be this loop guessing about applications it cannot see
+         * inside, which is how a working step gets abandoned. */
+        const still = before && after && !moved(before, after);
+        results.push({
+          type: 'tool_result',
+          tool_use_id: use.id,
+          /* The words live in the brain, like waitReport's: the two drivers must tell the model the same
+           * thing, or one of them teaches it a habit the other punishes. */
+          content: actionReport(still ? false : true),
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'failed';
         onEvent({ type: 'error', message: `${use.name} failed: ${message}` });
         results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: message });
       }
 
-      /* Before the settling pause, not after: the 350ms is a fixed cost of the LOOP, and folding it into
-       * the action would make every action look 350ms slower than it is. */
       trace.ms!.act = Date.now() - actAt;
 
-      // A moment for the screen to react before the next picture, or it shows the state before this.
-      await new Promise((done) => setTimeout(done, 350));
+      /* A moment for the screen to react before the next picture, or it shows the state before this. Skipped
+       * when the comparison above already waited it out - one pause, not two. */
+      if (!settled) await new Promise((done) => setTimeout(done, 350));
     }
 
     messages.push({ role: 'user', content: results });

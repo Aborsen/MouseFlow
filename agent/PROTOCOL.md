@@ -281,6 +281,22 @@ that never arrived was reported as success and the model built its next decision
 platform's equivalent is, check it, and say what went wrong: on Windows, error 5 means an elevated window
 owns the foreground and error 0 means the screen is locked.
 
+### What an action answers with
+
+`{ id, output: "done", moved: true | false | null }`. `moved` is the 64×36 fingerprint compared either side
+of the action, taken **after** the 350 ms the agent already waits — compared before it, every action is
+judged before the screen has had a chance to react and all of them look inert.
+
+It is a **fact, not a sentence**: the wording the model reads is composed at the deployment, the same rule
+the wait follows, because two agents phrasing this differently teach the model two different habits. `null`
+means the fingerprint could not be taken, and "could not tell" is not "did not move" — the deployment reads
+it as an ordinary `done`.
+
+Why it exists: a run spent a minute renaming a spreadsheet through ten actions, none of which landed,
+because the caret was never in the field. `do` has no return value and never has, so the only evidence was
+the next screenshot. Some actions correctly change nothing — a copy to the clipboard, a click on something
+already selected — so this is reported as an observation and the reading is left to the model.
+
 ## `/windows` — why it exists
 
 A screenshot is not the whole truth: an application that is minimised or behind another window is invisible

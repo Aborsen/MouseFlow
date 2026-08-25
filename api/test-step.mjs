@@ -111,6 +111,39 @@ group('a finish that does not claim success is a failure that said why');
 /* "It sends a screenshot every four seconds" was the report. The agent answers /shot in tens of
  * milliseconds and this loop has no timer in it at all - so the four seconds were the decision, which was
  * established by subtracting one measurement from another. Every step carries its own now. */
+/* A run spent a minute renaming a spreadsheet, ten actions at six to nine seconds, none of which landed:
+ * the caret was never in the field and nothing told it. The screen fingerprint costs thirty milliseconds
+ * and is the signal that was missing - stated as an observation, because some actions correctly change
+ * nothing and calling those failures would abandon working steps. */
+group('an action that changed nothing says so');
+{
+  const ask = scripted([answer([use('click', { x: 1, y: 2 }, 'c1')])]);
+  const first = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  const seen = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  const second = await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS,
+    results: [{ id: 'c1', output: 'done', moved: false }], ask: seen,
+  });
+  const sent = JSON.stringify(seen.seen[0].messages);
+  check('the model is told the screen stood still',
+    /screen looks exactly as it did before/.test(sent));
+  check('and told what to do about it, rather than to try again',
+    /rather than doing the same thing again/.test(sent));
+  check('the run is not failed over it — some actions correctly change nothing',
+    !second.done || second.done.ok !== false);
+}
+{
+  const ask = scripted([answer([use('click', { x: 1, y: 2 }, 'c2')])]);
+  const first = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  const seen = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS,
+    results: [{ id: 'c2', output: 'done' }], ask: seen,
+  });
+  check('an agent too old to say gets an ordinary "done", not a claim about the screen',
+    !/screen looks exactly/.test(JSON.stringify(seen.seen[0].messages)));
+}
+
 group('a step says what it cost');
 {
   const slow = async () => {

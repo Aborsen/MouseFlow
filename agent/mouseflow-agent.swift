@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.5"
+let VERSION = "0.9.6"
 
 // ---------------------------------------------------------------- arguments
 
@@ -3120,13 +3120,24 @@ enum Courier {
         if line.isEmpty {
             return "{\"id\":\(jsonString(id)),\"isError\":true,\"output\":\"nothing to do\"}"
         }
+        /* The screen BEFORE, so the answer can say whether the action did anything.
+           The fingerprint is the same 64x36 the wait uses and costs about thirty milliseconds. */
+        let before = Screen.grid()
+
         if let bad = doAction(line) {
             return "{\"id\":\(jsonString(id)),\"isError\":true,\"output\":\(jsonString(bad))}"
         }
         /* A moment for the screen to react before the next picture, or it shows the state before this. The
-           same 350ms the app's own loop leaves. */
+           same 350ms the app's own loop leaves - and the comparison has to happen after it, or every action
+           is compared before the screen has had a chance to react and all of them look inert. */
         Thread.sleep(forTimeInterval: 0.35)
-        return "{\"id\":\(jsonString(id)),\"output\":\"done\"}"
+
+        /* A FACT, never a sentence. What the model is told is composed at the deployment, exactly as it is
+           for a wait - two agents phrasing this differently would teach it two different habits. Absent
+           when either fingerprint could not be taken: "could not tell" is not "did not move". */
+        var stirred = "null"
+        if let a = before, let b = Screen.grid() { stirred = jsonBool(moved(a, b)) }
+        return "{\"id\":\(jsonString(id)),\"output\":\"done\",\"moved\":\(stirred)}"
     }
 
     /* Waiting, done here rather than by asking the model to look again.

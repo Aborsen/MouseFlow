@@ -49,6 +49,7 @@ import {
   screenMessage,
   toolsFor,
   truncatedAt,
+  actionReport,
   waitReport,
 } from './_brain.mjs';
 import { DEFAULT_SHOT_W } from './_brain.mjs';
@@ -135,9 +136,15 @@ function resultBlocks(pending, said) {
     }
     /* A wait reports numbers, not a sentence: the wording is one of the things both drivers have to say
      * identically, so it is composed here from what the agent measured. */
+    /* An ordinary action reports whether the screen stirred, in the same words the browser driver uses -
+     * composed here from the agent's fact for the same reason the wait is. `moved` is absent on any agent
+     * older than 0.9.6, and absent means "could not tell", which reads as an ordinary "done" rather than
+     * as a screen that stood still. */
     const content = p.name === 'wait' && got.quiet !== undefined
       ? waitReport(got)
-      : String(got.output == null ? 'done' : got.output).slice(0, 2000);
+      : got.output === 'done' || got.output == null
+        ? actionReport(got.moved === false ? false : undefined)
+        : String(got.output).slice(0, 2000);
     return { type: 'tool_result', tool_use_id: p.id, content, is_error: got.isError === true };
   });
 }

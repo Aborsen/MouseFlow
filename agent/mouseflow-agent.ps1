@@ -398,7 +398,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.5";
+        public const string Version = "0.9.6";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -3625,6 +3625,11 @@ namespace MouseFlow
             {
                 return "{\"id\":\"" + Agent.JsonText(id) + "\",\"isError\":true,\"output\":\"nothing to do\"}";
             }
+            /* The screen BEFORE, so the answer can say whether the action did anything. The same 64x36
+               fingerprint the wait uses, and it costs about as much as nothing. */
+            byte[] before = null;
+            try { before = Agent.Grid(); } catch { before = null; }
+
             string bad = Agent.DoAction(line);
             if (bad != null)
             {
@@ -3632,9 +3637,22 @@ namespace MouseFlow
                     + Agent.JsonText(bad) + "\"}";
             }
             /* A moment for the screen to react before the next picture, or it shows the state before this.
-               The same 350ms the app's own loop leaves. */
+               The same 350ms the app's own loop leaves - and the comparison has to come after it, or every
+               action is judged before the screen has had a chance to react and all of them look inert. */
             Thread.Sleep(350);
-            return "{\"id\":\"" + Agent.JsonText(id) + "\",\"output\":\"done\"}";
+
+            /* A FACT, never a sentence. The wording is composed at the deployment, exactly as it is for a
+               wait: two agents phrasing this differently would teach the model two different habits. Null
+               when either fingerprint could not be taken - "could not tell" is not "did not move". */
+            string stirred = "null";
+            try
+            {
+                byte[] after = Agent.Grid();
+                if (before != null && after != null) stirred = Moved(before, after) ? "true" : "false";
+            }
+            catch { stirred = "null"; }
+            return "{\"id\":\"" + Agent.JsonText(id) + "\",\"output\":\"done\",\"moved\":"
+                + stirred + "}";
         }
 
         /* Waiting, done here rather than by asking the model to look again.

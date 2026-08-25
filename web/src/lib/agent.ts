@@ -299,7 +299,15 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.9.5 is the build that notices where a page went.
+/* 0.9.6 is the build that says whether an action did anything.
+ *
+ * A watched run spent a minute renaming a spreadsheet - ten actions at six to nine seconds, none of which
+ * landed, because the caret was never in the field. Nothing could tell it: `do` has no return value and the
+ * only evidence was the next screenshot, which the model read and misread and tried again. This build takes
+ * the 64x36 fingerprint either side of an action and reports the fact; the deployment turns it into the one
+ * sentence both drivers say.
+ *
+ * The previous note, kept because the reason still holds. 0.9.5 is the build that notices where a page went.
  *
  * A recording knew when the work moved to a different APPLICATION and never when the same one changed what
  * it was showing - so a browser navigating from one page to the next left no trace, and a transcript could
@@ -338,7 +346,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.9.5';
+export const AGENT_WANTS = '0.9.6';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

@@ -306,6 +306,24 @@ export function waitReport(outcome) {
   return `Still changing after ${waited}s. Wait again with a longer limit if it needs longer.`;
 }
 
+/* Что действие дало, словами - одними и теми же на обоих путях.
+ *
+ * Наблюдение, а не приговор. Некоторые действия правильно не меняют экран - копирование в буфер, клик по
+ * уже выбранному, - поэтому здесь сообщается замеченное, а вывод оставлен модели. Сказать «не сработало»
+ * значило бы, что цикл гадает про приложение, внутрь которого не видит, и рабочий шаг будет брошен.
+ *
+ * Существует потому, что прогон потратил минуту на переименование таблицы: клик по заголовку, двойной
+ * клик, Ctrl+A, печать, File → Rename, снова печать - десять действий по шесть-девять секунд, ни одно из
+ * которых не дошло, потому что каретка так и не попала в поле. Сказать об этом было нечем: у `do` нет
+ * возвращаемого значения и никогда не было, а единственным способом узнать оставалось прочитать следующий
+ * скриншот - что модель и делала, ошибалась и повторяла. Отпечаток экрана стоит тридцать миллисекунд. */
+export const STILL_NOTE = 'done — but the screen looks exactly as it did before this. If that is not what '
+  + 'you expected, the action may not have reached where you aimed it: check that the thing you meant to '
+  + 'type into actually has the caret, rather than doing the same thing again.';
+
+/** What one action did, in the words both drivers use. `moved` absent means the agent could not tell. */
+export const actionReport = (moved) => (moved === false ? STILL_NOTE : 'done');
+
 /* --------------------------------------------------------------------------- reading the answer */
 
 /* What an HTTP failure means, in terms of the thing the user can do about it.
