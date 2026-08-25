@@ -2019,6 +2019,32 @@ check('the wizard can build an instruction from it without a control name',
   && /if \(line\.action === 'press'\) return !!line\.pressed;/.test(
     read('../web/src/features/record/SkillWizard.tsx')));
 
+/* A page title cut at ninety characters read as a title that ends there. "…press stop when the task is
+ * done. - Google Search" became "… - Go", which a reader has no way to recognise as shortened - and a page
+ * title is precisely a thing people recognise. */
+{
+  const seg = (window) => transcribe({
+    source: 'desktop', kind: 'recorded', name: 'x',
+    payload: {
+      events: [
+        { x: 1, y: 1, delayMs: 0, action: 'Focus', context: { app: 'Chrome', window } },
+        { x: 5, y: 5, delayMs: 200, action: 'Left Click Down', context: { app: 'Chrome', window, control: 'a' } },
+        { x: 5, y: 5, delayMs: 20, action: 'Left Click Release', context: { app: 'Chrome', window } },
+      ],
+    },
+  }).segments?.[0]?.where?.label;
+
+  const long = 'Capturing every click, drag, scroll and keystroke — press stop when the task is done. - Google Search';
+  check('a title too long to fit is shortened on a word, and says it was',
+    /…$/.test(seg(long)) && !/- Go…?$/.test(seg(long)));
+  check('and not left ending on a dangling separator',
+    !/[-–—,:;|]…$/.test(seg(long)));
+  check('a title that fits is left exactly alone',
+    seg('Short title - Google Chrome') === 'Short title - Google Chrome');
+  check('and one long word is still cut, because there is nowhere better to cut it',
+    seg('A'.repeat(200)).length <= 90 && /…$/.test(seg('A'.repeat(200))));
+}
+
 /* Two presses become one double-click, and the click count went down while the two context counters did
  * not - so a recording with one double-click printed "for 10 of the 9 clicks". Asserted as the invariant
  * rather than as those numbers: what must hold is that you cannot have read more clicks than there were. */

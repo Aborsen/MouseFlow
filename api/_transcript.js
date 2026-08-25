@@ -502,6 +502,26 @@ function pageLabel(url) {
  */
 const CTX_MAX = 90;
 
+/* Shortened on a WORD, and marked as shortened.
+ *
+ * `.slice(0, 90)` turned "Capturing every click … press stop when the task is done. - Google Search" into
+ * "… - Go". That does not read as a title that was cut; it reads as a title that ends there, and nothing on
+ * screen tells the reader which. A page title and a control name are both things a person recognises, and
+ * half a word is not recognisable.
+ *
+ * The floor stops a single long word from being chopped to nothing: with no space in the last 40% of the
+ * budget, the hard cut is the better answer. */
+const shorten = (v, max) => {
+  const said = String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  if (said.length <= max) return said;
+  const cut = said.slice(0, max - 1);
+  const space = cut.lastIndexOf(' ');
+  /* And without the separator the cut left dangling. A page title is usually "<page> - <site>", so cutting
+   * inside the site leaves "… -", and "… -…" reads as damage rather than as brevity. */
+  return (space > max * 0.6 ? cut.slice(0, space) : cut)
+    .replace(/[\s\-–—,:;|·]+$/, '') + '…';
+};
+
 /* Control kinds that name a shape rather than a thing. UIA's LocalizedControlType is already a human
  * word - "button", "edit box", "list item" - which is why there is no mapping table here, but these
  * particular words tell a reader nothing: "clicked the \"Send\" pane" is worse than "clicked \"Send\"". */
@@ -511,8 +531,10 @@ function ctxOf(raw) {
   const src = raw && typeof raw === 'object' ? raw : null;
   if (!src) return null;
   const app = oneLine(src.app, CTX_MAX);
-  const window = oneLine(src.window, CTX_MAX);
-  const control = oneLine(src.control, CTX_MAX);
+  /* The two a person reads as NAMES, shortened on a word rather than on a character. Consistently, so the
+   * segment key built from them still matches: two events on the same long title shorten identically. */
+  const window = shorten(src.window, CTX_MAX);
+  const control = shorten(src.control, CTX_MAX);
   const type = oneLine(src.type, 40);
   /* The four the agent has written since 0.8.0 and nothing read until now. `role` and `subrole` are the
    * UNLOCALISED kind of the thing that was actually hit, which is what lets an application that names none
@@ -523,7 +545,7 @@ function ctxOf(raw) {
   const role = oneLine(src.role, 40);
   const subrole = oneLine(src.subrole, 40);
   const container = oneLine(src.container ?? src.in, 40);
-  const containerName = oneLine(src.containerName ?? src.inName, CTX_MAX);
+  const containerName = shorten(src.containerName ?? src.inName, CTX_MAX);
   /* A type on its own is not context: "a button" with no name and no application says nothing a reader
    * could act on, and keeping it would make a step look resolved when it was not. */
   if (!app && !window && !control) return null;
