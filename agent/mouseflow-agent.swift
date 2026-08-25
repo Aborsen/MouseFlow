@@ -275,6 +275,54 @@ final class Pending {
     }
 }
 
+/* Keys that cannot spell anything, on any layout.
+ *
+ * The rule is that, and not "keys we happen to find useful": Return, Tab, Escape, the arrows and the page
+ * keys produce no character anywhere, so naming them reveals nothing a password could hide in. Every other
+ * key reaches the anonymous path.
+ *
+ * Codes are the system's own, from Carbon's Events.h (kVK_*), not from memory: Return 0x24, keypad Enter
+ * 0x4C, Tab 0x30, Delete 0x33, Escape 0x35, Home 0x73, PageUp 0x74, ForwardDelete 0x75, End 0x77,
+ * PageDown 0x79, and the arrows 0x7B-0x7E.
+ *
+ * OPTION IS NOT A COMMAND MODIFIER, deliberately. On many layouts ⌥ with a letter composes a character - ⌥e
+ * is an accent - so treating it as a command would be a way of reading text. Command and Control only. */
+let NAMED_KEYS: [Int64: String] = [
+    0x24: "Enter", 0x4C: "Enter", 0x30: "Tab", 0x35: "Escape",
+    0x33: "Backspace", 0x75: "Delete",
+    0x7B: "Left", 0x7C: "Right", 0x7D: "Down", 0x7E: "Up",
+    0x73: "Home", 0x77: "End", 0x74: "PageUp", 0x79: "PageDown",
+]
+
+/* The held modifiers, in a fixed order so the same chord always reads the same way. Shift is included for a
+ * NAMED key - Shift+Tab goes backwards, which is a different instruction - and is never enough on its own
+ * to make a character key readable. */
+func chordPrefix(_ flags: CGEventFlags) -> String {
+    var parts: [String] = []
+    if flags.contains(.maskCommand) { parts.append("Cmd") }
+    if flags.contains(.maskControl) { parts.append("Ctrl") }
+    if flags.contains(.maskAlternate) { parts.append("Alt") }
+    if flags.contains(.maskShift) { parts.append("Shift") }
+    return parts.isEmpty ? "" : parts.joined(separator: "+") + "+"
+}
+
+/* The letter of a Command or Control chord, asked of the event itself rather than of a table.
+ *
+ * A hardcoded keycode-to-letter map is a US-layout assumption that is wrong on the first machine that is
+ * not one. The event already knows what the key produces on THIS layout, so it is asked - and only ever
+ * when a command modifier is held, which is the whole of the safety argument. */
+func commandLetter(_ event: CGEvent) -> String? {
+    var length = 0
+    var chars = [UniChar](repeating: 0, count: 4)
+    event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &length, unicodeString: &chars)
+    guard length > 0, let scalar = Unicode.Scalar(chars[0]) else { return nil }
+    let text = String(Character(scalar)).uppercased()
+    /* Only a printable single character is a shortcut worth naming; a control code is what ⌃ produces and
+     * says nothing a reader could use. */
+    guard text.count == 1, text.rangeOfCharacter(from: .alphanumerics) != nil else { return nil }
+    return text
+}
+
 /* Events posted by this agent carry a mark, so a replay is not recorded as a person working.
  *
  * The Windows agent reads LLMHF_INJECTED off the hook struct. macOS has no such flag for "somebody
@@ -619,12 +667,18 @@ final class Recorder {
         if let e = toQueue { enqueue(Pending(target: e, x: Double(x), y: Double(y))) }
     }
 
-    /* A key was pressed, and when. NEVER which key.
+    /* A key that COULD spell something was pressed, and when. Never which key.
      *
-     * This is the whole design and it is not negotiable: "five of those ten minutes went on typing in
-     * Outlook" needs the timing and nothing else, and a tap that reads key codes has captured a password
-     * whether or not it stores one. The tap callback below is handed a CGEvent it could read the keycode
-     * from; it does not, and this function is not given one. */
+     * The guarantee is unchanged and it is still not negotiable: a tap that reads key codes has captured a
+     * password whether or not it stores one, so no key capable of producing a character is ever identified.
+     * Every letter, digit and punctuation mark comes here, including every Shift chord - a capital letter
+     * is still a letter. This function is not given the event, so it cannot read one even by accident.
+     *
+     * What changed is the OTHER set. Keys that cannot spell anything on any layout - Return, Tab, Escape,
+     * the arrows - and chords held with Command or Control, which are commands rather than text, are named
+     * by captureNamedKey below. The reason is not convenience: without them a recording cannot know that
+     * the work ended by pressing Send, so a skill made from it silently stops one step short of doing the
+     * job, and the person finds out on a real machine. See NAMED_KEYS. */
     func captureKey() {
         var first: Ev?
         gate.lock()
@@ -646,6 +700,30 @@ final class Recorder {
         gate.unlock()
 
         if let e = first { enqueue(Pending(target: e, focused: true)) }
+    }
+
+    /* A key that carries no text, recorded BY NAME.
+     *
+     * Never coalesced, unlike a run of typing: two presses of Return are two things that happened, and
+     * folding them into one would lose a step. Each one resolves the focused element, because "pressed
+     * Enter" is only an instruction when it says where. */
+    func captureNamedKey(_ name: String) {
+        var pending: Ev?
+        gate.lock()
+        if recording {
+            let now = elapsedMs
+            let e = Ev()
+            e.x = lastX
+            e.y = lastY
+            e.delayMs = buffer.isEmpty ? 0 : (now - lastStamp)
+            e.action = "Key " + name
+            buffer.append(e)
+            lastStamp = now
+            pending = e
+        }
+        gate.unlock()
+
+        if let e = pending { enqueue(Pending(target: e, focused: true)) }
     }
 
     // ---------------------------------------------------------------- resolver
@@ -2308,6 +2386,24 @@ final class Replayer {
             gate.lock(); unplayable += 1; gate.unlock()
 
         default:
+            /* A key recorded BY NAME - "Key Enter", "Key Cmd+S" - is played. Anonymous typing is not, and
+             * cannot be: the case above catches "Key Down" FIRST, which matters more than it looks. Parsed
+             * naively, that legacy action reads as a key called "Down" and a replay of somebody typing
+             * would press the down arrow once per keystroke. Order is the guard, and the guard is tested. */
+            if event.action.hasPrefix("Key "), event.action != "Key Down" {
+                let spec = String(event.action.dropFirst(4))
+                var parts = spec.split(separator: "+").map(String.init)
+                let name = parts.popLast() ?? ""
+                let mods = Set(parts.map { $0.lowercased() })
+                if Input.key(name, ctrl: mods.contains("ctrl"), shift: mods.contains("shift"),
+                             alt: mods.contains("alt"), cmd: mods.contains("cmd"), rawCtrl: false) == nil {
+                    break
+                }
+                /* Input.key refused the name - an agent from a later build naming a key this one does not
+                 * know. Counted, not guessed at. */
+                gate.lock(); unplayable += 1; gate.unlock()
+                break
+            }
             gate.lock(); unplayable += 1; gate.unlock()
         }
         return true
@@ -2396,13 +2492,25 @@ private func tapCallback(
         let delta = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
         Recorder.shared.capture(action: delta >= 0 ? "Scroll Up" : "Scroll Down", x: x, y: y)
     case .keyDown:
-        /* A key was pressed, and when. Never which.
+        /* Two paths, and which one a key takes is decided by whether it can spell anything.
          *
          * One difference from Windows worth naming: a bare modifier arrives as .flagsChanged, not .keyDown,
          * and is not subscribed to here - so holding Shift alone is not counted as typing, where on Windows
          * it is. Both answers are defensible and the transcript only reads density and duration, so the
          * cheaper one wins. */
-        Recorder.shared.captureKey()
+        let code = event.getIntegerValueField(.keyboardEventKeycode)
+        let flags = event.flags
+        let commanded = flags.contains(.maskCommand) || flags.contains(.maskControl)
+        if let named = NAMED_KEYS[code] {
+            Recorder.shared.captureNamedKey(chordPrefix(flags) + named)
+        } else if commanded, let letter = commandLetter(event) {
+            /* Read ONLY under Command or Control. A chord is an instruction to the application - Save,
+             * Copy, Send - and nobody types a password holding Command. Without the modifier this branch is
+             * never reached and the key stays anonymous. */
+            Recorder.shared.captureNamedKey(chordPrefix(flags) + letter)
+        } else {
+            Recorder.shared.captureKey()
+        }
     default:
         break
     }
