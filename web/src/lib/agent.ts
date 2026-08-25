@@ -97,6 +97,52 @@ export class AgentError extends Error {
   }
 }
 
+/* Chrome 142 replaced Private Network Access with Local Network Access, a user permission, and a request
+ * from a public origin to 127.0.0.1 is refused until it is granted. Declaring the address space is the
+ * opt-in the spec asks for, and it doubles as the mixed-content exemption for an https page reaching
+ * http://127.0.0.1.
+ *
+ * It is NOT a way round the permission - measured, not assumed: from the deployed origin, with the agent
+ * answering curl on the same machine, a fetch with this option fails exactly like one without until the
+ * permission is granted. It is declared because the spec asks callers to declare it, not because it buys
+ * anything on its own.
+ *
+ * The option is unknown to browsers that do not implement it, and an unknown key in RequestInit is
+ * ignored rather than rejected - so this is safe to send everywhere and there is nothing to feature-detect.
+ */
+interface LoopbackInit extends RequestInit {
+  targetAddressSpace?: 'loopback' | 'local' | 'public';
+}
+
+/** Why a loopback call did not happen. `blocked` is the browser refusing; `silent` is nothing listening. */
+export type LoopbackTrouble = 'blocked' | 'ungranted' | 'silent' | 'unknown';
+
+/* Which of those it was.
+ *
+ * A refused request and a dead process are the SAME TypeError with the same message - "Failed to fetch" -
+ * so the failure itself cannot tell them apart, and treating both as "agent offline" is what sent people
+ * to reinstall an agent that was already running. The permission is the one thing that can distinguish
+ * them, so it is asked afterwards, on the way to explaining a failure that already happened.
+ *
+ * Read as an EXPLANATION, never as a gate. The state is `denied` before anyone has been asked, and it is
+ * `denied` on a loopback page where the requests demonstrably work - so gating on it would refuse to try
+ * on exactly the machines where trying succeeds. Asking only after a failure sidesteps both.
+ */
+export async function loopbackTrouble(): Promise<LoopbackTrouble> {
+  const anyNav = navigator as Navigator & {
+    permissions?: { query(d: { name: string }): Promise<{ state: string }> };
+  };
+  if (!anyNav.permissions?.query) return 'unknown';
+  try {
+    const { state } = await anyNav.permissions.query({ name: 'local-network-access' });
+    if (state === 'granted') return 'silent';
+    return state === 'denied' ? 'blocked' : 'ungranted';
+  } catch (_) {
+    /* A browser with no such permission to query has no Local Network Access to refuse either. */
+    return 'silent';
+  }
+}
+
 /** Per-endpoint deadlines. /do can legitimately take a while: it types character by character. */
 const DEADLINE: Record<string, number> = {
   '/health': 4000,
@@ -134,10 +180,11 @@ export async function agentCall<T>(port: number, path: string, options: CallOpti
     res = await fetch(agentBase(port) + path, {
       method: options.method ?? 'GET',
       mode: 'cors',
+      targetAddressSpace: 'loopback',
       signal: cutoff.signal,
       headers: options.contentType ? { 'content-type': options.contentType } : undefined,
       body: options.body,
-    });
+    } as LoopbackInit);
   } catch (err) {
     const aborted = err instanceof DOMException && err.name === 'AbortError';
     throw new AgentError(

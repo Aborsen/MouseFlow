@@ -8,8 +8,8 @@ import { Outlet, useRouterState } from '@tanstack/react-router';
 import { useState } from 'react';
 import { cn } from '@insightis/ui/cn';
 import { Typography } from '@insightis/ui/Typography';
-import { AGENT_WANTS } from '@/lib/agent';
-import { useAgent } from '@/lib/store';
+import { AGENT_WANTS, type LoopbackTrouble } from '@/lib/agent';
+import { askAgent, useAgent } from '@/lib/store';
 import { AccountProvider, isAuthPath, isPublicPath } from './AccountProvider';
 import { AppSidebar } from './AppSidebar';
 import { SettingsDialog, type SettingsScreen } from './SettingsDialog';
@@ -48,10 +48,49 @@ const Shell = () => {
   return <ShellFrame />;
 };
 
+/* What the pill says when there is no agent on the line.
+ *
+ * "Agent offline" used to cover four different situations, and the one it described accurately was the
+ * rarest. The other three all end with somebody reinstalling an agent that was already running, because
+ * that is the only instruction the words suggest. In particular a browser that refused the request and a
+ * machine with nothing listening produce the SAME TypeError, so the pill has to be told which it was
+ * rather than working it out from the failure.
+ *
+ * Tone matters as much as wording: red reads as broken, and "not looked yet" is not broken.
+ */
+const quiet = (asked: boolean, trouble: LoopbackTrouble | null) => {
+  if (!asked) {
+    return {
+      label: 'Check for agent',
+      title: 'Nothing has been asked yet. Click to look for the agent on this computer — your browser '
+        + 'may ask permission to reach the local network, which is the request being made.',
+      bad: false,
+    };
+  }
+  if (trouble === 'blocked') {
+    return {
+      label: 'Blocked by browser',
+      title: 'The agent may well be running: this browser refused the request to the local network. '
+        + 'Click for how to allow it again.',
+      bad: false,
+    };
+  }
+  if (trouble === 'ungranted') {
+    return {
+      label: 'Allow local network',
+      title: 'Reaching the agent needs this browser\'s local network permission. Click to try again and '
+        + 'answer Allow.',
+      bad: false,
+    };
+  }
+  return { label: 'Agent offline', title: 'Click for the command that starts it', bad: true };
+};
+
 const ShellFrame = () => {
   const [settings, setSettings] = useState<SettingsScreen | null>(null);
-  const { health, stale } = useAgent();
+  const { health, stale, asked, trouble } = useAgent();
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const away = quiet(asked, trouble);
 
   return (
     <div className="page-glow flex min-h-screen items-stretch bg-surface-page">
@@ -66,20 +105,27 @@ const ShellFrame = () => {
 
           <button
             type="button"
-            onClick={() => setSettings('connections')}
+            onClick={() => {
+              /* THE GESTURE. This press is what the browser's local-network prompt hangs off, which is the
+               * whole reason the first request waits for it. Asking before opening the panel means the
+               * prompt and the panel explaining it arrive together. */
+              if (!health) askAgent();
+              setSettings('connections');
+            }}
             title={
               stale
                 ? `This app expects ${AGENT_WANTS}. Click for the command that starts the current one.`
                 : health
                   ? 'The local agent is connected. To stop it, close its PowerShell window.'
-                  : 'Click for the command that starts it'
+                  : away.title
             }
             className={cn(
               'ms-auto inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[0.8rem]',
               'hover:border-stroke-hover',
               health && !stale && 'border-stroke text-ink-body',
               stale && 'border-fb-attention/50 text-fb-attention',
-              !health && 'border-fb-red/40 text-fb-red-text',
+              !health && !away.bad && 'border-stroke text-ink-body',
+              !health && away.bad && 'border-fb-red/40 text-fb-red-text',
             )}
           >
             <span
@@ -87,14 +133,15 @@ const ShellFrame = () => {
                 'size-[7px] rounded-full',
                 health && !stale && 'bg-fb-green',
                 stale && 'bg-fb-attention',
-                !health && 'bg-fb-red',
+                !health && !away.bad && 'bg-ink-inactive',
+                !health && away.bad && 'bg-fb-red',
               )}
             />
             {health
               ? stale
                 ? `Agent ${health.version} · update to ${AGENT_WANTS}`
                 : `Agent ${health.version} · ${health.screen.w}×${health.screen.h}`
-              : 'Agent offline'}
+              : away.label}
           </button>
         </header>
 

@@ -1887,6 +1887,38 @@ check('the attach panel branches on the platform the agent reports',
 check('and Windows is told about a tray, not a menu bar',
   /tray menu, in the notification area/.test(conn));
 
+/* Chrome 142 made reaching 127.0.0.1 from a public origin a user PERMISSION. All three defences below were
+ * described in the docs for weeks while none of them existed in the code, which is the failure these
+ * guard: the prompt was raised by a background poll on page load, got dismissed as inexplicable, and every
+ * later request failed instantly while the app said "Agent offline" about an agent answering curl. */
+group('the browser is asked for the local network on purpose, not by accident');
+const agentLib = read('../web/src/lib/agent.ts');
+const storeLib = read('../web/src/lib/store.ts');
+check('every call to the agent declares the address space it is crossing',
+  /targetAddressSpace: 'loopback'/.test(agentLib));
+check('nothing reaches loopback before a gesture, on an origin where a prompt can appear',
+  /if \(timer === null && armed\)/.test(storeLib)
+  && /export function askAgent/.test(storeLib));
+check('and refreshAgent cannot start one either, so the rule does not rest on its callers',
+  /export function refreshAgent\(\) \{\s*\n\s*if \(!armed\) return;/.test(storeLib));
+check('a loopback page is exempt, because same-address-space raises no prompt to wait for',
+  /const sameAddressSpace = \(\)/.test(storeLib)
+  && /let armed = sameAddressSpace\(\)/.test(storeLib));
+check('the permission is read to EXPLAIN a failure, never to decide whether to try',
+  /const trouble = status\.trouble \?\? await loopbackTrouble\(\)/.test(storeLib)
+  && !/if \([^)]*loopbackTrouble[^)]*\)[\s\S]{0,40}return;/.test(storeLib));
+check('and "Agent offline" is no longer the answer to four different questions',
+  /Blocked by browser/.test(read('../web/src/shell/AppLayout.tsx'))
+  && /Check for agent/.test(read('../web/src/shell/AppLayout.tsx')));
+
+/* The two agents answered the same question differently in the one header that decides whether a browser
+ * will talk to them at all. */
+check('both agents echo the caller origin rather than a bare star, and vary on it',
+  /if \(allow == "\*" && origin != null\)/.test(read('../agent/mouseflow-agent.ps1'))
+  && /if allow == "\*", let asked = origin \{ allow = asked \}/.test(read('../agent/mouseflow-agent.swift'))
+  && /Vary: Origin/.test(read('../agent/mouseflow-agent.ps1'))
+  && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
+
 /* A picture that 404s is the documentation's version of the same bug. */
 group('the documentation points at pictures that exist');
 const docsDir = fileURLToPath(new URL('../docs/product/', import.meta.url));

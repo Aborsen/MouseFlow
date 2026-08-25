@@ -11,7 +11,7 @@
  * here are the ones the old code already proved it needed.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { type AgentHealth, health, olderThan } from './agent';
+import { type AgentHealth, health, type LoopbackTrouble, loopbackTrouble, olderThan } from './agent';
 
 const KEY = 'mouseflow';
 
@@ -177,9 +177,35 @@ export interface AgentStatus {
   stale: boolean;
   /** How many polls in a row have failed - used to slow down rather than hammer a machine with no agent. */
   failures: number;
+  /** Whether anything has been asked yet. False means "not looked", which is not "not there". */
+  asked: boolean;
+  /** Why the last look failed, when the browser rather than the machine is the reason. */
+  trouble: LoopbackTrouble | null;
 }
 
-let status: AgentStatus = { health: null, stale: false, failures: 0 };
+/* WHETHER THE FIRST LOOPBACK CALL MAY HAPPEN ON ITS OWN.
+ *
+ * On a public origin - the deployed app - Chrome 142+ raises a permission prompt for the first request to
+ * 127.0.0.1. A prompt raised by a background health poll is a prompt with no visible cause: it appears on
+ * page load, beside nothing the user did, and dismissing it is the obvious move. Dismissed once it becomes
+ * `denied`, every later request fails instantly with no prompt at all, and the app says "Agent offline"
+ * for a machine whose agent answers curl perfectly well. There is no way back from inside the page.
+ *
+ * So on a public origin nothing is polled until a gesture asks for it, and the gesture is what the prompt
+ * is attached to.
+ *
+ * A LOOPBACK PAGE IS EXEMPT, and that is not a shortcut: a loopback page talking to loopback is the same
+ * address space, no permission exists to ask for, and no prompt can appear. Making development wait for a
+ * click would be waiting for something that is never coming.
+ */
+const sameAddressSpace = () =>
+  /^(localhost|127\.0\.0\.1|\[::1\]|.*\.localhost)$/i.test(location.hostname);
+
+let armed = sameAddressSpace();
+
+let status: AgentStatus = {
+  health: null, stale: false, failures: 0, asked: armed, trouble: null,
+};
 const watchers = new Set<() => void>();
 let timer: number | null = null;
 
@@ -187,9 +213,13 @@ async function poll() {
   const port = current.port;
   try {
     const body = await health(port);
-    status = { health: body, stale: olderThan(body.version), failures: 0 };
+    status = { health: body, stale: olderThan(body.version), failures: 0, asked: true, trouble: null };
   } catch (_) {
-    status = { health: null, stale: false, failures: status.failures + 1 };
+    /* Asked only on the FIRST failure of a run. The answer cannot change while the failures continue -
+     * a granted permission does not un-grant itself mid-poll - and asking on every tick would query a
+     * permission every two seconds for as long as the machine has no agent. */
+    const trouble = status.trouble ?? await loopbackTrouble();
+    status = { health: null, stale: false, failures: status.failures + 1, asked: true, trouble };
   }
   for (const watcher of watchers) watcher();
 
@@ -206,7 +236,9 @@ export function useAgent(): AgentStatus {
   useEffect(() => {
     const watcher = () => bump((n) => n + 1);
     watchers.add(watcher);
-    if (timer === null) {
+    /* `armed`, not just "no timer yet": mounting this hook is not a gesture. On the deployed app the first
+     * request waits for askAgent(), which a button calls. */
+    if (timer === null && armed) {
       timer = window.setTimeout(poll, 0);
     }
     return () => {
@@ -221,10 +253,33 @@ export function useAgent(): AgentStatus {
   return status;
 }
 
-/** Ask now rather than waiting for the next tick - after starting the agent, say. */
+/* Ask now rather than waiting for the next tick - after starting the agent, say.
+ *
+ * Does nothing while unarmed, so the "no loopback call before a gesture" rule holds however this is
+ * called. Every caller today IS inside a gesture; making the rule depend on that staying true is how it
+ * would quietly stop being true. Use askAgent() to look for the first time. */
 export function refreshAgent() {
+  if (!armed) return;
   if (timer !== null) clearTimeout(timer);
   timer = window.setTimeout(poll, 0);
 }
+
+/* Look for the agent because somebody asked to.
+ *
+ * MUST BE CALLED FROM A GESTURE on the deployed app, because the permission prompt it may raise is only
+ * comprehensible while the user still remembers pressing something. Calling it from an effect would put
+ * back exactly the bug this arrangement removes.
+ *
+ * Idempotent, and it also clears the remembered trouble: someone who has just granted the permission and
+ * pressed the button again is owed a fresh answer, not the reason the last attempt failed.
+ */
+export function askAgent() {
+  armed = true;
+  status = { ...status, trouble: null };
+  refreshAgent();
+}
+
+/** Whether the first look is still waiting on a gesture. */
+export const agentArmed = () => armed;
 
 export const uid = () => 'r' + Math.random().toString(36).slice(2, 10);

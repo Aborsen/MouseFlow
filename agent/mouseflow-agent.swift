@@ -3252,7 +3252,7 @@ struct Response {
     var body = ""
 }
 
-func respond(_ fd: Int32, _ res: Response) {
+func respond(_ fd: Int32, _ res: Response, origin: String? = nil) {
     let reason: String = {
         switch res.status {
         case 200: return "OK"
@@ -3270,11 +3270,22 @@ func respond(_ fd: Int32, _ res: Response) {
     head += "Content-Type: \(res.contentType); charset=utf-8\r\n"
     head += "Content-Length: \(bytes.count)\r\n"
     /* Echoed, never used to reject - the same as the Windows agent, and the same single seam the protocol
-     * says to leave for the authentication design that is being chosen. */
-    head += "Access-Control-Allow-Origin: \(allowOrigin)\r\n"
+     * says to leave for the authentication design that is being chosen.
+     *
+     * A BARE STAR IS REPLACED BY THE CALLER'S OWN ORIGIN when one was sent. The Windows agent has done this
+     * since it met Chrome's private-network preflight, which will not accept "*" as the answer; this side
+     * kept sending the star, so the two agents differed in exactly the place that decides whether a browser
+     * will talk to them at all. An unpinned agent still allows everyone - the star is what it means - but it
+     * now says so in the form a browser accepts. */
+    var allow = allowOrigin
+    if allow == "*", let asked = origin { allow = asked }
+    head += "Access-Control-Allow-Origin: \(allow)\r\n"
     head += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
     head += "Access-Control-Allow-Headers: content-type\r\n"
     head += "Access-Control-Max-Age: 600\r\n"
+    /* Because the answer above now depends on the request. Without this a cache could hand one origin's
+     * answer to another and the second would be refused for a reason nothing on either side records. */
+    head += "Vary: Origin\r\n"
     head += "Cache-Control: no-store\r\n"
     head += "Connection: close\r\n\r\n"
 
@@ -3290,7 +3301,7 @@ func respond(_ fd: Int32, _ res: Response) {
     }
 }
 
-func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, body: String)? {
+func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, body: String, origin: String?)? {
     var raw = [UInt8]()
     var chunk = [UInt8](repeating: 0, count: 4096)
     var headerEnd: Int?
@@ -3322,9 +3333,16 @@ func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, b
     }
 
     var length = 0
+    /* The Origin is read so it can be ECHOED, never so it can be used to reject: the agent's answer to
+     * who may talk to it is --allow-origin, checked elsewhere, and a second gate here would be a second
+     * place for the two agents to disagree. */
+    var origin: String?
     for line in lines.dropFirst() {
         let bits = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-        if bits.count == 2, bits[0].lowercased() == "content-length" { length = Int(bits[1]) ?? 0 }
+        guard bits.count == 2 else { continue }
+        let name = bits[0].lowercased()
+        if name == "content-length" { length = Int(bits[1]) ?? 0 }
+        if name == "origin", !bits[1].isEmpty { origin = bits[1] }
     }
 
     var body = [UInt8](raw[start...])
@@ -3333,7 +3351,7 @@ func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, b
         if n <= 0 { break }
         body.append(contentsOf: chunk[0..<n])
     }
-    return (method, path, query, String(bytes: body.prefix(length), encoding: .utf8) ?? "")
+    return (method, path, query, String(bytes: body.prefix(length), encoding: .utf8) ?? "", origin)
 }
 
 func find(_ haystack: [UInt8], _ needle: [UInt8]) -> Int? {
@@ -3740,7 +3758,7 @@ let acceptThread = Thread {
             let result = route(
                 method: request.method, path: request.path, query: request.query, body: request.body
             )
-            respond(client, result)
+            respond(client, result, origin: request.origin)
         }
     }
 }

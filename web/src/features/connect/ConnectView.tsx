@@ -30,7 +30,7 @@ import {
   AGENT_WANTS, MAC_STOP_COMMAND, MAC_TOOLS_COMMAND, autostartEnable, localFileCommand, macInstallCommand,
   macRestartCommand, olderThan, startCommand,
 } from '@/lib/agent';
-import { refreshAgent, useAgent, useConsole } from '@/lib/store';
+import { askAgent, refreshAgent, useAgent, useConsole } from '@/lib/store';
 /* Общее с панелью настроек: определение платформы, переключатель, строка с командой и ссылка на скачивание.
  * Вынесено туда после того, как выяснилось, что установочная команда живёт на ДВУХ экранах, а про macOS
  * узнал только один. */
@@ -47,7 +47,7 @@ interface Step {
 
 export const ConnectView = () => {
   const [state, update] = useConsole();
-  const { health, failures } = useAgent();
+  const { health, failures, asked, trouble } = useAgent();
   const navigate = useNavigate();
   const [said, setSaid] = useState<{ text: string; kind: 'good' | 'bad' } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -162,17 +162,59 @@ export const ConnectView = () => {
     note: mac
       ? 'Press ⌘ Space, type “Terminal”, press Enter. In that window press ⌘V to paste, then Enter. It prints a line or two, then sits quietly for ten to thirty seconds while it compiles — that silence is the compiler, not a hang. It then starts the agent in the background and tells you whether it answered, so the window can be closed afterwards.'
       : 'Press Win+X then I for a PowerShell window. Leave it open afterwards — closing it is how you stop the agent, and there is no other off switch.',
+    /* THE PROMPT IS EXPLAINED BEFORE IT APPEARS, and it appears because of a press.
+     *
+     * A spinner here used to say "Watching 127.0.0.1 for the agent…" from the moment the page loaded. On
+     * the deployed app that watching is what raises Chrome's local-network prompt, so the prompt arrived
+     * unattached to anything the user had done — and a prompt nobody can explain gets dismissed. Dismissed
+     * once, it is `denied` for good, and the screen then watches forever for an agent it will never be
+     * allowed to reach. Which reads, from the outside, as "the agent does not work on a Mac".
+     */
     body: !health ? (
-      <div>
-        <div className="flex flex-wrap items-center gap-2 text-[0.85rem] text-ink-secondary">
-          <Loader2 className="size-4 animate-spin" />
-          Watching 127.0.0.1:{state.port} for the agent…
-        </div>
-        {failures > 6 && (
-          <Typography variant="p" className="mt-1.5 max-w-[66ch] text-ink-inactive text-[0.82rem]">
-            Nothing yet. If your browser asked about local network access, choose Allow.
-            {mac && ' If Terminal showed the compiler complaining, paste that output back — it names the line.'}
-          </Typography>
+      <div className="flex flex-col gap-2">
+        {!asked ? (
+          <>
+            <Typography variant="p" className="max-w-[66ch] text-ink-secondary text-[0.85rem]">
+              Your browser will ask whether this page may reach devices on your local network. That prompt
+              is this request, and the answer has to be <strong className="text-ink-primary">Allow</strong> —
+              the agent runs on this computer, so reaching it is the only way the page can see it.
+            </Typography>
+            <div>
+              <Button size="sm" onClick={() => askAgent()}>Look for the agent</Button>
+            </div>
+          </>
+        ) : trouble === 'blocked' || trouble === 'ungranted' ? (
+          <>
+            <Typography variant="p" className="max-w-[66ch] text-fb-attention text-[0.85rem]">
+              {trouble === 'blocked'
+                ? 'This browser is refusing to reach the local network, so the agent cannot be seen from '
+                  + 'here even if it is running. Nothing is wrong with the agent and reinstalling it will '
+                  + 'not help.'
+                : 'The local network permission has not been granted yet.'}
+            </Typography>
+            <Typography variant="p" className="max-w-[66ch] text-ink-inactive text-[0.82rem]">
+              Click the settings icon at the left of the address bar, find{' '}
+              <strong className="text-ink-body">Local network access</strong> and set it to Allow. It is
+              also under Settings → Privacy and security → Site settings → Local network access. Then:
+            </Typography>
+            <div>
+              <Button size="sm" variant="ghost" onClick={() => askAgent()}>Try again</Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-2 text-[0.85rem] text-ink-secondary">
+              <Loader2 className="size-4 animate-spin" />
+              Watching 127.0.0.1:{state.port} for the agent…
+            </div>
+            {failures > 6 && (
+              <Typography variant="p" className="max-w-[66ch] text-ink-inactive text-[0.82rem]">
+                Nothing yet — the browser is letting the request through, so this is the agent not
+                answering rather than the browser refusing.
+                {mac && ' If Terminal showed the compiler complaining, paste that output back — it names the line.'}
+              </Typography>
+            )}
+          </>
         )}
       </div>
     ) : null,

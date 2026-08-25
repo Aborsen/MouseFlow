@@ -163,15 +163,20 @@ broken.
 What the app does about it:
 
 - Requests carry `targetAddressSpace: 'loopback'`, which also serves as the mixed-content exemption for an
-  `https` page reaching `http://127.0.0.1`.
+  `https` page reaching `http://127.0.0.1`. It DECLARES the hop; it does not grant it. Measured on Chrome
+  151 against a running agent: with the permission ungranted, a request carrying this option fails exactly
+  like one without it. It is sent because the spec asks callers to declare it, not because it buys anything
+  on its own.
 - **The first loopback request comes from a button press**, never from the background health poll. A
   permission prompt raised by a background fetch can be dismissed without the user understanding what it was
   for, and a page stuck on "Agent offline" because of an ungranted permission has no way back.
 - Step 2 pre-explains the prompt and shows the reset path (Settings → Privacy and security → Site settings
   → Local network access) for anyone who clicks Block.
-- `navigator.permissions.query({ name: 'local-network-access' })` is consulted **only as an optimisation**:
-  it reports `denied` before a grant, and reports `denied` on loopback pages where requests actually work.
-  Never gate functionality on it alone.
+- `navigator.permissions.query({ name: 'local-network-access' })` is asked **only to explain a failure that
+  already happened**, never to decide whether to try. It reports `denied` before anyone has been asked, and
+  `denied` on loopback pages where requests demonstrably work — so gating on it would refuse to try on
+  exactly the machines where trying succeeds. Asking afterwards is what lets the app separate "this browser
+  refused" from "nothing is listening", which are the same `TypeError` and used to be the same message.
 
 Managed fleets can skip the prompt with the `LocalNetworkAccessAllowedForUrls` Chrome policy.
 
