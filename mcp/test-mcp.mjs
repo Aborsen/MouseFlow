@@ -983,6 +983,66 @@ check('anything past that scrolls inside its own block',
 check('and the "N older ones are on the Record page" truncation is gone',
   !/older\{' '\}/.test(skillsView) && !/const READY_SHOWN/.test(skillsView));
 
+/* Publishing had no opposite for as long as it existed. The app said "the gallery listing stays until you
+ * withdraw it" on the screen where a skill is deleted, and there was no control anywhere - the only way out
+ * was a DELETE typed into a browser console against an endpoint nobody was told about. */
+group('a published skill can be taken back');
+const apiTs = read('../web/src/lib/api.ts');
+check('the app can ask the endpoint that has existed all along',
+  /export const galleryWithdraw/.test(apiTs)
+    && /method: 'DELETE'/.test(apiTs));
+/* One status for two cases - "not your skill" and "already withdrawn" - and from the browser they cannot be
+ * told apart. Somebody pressing Withdraw on a listing that is already gone wants the same outcome either
+ * way, and wants the app's record of it cleared most of all. */
+check('and a listing that is already gone is not reported as a failure',
+  /err\.status === 404\) return \{ ok: true, alreadyGone: true \}/.test(apiTs));
+
+check('the control is beside Republish, not filed under the ellipsis',
+  /\{listing && \([\s\S]{0,200}label="Withdraw"/.test(skillsView)
+    && skillsView.indexOf("{listing ? 'Republish' : 'Publish'}")
+      < skillsView.indexOf('label="Withdraw"'));
+/* Two presses, because the listing goes for everybody on the second one - and the SAME armed flag as Delete
+ * would cock both buttons of the row at once. */
+check('it asks twice, on a flag of its own',
+  /armed=\{armedWithdraw === flow\.id\}/.test(skillsView)
+    && /const \[armedWithdraw, setArmedWithdraw\]/.test(skillsView));
+/* `publishedAs` in the payload is the ONLY thing the app reads to know a skill is published: gallery_skill
+ * has no back-reference to the flow. Withdraw the listing and leave that behind, and the row goes on saying
+ * Published and offering to withdraw something that is not there. */
+check('and the app forgets it was published, or the row keeps claiming it is',
+  /delete payload\.publishedAs;/.test(skillsView) && /delete payload\.publishedAt;/.test(skillsView));
+check('cleared even when the gallery said it was already gone - especially then',
+  /alreadyGone\s*\n?\s*\?/.test(skillsView));
+/* And the sentence that used to point nowhere now points at the button. */
+check('the delete warning names where the listing is taken down',
+  /Withdraw on this[\s\S]{0,40}row is what takes that down/.test(skillsView));
+
+/* The mock has to be able to say no, or the second press was never a state anybody could look at. */
+const mockApi = read('../web/src/dev/mock-api.ts');
+check('the preview models a withdraw instead of waving it through',
+  /if \(req\.method === 'DELETE'\)/.test(mockApi)
+    && /withdrawnListings\.add\(id\)/.test(mockApi)
+    && /not your skill, or already withdrawn/.test(mockApi));
+check('and a withdrawn listing leaves the list, as the real query makes it',
+  /const live = GALLERY\.filter\(\(s\) => !withdrawnListings\.has\(s\.id\)\)/.test(mockApi));
+check('and one fixture is published, so the published half of the row exists at all',
+  /publishedAs: 'sk_dev_1'/.test(mockApi));
+
+/* An empty array is what `flows` is before the account has answered, so every branch asking "are there no
+ * skills?" was answering before it had been told. For a second and a half the page opened with the whole
+ * empty-state foundry and "Nothing on your account yet" above a list of five recordings. */
+group('the page does not say the account is empty before it has read it');
+check('it takes the flag that separates "empty" from "not yet told"',
+  /const \{ flows, loaded, readFailed, reload \} = useAccount\(\);/.test(skillsView));
+check('the foundry picks neither size until then',
+  /\{!loaded \? null : skills\.length === 0 \? \(/.test(skillsView));
+check('and the library says it is reading, rather than counting nothing',
+  /\{!loaded \? \([\s\S]{0,400}Reading…/.test(skillsView));
+/* A read that FAILED leaves `loaded` false for good, so "Reading…" would sit there for ever describing
+ * something the app has given up on. AccountProvider keeps `readFailed` for exactly this, and says so. */
+check('and a read that failed says that instead of reading for ever',
+  /readFailed[\s\S]{0,120}could not be read just now/.test(skillsView));
+
 /* The same treatment on the other table, because two tables of the same product sorting differently - or
  * one of them not sorting at all - is a difference somebody has to learn for no reason. */
 group('and the recordings table sorts the same way');

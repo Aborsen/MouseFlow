@@ -16,6 +16,10 @@ const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString();
  * сколько живёт dev-сервер. */
 const pushedFlows = new Map<string, unknown>();
 const deletedFlows = new Set<string>();
+/* Which gallery listings have been withdrawn since this server started. In memory like the rest: the point
+ * is that a withdraw is VISIBLE afterwards - the listing leaves the list and a second press is refused -
+ * not that it survives a restart. */
+const withdrawnListings = new Set<string>();
 const pushedRuns: unknown[] = [];
 
 /* Conversations, as the real store would hold them. In memory, so they last as long as the dev server does -
@@ -93,11 +97,18 @@ const FLOWS = [
     updated: hoursAgo(20),
     /* A created skill as extension/skills.js writes one: the goal with its variable parts lifted out by
      * parameterise(), the values that filled them as examples, and what one successful run did beside it as
-     * evidence. This is the shape the Structure fold turns into a tool definition. */
+     * evidence. This is the shape the Structure fold turns into a tool definition.
+     *
+     * AND IT IS PUBLISHED, which no fixture was: `publishedAs` is the only thing the app reads to know that,
+     * so without one the Published pill, Republish and Withdraw were all unreachable in the preview - three
+     * controls nobody could look at. The id matches a GALLERY listing below, because that is the pair the
+     * real thing forms. */
      payload: {
       version: 1,
       kind: 'created',
       name: 'Reply that the invoice is approved',
+      publishedAs: 'sk_dev_1',
+      publishedAt: hoursAgo(30),
       goalTemplate: 'Reply to {{recipient}} saying "{{text}}" and attach the latest invoice',
       params: [
         { name: 'recipient', type: 'email', example: 'accounts@northwind.example' },
@@ -358,18 +369,37 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
 
   if (url.startsWith('/api/gallery')) {
     const id = /[?&]id=([^&]+)/.exec(url)?.[1];
+
+    /* Withdraw, modelled rather than waved through. This route answered ANY method carrying an id with the
+     * skill itself, so a DELETE came back 200 and the caller was told a listing had been taken down that was
+     * still there - and the second press, which the real endpoint answers 404 for ("not your skill, or
+     * already withdrawn"), was never reachable. Both are states the button has to handle. */
+    if (req.method === 'DELETE') {
+      if (!id) return json(res, 400, { error: { message: 'which skill?' } });
+      const known = GALLERY.some((s) => s.id === id);
+      if (!known || withdrawnListings.has(id)) {
+        return json(res, 404, { error: { message: 'not your skill, or already withdrawn' } });
+      }
+      withdrawnListings.add(id);
+      return json(res, 200, { ok: true, withdrawn: id });
+    }
+
     if (id) {
       const skill = GALLERY.find((s) => s.id === id);
-      return skill ? json(res, 200, { ok: true, skill }) : json(res, 404, { error: { message: 'no such skill' } });
+      // Withdrawn is gone as far as a reader is concerned: the real query filters `withdrawn_at is null`.
+      return skill && !withdrawnListings.has(id)
+        ? json(res, 200, { ok: true, skill })
+        : json(res, 404, { error: { message: 'no such skill' } });
     }
     if (req.method === 'POST') return json(res, 201, { ok: true, skill: GALLERY[0] });
     /* Searches, because the field on the page does. A fixture that ignores ?q= makes a working search look
      * broken - the same class of lie as the sign-out mock that reported success and kept the session. Name
      * and description only, which is what the real index covers. */
     const asking = new URL(url, 'http://x').searchParams.get('q');
+    const live = GALLERY.filter((s) => !withdrawnListings.has(s.id));
     const matched = asking
-      ? GALLERY.filter((s) => (s.name + ' ' + s.description).toLowerCase().includes(asking.toLowerCase()))
-      : GALLERY;
+      ? live.filter((s) => (s.name + ' ' + s.description).toLowerCase().includes(asking.toLowerCase()))
+      : live;
     return json(res, 200, { ok: true, skills: matched, total: matched.length, shown: matched.length });
   }
 

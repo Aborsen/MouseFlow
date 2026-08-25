@@ -18,7 +18,7 @@ import { Pill } from '@/components/Pill';
 import { ArmedButton } from '@/components/ArmedButton';
 import { SortButton } from '@/components/SortButton';
 import { Said } from '@/components/Said';
-import { type Flow, galleryPublish, mintDeviceToken, push } from '@/lib/api';
+import { type Flow, galleryPublish, galleryWithdraw, mintDeviceToken, push } from '@/lib/api';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { listedInSkills } from '@/lib/flow-role';
 import { SearchField } from '@/components/SearchField';
@@ -470,7 +470,13 @@ const Structure = ({ skill, flowId, wire, onWire }: {
 };
 
 export const SkillsView = () => {
-  const { flows, reload } = useAccount();
+  /* `loaded` and not only `flows`, and that is the difference between "this account is empty" and "this page
+   * has not been told yet". Before /api/sync answers, `flows` is [] - so every branch below that asks
+   * `skills.length === 0` was answering a question it had no answer to, and answering it wrongly: for a
+   * second and a half the page opened with the whole empty-state foundry and a bar reading "Nothing on your
+   * account yet" ABOVE a list of five recordings, then collapsed into the real thing. Neither state was
+   * true; the truth had not arrived. */
+  const { flows, loaded, readFailed, reload } = useAccount();
   /* The recordings this browser holds. Two uses, and the first one is a guarantee rather than a caution:
    * a row this browser knows to be a recording is not listed here at all, so the delete button below cannot
    * be over one. See lib/flow-role.ts for why an UNSTAMPED row defaults the way it does. */
@@ -510,6 +516,12 @@ export const SkillsView = () => {
       .sort((a, b) => madeAt(b) - madeAt(a)),
     [local.recordings, flows],
   );
+
+  /* Которое объявление снимаем, и это ОТДЕЛЬНАЯ величина от `armed`, которой взводится Delete. Один флаг
+   * по id взвёл бы обе кнопки строки сразу, а удалить скилл и убрать его из галереи - два разных действия с
+   * разными последствиями: первое стирает скилл у тебя, второе прячет объявление у всех. */
+  const [armedWithdraw, setArmedWithdraw] = useState<string | null>(null);
+  const [withdrawing, setWithdrawing] = useState<string | null>(null);
 
   /* Которую запись превращаем в скилл. Единственный путь: буквальный повтор координат убран отсюда
    * совсем, так что «сделать скилл» везде значит одно и то же - открыть визард. Величина, а не флаг,
@@ -702,6 +714,57 @@ export const SkillsView = () => {
     }
   }, [reload]);
 
+  /* Убрать объявление из галереи - и стереть у себя память о том, что оно было.
+   *
+   * ДВА ДЕЙСТВИЯ, И ВТОРОЕ ОБЯЗАТЕЛЬНО. `publishedAs` в payload - единственное, по чему приложение знает,
+   * что скилл опубликован: у gallery_skill нет обратной ссылки на flow. Снять объявление и оставить эту
+   * запись значит, что строка и дальше говорит «Published» и предлагает снять то, чего уже нет.
+   *
+   * Чистится и когда галерея ответила «его там уже нет» - особенно тогда: ровно в этом состоянии строка
+   * врёт, и это единственный способ её починить. */
+  const withdraw = useCallback(async (flow: Flow) => {
+    const listing = publishedAs(flow);
+    if (!listing) return;
+    setWithdrawing(flow.id);
+    setSaid(null);
+    try {
+      const { alreadyGone } = await galleryWithdraw(listing);
+      const payload = { ...(flow.payload as Record<string, unknown>) };
+      delete payload.publishedAs;
+      delete payload.publishedAt;
+      const saved = await push({
+        flows: [{
+          id: flow.id,
+          source: flow.source,
+          kind: flow.kind,
+          name: flow.name,
+          description: flow.description,
+          origins: flow.origins,
+          created: flow.created,
+          payload,
+        }],
+      });
+      if (saved.problems.length) throw new Error(saved.problems.join('; '));
+      await reload();
+      setSaid({
+        text: alreadyGone
+          ? `"${flow.name}" was no longer in the gallery. This app's record of it is cleared, so the row `
+            + 'says what is true again.'
+          : `"${flow.name}" is out of the gallery. Copies people already installed keep working — `
+            + 'withdrawing hides the listing, it does not reach into their accounts.',
+        kind: 'good',
+      });
+    } catch (err) {
+      setSaid({
+        text: `It is still in the gallery: ${err instanceof Error ? err.message : 'the withdraw failed'}`,
+        kind: 'bad',
+      });
+    } finally {
+      setWithdrawing(null);
+      setArmedWithdraw(null);
+    }
+  }, [reload]);
+
   const remove = useCallback((flow: Flow) => removeMany([flow]), [removeMany]);
   const [token, setToken] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -807,8 +870,12 @@ export const SkillsView = () => {
         * Два размера, и это не украшение. В макете, по которому это сделано, библиотеки нет вовсе - там «No
         * skills yet» - то есть макет показывает ПУСТОЕ состояние. Копировать его буквально значило бы отдать
         * пол-экрана объяснению человеку с двадцатью скиллами. Поэтому при нуле скиллов страница выглядит как
-        * макет, а как только скилл появился, кузница сжимается в полосу и место уходит библиотеке. */}
-      {skills.length === 0 ? (
+        * макет, а как только скилл появился, кузница сжимается в полосу и место уходит библиотеке.
+        *
+        * И НИ ОДНОГО ИЗ ДВУХ, пока аккаунт не прочитан. Оба размера - утверждение о том, сколько у человека
+        * скиллов, а до ответа /api/sync это неизвестно; выбор «по умолчанию пусто» разворачивал большой блок
+        * и через секунду складывал его. Пустое место лучше неверного ответа, и оно не прыгает. */}
+      {!loaded ? null : skills.length === 0 ? (
         <section className="mb-4 overflow-hidden rounded-2xl border-stroke border bg-gradient-to-br from-surface-card via-surface-card to-brand-tertiary/[0.07] p-6">
           <div className="grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(20rem,32rem)_1fr]">
             <div className="min-w-0">
@@ -973,8 +1040,25 @@ export const SkillsView = () => {
         * because they are two things of the same kind and the page should say so.
         *
         * Only when there is a library to frame: at zero skills the bar below is already a card, and a card
-        * inside a card is a border nobody meant to draw. */}
-      {skills.length === 0 ? (
+        * inside a card is a border nobody meant to draw.
+        *
+        * And while the account is still being read, neither: "Reading…" in the same box, which is what
+        * TeamView says in the same situation. The alternative was the table with its own heading counting
+        * "0 skills" - a number, stated plainly, that was not the case. */}
+      {!loaded ? (
+        <div className="rounded-xl border-stroke border bg-surface-card px-4 py-3.5">
+          {/* `readFailed` and not just "Reading…", which is what AccountProvider keeps that flag FOR - its
+              own note says whoever would otherwise render "nothing here" should ask this first. A read that
+              failed leaves `loaded` false for good, so without this the page would sit saying it is reading
+              something it has given up on. */}
+          <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
+            {readFailed
+              ? 'Your account could not be read just now, so this page cannot say what is on it. It tries '
+                + 'again on its own; reloading also does.'
+              : 'Reading…'}
+          </Typography>
+        </div>
+      ) : skills.length === 0 ? (
         /* На всю ширину, а не колонкой слева.
          *
          * Это место, где на странице стоит ТАБЛИЦА, и текст, занимающий шестую часть той же строки, читается
@@ -1254,6 +1338,33 @@ export const SkillsView = () => {
                         {listing ? 'Republish' : 'Publish'}
                       </Button>
 
+                      {/* Beside Republish, and only when there is a listing to take down.
+                        *
+                        * NOT behind the "…", which is where this would have gone and where the tool
+                        * definitions used to be filed - see the note above about that being the product's
+                        * point under "more". The app has been telling people "the gallery listing stays
+                        * until you withdraw it" since publishing existed, and pointing at nothing: there
+                        * was no control anywhere, and the only way out was a DELETE typed into a console.
+                        * Publishing and unpublishing are one pair; they belong next to each other.
+                        *
+                        * Armed, because it is outward-facing - the listing goes for everybody on the second
+                        * press - and `ghost` at rest like the rest of the row, because nothing is destroyed:
+                        * the row keeps its withdrawn_at and installed copies go on working. */}
+                      {listing && (
+                        <ArmedButton
+                          label="Withdraw"
+                          armedLabel="Withdraw — press again"
+                          restingVariant="ghost"
+                          icon={<Lock className="size-4" />}
+                          armed={armedWithdraw === flow.id}
+                          onArm={() => setArmedWithdraw(flow.id)}
+                          onDisarm={() => setArmedWithdraw(null)}
+                          onConfirm={() => void withdraw(flow)}
+                          busy={withdrawing === flow.id}
+                          title="Take it out of the gallery. Copies people already installed keep working."
+                        />
+                      )}
+
                       <Button
                         variant={openRow === flow.id ? 'secondary' : 'ghost'}
                         size="sm"
@@ -1340,8 +1451,8 @@ export const SkillsView = () => {
                       {/* Only when it is cocked, and only what is true. Three separate facts, and the first
                         * one is the one that cost somebody a transcript: a recording and the skill listed
                         * here can be the same row, so deleting it here deletes the recording. A published
-                        * copy is a different thing on a different table and survives; withdrawing is in the
-                        * gallery. */}
+                        * copy is a different thing on a different table and survives; Withdraw on the row
+                        * is what takes that down. */}
                       {armed === flow.id && (
                         <Typography variant="p" className="mt-2 max-w-[76ch] text-fb-attention text-[0.78rem]">
                           {local.recordings.some((rec) => rec.id === flow.id) ? (
@@ -1352,7 +1463,10 @@ export const SkillsView = () => {
                             </>
                           ) : null}
                           This removes it from your account and from every machine that syncs.
-                          {listing ? ' The gallery listing stays until you withdraw it there.' : ''}
+                          {listing
+                            ? ' The gallery listing is a separate thing and survives this — Withdraw on this'
+                              + ' row is what takes that down.'
+                            : ''}
                         </Typography>
                       )}
                     </div>

@@ -282,6 +282,31 @@ export const galleryPublish = (skill: unknown, source?: 'extension' | 'desktop')
     body: JSON.stringify({ skill, source }),
   });
 
+/* Take your own listing out of the gallery. `DELETE /api/gallery?id=…`, and the author check lives in the
+ * endpoint's WHERE clause rather than in a branch, so this cannot take down somebody else's.
+ *
+ * IT IS NOT A DELETE, and the difference matters to whoever installed it: the row keeps its `withdrawn_at`
+ * and every copy already installed goes on working. Withdrawing hides the listing; it does not reach into
+ * other people's accounts.
+ *
+ * ALREADY GONE IS NOT A FAILURE. The endpoint answers 404 for "not your skill, or already withdrawn" - one
+ * status for two cases, and from here they cannot be told apart - but somebody pressing Withdraw on a
+ * listing that is no longer there wants the same outcome either way, and wants this app's record of it
+ * cleared most of all. So a 404 comes back as `alreadyGone`, and anything else still throws.
+ */
+export const galleryWithdraw = async (id: string): Promise<{ ok: true; alreadyGone: boolean }> => {
+  try {
+    await call<{ ok: true; withdrawn: string }>(
+      `/api/gallery?id=${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+    return { ok: true, alreadyGone: false };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return { ok: true, alreadyGone: true };
+    throw err;
+  }
+};
+
 /* ---------------------------------------------------------------------------- hours */
 
 /** Hours a run took. Measured, not estimated - every run has a start and a finish. */
