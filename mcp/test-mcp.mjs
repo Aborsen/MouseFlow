@@ -1248,15 +1248,46 @@ const GOAL_SKILL = {
   source: 'desktop',
   payload: { kind: 'created', goalTemplate: 'send a test email', fromRecording: 'r_1', steps: [] },
 };
-check('a skill made from a recording is judged on THAT recording’s addresses, passed in',
-  skillMd.portability(GOAL_SKILL).ok === false
+/* The address rule was written for a REPLAY: a list of clicks with no address cannot be started. A goal
+ * skill is not that - the sentence somebody wrote IS the instruction, and requiring a recorded URL demanded
+ * evidence this format never produces, which refused the easiest way anybody has to author a skill. */
+check('a skill written or dictated as a goal is portable on its own, with or without addresses',
+  skillMd.portability(GOAL_SKILL).ok === true
     && skillMd.portability(GOAL_SKILL, ['https://mail.google.com']).ok === true);
+check('and the addresses it does know still travel with it',
+  skillMd.portability(GOAL_SKILL, ['https://mail.google.com']).urls[0] === 'https://mail.google.com');
 check('and it no longer claims the desktop agent cannot write addresses, because it can',
   !/does not write down web addresses/.test(skillMd.portability(GOAL_SKILL).why)
   && !/does not write down web addresses/.test(read('../api/_skill-md.mjs').split('export function portability')[1]));
-check('a dictated flow is refused for the reason that is actually true of it',
-  /works from what is on screen rather than from addresses/.test(
-    skillMd.portability({ source: 'desktop', payload: { kind: 'created', fromRun: 'dr_1' } }).why));
+check('a dictated desktop flow is portable too — it is a goal, not a list of clicks',
+  skillMd.portability({ source: 'desktop', payload: { kind: 'created', fromRun: 'dr_1' } }).ok === true);
+check('only a recorded replay is refused, and it is told the goal path works',
+  skillMd.portability({ source: 'desktop', payload: { kind: 'recorded', events: [] } }).ok === false
+    && /written or dictated as a goal can be exported/.test(
+      skillMd.portability({ source: 'desktop', payload: { kind: 'recorded', events: [] } }).why));
+/* A dictated goal names where it happens the way a person does — "my gmail" — and a browser agent needs an
+ * address. Nothing recorded one, because nothing was recorded. So it is read off the goal, and the file has
+ * to say that is where it came from: an inferred address shown as a recorded one is a lie that reads as a
+ * fact. */
+const INFERRED = skillMd.skillMarkdown(
+  { kind: 'created', goalTemplate: 'send a test email from my gmail', params: [], origins: [] },
+  { name: 'send a test email' },
+  {},
+  { portable: true, urls: [], inferredUrls: ['https://mail.google.com'], desktopOnly: true },
+);
+check('an address read off the goal is listed, and labelled as read rather than observed',
+  /- https:\/\/mail\.google\.com/.test(INFERRED)
+  && /Read off the goal, not recorded/.test(INFERRED));
+check('a goal that needs a desktop says so in the file instead of being refused at the door',
+  /This may need a desktop, not a browser/.test(INFERRED)
+  && /do not improvise a web equivalent/.test(INFERRED));
+check('and recorded addresses are never presented as inferred ones',
+  !/Read off the goal/.test(skillMd.skillMarkdown(
+    { kind: 'created', goalTemplate: 'x', params: [], origins: [] },
+    { name: 'x' }, {},
+    { portable: true, urls: ['https://example.com'], inferredUrls: ['https://guess.example'] },
+  )));
+
 check('and the route reads the source recording rather than guessing',
   /where user_id = \$\{who\.id\} and client_id = \$\{cameFrom\}/.test(read('../api/skill-md.js'))
   && /portability\(flow, trail\)/.test(read('../api/skill-md.js')));

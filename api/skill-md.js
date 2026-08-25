@@ -38,6 +38,24 @@ const TRIGGER_TOOL = {
         description: 'Two to four sentences: when this is the right answer, and when it is not. Say plainly '
           + 'that it acts on a real computer, so it answers a request to DO something, never a question.',
       },
+      /* THE CONVERSION. A goal written in words says where it happens the way a person would - "my gmail",
+       * "our Notion" - and an agent with browser tools needs an address to open. Nothing recorded it,
+       * because nothing was recorded: the goal was spoken. So it is READ OFF THE GOAL, and the file says
+       * that is where it came from, because an inferred address presented as a recorded one is a lie that
+       * looks like a fact. */
+      webAddresses: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Only for a goal carried out in a browser: the addresses the goal implies, as bare '
+          + 'origins - "https://mail.google.com" for "my gmail". At most three, most likely first. Empty if '
+          + 'the goal names no recognisable web application, and empty rather than guessed.',
+      },
+      desktopOnly: {
+        type: 'boolean',
+        description: 'True when the goal needs applications on a computer rather than pages in a browser - '
+          + '"the spreadsheet on screen", Outlook the program, Finder. An agent with only browser tools '
+          + 'cannot carry that out, and the file has to say so instead of pretending.',
+      },
     },
     required: ['description', 'whenToUse'],
     additionalProperties: false,
@@ -150,7 +168,11 @@ async function handler(req, res) {
         role: 'user',
         text: portable
           ? `${briefOf(structure, flow.name)}\n\nIt will be carried out by an agent using its own browser `
-            + `tools, not by MouseFlow, at: ${portably.urls.slice(0, 6).join(', ')}`
+            + 'tools, not by MouseFlow'
+            + (portably.urls.length
+              ? `, at: ${portably.urls.slice(0, 6).join(', ')}`
+              : '. No address was recorded — read the addresses off the goal itself, and say so if the '
+                + 'goal needs desktop applications rather than web pages.')
           : briefOf(structure, flow.name),
       }],
       tools: [TRIGGER_TOOL],
@@ -173,7 +195,16 @@ async function handler(req, res) {
     /* Said, so the panel can show whether the trigger line was written or derived. A file whose description
      * came out of the fallback is worth knowing about before it is handed to an agent. */
     written: !!written.description,
-    text: skillMarkdown(structure, flow, written, { portable, urls: portably.urls }),
+    text: skillMarkdown(structure, flow, written, {
+      portable,
+      urls: portably.urls,
+      /* Kept apart from `urls` all the way to the page. They are different KINDS of fact - one was seen,
+       * one was worked out - and merging them into one list is how the second becomes the first. */
+      inferredUrls: portable && !portably.urls.length && Array.isArray(written.webAddresses)
+        ? written.webAddresses.slice(0, 3)
+        : [],
+      desktopOnly: portable && !!written.desktopOnly,
+    }),
   });
 }
 

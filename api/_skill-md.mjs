@@ -110,21 +110,29 @@ export function portability(flow, knownUrls) {
   const urls = Array.isArray(knownUrls) && knownUrls.length
     ? knownUrls
     : urlTrail((flow && flow.payload) || {});
-  if (urls.length) return { ok: true, urls, why: '' };
 
-  const created = flow && flow.payload && flow.payload.kind === 'created';
-  const fromRun = created && flow.payload.fromRun;
+  /* A SKILL WRITTEN IN WORDS IS ALREADY PORTABLE, and that is the whole of this branch.
+   *
+   * The address rule was written for a REPLAY: a list of clicks with no address cannot be started by an
+   * agent that has only browser tools, so it must not be shipped as one. A goal skill is not that. It says
+   * what to achieve in a sentence a person wrote - "send a test email from my gmail to …" - and an agent
+   * with browser tools can carry that out the same way a person would. Demanding a recorded URL demands
+   * evidence this format never produces, and it refused the easiest way anybody has to author a skill:
+   * saying it out loud.
+   *
+   * The generator already degrades correctly - "Where it happens" is simply left out when nothing is known
+   * - so the file this produces was always buildable. The gate was stricter than the thing it guarded.
+   */
+  if (flow && flow.payload && flow.payload.kind === 'created') {
+    return { ok: true, urls, why: '' };
+  }
+
+  if (urls.length) return { ok: true, urls, why: '' };
   return {
     ok: false,
     urls,
-    why: fromRun
-      ? 'this skill was made from a flow carried out on the desktop, where the agent works from what is on '
-        + 'screen rather than from addresses — so no web address was recorded and there is nothing for '
-        + 'another agent to open. A skill made from a recording that visited a page can be exported this way.'
-      : created
-        ? 'the recording this skill was made from visited no web address, so there is nothing for another '
-          + 'agent to open.'
-        : 'no web addresses were recorded, so there is nothing for another agent to open.',
+    why: 'this repeats recorded steps, and none of them landed on a web address — so there is nothing for '
+      + 'another agent to open. Skills written or dictated as a goal can be exported this way.',
   };
 }
 
@@ -150,6 +158,11 @@ export function skillMarkdown(structure, flow, written = {}, opts = {}) {
    * them: what has to be true first, what carries them out, and what going wrong looks like. */
   const portable = !!opts.portable;
   const urls = Array.isArray(opts.urls) ? opts.urls : [];
+  /* Read off the goal rather than recorded, and never merged with the line above. An address somebody's
+   * flow actually visited and an address a model worked out from a sentence are different kinds of fact,
+   * and presenting the second as the first is the failure this whole file is careful about. */
+  const inferred = Array.isArray(opts.inferredUrls) ? opts.inferredUrls : [];
+  const desktopOnly = !!opts.desktopOnly;
 
   const description = String(written.description || '').trim() || String(s.description || '').trim();
 
@@ -220,6 +233,26 @@ export function skillMarkdown(structure, flow, written = {}, opts = {}) {
     out.push('');
     out.push('Query strings were left out on purpose — they are where session tokens and one-time links '
       + 'live. If a flow needs one, add it here.');
+    out.push('');
+  } else if (portable && inferred.length) {
+    out.push('## Where it happens');
+    out.push('');
+    for (const u of inferred) out.push(`- ${u}`);
+    out.push('');
+    out.push('**Read off the goal, not recorded.** This skill was written as a sentence rather than '
+      + 'captured from a session, so nothing here was observed — these are the addresses the goal appears '
+      + 'to mean. Check the first one before acting on it, and if the user meant somewhere else, go there '
+      + 'instead.');
+    out.push('');
+  }
+
+  /* Said in the file rather than refused at the door. Whether a goal needs a desktop is a judgement, and a
+   * wrong judgement that BLOCKS costs somebody their export, while a wrong judgement that WARNS costs a
+   * sentence the reader can weigh. The agent reading this is the one holding the tools; it can decide. */
+  if (portable && desktopOnly) {
+    out.push('> **This may need a desktop, not a browser.** It was carried out through applications on a '
+      + 'computer rather than pages in a browser. If the steps below need something your browser tools '
+      + 'cannot reach, stop and tell the user — do not improvise a web equivalent.');
     out.push('');
   }
 

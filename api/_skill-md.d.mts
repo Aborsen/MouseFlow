@@ -26,6 +26,13 @@ export function skillFileName(name: string): string;
 export function skillMarkdown(
   structure: SkillMdStructure,
   flow: { name?: string },
-  written?: { description?: string; whenToUse?: string },
-  opts?: { portable?: boolean; urls?: readonly string[] },
+  written?: { description?: string; whenToUse?: string; webAddresses?: string[]; desktopOnly?: boolean },
+  opts?: {
+    portable?: boolean;
+    /** Addresses the flow actually visited. */
+    urls?: readonly string[];
+    /** Addresses read off the goal when none were recorded. Kept apart from `urls` on purpose. */
+    inferredUrls?: readonly string[];
+    desktopOnly?: boolean;
+  },
 ): string;
