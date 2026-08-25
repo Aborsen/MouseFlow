@@ -171,7 +171,8 @@ Small, visible in every screenshot, and worth a line each:
 ### `record-a-flow.md` and `skills.md`
 
 1. **There is one skill button on a recording, and it opens the wizard.** There used to be two — a literal
-   copy and the wizard. The literal copy still exists, on the Skills page, called **"Repeat it exactly"**.
+   copy and the wizard. The literal copy has since been removed from the product entirely, Skills page
+   included, so there is only ever one way to make a skill.
 2. **Play is not on the recording row.** It is in the panel with the repeat, speed and loop it obeys.
 3. Everything in Part 2 about the wizard.
 

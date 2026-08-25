@@ -48,16 +48,22 @@ When more exist than are shown, it says so — *"4 older ones are on the Record 
 truncation reads as "this is all of them". The ones hidden are the **oldest**, which is what makes the
 truncation acceptable.
 
-### Two outcomes, and the wizard
+### One outcome, and the wizard
 
 ![The wizard, step one](../img/record-skill-wizard.png)
 
 ![The wizard, step two](../img/record-skill-wizard-2.png)
 
-**Repeat it exactly** is the original: the recording's events, copied, replayed by screen position. Free,
-fast, literal — and it cannot type, because keystroke content is never stored
-([17 — Privacy](17-privacy-security.md)). A recording that typed replays without the typing and reports the
-skipped events as `unplayable`.
+There were two. **Repeat it exactly** copied the recording's events and replayed them by screen position:
+free, fast, literal — and unable to type, because keystroke content is never stored
+([17 — Privacy](17-privacy-security.md)), so a recording that typed replayed without the typing and reported
+the skipped events as `unplayable`. It is **gone**, with both buttons that offered it and the `saveAsSkill`
+builder behind them. Two outcomes under one word is a choice somebody makes before they know the difference,
+and the literal one broke whenever a window moved.
+
+What is left of it: the `dr_<recording id>` prefix, because skills made that way are on accounts already and
+`hasSkillFor()` has to recognise them — otherwise their recording returns to *Ready to become a skill* and
+invites the same work twice.
 
 **Make a skill** opens the wizard (`features/record/SkillWizard.tsx`), which asks for the part that was
 deliberately never watched. Three screens:

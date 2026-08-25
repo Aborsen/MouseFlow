@@ -29,7 +29,7 @@ import { useAccount } from '@/shell/AccountProvider';
 import { Page } from '@/shell/Surface';
 import { adoptRecording } from '@/features/record/adopt';
 import { zip } from './zip';
-import { describeRecording, hasSkillFor, saveAsSkill } from '@/features/record/save-as-skill';
+import { describeRecording, hasSkillFor } from '@/features/record/save-as-skill';
 import { SkillWizard } from '@/features/record/SkillWizard';
 import {
   type SkillStructure,
@@ -492,10 +492,6 @@ export const SkillsView = () => {
   /* Which row has its structure open. One at a time: two open panels push the list twice and the second is
    * never the one being read. */
   const [openRow, setOpenRow] = useState<string | null>(null);
-  /* Какая запись сейчас превращается в скилл. По одной: две одновременные записи в аккаунт по одной кнопке -
-   * это два прогона одного намерения, и второй не нужен. */
-  const [making, setMaking] = useState<string | null>(null);
-
   /* Записи, из которых скилла ещё НЕТ.
    *
    * Только такие: предложить «сделать скилл» из записи, у которой он есть, значит пригласить к дублю - а id
@@ -515,8 +511,9 @@ export const SkillsView = () => {
     [local.recordings, flows],
   );
 
-  /* Который скилл делаем визардом. Отдельная величина, а не флаг рядом с `making`: буквальный повтор
-   * сохраняется одним нажатием, а этот путь - разговор, и пока он идёт список должен жить дальше. */
+  /* Которую запись превращаем в скилл. Единственный путь: буквальный повтор координат убран отсюда
+   * совсем, так что «сделать скилл» везде значит одно и то же - открыть визард. Величина, а не флаг,
+   * потому что это разговор, и пока он идёт список должен жить дальше. */
   const [wizardFor, setWizardFor] = useState<typeof local.recordings[number] | null>(null);
 
   /* Arriving here from the Record page's Skill button, which sends `?make=<recording id>`.
@@ -539,23 +536,6 @@ export const SkillsView = () => {
     }
   });
 
-
-  const convert = useCallback(async (rec: typeof local.recordings[number]) => {
-    setMaking(rec.id);
-    setSaid(null);
-    try {
-      await saveAsSkill(rec);
-      await reload();
-      setSaid({ text: `"${rec.name}" is a skill now — the recording is untouched.`, kind: 'good' });
-    } catch (err) {
-      setSaid({
-        text: err instanceof Error ? err.message : 'it could not be saved as a skill',
-        kind: 'bad',
-      });
-    } finally {
-      setMaking(null);
-    }
-  }, [reload]);
 
   /* Newest first to begin with, which is the order the list already arrived in and the one somebody wants
    * without asking. Clicking a column takes over from there. */
@@ -854,9 +834,7 @@ export const SkillsView = () => {
                 {convertible.length ? (
                   <Button
                     leftSlot={<Sparkles className="size-4" />}
-                    isLoading={making === convertible[0].id}
-                    disabled={!!making}
-                    onClick={() => void convert(convertible[0])}
+                    onClick={() => setWizardFor(convertible[0])}
                   >
                     Build from “{(convertible[0].name || 'recording').slice(0, 22)}”
                   </Button>
@@ -1453,34 +1431,21 @@ export const SkillsView = () => {
                   </span>
                 </span>
 
-                {/* Два исхода, и разница между ними стоит того, чтобы стоять рядом. «Repeat it exactly» -
-                  * то, что было: буквальный повтор координат, бесплатный и быстрый, и он не печатает,
-                  * потому что содержимое нажатий нигде не хранится. Визард спрашивает недостающий текст
-                  * один раз и делает скилл-ЦЕЛЬ: он печатает, перечитывает экран и уезжает к ИИ с
-                  * параметрами. См. SkillWizard.tsx. */}
-                {/* The pair is one box, and below `sm` it is a stacked one taking the whole row. Neither
-                  * label wraps - together they are 253px of min-content - so on their own they sat past the
-                  * right edge of a 236px panel with the second one unreachable. Beside each other again as
-                  * soon as there is room for them. */}
-                <span className="grid grid-cols-[minmax(0,1fr)] w-full gap-2 sm:flex sm:w-auto sm:items-center">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    isLoading={making === rec.id}
-                    disabled={!!making}
-                    onClick={() => void convert(rec)}
-                  >
-                    Repeat it exactly
-                  </Button>
-                  <Button
-                    size="sm"
-                    leftSlot={<Sparkles className="size-4" />}
-                    disabled={!!making}
-                    onClick={() => setWizardFor(rec)}
-                  >
-                    Make a skill
-                  </Button>
-                </span>
+                {/* ОДНА кнопка, и это визард. Рядом стояла «Repeat it exactly» - буквальный повтор
+                  * координат, бесплатный и быстрый, и он не умеет печатать, потому что содержимое нажатий
+                  * нигде не хранится. Два разных исхода под словом «скилл» - это выбор, который человек
+                  * делает до того, как узнал разницу, а «повторить как было» почти никогда не был тем
+                  * ответом, который нужен. Визард спрашивает недостающий текст один раз и делает
+                  * скилл-ЦЕЛЬ: он печатает, перечитывает экран и уезжает к ИИ с параметрами.
+                  * На всю строку ниже `sm`: подпись не переносится, а строка в панели - 236px. */}
+                <Button
+                  size="sm"
+                  className="w-full sm:w-auto"
+                  leftSlot={<Sparkles className="size-4" />}
+                  onClick={() => setWizardFor(rec)}
+                >
+                  Make a skill
+                </Button>
               </li>
             ))}
           </ul>

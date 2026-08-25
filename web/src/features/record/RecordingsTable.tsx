@@ -528,8 +528,8 @@ export const RecordingsTable = ({
                             * - a goal skill re-reads the screen, so it survives a window that moved and it
                             * can type, which a coordinate replay cannot.
                             *
-                            * The literal copy is still there, on the Skills page, called "Repeat it exactly"
-                            * where there is room to say what it means. */}
+                            * The literal copy is gone from the Skills page too now: one word, one act,
+                            * everywhere it is offered. */}
                         <Button
                           variant="ghost" size="sm" leftSlot={<Sparkles className="size-4" />}
                           title="Make a skill — it asks what went into each field, and adapts to a window that moved"

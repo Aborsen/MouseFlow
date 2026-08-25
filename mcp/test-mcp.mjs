@@ -1176,9 +1176,24 @@ check('and the literal copy is gone from the row, prop and handler with it',
   !/onSaveAsSkill/.test(recTable)
     && !/onSaveAsSkill/.test(read('../web/src/features/record/RecordView.tsx'))
     && !/const keepAsSkill/.test(read('../web/src/features/record/RecordView.tsx')));
-/* Not lost, though: it is on the Skills page where there is room to say what it means. */
-check('it is still offered where there is room to name it',
-  /Repeat it exactly/.test(skillsView));
+/* And now gone from the Skills page as well, where it was the second of two buttons. Two outcomes under one
+ * word is a choice made before the difference is known, and "repeat it as it was" - which cannot type, and
+ * breaks when a window moves - was almost never the answer wanted. Asserted as absence in BOTH places: the
+ * screen that offered it and the builder behind it, or it comes back the next time somebody needs a quick
+ * copy and finds the function still sitting there. */
+const saveAsSkillModule = read('../web/src/features/record/save-as-skill.ts');
+/* The BUTTON, not the words: the comment above the surviving one names what was taken away and why, which
+ * is the thing this repository does everywhere. A check that forbade the phrase in prose would forbid the
+ * explanation and pass a file that had deleted it. */
+check('and it is gone from the product, not moved somewhere quieter',
+  !/>\s*Repeat it exactly\s*<\/Button>/.test(skillsView)
+    && !/export async function saveAsSkill/.test(saveAsSkillModule)
+    && /export async function saveAsGoalSkill/.test(saveAsSkillModule));
+/* The id prefix stays, though, and that is not a leftover: skills made the old way are on accounts, and
+ * hasSkillFor has to recognise them or their recording is invited into the wizard a second time. */
+check('but the old ids are still recognised, so nobody is asked to make the same skill twice',
+  /const skillIdFor = \(recordingId: string\) => `dr_\$\{recordingId\}`/.test(saveAsSkillModule)
+    && /flow\.id === skillIdFor\(recordingId\) \|\| flow\.id === goalSkillIdFor\(recordingId\)/.test(saveAsSkillModule));
 /* Play obeys the repeat, speed and loop below it, so it belongs beside them rather than above them. */
 check('Play is in the panel with the settings it obeys, not on the row',
   (recTable.match(/onClick=\{\(\) => onPlay\(rec\)\}/g) || []).length === 1);
