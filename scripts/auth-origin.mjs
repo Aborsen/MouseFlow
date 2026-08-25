@@ -121,7 +121,18 @@ async function main() {
     return;
   }
 
-  const origin = normalise(target);
+  /* A REMOVE LOOKS FOR THE EXACT STRING IT WAS GIVEN, and only falls back to the tidied origin when no
+   * entry matches verbatim.
+   *
+   * `normalise` exists so an ADD cannot write an entry Better Auth will never match. Applying it to a
+   * remove is the exact opposite of helpful, because the entries most worth removing are the malformed
+   * ones: asking to remove "https://example.com/" trimmed the argument to "https://example.com", deleted
+   * the GOOD twin, left the broken one sitting there, and printed "Removed https://example.com" —
+   * a destructive no-op that reported success and read as though it had worked. It did that here, to
+   * this project's own config, which is how it came to be written down.
+   */
+  const verbatim = removing && current.some((entry) => domainOf(entry) === target);
+  const origin = verbatim ? target : normalise(target);
   /* Compared on the domain, whichever shape the entry is in, and written as an object because that is what
    * Neon reads. Comparing the whole entry is what made every add a no-op that reported success. */
   const has = current.some((entry) => domainOf(entry) === origin);

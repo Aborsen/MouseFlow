@@ -1799,6 +1799,35 @@ check('and reporting never throws on top of the failure it is reporting',
 check('it is awaited before responding, since a function can be frozen the instant it returns',
   /await report\(err, req/.test(read('../api/insights.js')));
 
+/* A failed sign-in used to be knowable only from the address bar of the person it happened to, which is
+ * why a loop that shows up in the database as three sessions in twenty-two seconds had no reason attached
+ * to any of them. These hold the reporting in place. */
+const authRoute = read('../api/auth.js');
+check('every failed sign-in reports before it redirects, because the address bar is not instrumentation',
+  /await report\([\s\S]{0,500}?res\.writeHead\(302/.test(authRoute));
+check('and no failure path can skip it — the only redirects are the one bounce and the one success',
+  (authRoute.match(/res\.writeHead\(302/g) || []).length === 2,
+  'found ' + (authRoute.match(/res\.writeHead\(302/g) || []).length);
+check('the browser is named, since a failure that clusters on one engine is a different bug',
+  /browser: String\(req\.headers\['user-agent'\]/.test(authRoute));
+/* Scoped to the object literal itself, not a window of characters after it: a loose window reaches the
+ * `if (!verifier)` on the next line and fails on the word rather than on the thing. */
+check('and the one-time verifier is not among what travels',
+  !/verifier/i.test((authRoute.match(/detail: \{[^}]*\}/) || [''])[0]));
+check('a refusal is a warning and a broken contract is an error, so the two do not drown each other',
+  /bounced\('rejected', why, 'warning'\)/.test(authRoute)
+  && /bounced\('no-session-cookie', why, 'error'\)/.test(authRoute));
+
+/* The tool that edits the trusted-origin list runs against PRODUCTION auth config, and the entries most
+ * worth removing are the malformed ones — so tidying the argument before matching deletes the wrong twin
+ * and says "Removed". It did exactly that to this project. */
+const originTool = read('../scripts/auth-origin.mjs');
+check('removing a trusted origin matches the string it was given before tidying it',
+  /const verbatim = removing && current\.some\(\(entry\) => domainOf\(entry\) === target\)/.test(originTool)
+  && /const origin = verbatim \? target : normalise\(target\)/.test(originTool));
+check('and a non-exact entry is still flagged rather than silently tidied',
+  /NOT an exact origin, so it is trusted for nothing/.test(originTool));
+
 /* Every route that turns an exception into a 500 has to say so, or the commonest failure stays invisible. */
 let silent = [];
 for (const file of readdirSync(fileURLToPath(new URL('../api/', import.meta.url))).filter((f) => f.endsWith('.js'))) {

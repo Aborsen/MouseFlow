@@ -125,12 +125,23 @@ async function send(event) {
 /**
  * Report one error. Awaited by the caller BEFORE it responds, because a serverless function can be frozen
  * the instant it returns and an in-flight request dies with it — the reason the SDK has `flush()` at all.
+ *
+ * `extra` carries three optional things beyond the route tag:
+ *   where   a sentence about the place, kept for the callers that already pass one
+ *   detail  fields to put beside the event — the caller's job, not this file's, because the one thing
+ *           that must never travel is the query string, and only the caller knows which of ITS values
+ *           are safe to name. Nothing here reads req beyond method and path.
+ *   level   'warning' for a failure that is somebody's circumstance rather than our fault — an
+ *           abandoned sign-in is not a defect, but we still want to see how often it happens.
  */
 export async function report(err, req, extra) {
   if (!dsnOf()) return;
   const error = err instanceof Error ? err : new Error(String(err && err.message ? err.message : err));
+  const beside = extra && (extra.where || extra.detail)
+    ? { ...(extra.where ? { where: extra.where } : {}), ...(extra.detail || {}) }
+    : undefined;
   await send({
-    level: 'error',
+    level: extra && extra.level === 'warning' ? 'warning' : 'error',
     platform: 'node',
     timestamp: Date.now() / 1000,
     environment: process.env.VERCEL_ENV || 'development',
@@ -145,7 +156,7 @@ export async function report(err, req, extra) {
     },
     request: requestOf(req),
     tags: extra && extra.route ? { route: extra.route } : undefined,
-    extra: extra && extra.where ? { where: extra.where } : undefined,
+    extra: beside,
   });
 }
 

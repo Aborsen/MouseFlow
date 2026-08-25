@@ -17,6 +17,8 @@
  * explicit rewrite works the same at every depth.
  */
 
+import { report } from './_report.js';
+
 const AUTH_BASE = process.env.NEON_AUTH_BASE_URL;
 
 /* The name Neon Auth gives the one-time value that completes an OAuth sign-in. */
@@ -120,11 +122,44 @@ async function finishSignIn(req, res) {
     return url.pathname + url.search + url.hash;
   };
 
-  if (!verifier) {
-    res.writeHead(302, { location: landing('missing-verifier') });
+  /* Every way this can fail ends here, and it REPORTS BEFORE IT REDIRECTS.
+   *
+   * The reason used to exist only in the address bar, which meant it existed only until the person who
+   * saw it closed the tab. From the database a failed sign-in looks like three sessions in twenty-two
+   * seconds - the round trip completes, the hand-off does not, and the user simply tries again - and not
+   * one of those rows says why. Asking somebody to reproduce it with a screenshot is asking them to be
+   * our instrumentation. So the reason now travels on its own.
+   *
+   * WHAT GOES: the outcome, whatever the upstream called the refusal, where the browser was headed, and
+   * the browser itself. The last one is not decoration - a failure that clusters on one engine is a
+   * different bug from one that does not, and nothing else here would show that.
+   *
+   * WHAT DOES NOT: the verifier. It is a one-time credential; report() drops the query string, and
+   * nothing below hands any piece of it over by another route. Nor the cookies, nor the address.
+   *
+   * A `warning` is a circumstance rather than a defect: somebody closed the Google tab, or came back in
+   * a different browser from the one they left in. Still worth counting, not worth paging anyone.
+   */
+  const bounced = async (outcome, why, level) => {
+    await report(
+      new Error('sign-in did not complete: ' + outcome + (why ? ' — ' + why : '')),
+      req,
+      {
+        route: 'auth/finish',
+        level,
+        detail: {
+          outcome,
+          why: why || null,
+          to: back.slice(0, 120),
+          browser: String(req.headers['user-agent'] || '').slice(0, 200),
+        },
+      },
+    );
+    res.writeHead(302, { location: landing(outcome, why) });
     res.end();
-    return;
-  }
+  };
+
+  if (!verifier) return bounced('missing-verifier', '', 'warning');
 
   let upstream;
   try {
@@ -137,9 +172,8 @@ async function finishSignIn(req, res) {
       },
     });
   } catch (err) {
-    res.writeHead(302, { location: landing('unreachable') });
-    res.end();
-    return;
+    /* An error, not a warning: the auth service being unreachable from our own function is ours. */
+    return bounced('unreachable', String(err && err.message ? err.message : err).slice(0, 60), 'error');
   }
 
   const cookies = typeof upstream.headers.getSetCookie === 'function'
@@ -166,9 +200,11 @@ async function finishSignIn(req, res) {
       } catch (_) { /* An upstream that cannot even be read is described by its status alone. */ }
       why = why ? upstream.status + ' ' + why : String(upstream.status);
     }
-    res.writeHead(302, { location: landing(upstream.ok ? 'no-session-cookie' : 'rejected', why) });
-    res.end();
-    return;
+    /* "Answered ok and set no cookie" is the upstream breaking its own contract, so that one is an error.
+     * A plain refusal carries the upstream's own code and is counted rather than escalated. */
+    return upstream.ok
+      ? bounced('no-session-cookie', why, 'error')
+      : bounced('rejected', why, 'warning');
   }
 
   res.setHeader('Set-Cookie', cookies.map(firstParty));
