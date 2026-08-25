@@ -191,12 +191,22 @@ export interface AgentStatus {
  * `denied`, every later request fails instantly with no prompt at all, and the app says "Agent offline"
  * for a machine whose agent answers curl perfectly well. There is no way back from inside the page.
  *
- * So on a public origin nothing is polled until a gesture asks for it, and the gesture is what the prompt
- * is attached to.
+ * So nothing is polled until a gesture asks for it — WHEN A PROMPT COULD ACTUALLY APPEAR. That last part is
+ * the whole condition, and leaving it out is a bug of its own: somebody who granted the permission weeks ago
+ * has nothing to be prompted about, and making them press a button on every page load to be told what the
+ * browser already knows is friction with no purpose. It also reads as broken — a pill saying "Check for
+ * agent" beside a running agent looks like a failure, not like a question.
  *
- * A LOOPBACK PAGE IS EXEMPT, and that is not a shortcut: a loopback page talking to loopback is the same
- * address space, no permission exists to ask for, and no prompt can appear. Making development wait for a
- * click would be waiting for something that is never coming.
+ * Two cases need no gesture, and both mean "no prompt can be raised":
+ *
+ *   A LOOPBACK PAGE. Loopback talking to loopback is the same address space; no permission exists to ask
+ *   for. Making development wait for a click would be waiting for something that is never coming.
+ *
+ *   AN ALREADY-GRANTED PERMISSION, which the browser will tell us before we ask for anything. `granted` is
+ *   the one state the query answers reliably — the unreliable direction is `denied`, which it reports both
+ *   before anyone has been asked and on loopback pages where requests demonstrably work. Reading it to
+ *   decide "no prompt is coming, go ahead" is safe; reading it to decide "do not bother trying" is not, and
+ *   is why this never gates a call, only releases one.
  */
 const sameAddressSpace = () =>
   /^(localhost|127\.0\.0\.1|\[::1\]|.*\.localhost)$/i.test(location.hostname);
@@ -237,9 +247,11 @@ export function useAgent(): AgentStatus {
     const watcher = () => bump((n) => n + 1);
     watchers.add(watcher);
     /* `armed`, not just "no timer yet": mounting this hook is not a gesture. On the deployed app the first
-     * request waits for askAgent(), which a button calls. */
+     * request waits for askAgent(), which a button calls — unless the browser says no prompt is coming. */
     if (timer === null && armed) {
       timer = window.setTimeout(poll, 0);
+    } else if (!armed) {
+      armIfNothingToAsk();
     }
     return () => {
       watchers.delete(watcher);
@@ -273,6 +285,21 @@ export function refreshAgent() {
  * Idempotent, and it also clears the remembered trouble: someone who has just granted the permission and
  * pressed the button again is owed a fresh answer, not the reason the last attempt failed.
  */
+/* Release the first call when the browser has already told us no prompt is coming.
+ *
+ * Asked once per page, and only ever ARMS - it never disarms, never reports a failure, and never stops a
+ * later gesture from doing what it would have done anyway. `silent` is what loopbackTrouble() answers for a
+ * granted permission and for a browser that has no such permission to grant; both mean nothing can pop up.
+ */
+let probedPermission = false;
+function armIfNothingToAsk() {
+  if (armed || probedPermission) return;
+  probedPermission = true;
+  void loopbackTrouble().then((verdict) => {
+    if (verdict === 'silent' && !armed) askAgent();
+  });
+}
+
 export function askAgent() {
   armed = true;
   status = { ...status, trouble: null };
