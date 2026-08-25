@@ -470,13 +470,18 @@ const Structure = ({ skill, flowId, wire, onWire }: {
 };
 
 export const SkillsView = () => {
-  /* `loaded` and not only `flows`, and that is the difference between "this account is empty" and "this page
-   * has not been told yet". Before /api/sync answers, `flows` is [] - so every branch below that asks
-   * `skills.length === 0` was answering a question it had no answer to, and answering it wrongly: for a
-   * second and a half the page opened with the whole empty-state foundry and a bar reading "Nothing on your
-   * account yet" ABOVE a list of five recordings, then collapsed into the real thing. Neither state was
-   * true; the truth had not arrived. */
-  const { flows, loaded, readFailed, reload } = useAccount();
+  /* `known`, not `flows.length`, and not `loaded` either - the three are different questions.
+   *
+   * Before the account has said anything, `flows` is [] - so every branch below that asks `skills.length
+   * === 0` was answering a question it had not been told the answer to, and answering it wrongly: the page
+   * opened with the whole empty-state foundry and a bar reading "Nothing on your account yet" ABOVE a list
+   * of five recordings, then collapsed into the real thing a second and a half later.
+   *
+   * `known` is "there is something worth drawing", which includes the last answer kept on disk - so on
+   * every load after the first this page opens with its skills on it, the way Record always has. `loaded`
+   * stays the stricter question, "the account answered THIS session", and belongs to whoever compares the
+   * two sides; that is not this page. See both notes in AccountProvider. */
+  const { flows, known, readFailed, reload } = useAccount();
   /* The recordings this browser holds. Two uses, and the first one is a guarantee rather than a caution:
    * a row this browser knows to be a recording is not listed here at all, so the delete button below cannot
    * be over one. See lib/flow-role.ts for why an UNSTAMPED row defaults the way it does. */
@@ -875,7 +880,7 @@ export const SkillsView = () => {
         * И НИ ОДНОГО ИЗ ДВУХ, пока аккаунт не прочитан. Оба размера - утверждение о том, сколько у человека
         * скиллов, а до ответа /api/sync это неизвестно; выбор «по умолчанию пусто» разворачивал большой блок
         * и через секунду складывал его. Пустое место лучше неверного ответа, и оно не прыгает. */}
-      {!loaded ? null : skills.length === 0 ? (
+      {!known ? null : skills.length === 0 ? (
         <section className="mb-4 overflow-hidden rounded-2xl border-stroke border bg-gradient-to-br from-surface-card via-surface-card to-brand-tertiary/[0.07] p-6">
           <div className="grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(20rem,32rem)_1fr]">
             <div className="min-w-0">
@@ -1045,12 +1050,12 @@ export const SkillsView = () => {
         * And while the account is still being read, neither: "Reading…" in the same box, which is what
         * TeamView says in the same situation. The alternative was the table with its own heading counting
         * "0 skills" - a number, stated plainly, that was not the case. */}
-      {!loaded ? (
+      {!known ? (
         <div className="rounded-xl border-stroke border bg-surface-card px-4 py-3.5">
           {/* `readFailed` and not just "Reading…", which is what AccountProvider keeps that flag FOR - its
               own note says whoever would otherwise render "nothing here" should ask this first. A read that
-              failed leaves `loaded` false for good, so without this the page would sit saying it is reading
-              something it has given up on. */}
+              failed leaves `known` false on a machine with nothing kept, so without this the page would sit
+              saying it is reading something it has given up on. */}
           <Typography variant="p" className="text-ink-inactive text-[0.88rem]">
             {readFailed
               ? 'Your account could not be read just now, so this page cannot say what is on it. It tries '

@@ -12,6 +12,7 @@ import {
 } from 'react';
 import { type Account, type Flow, type Run, pull, signOut, whoAmI } from '@/lib/api';
 import { type MailState, type TeamList, type TeamRow, callTeams } from '@/lib/teams';
+import { KEPT_ACCOUNT, KEPT_TEAMS, forget, keep, kept } from '@/lib/kept';
 import { LANDINGS } from '@/features/auth/shared';
 
 interface AccountValue {
@@ -26,6 +27,14 @@ interface AccountValue {
    * been deleted on another machine. They came back when the answer arrived, so the damage was invisible;
    * had the request failed, they would simply have gone. */
   loaded: boolean;
+  /* Whether `flows` and `runs` are worth putting on screen: because the account answered, or because the
+   * last thing it answered was kept on disk.
+   *
+   * NOT the same question as `loaded`, and the difference is the whole reason both exist. Anything that
+   * COMPARES this browser against the account asks `loaded` - the reconciliation, the tour - because a kept
+   * answer is the last thing that was true and not a statement about now. Anything that merely RENDERS asks
+   * this, because a list from four seconds ago beats "Reading…" for a second and a half. */
+  known: boolean;
   /** True when the last read of the account failed. See the note where it is set. */
   readFailed: boolean;
   reload: () => Promise<void>;
@@ -141,7 +150,19 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     }
   });
   const [loaded, setLoaded] = useState(false);
+  const [known, setKnown] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
+
+  /* What was kept, read ONCE and synchronously. It cannot be applied yet - it is keyed to an account and
+   * nobody has said who this is - but reading it here means the answer is in hand the moment whoAmI does. */
+  const [onDisk] = useState(() => ({
+    account: (id: string | null) => kept<{ flows: Flow[]; runs: Run[] }>(KEPT_ACCOUNT, id),
+    teams: (id: string | null) => kept<TeamList>(KEPT_TEAMS, id),
+  }));
+
+  /* Whose account the kept copies belong to. A ref because `keep` is called from callbacks that must not be
+   * rebuilt when the account arrives, and because it is never rendered. */
+  const accountId = useRef<string | null>(null);
 
   const [teams, setTeams] = useState<TeamRow[] | null>(null);
   const [teamsMail, setTeamsMail] = useState<MailState | null>(null);
@@ -158,6 +179,7 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
       setTeams(body.teams);
       setTeamsMail(body.mail ?? null);
       setTeamsProblem(null);
+      keep(KEPT_TEAMS, accountId.current, body);
     } catch (err) {
       /* `teams` is left ALONE - null if it was never read, and the list that is on screen if it was. A failed
        * refresh after removing somebody should not blank the page it happened on, and it must never come out
@@ -173,19 +195,23 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     await refreshTeams();
   }, [refreshTeams]);
 
+  /* What is done with a sync answer, in one place: the boot path and every later refresh apply it the same
+   * way, and both keep it. Two copies of this drifted once already - see the file's opening note. */
+  const applySync = useCallback((body: Awaited<ReturnType<typeof pull>>) => {
+    setFlows(body.flows);
+    setRuns(body.runs);
+    /* The account's own answer about the person. Kept beside the flows because it arrives with them and
+     * is needed at the same moment - the first render after signing in. */
+    if (body.you) setAccount((was) => (was ? { ...was, prefs: body.you.prefs ?? {} } : was));
+    setLoaded(true);
+    setKnown(true);
+    setReadFailed(false);
+    keep(KEPT_ACCOUNT, accountId.current, { flows: body.flows, runs: body.runs });
+  }, []);
+
   const reload = useCallback(async () => {
     try {
-      const body = await pull();
-      setFlows(body.flows);
-      setRuns(body.runs);
-      /* The account's own answer about the person. Kept beside the flows because it arrives with them and
-       * is needed at the same moment - the first render after signing in. */
-      if (body.you) setAccount((was) => (was ? { ...was, prefs: body.you.prefs ?? {} } : was));
-      /* Only on success. A failed read leaves `loaded` false, so nothing that compares the two sides runs at
-       * all - which is the right answer: an account that could not be read has told us nothing about what it
-       * holds. */
-      setLoaded(true);
-      setReadFailed(false);
+      applySync(await pull());
     } catch (_) {
       /* Not worth a banner over the whole app - a blip on a page that is already showing everything would
        * be noise. But it IS worth recording, because on a machine with nothing in local storage a failed
@@ -194,7 +220,7 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
        * would otherwise render "nothing here" asks this first. */
       setReadFailed(true);
     }
-  }, []);
+  }, [applySync]);
 
   useEffect(() => {
     (async () => {
@@ -208,12 +234,42 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
         history.replaceState(null, '', location.pathname + (query ? `?${query}` : '') + location.hash);
       }
 
+      /* BOTH AT ONCE, and that is the whole of it: /api/sync does not need whoAmI's ANSWER in order to be
+       * STARTED - it needs the session cookie, which the browser is already holding. Serialised, the app
+       * waited out two cold functions end to end and the second could not begin until the first came back:
+       * 0.9-1.4s measured before anything from the account could be on screen, against 0.4-0.7s for one.
+       *
+       * Judged in the old order, which is the part that must not change. `checked` still flips on whoAmI,
+       * because that is the question the wall asks. And a 401 for a visitor with no session is not a failed
+       * read - it is the expected answer to a question we should not have asked - so it is only ever looked
+       * at when there turns out to have been somebody to ask for. */
+      const syncing = pull().then((body) => ({ body }), () => null);
+
       const me = await whoAmI();
       setAccount(me);
+      accountId.current = me?.id ?? null;
       setChecked(true);
-      if (me) await reload();
+      if (!me) return;
+
+      /* The last answer, on screen now rather than in a second and a half. Only if it was THIS person's -
+       * see lib/kept.ts - and `loaded` stays false, so the reconciliation still waits for the real one. */
+      const before = onDisk.account(me.id);
+      if (before) {
+        setFlows(before.flows);
+        setRuns(before.runs);
+        setKnown(true);
+      }
+      const teamsBefore = onDisk.teams(me.id);
+      if (teamsBefore) {
+        setTeams(teamsBefore.teams);
+        setTeamsMail(teamsBefore.mail ?? null);
+      }
+
+      const answer = await syncing;
+      if (answer) applySync(answer.body);
+      else setReadFailed(true);
     })();
-  }, [reload]);
+  }, [applySync, onDisk]);
 
   const [leaving, setLeaving] = useState<string | null>(null);
 
@@ -230,6 +286,11 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
    * happening. */
   const leave = useCallback(async () => {
     setLeaving(null);
+    /* Dropped on the way out, so the next person on this machine starts from nothing. The account key would
+     * refuse to match theirs anyway - that is what it is for - but data nobody will ever read again has no
+     * business sitting in a browser. */
+    forget(KEPT_ACCOUNT);
+    forget(KEPT_TEAMS);
     try {
       await signOut();
     } catch (err) {
@@ -269,11 +330,11 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
 
   const value = useMemo(
     () => ({
-      account, flows, runs, loaded, readFailed, reload, leave, leaveProblem: leaving,
+      account, flows, runs, loaded, known, readFailed, reload, leave, leaveProblem: leaving,
       teams, teamsMail, teamsProblem, ensureTeams, refreshTeams,
     }),
     [
-      account, flows, runs, loaded, readFailed, reload, leave, leaving,
+      account, flows, runs, loaded, known, readFailed, reload, leave, leaving,
       teams, teamsMail, teamsProblem, ensureTeams, refreshTeams,
     ],
   );

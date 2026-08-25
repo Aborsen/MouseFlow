@@ -1078,16 +1078,66 @@ check('and one fixture is published, so the published half of the row exists at 
  * skills?" was answering before it had been told. For a second and a half the page opened with the whole
  * empty-state foundry and "Nothing on your account yet" above a list of five recordings. */
 group('the page does not say the account is empty before it has read it');
+/* The flag was `loaded` when this was written and is `known` now - a wider question, "there is something
+ * worth drawing", which a kept answer satisfies too. The strict one still exists and still belongs to
+ * whoever COMPARES the two sides; the group below is about that difference. */
 check('it takes the flag that separates "empty" from "not yet told"',
-  /const \{ flows, loaded, readFailed, reload \} = useAccount\(\);/.test(skillsView));
+  /const \{ flows, known, readFailed, reload \} = useAccount\(\);/.test(skillsView));
 check('the foundry picks neither size until then',
-  /\{!loaded \? null : skills\.length === 0 \? \(/.test(skillsView));
+  /\{!known \? null : skills\.length === 0 \? \(/.test(skillsView));
 check('and the library says it is reading, rather than counting nothing',
-  /\{!loaded \? \([\s\S]{0,400}Reading…/.test(skillsView));
+  /\{!known \? \([\s\S]{0,400}Reading…/.test(skillsView));
 /* A read that FAILED leaves `loaded` false for good, so "Reading…" would sit there for ever describing
  * something the app has given up on. AccountProvider keeps `readFailed` for exactly this, and says so. */
 check('and a read that failed says that instead of reading for ever',
   /readFailed[\s\S]{0,120}could not be read just now/.test(skillsView));
+
+/* Record opened with everything on it and Skills sat on "Reading…", and the reason was not the query:
+ * recordings are on disk and read synchronously, while the account's answer lived in React state only, so
+ * every reload started from nothing. It then waited out TWO cold functions end to end, because /api/sync was
+ * not started until whoAmI had come back. Measured: 0.42-0.67s for one warm function, 0.22 MB of payload for
+ * the account being complained about - so neither the size nor the query was ever the cost. */
+group('the account is read in parallel and remembered between loads');
+const keptLib = read('../web/src/lib/kept.ts');
+
+check('the two boot reads are started together, not one after the other',
+  /const syncing = pull\(\)\.then/.test(provider)
+    && provider.indexOf('const syncing = pull()') < provider.indexOf('const me = await whoAmI()'));
+/* The order things are JUDGED in must not change: the wall asks whoAmI, and a 401 for somebody with no
+ * session is the expected answer to a question we should not have asked - not a failed read. */
+check('and a visitor with no session is not reported as a failed read',
+  /if \(!me\) return;/.test(provider)
+    && provider.indexOf('if (!me) return;') < provider.indexOf('else setReadFailed(true)'));
+
+check('what the account last answered is kept, and whose it was is part of the record',
+  /export function keep<T>\(key: string, forAccount: string \| null/.test(keptLib)
+    && /parsed\.forAccount !== forAccount\) return null/.test(keptLib));
+/* Not a nicety: the recordings store is not keyed by person, and one person's skills handed to the next to
+ * sign in on the same machine is a leak rather than a slow page. */
+check('a kept copy belonging to somebody else is not read',
+  /kept<\{ flows: Flow\[\]; runs: Run\[\] \}>\(KEPT_ACCOUNT, id\)/.test(provider)
+    && /const before = onDisk\.account\(me\.id\)/.test(provider));
+check('and signing out drops it rather than leaving it for the next person',
+  /forget\(KEPT_ACCOUNT\)/.test(provider) && /forget\(KEPT_TEAMS\)/.test(provider));
+
+/* The distinction the whole thing turns on. `loaded` is "the account answered THIS session" and is what the
+ * reconciliation asks - the note there describes it concluding that every local recording had been deleted
+ * elsewhere, off an empty `flows` on the first render. A kept answer must never be able to trigger that. */
+check('rendering asks a different question from comparing',
+  /known: boolean;/.test(provider)
+    && /const \{ flows, known, readFailed, reload \} = useAccount\(\)/.test(skillsView));
+check('and the kept copy does not make the account look answered',
+  /setKnown\(true\);\n      \}/.test(provider)
+    && !/setLoaded\(true\);\n        setKnown/.test(provider));
+check('so the reconciliation still waits for the real answer',
+  /const \{ flows, loaded, reload \} = useAccount\(\)/.test(read('../web/src/features/record/Reconciler.tsx'))
+    && /if \(!loaded\) return;/.test(read('../web/src/features/record/Reconciler.tsx')));
+/* One place applies a sync answer now. Two copies of that drifted once already - the file's opening note is
+ * about three separate reads of /api/sync that could and did disagree. */
+check('and one place applies an answer, whether it came at boot or later',
+  /const applySync = useCallback/.test(provider)
+    && /applySync\(await pull\(\)\)/.test(provider)
+    && /if \(answer\) applySync\(answer\.body\)/.test(provider));
 
 /* The same treatment on the other table, because two tables of the same product sorting differently - or
  * one of them not sorting at all - is a difference somebody has to learn for no reason. */
