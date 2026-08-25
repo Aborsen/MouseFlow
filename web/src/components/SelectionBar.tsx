@@ -75,7 +75,7 @@ export const SelectionBar = ({
   }, [armed]);
 
   return (
-    <div className={cn('flex h-8 flex-wrap items-center gap-3 text-[0.8rem]', className)}>
+    <div className={cn('flex min-h-8 flex-wrap items-center gap-3 text-[0.8rem]', className)}>
       {label}
 
       {total > 0 && (

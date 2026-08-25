@@ -109,7 +109,9 @@ export const FlowCard = ({
           <span className="shrink-0 text-[0.74rem] text-ink-inactive tabular-nums">{sizeOf(skill)}</span>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        {/* Wrapping, because neither button wraps its own label: `Install` and `Try in Record` are 215px
+            of min-content side by side, and a card in the extension's panel is 206px wide. */}
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button
             size="sm"
             variant={installed ? 'ghost' : 'primary'}

@@ -51,6 +51,7 @@ import { ArmedButton } from '@/components/ArmedButton';
 import { Said } from '@/components/Said';
 import { SelectionBar } from '@/components/SelectionBar';
 import { useAccount } from '@/shell/AccountProvider';
+import { Page } from '@/shell/Surface';
 import { roleOf, SKILL_ROLE } from '@/lib/flow-role';
 
 type Role = 'owner' | 'admin' | 'member';
@@ -379,11 +380,13 @@ export const TeamView = () => {
 
   return (
     <div className="relative min-h-full">
-      <div className="mx-auto max-w-[1180px] p-5">
+      <Page column>
 
         {/* ------------------------------------------------------------ what this is, and the one act */}
         <header className="mb-5 flex flex-wrap items-start gap-5">
-          <div className="min-w-[22rem] flex-1">
+          {/* The same shape as the dashboard's header, and for the same reason - see the long note there.
+            * 22rem is 116px wider than this whole page in the extension's panel. */}
+          <div className="min-w-0 flex-1 basis-full sm:min-w-[22rem] sm:basis-auto">
             <Typography variant="span" className={cn(LABEL, 'block')}>Teams</Typography>
             <Typography variant="h2" weight="semibold" className="mt-1 text-[1.7rem] leading-tight tracking-tight">
               Who may see whose work
@@ -436,7 +439,7 @@ export const TeamView = () => {
               value={newName}
               onChange={(e) => setNewName(e.target.value.slice(0, 60))}
               placeholder="Name the team — Operations, Finance, a client…"
-              className={cn(FIELD, 'min-w-[16rem] flex-1')}
+              className={cn(FIELD, 'min-w-0 flex-1 basis-full sm:min-w-[16rem] sm:basis-auto')}
             />
             <Button size="sm" type="submit" disabled={busy || !newName.trim()}>Create</Button>
             <Button
@@ -577,7 +580,7 @@ export const TeamView = () => {
             )}
           </div>
         </div>
-      </div>
+      </Page>
 
       {/* -------------------------------------------------------------- one team, over the list */}
       {openId && (
@@ -678,7 +681,7 @@ export const TeamView = () => {
 
                   {/* -------- adding somebody */}
                   {manages && (
-                    <div className="grid gap-2">
+                    <div className="grid grid-cols-[minmax(0,1fr)] gap-2">
                       <span className={LABEL}>Add somebody</span>
                       <form
                         className="flex flex-wrap items-center gap-2"
@@ -749,7 +752,7 @@ export const TeamView = () => {
                   )}
 
                   {/* -------- who is in it */}
-                  <div className="grid gap-1.5">
+                  <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5">
                     <SelectionBar
                       total={pickable.length}
                       selected={live.size}
@@ -929,7 +932,7 @@ export const TeamView = () => {
                   </div>
 
                   {/* -------- shared skills */}
-                  <div className="grid gap-1.5">
+                  <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5">
                     <span className="flex items-center gap-2">
                       <span className={LABEL}>Shared with this team</span>
                       {shareable.length > 0 && (

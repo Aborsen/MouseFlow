@@ -26,6 +26,7 @@ import { SearchField } from '@/components/SearchField';
 import { type GallerySkill, galleryGet, galleryList, push } from '@/lib/api';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
+import { Page } from '@/shell/Surface';
 import { adoptRecording } from '@/features/record/adopt';
 import { FlowCard } from './FlowCard';
 import {
@@ -222,7 +223,7 @@ export const GalleryView = () => {
     const shown = sorted.slice((here - 1) * PER_PAGE, here * PER_PAGE);
 
     return (
-      <div className="p-5">
+      <Page>
         <button
           type="button"
           onClick={() => setOpen(null)}
@@ -315,7 +316,7 @@ export const GalleryView = () => {
             {inner || app ? 'Nothing in this collection matches that.' : 'Nothing in this collection yet.'}
           </Typography>
         ) : (
-          <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          <ul className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {shown.map(card)}
           </ul>
         )}
@@ -357,7 +358,7 @@ export const GalleryView = () => {
             </button>
           </div>
         )}
-      </div>
+      </Page>
     );
   }
 
@@ -366,8 +367,8 @@ export const GalleryView = () => {
   const drawn = rowsFor(visible, myApps);
 
   return (
-    <div className="p-5">
-      <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,26rem)] xl:items-start">
+    <Page>
+      <div className="mb-4 grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,26rem)] xl:items-start">
         <div className="min-w-0">
           <Typography variant="span" className="block text-[0.7rem] uppercase tracking-[0.14em] text-brand-tertiary">
             Community library
@@ -463,7 +464,7 @@ export const GalleryView = () => {
               {total > all.length ? ` of ${total}` : ''}
             </span>
           </div>
-          <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          <ul className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {sortBy(visible, 'installs').map(card)}
           </ul>
         </>
@@ -491,7 +492,7 @@ export const GalleryView = () => {
                 </button>
               )}
             </div>
-            <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            <ul className="grid grid-cols-[minmax(0,1fr)] gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {picked.slice(0, PER_ROW).map(card)}
             </ul>
           </section>
@@ -504,6 +505,6 @@ export const GalleryView = () => {
           the published one alone. Nothing here runs until you run it.
         </Typography>
       )}
-    </div>
+    </Page>
   );
 };

@@ -34,6 +34,7 @@ import {
   type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
 } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
+import { Page } from '@/shell/Surface';
 import { hasSkillFor } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { SessionStrip } from './SessionStrip';
@@ -909,7 +910,7 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     /* One column, not two: a row of a recording carries a name, three replay controls, a date and six
      * actions, and squeezing that into a 1fr column beside the recorder is what made it wrap to three lines
      * and push the page sideways. The recorder is small; it goes above. */
-    <div className="flex flex-col gap-4 p-5">
+    <Page className="flex flex-col gap-4">
       {/* Above everything, because it is about something that is already waiting rather than about anything
         * on this page - and because the alternative was a person hunting through settings for a switch they
         * had no reason to know existed. Renders nothing at all unless a request is genuinely queued and this
@@ -1136,6 +1137,6 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
           }}
         />
       )}
-    </div>
+    </Page>
   );
 };

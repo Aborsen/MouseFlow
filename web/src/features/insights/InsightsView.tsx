@@ -47,6 +47,7 @@ import { cn } from '@insightis/ui/cn';
 import { DateRangePicker } from '@insightis/ui/Datepicker';
 import type { DateRange } from 'react-day-picker';
 import { ChatView } from '@/features/chat/ChatView';
+import { usePageChrome } from '@/shell/Surface';
 import { openingQuestion, takeAsk } from '@/features/chat/ask-about';
 
 /* ------------------------------------------------------------------ the endpoint's shape
@@ -606,6 +607,12 @@ export const InsightsView = () => {
     return () => mq.removeEventListener('change', listen);
   }, []);
 
+  /* What page chrome this surface expects. As a route this screen IS the page - it fills the window below
+   * the top bar and scrolls inside itself, so the assistant beside it can stay put. In the extension's
+   * panel <main> already does both, the assistant column is hidden below xl anyway, and asking for a
+   * second scroller inside the first is how the panel came to have two vertical scrollbars. */
+  const page = usePageChrome();
+
   const [asked] = useState(() => takeAsk());
   const opening = asked ? openingQuestion(asked) : undefined;
   const navigate = useNavigate();
@@ -859,17 +866,23 @@ export const InsightsView = () => {
     /* Two columns, because the questions somebody wants to ask are about the numbers next to them. The
      * dashboard scrolls; the assistant does not move. Below 1280px there is not room for both, so the panel
      * becomes a toggle over the page rather than a column beside it. */
-    <div className="flex h-[calc(100dvh-3.25rem)] min-h-0">
-      <div className="min-w-0 flex-1 overflow-y-auto p-5">
+    <div className={cn('flex min-h-0', page.height)}>
+      <div className={cn('min-w-0 flex-1', page.scroll, page.gutter)}>
       <header className="mb-4 flex flex-wrap items-end gap-3">
-        {/* A wrap threshold rather than min-w-0.
+        {/* A wrap threshold rather than min-w-0 - but only at a width where 20rem is a width this column
+         * can actually have.
          *
-         * The controls beside it cannot shrink below their own buttons, so with `min-w-0` this column was
-         * the only thing that could give - and it gave all of it: with the assistant panel open, the
+         * The controls beside it cannot shrink below their own buttons, so with a bare `min-w-0` this column
+         * was the only thing that could give, and it gave all of it: with the assistant panel open, the
          * heading came out one word per line down a 60px gutter. 20rem is the width at which the sentence
-         * still reads; below that the controls wrap to their own line instead, which is what `flex-wrap`
-         * was there to do. */}
-        <div className="min-w-[20rem] flex-1">
+         * still reads.
+         *
+         * Below `sm` there is no such width - the extension's side panel hands this screen 236px in total -
+         * so the threshold stops being a threshold and becomes a floor 84px wider than the page, which is
+         * what put a sideways scrollbar under the dashboard. There `basis-full` does the same job from the
+         * other side: this column takes a row of its own, and the controls wrap under it because nothing is
+         * left on the line, which is what `flex-wrap` was there to do. */}
+        <div className="min-w-0 flex-1 basis-full sm:min-w-[20rem] sm:basis-auto">
           <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
             {teamShown
               ? `${teamShown.team?.name ?? 'Team'} · ${personName ?? 'everybody'}`
@@ -1104,7 +1117,7 @@ export const InsightsView = () => {
             <>
               {/* ------------------------------------------------------- the summary, first */}
               <section className="rounded-xl border-stroke border bg-surface-card p-4">
-                <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
                   <Tile
                     icon={<Timer className="size-3.5" />}
                     label="agent runs"
@@ -1293,7 +1306,7 @@ export const InsightsView = () => {
               </Section>
 
               {/* ------------------------------------------- what wants a decision, next */}
-              <div className="grid gap-4 lg:grid-cols-2">
+              <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-2">
                 <Section
                   title="Worth automating"
                   icon={<Repeat2 className="size-4 text-brand-primary" />}
@@ -1403,7 +1416,11 @@ export const InsightsView = () => {
                 * it went. One under the other puts a screen and a half between them, and comparing them is
                 * the whole point. Each keeps its own horizontal scroller, so a table in half the width
                 * scrolls itself rather than the page. */}
-              <div className="grid gap-4 xl:grid-cols-2">
+              {/* The single column is stated, and that is not decoration: a grid with no `grid-cols` has
+                * one IMPLICIT `auto` track, and `auto` cannot go below its content's min-content width. The
+                * card below holds a 560px table, so the track became 560px and took the page with it.
+                * `minmax(0,1fr)` is what lets that table scroll inside its own card instead. */}
+              <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-2">
                 {/* ------------------------------------------------------------ where the time went */}
                 <Section
                   title="Where the time went"

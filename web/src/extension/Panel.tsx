@@ -32,6 +32,9 @@ import { InsightsView } from '@/features/insights/InsightsView';
 import { TeamView } from '@/features/team/TeamView';
 import { GalleryView } from '@/features/gallery/GalleryView';
 import { AccountProvider } from '@/shell/AccountProvider';
+/* Declared once, here, and every app screen below reads it instead of asking whether it is in an
+ * extension. See shell/Surface.tsx for what it decides and why it is not five `if`s. */
+import { SurfaceProvider } from '@/shell/Surface';
 import { AssistantScreen } from './AssistantScreen';
 import { SignInView } from '@/features/auth/SignInView';
 import { SignUpView } from '@/features/auth/SignUpView';
@@ -110,6 +113,7 @@ export const Panel = () => {
    * measuring the viewport works in one. And `relative`, because the assistant covers this box - rail
    * included - rather than sitting in the column beside it. */
   return (
+    <SurfaceProvider value="panel">
     <AccountProvider>
       <Reconciler />
       <div className="relative flex h-full items-stretch bg-surface-page text-ink-primary">
@@ -198,5 +202,6 @@ export const Panel = () => {
       {asking && signedIn && <AssistantScreen onClose={() => setAsking(false)} />}
     </div>
     </AccountProvider>
+    </SurfaceProvider>
   );
 };

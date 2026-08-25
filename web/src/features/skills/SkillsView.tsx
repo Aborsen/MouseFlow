@@ -26,6 +26,7 @@ import { SelectionBar } from '@/components/SelectionBar';
 import { Signal } from '@/components/Signal';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
+import { Page } from '@/shell/Surface';
 import { adoptRecording } from '@/features/record/adopt';
 import { zip } from './zip';
 import { describeRecording, hasSkillFor, saveAsSkill } from '@/features/record/save-as-skill';
@@ -48,6 +49,9 @@ import {
  * side panel, which is four hundred - a seven-column grid is a row scrolled sideways to read, which is not
  * reading. So the grid is applied from `md` up and the row stacks under it, and the same components serve
  * both without a second copy of the table existing anywhere. */
+/* A term in the structure list. `mt-1.5` only while the list is stacked - see the note at the <dl>. */
+const DT = 'mt-1.5 text-ink-inactive sm:mt-0';
+
 const SKILL_COLUMNS = 'md:grid-cols-[1.5rem_2rem_minmax(12rem,1fr)_7rem_6rem_6.5rem_20rem]';
 
 /* Both lists are one height, and it fits five.
@@ -244,34 +248,43 @@ const Structure = ({ skill, flowId, wire, onWire }: {
         <Typography variant="span" weight="semibold" className="text-[0.82rem] text-ink-secondary">
           Structure
         </Typography>
-        <span className="ms-auto shrink-0 font-mono text-[0.72rem] text-ink-inactive">
+        {/* Truncating rather than shrink-0: a tool name is one unbreakable mono token, and in the panel it
+            was 91px past the edge of its own row. It is printed in full in the JSON below, and the title
+            attribute gives it back on hover. */}
+        <span
+          title={skill.toolName}
+          className="ms-auto min-w-0 truncate font-mono text-[0.72rem] text-ink-inactive"
+        >
           {skill.toolName}
         </span>
       </summary>
 
       <div className="space-y-3 border-stroke border-t px-3 py-2.5">
         {/* The parsed skill first, in words, because the JSON below is the same thing for a machine. */}
-        <dl className="grid grid-cols-[6.5rem_1fr] gap-x-3 gap-y-1 text-[0.8rem]">
-          <dt className="text-ink-inactive">Runs on</dt>
+        {/* Label BESIDE the value where there is room for both, and above it where there is not: 6.5rem of
+          * label leaves 34px for "2 recorded actions" in a panel, which is a column, not a value. `DT` puts
+          * the pairs back into pairs once they are stacked. */}
+        <dl className="grid grid-cols-[minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.8rem] sm:grid-cols-[6.5rem_minmax(0,1fr)]">
+          <dt className={DT}>Runs on</dt>
           <dd className="break-words text-ink-body">{skill.runsHow}</dd>
 
           {skill.goalTemplate && (
             <>
-              <dt className="text-ink-inactive">Goal</dt>
+              <dt className={DT}>Goal</dt>
               <dd className="break-words font-mono text-[0.78rem] text-ink-body">{skill.goalTemplate}</dd>
             </>
           )}
 
           {skill.kind === 'recorded' && (
             <>
-              <dt className="text-ink-inactive">Replays</dt>
+              <dt className={DT}>Replays</dt>
               <dd className="text-ink-body">
                 {skill.events} recorded action{skill.events === 1 ? '' : 's'}
               </dd>
             </>
           )}
 
-          <dt className="text-ink-inactive">Takes</dt>
+          <dt className={DT}>Takes</dt>
           <dd className="text-ink-body">
             {Object.keys(skill.schema.properties).length === 0 ? (
               <span className="text-ink-inactive">nothing — it replays as recorded</span>
@@ -292,7 +305,7 @@ const Structure = ({ skill, flowId, wire, onWire }: {
 
           {skill.steps.length > 0 && (
             <>
-              <dt className="text-ink-inactive">One run did</dt>
+              <dt className={DT}>One run did</dt>
               {/* Evidence, not steps to replay - which is what a created skill keeps beside its goal. */}
               <dd className="break-words text-ink-secondary">
                 {skill.steps.map((step) => step.name).join(' → ')}
@@ -314,7 +327,7 @@ const Structure = ({ skill, flowId, wire, onWire }: {
               As an agent skill
             </Typography>
             {/* Two files, two bargains, and the difference is what has to be true when it runs. */}
-            <div className="ms-auto flex items-center gap-0.5 rounded-md border-stroke border bg-surface-card p-0.5">
+            <div className="ms-auto flex flex-wrap items-center gap-0.5 rounded-md border-stroke border bg-surface-card p-0.5">
               {([
                 [false, 'Through MouseFlow', 'Runs on this machine, any application — needs the agent'],
                 [true, 'Portable', 'The agent reading it drives its own browser — needs no MouseFlow'],
@@ -405,8 +418,10 @@ const Structure = ({ skill, flowId, wire, onWire }: {
 
         {/* --------------------------------------------------------- the same thing, on the wire */}
         <div>
-          <div className="mb-1.5 flex items-center gap-1.5">
-            <div className="flex gap-1">
+          {/* Both wrapping: three format labels are 186px of min-content on their own, and Copy is another
+              70px beside them, in a row 150px wide inside the extension's panel. */}
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap gap-1">
               {WIRE_FORMATS.map((format) => (
                 <button
                   key={format}
@@ -806,7 +821,7 @@ export const SkillsView = () => {
   }, [reload]);
 
   return (
-    <div className="p-5">
+    <Page>
       {/* КУЗНИЦА.
         *
         * Два размера, и это не украшение. В макете, по которому это сделано, библиотеки нет вовсе - там «No
@@ -815,7 +830,7 @@ export const SkillsView = () => {
         * макет, а как только скилл появился, кузница сжимается в полосу и место уходит библиотеке. */}
       {skills.length === 0 ? (
         <section className="mb-4 overflow-hidden rounded-2xl border-stroke border bg-gradient-to-br from-surface-card via-surface-card to-brand-tertiary/[0.07] p-6">
-          <div className="grid gap-6 xl:grid-cols-[minmax(20rem,32rem)_1fr]">
+          <div className="grid grid-cols-[minmax(0,1fr)] gap-6 xl:grid-cols-[minmax(20rem,32rem)_1fr]">
             <div className="min-w-0">
               <Typography variant="span" className="block text-[0.7rem] uppercase tracking-[0.14em] text-ink-inactive">
                 Skill foundry
@@ -867,7 +882,7 @@ export const SkillsView = () => {
             {/* Три стадии. В 01 - настоящая запись; в 02 и 03 скелетоны, потому что структуры и скилла ещё
               * нет, и цифры там пришлось бы придумать. Скелетон читается как «дальше будет», число - как
               * «уже есть». */}
-            <div className="grid min-w-0 gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr] sm:items-stretch">
+            <div className="grid grid-cols-[minmax(0,1fr)] min-w-0 gap-2 sm:grid-cols-[1fr_auto_1fr_auto_1fr] sm:items-stretch">
               <div className="min-w-0 rounded-xl border-brand-primary/40 border bg-surface-card2 p-3.5">
                 <span className="inline-flex rounded-md border-brand-primary/40 border bg-brand-primary/10 px-1.5 py-0.5 font-mono text-[0.68rem] text-brand-primary">01</span>
                 <Typography variant="span" weight="semibold" className="mt-2 block text-[0.92rem]">Recording</Typography>
@@ -929,7 +944,7 @@ export const SkillsView = () => {
           {/* basis-full under sm, so the sentence takes the line rather than a sixty-pixel column beside
               two buttons - which is one word per line, and unreadable in a narrow window or an extension
               panel. `min-w-0` alone does not do it: flex-1 will happily shrink to nothing. */}
-          <div className="min-w-[14rem] flex-1 basis-full sm:basis-auto">
+          <div className="min-w-0 flex-1 basis-full sm:min-w-[14rem] sm:basis-auto">
             <Typography variant="span" weight="semibold" className="block text-[0.92rem]">
               {convertible.length
                 ? `${convertible.length} recording${convertible.length === 1 ? '' : 's'} ready to become a skill`
@@ -1011,7 +1026,7 @@ export const SkillsView = () => {
         <div className="mb-3 flex flex-wrap items-end gap-x-4 gap-y-3">
           {/* Same rule as the strip above: the title and its sentence get a whole line before the search
               box and the filters sit beside them. */}
-          <div className="min-w-[16rem] flex-1 basis-full lg:basis-auto">
+          <div className="min-w-0 flex-1 basis-full lg:min-w-[16rem] lg:basis-auto">
             <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
               Library · {skills.length} skill{skills.length === 1 ? '' : 's'}
             </Typography>
@@ -1031,7 +1046,10 @@ export const SkillsView = () => {
           />
 
           {/* Counted, so choosing one is not a guess about whether it will be empty. */}
-          <div className="flex shrink-0 items-center gap-0.5 rounded-md border-stroke border bg-surface-card2 p-0.5">
+          {/* Three segments of 210px, which is 10px more than a 202px row will hold - so below `sm` it takes
+            * the whole row and the segments share it, which is the shape this control has everywhere else in
+            * the product. `shrink-0` again as soon as it fits beside the search box. */}
+          <div className="flex w-full items-center gap-0.5 rounded-md border-stroke border bg-surface-card2 p-0.5 sm:w-auto sm:shrink-0">
             {FILTERS.map(({ id, label }) => {
               const n = id === 'all'
                 ? skills.length
@@ -1042,7 +1060,7 @@ export const SkillsView = () => {
                   type="button"
                   onClick={() => setFilter(id)}
                   className={cn(
-                    'rounded px-2.5 py-1 text-[0.8rem] transition-colors duration-base',
+                    'flex-1 rounded px-1.5 py-1 text-[0.8rem] transition-colors duration-base sm:flex-none sm:px-2.5',
                     filter === id
                       ? 'bg-brand-primary/15 font-semibold text-brand-primary'
                       : 'text-ink-secondary hover:bg-state-hover',
@@ -1291,7 +1309,7 @@ export const SkillsView = () => {
                                 if (e.key === 'Enter') void rename(flow, draftName);
                                 if (e.key === 'Escape') setRenaming(null);
                               }}
-                              className="h-8 w-[16rem] rounded-md border-stroke border bg-surface-card px-2.5 text-[0.85rem] text-ink-primary focus:border-input-focus focus:outline-none"
+                              className="h-8 w-full sm:w-[16rem] rounded-md border-stroke border bg-surface-card px-2.5 text-[0.85rem] text-ink-primary focus:border-input-focus focus:outline-none"
                             />
                             <Button
                               size="sm"
@@ -1389,7 +1407,10 @@ export const SkillsView = () => {
       {/* mt-8 rather than the mb-4 of everything else: this is the seam between two different claims - what
         * you HAVE and what could become one - and at the old spacing the second block read as another row of
         * the first. */}
-      <div className={cn('mb-4 grid gap-4', skills.length > 0 && 'mt-8',
+      {/* `minmax(0,1fr)` and not the implicit `auto` track: `auto` has a min-content floor, and the rows
+        * below hold two buttons that do not wrap their labels - 465px of min-content, measured, in a 236px
+        * panel, all of it past the edge. */}
+      <div className={cn('mb-4 grid grid-cols-[minmax(0,1fr)] gap-4', skills.length > 0 && 'mt-8',
         skills.length === 0 && convertible.length > 0 && 'xl:grid-cols-2')}
       >
       {convertible.length > 0 && (
@@ -1437,23 +1458,29 @@ export const SkillsView = () => {
                   * потому что содержимое нажатий нигде не хранится. Визард спрашивает недостающий текст
                   * один раз и делает скилл-ЦЕЛЬ: он печатает, перечитывает экран и уезжает к ИИ с
                   * параметрами. См. SkillWizard.tsx. */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  isLoading={making === rec.id}
-                  disabled={!!making}
-                  onClick={() => void convert(rec)}
-                >
-                  Repeat it exactly
-                </Button>
-                <Button
-                  size="sm"
-                  leftSlot={<Sparkles className="size-4" />}
-                  disabled={!!making}
-                  onClick={() => setWizardFor(rec)}
-                >
-                  Make a skill
-                </Button>
+                {/* The pair is one box, and below `sm` it is a stacked one taking the whole row. Neither
+                  * label wraps - together they are 253px of min-content - so on their own they sat past the
+                  * right edge of a 236px panel with the second one unreachable. Beside each other again as
+                  * soon as there is room for them. */}
+                <span className="grid grid-cols-[minmax(0,1fr)] w-full gap-2 sm:flex sm:w-auto sm:items-center">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    isLoading={making === rec.id}
+                    disabled={!!making}
+                    onClick={() => void convert(rec)}
+                  >
+                    Repeat it exactly
+                  </Button>
+                  <Button
+                    size="sm"
+                    leftSlot={<Sparkles className="size-4" />}
+                    disabled={!!making}
+                    onClick={() => setWizardFor(rec)}
+                  >
+                    Make a skill
+                  </Button>
+                </span>
               </li>
             ))}
           </ul>
@@ -1523,7 +1550,7 @@ export const SkillsView = () => {
         * является: импорта скиллов в вебе нет, есть импорт .mmmacro, который станет ЗАПИСЬЮ и появится в
         * секции выше. Плитка, обещающая «skill file», обещала бы формат, которого у нас нет. */}
       {skills.length === 0 && (
-        <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(9rem,auto)_1fr_1fr_1fr]">
+        <div className="mb-4 grid grid-cols-[minmax(0,1fr)] gap-3 lg:grid-cols-[minmax(9rem,auto)_1fr_1fr_1fr]">
           <div className="min-w-0 self-center">
             <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
               Other ways to start
@@ -1604,6 +1631,6 @@ export const SkillsView = () => {
           }}
         />
       )}
-    </div>
+    </Page>
   );
 };

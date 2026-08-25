@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "check-types": "tsc --noEmit",
     "dev:mock": "node scripts/copy-agent.mjs && node scripts/dev-mock.mjs",
+    "dev:panel": "node scripts/panel-harness.mjs",
     "sync:ui": "node scripts/sync-design-system.mjs",
     "sync:ui:check": "node scripts/sync-design-system.mjs --check"
   },
