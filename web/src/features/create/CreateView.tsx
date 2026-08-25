@@ -44,6 +44,8 @@ import {
   runOnDesktop,
 } from '@/lib/desktop-engine';
 import { useAgent, useConsole } from '@/lib/store';
+import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
+import { SaveDictatedSkill } from './SaveDictatedSkill';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Plan, askForPlan } from '@/lib/plan';
 import { LiveContext } from './LiveContext';
@@ -76,6 +78,12 @@ interface Turn {
   feed: RunEvent[];
   state: 'running' | 'ok' | 'failed';
   note?: string;
+  /* ЧЕМ ЭТОТ ПРОГОН БЫЛ, оставленное для того, чтобы из него можно было сделать скилл.
+   *
+   * Заполняется только когда прогон закончился успешно и записался на аккаунт: скилл делается из
+   * ДОКАЗАННОГО флоу, а прогон, который не доехал до аккаунта, доказывает только то, что было на этом
+   * экране. Пусто - кнопки нет, и это честнее кнопки, которая отвечает «не получилось». */
+  proved?: DictatedRun;
   /** Намерение, с которым этот прогон начинался, если план спрашивали. Остаётся над фидом, чтобы «сказала»
    * и «сделала» читались рядом. Цикл его не видел. */
   plan?: Plan;
@@ -121,7 +129,12 @@ const SUGGESTIONS = [
 export const CreateView = () => {
   const [state] = useConsole();
   const { health, stale } = useAgent();
-  const { reload } = useAccount();
+  const { reload, flows } = useAccount();
+  /* Открытый диалог сохранения, вместе с прогоном, который он сохраняет. Держится здесь, а не в самом
+   * ходе: ход перерисовывается фидом, а диалог не должен закрываться оттого, что пришёл ещё один шаг. */
+  const [saving, setSaving] = useState<
+    { run: NonNullable<Turn['proved']>; goal: string } | null
+  >(null);
   const navigate = useNavigate();
 
   const [target, setTarget] = useState<Target>(() => {
@@ -375,12 +388,15 @@ export const CreateView = () => {
            * in - never a constant. The old hardcoded string meant a model change made every logged run lie,
            * and the chat assistant then reported the lie back with confidence. */
           const loggedModel = await desktopModel().catch(() => 'claude-opus-5');
+          /* Один id на две вещи: строку прогона и скилл, который из неё сделают. Считался он раньше прямо
+           * в теле push(), и «сделать скилл из этого прогона» тогда не на что было бы сослаться. */
+          const runId = `dr_${startedAt.replace(/\D/g, '').slice(-12)}`;
           /* Logged to the account, best effort: the sidebar's hours, the Hours screen and the Insights page
            * are built from runs, so a desktop run that went unrecorded would make them quietly wrong. */
           try {
             await push({
               runs: [{
-                id: `dr_${startedAt.replace(/\D/g, '').slice(-12)}`,
+                id: runId,
                 kind: 'agent',
                 goal: text,
                 model: loggedModel,
@@ -393,6 +409,20 @@ export const CreateView = () => {
               }],
             });
             await reload();
+            /* Ставится ПОСЛЕ успешного push: до него прогона на аккаунте нет, а скилл ссылается на него как
+             * на своё свидетельство. Ссылка на строку, которой не существует, - это не половина связи, это
+             * сломанная связь, и обнаружится она через неделю у другого человека. */
+            if (result.ok) {
+              /* Окна СПРАШИВАЮТСЯ у машины, а не берутся из фида: фид - это то, что модель решала, а
+               * origins скилла - это где он применим. Не ответила - пустой список, потому что скилл без
+               * origins просто не сужен, а скилл с выдуманными origins врёт. */
+              const where = await windows(state.port)
+                .then((r) => r.windows.map((w) => w.title).filter(Boolean))
+                .catch(() => [] as string[]);
+              updateLive((t) => ({
+                ...t, proved: { runId, steps: result.steps, windows: where, at: startedAt },
+              }));
+            }
           } catch (_) {
             // The run still happened; losing its log is not worth telling the user about.
           }
@@ -562,6 +592,27 @@ export const CreateView = () => {
                     >
                       {turn.note}
                     </Typography>
+                  )}
+
+                  {/* Появляется только на доказанном прогоне - и исчезает, когда скилл уже сделан, потому
+                    * что второе приглашение сделать то же самое читается как «первое не сработало». */}
+                  {turn.state === 'ok' && turn.proved && (
+                    hasSkillForRun(flows, turn.proved.runId) ? (
+                      <Typography variant="p" className="mt-2 text-ink-inactive text-[0.82rem]">
+                        Saved as a skill.
+                      </Typography>
+                    ) : (
+                      <div className="mt-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          leftSlot={<Sparkles className="size-4" />}
+                          onClick={() => setSaving({ run: turn.proved!, goal: turn.goal })}
+                        >
+                          Save as skill
+                        </Button>
+                      </div>
+                    )
                   )}
                 </AgentTurn>
               </div>
@@ -867,6 +918,20 @@ export const CreateView = () => {
           </aside>
         )}
       </div>
+
+      {saving && (
+        <SaveDictatedSkill
+          run={saving.run}
+          goal={saving.goal}
+          onClose={() => setSaving(null)}
+          onSaved={() => {
+            setSaving(null);
+            /* Перечитать аккаунт: hasSkillForRun() смотрит в `flows`, и без этого кнопка осталась бы на
+             * месте до следующей загрузки страницы - предлагая сделать то, что только что сделали. */
+            void reload();
+          }}
+        />
+      )}
     </div>
   );
 };

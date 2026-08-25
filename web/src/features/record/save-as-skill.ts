@@ -115,3 +115,76 @@ export async function saveAsGoalSkill(
 
   if (body.problems.length) throw new Error(body.problems.join('; '));
 }
+
+/* --------------------------------------------------------- a skill from a flow somebody dictated */
+
+/* ЕЩЁ ОДИН ИСТОЧНИК, НО НЕ ЕЩЁ ОДИН ВИД СКИЛЛА - разница, из-за которой буквальный повтор пришлось убирать.
+ *
+ * Флоу, надиктованный в чате, - это уже текст цели. Записи визард нужен затем, чтобы из трёхсот событий
+ * собрать предложение; здесь предложение написал человек, и собирать нечего. Отличается только ПРОИСХОЖДЕНИЕ:
+ * доказательством служат шаги удачного прогона, а не шаги записи.
+ *
+ * Поэтому формат тот же самый - `kind: 'created'`, goalTemplate, params, steps-как-свидетельство, - и
+ * запускается он тем же путём. Два входа, один скилл; это не то же, что два скилла под одним словом.
+ */
+export interface DictatedRun {
+  /** Прогон, который это доказал. Скилл делается только из удачного - непроверенному тут не место. */
+  runId: string;
+  /** Окна, в которых прогон работал: то же поле origins, что у записи, и та же роль - где это применимо. */
+  windows: string[];
+  /** Что цикл делал по шагам. Свидетельство, а не то, что повторяется. */
+  steps: { tool: string; input: Record<string, unknown> }[];
+  at: string;
+}
+
+/** Id скилла, сделанного из надиктованного прогона. Своя приставка: `gs_` принадлежит записям, и
+ *  склеивать их значило бы, что удаление записи трогает чужой скилл. */
+export const dictatedSkillIdFor = (runId: string) => `gd_${runId}`;
+
+export const hasSkillForRun = (flows: Flow[], runId: string) =>
+  flows.some((flow) => flow.id === dictatedSkillIdFor(runId));
+
+export async function saveDictatedAsGoalSkill(
+  run: DictatedRun,
+  said: { name: string; goal: string; params: GoalParam[] },
+): Promise<void> {
+  const title = said.name.slice(0, 80);
+  const asks = said.params.length
+    ? ` Asks for ${said.params.map((p) => p.name).join(', ')}.`
+    : '';
+  const description = (`Carries out: ${said.goal.split('\n')[0]}`.slice(0, 300) + asks).slice(0, 400);
+
+  const body = await push({
+    flows: [{
+      id: dictatedSkillIdFor(run.runId),
+      source: 'desktop',
+      kind: 'created',
+      name: title,
+      description,
+      origins: run.windows.slice(0, 12),
+      created: run.at,
+      payload: {
+        version: 1,
+        kind: 'created',
+        agent: 'desktop',
+        role: SKILL_ROLE,
+        name: title,
+        description,
+        goalTemplate: said.goal,
+        params: said.params,
+        /* Шаги прогона, обрезанные так же, как у записи. Читаются как «что сделал один удачный прогон» -
+         * ровно та роль, которую structureOf() им отводит. */
+        steps: run.steps.slice(0, 200).map((s, i) => ({
+          name: `${i + 1}. ${s.tool}`,
+          input: null as string | null,
+        })),
+        /* Откуда взялось. У записи здесь fromRecording; прогон - другой род свидетельства, и называть его
+         * записью значило бы отправить читателя искать несуществующую. */
+        fromRun: run.runId,
+        created: run.at,
+      },
+    }],
+  });
+
+  if (body.problems.length) throw new Error(body.problems.join('; '));
+}

@@ -1911,6 +1911,42 @@ check('and "Agent offline" is no longer the answer to four different questions',
   /Blocked by browser/.test(read('../web/src/shell/AppLayout.tsx'))
   && /Check for agent/.test(read('../web/src/shell/AppLayout.tsx')));
 
+/* A flow dictated in chat can become a skill once it has actually run. The danger here is not that it
+ * fails - it is that it quietly becomes a SECOND kind of skill, which is the thing da2b247 spent a whole
+ * commit removing. So these hold it to one format and one save path. */
+group('a dictated flow becomes a skill, and not a second kind of skill');
+const dictated = read('../web/src/features/create/SaveDictatedSkill.tsx');
+const saver = read('../web/src/features/record/save-as-skill.ts');
+check('it saves the same goal skill the wizard saves — created, desktop, goalTemplate',
+  /kind: 'created'/.test(saver) && /agent: 'desktop'/.test(saver)
+  && /goalTemplate: said\.goal/.test(saver));
+check('provenance says RUN, so nobody goes looking for a recording that never existed',
+  /fromRun: run\.runId/.test(saver) && !/fromRecording: run\./.test(saver));
+check('and its id cannot collide with a skill made from a recording',
+  /dictatedSkillIdFor = \(runId: string\) => `gd_\$\{runId\}`/.test(saver)
+  && /goalSkillIdFor = \(recordingId: string\) => `gs_\$\{recordingId\}`/.test(saver));
+check('the offer appears only on a run that finished AND reached the account',
+  /if \(result\.ok\) \{/.test(read('../web/src/features/create/CreateView.tsx'))
+  && /turn\.state === 'ok' && turn\.proved/.test(read('../web/src/features/create/CreateView.tsx')));
+check('and it stops being offered once the skill exists',
+  /hasSkillForRun\(flows, turn\.proved\.runId\)/.test(read('../web/src/features/create/CreateView.tsx')));
+
+/* The parameter convention is `{{name}}`, because that is what fillGoal substitutes. Run the file's OWN
+ * expression rather than a copy of it - a copied regex is a second definition that agrees today. */
+const paramRx = dictated.match(/goal\.matchAll\(\/(.+?)\/g\)/);
+check('the parameter pattern is read from the file itself', !!paramRx, 'not found');
+if (paramRx) {
+  const rx = new RegExp(paramRx[1], 'g');
+  const names = (text) => [...text.matchAll(rx)].map((m) => m[1]);
+  check('it finds a placeholder and reports its name',
+    JSON.stringify(names('mail {{recipient}} the report')) === '["recipient"]');
+  check('it reads them in the order they were written, which is the order they are read in',
+    JSON.stringify(names('{{b}} then {{a}}')) === '["b","a"]');
+  check('a single brace is not a placeholder, or every JSON example becomes a parameter',
+    names('send {plain} and ${x}').length === 0);
+  check('and an empty pair asks for nothing', names('{{}} {{ }}').length === 0);
+}
+
 /* A click on a browser tab came back as "something Google Chrome did not name", so a recording of tab
  * clicks produced a skill with no steps in it. Chrome's own native tree says why: the hit test lands on
  * TabStrip::TabDragContextImpl, which covers the tabs exactly and has NO children, while the tab itself is
