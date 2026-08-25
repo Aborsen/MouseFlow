@@ -132,22 +132,51 @@ const FLOWS = [
   },
 ];
 
+/* `steps` и `said` есть на проводе с самого начала - api/sync.js отдаёт обе колонки, - и в этом наборе их
+ * не было, поэтому история прогонов на моке выглядела бы пустой при работающем сервере. Ровно тот случай,
+ * ради которого этот файл переписывали трижды: мок, отвечающий не тем, чем отвечает сервер, показывает
+ * рабочий код сломанным.
+ *
+ * Формы шагов ДВЕ, и это не небрежность: десктопный цикл пишет {tool, input, ms}, расширение - свою. Обе
+ * здесь, потому что Earlier предлагает «сделать скилл» только по первой, и проверить это можно только
+ * имея вторую. */
 const RUNS = [
   {
-    id: 'r1', kind: 'agent', goal: 'send the welcome email to Margaryta', model: 'claude-opus-5',
+    id: 'dr_251119120000', kind: 'agent', goal: 'send the welcome email to Margaryta', model: 'claude-opus-5',
     flowId: null, outcome: 'ok', summary: 'Sent it.', error: null, extension: null,
+    said: ['Outlook is already open, so I will use that rather than launching it.'],
+    steps: [
+      { tool: 'activate_window', input: { process: 'OUTLOOK' }, ms: { shot: 90, model: 4200, act: 380 } },
+      { tool: 'click', input: { x: 120, y: 88, label: 'New mail' }, ms: { shot: 88, model: 3900, act: 360 } },
+      { tool: 'type_text', input: { text: 'margaryta@example.com' }, ms: { shot: 91, model: 3100, act: 420 } },
+      { tool: 'press_key', input: { key: 'Tab' }, ms: { shot: 87, model: 2600, act: 355 } },
+      { tool: 'type_text', input: { text: 'Welcome!\n\nGlad to have you with us.' }, ms: { shot: 90, model: 4800, act: 470 } },
+      { tool: 'click', input: { x: 74, y: 140, label: 'Send' }, ms: { shot: 89, model: 5200, act: 365 } },
+    ],
     startedAt: hoursAgo(3), finishedAt: new Date(now - 3 * 3600_000 + 7 * 60_000).toISOString(),
   },
   {
     id: 'r2', kind: 'replay', goal: null, model: null, flowId: 'dr_dev_1',
-    outcome: 'ok', summary: null, error: null, extension: null,
+    outcome: 'ok', summary: null, error: null, extension: null, said: [], steps: [],
     startedAt: hoursAgo(26), finishedAt: new Date(now - 26 * 3600_000 + 90_000).toISOString(),
   },
   {
     id: 'r3', kind: 'agent', goal: 'research AI browser agents and write it up', model: 'claude-opus-5',
     flowId: null, outcome: 'failed', summary: null, error: 'It used all 24 steps without finishing.',
     extension: '0.16.0',
+    said: ['Opening the first result to read it properly.'],
+    /* Форма расширения: нет `tool`, есть `host`. Earlier не предложит сделать из неё десктопный скилл, и
+     * это единственный способ увидеть, что не предложит. */
+    steps: [{ host: 'www.google.com' }, { host: 'arxiv.org' }, { host: 'arxiv.org' }],
     startedAt: hoursAgo(70), finishedAt: new Date(now - 70 * 3600_000 + 22 * 60_000).toISOString(),
+  },
+  {
+    /* Прогон, чья строка шагов не несёт: так выглядят строки, записанные до того, как шаги стали
+     * записываться. История обязана сказать про них правду, а не «ничего не делал». */
+    id: 'r4', kind: 'agent', goal: 'rename the sheet to Q3 and save it', model: 'claude-opus-5',
+    flowId: null, outcome: 'stopped', summary: null, error: 'Stopped.', extension: null,
+    said: [], steps: [],
+    startedAt: hoursAgo(96), finishedAt: new Date(now - 96 * 3600_000 + 40_000).toISOString(),
   },
 ];
 

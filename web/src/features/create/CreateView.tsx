@@ -50,6 +50,8 @@ import { SaveDictatedSkill } from './SaveDictatedSkill';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Plan, askForPlan } from '@/lib/plan';
 import { LiveContext } from './LiveContext';
+import { describe } from './describe';
+import { Earlier } from './Earlier';
 /* Сказать о конце прогона тому, кто на эту вкладку не смотрит. Смысл прогона в том, что человек уходит
  * заниматься другим - вкладка позади других окон НАМЕРЕННО, - и результат, живущий только на экране, никто не
  * видит до момента, когда сам решит проверить. */
@@ -92,35 +94,6 @@ interface Turn {
   pinned?: string | null;
 }
 
-/** What a step actually did, not just which verb it used - afterwards is when somebody is working out
- *  where a run went wrong. */
-function describe(event: RunEvent): string {
-  const input = (event.input ?? {}) as Record<string, any>;
-  const at = Number.isFinite(input.x) && Number.isFinite(input.y) ? ` at ${input.x},${input.y}` : '';
-  switch (event.name) {
-    case 'click':
-      return `${input.double ? 'double-click' : input.button === 'right' ? 'right-click' : 'click'}${at}`;
-    case 'scroll':
-      return `scroll ${Number(input.amount) < 0 ? 'down' : 'up'}${at}`;
-    case 'type_text': {
-      const text = String(input.text ?? '');
-      const lines = text.split('\n').length;
-      const shown = text.replace(/\n/g, ' ⏎ ');
-      return `type "${shown.length > 60 ? `${shown.slice(0, 60)}…` : shown}"${lines > 1 ? ` (${lines} lines)` : ''}`;
-    }
-    case 'press_key': {
-      const mods = [input.ctrl && 'Ctrl', input.shift && 'Shift', input.alt && 'Alt'].filter(Boolean);
-      return `press ${[...mods, input.key ?? '?'].join('+')}`;
-    }
-    case 'activate_window':
-      return `switch to ${input.title ?? input.process ?? 'a window'}`;
-    case 'wait':
-      return 'wait for the screen to settle';
-    default:
-      return event.name ?? 'step';
-  }
-}
-
 const SUGGESTIONS = [
   'open my inbox, find the message from Ann about the invoice and reply that it is approved',
   'download this month’s invoices from the billing page and put them in Downloads',
@@ -130,7 +103,7 @@ const SUGGESTIONS = [
 export const CreateView = () => {
   const [state] = useConsole();
   const { health, stale } = useAgent();
-  const { reload, flows } = useAccount();
+  const { reload, flows, runs } = useAccount();
   /* Открытый диалог сохранения, вместе с прогоном, который он сохраняет. Держится здесь, а не в самом
    * ходе: ход перерисовывается фидом, а диалог не должен закрываться оттого, что пришёл ещё один шаг. */
   const [saving, setSaving] = useState<
@@ -356,6 +329,9 @@ export const CreateView = () => {
        * это всё ещё жест пользователя. Ответ не проверяется - announceFinished сам решает, что ему доступно. */
       void askToNotify();
 
+      /** Что прогон говорил по дороге. Собирается по ходу, пишется в конце. */
+      const commentary: string[] = [];
+
       void runOnDesktop({
         /* Шлюзы — только когда план действительно спрашивали. Без плана нет границ, и инструмент чекпоинта
          * даже не предлагается модели. */
@@ -375,7 +351,17 @@ export const CreateView = () => {
             + 'and say so rather than going to look for it.'
           : text,
         machine: localMachine(state.port),
-        onEvent: (event) => updateLive((t) => ({ ...t, feed: [...t.feed, event] })),
+        onEvent: (event) => {
+          /* СЛОВА ПРОГОНА, отложенные для записи на аккаунт.
+           *
+           * `user_run.said` существует с самого начала и на этом пути никогда не заполнялся - api/insights.js
+           * даже вынужден объяснять, что пустая колонка не значит «прогон молчал». Заполняется отсюда, а не
+           * из фида: фид живёт в состоянии компонента и его к этому моменту может уже не быть, а слова -
+           * единственное, что делает историю прогона читаемой человеком. Итоговая фраза не здесь: она
+           * уходит в `summary`, и дублировать её значило бы напечатать её дважды подряд. */
+          if (event.type === 'text' && event.text) commentary.push(event.text);
+          updateLive((t) => ({ ...t, feed: [...t.feed, event] }));
+        },
         isAborted: () => abort.current,
       })
         .then(async (result) => {
@@ -414,6 +400,9 @@ export const CreateView = () => {
                 summary: result.said ?? result.error ?? null,
                 error: result.ok ? null : result.error ?? null,
                 steps: result.steps,
+                /* Обрезано так же, как режет api/sync.js: он берёт первые 200 в любом случае, и отправлять
+                 * больше значило бы отправить то, что заведомо выбросят. */
+                said: commentary.slice(0, 200),
                 startedAt,
                 finishedAt: new Date().toISOString(),
               }],
@@ -482,6 +471,24 @@ export const CreateView = () => {
     <div className="flex h-[calc(100dvh-3.25rem)] gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
       <Thread>
+        {/* ЧТО БЫЛО РАНЬШЕ - наверху ленты, из записи на аккаунте, а не из второй копии рядом с ней.
+          *
+          * Развёрнуто, когда живых ходов нет: человек, открывший пустую страницу Create, пришёл либо
+          * начать новое, либо найти старое, и второе до этой правки было негде. Свёрнуто, когда он уже
+          * работает: тогда старое - это шум над тем, что происходит сейчас.
+          *
+          * `hide` - прогоны, показанные живьём в этой же сессии. После удачного прогона страница
+          * перечитывает аккаунт, и без этого он появился бы в ленте дважды: один раз как ход, второй раз
+          * как история этого же хода. */
+        <Earlier
+          runs={runs}
+          flows={flows}
+          hide={new Set(turns.map((t) => t.proved?.runId).filter(Boolean) as string[])}
+          openByDefault={turns.length === 0}
+          onAskAgain={setGoal}
+          onSaveAsSkill={(run, goal) => setSaving({ run, goal })}
+        />}
+
         {turns.length === 0 ? (
           <Opener
             title="Say what you want done"
