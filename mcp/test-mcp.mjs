@@ -2315,6 +2315,63 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------------- двойной клик по тому, у чего нет имени */
+
+/* Ветка звала unnamedClick() - функции с таким именем никогда не существовало, она называется
+ * unnamedClicks, во множественном. То есть ReferenceError каждый раз, когда двойной клик приходился на
+ * то, чему дерево доступности не дало имени: холст, тело документа, окно приложения без разрешения.
+ * Такая запись не открывалась ВООБЩЕ - ни прочитать, ни отредактировать, ни сделать скилл, - и падало это
+ * в transcribe(), то есть на маршруте.
+ *
+ * Ни одна из двадцати девяти записей на живом аккаунте в неё не попадала, поэтому и не всплывало. Тест
+ * держит обе ветки, потому что чинилась одна, а сломать легко обе. */
+group('двойной клик читается и тогда, когда у цели нет имени');
+{
+  const { transcribe } = await import(new URL('../api/_transcript.js', import.meta.url));
+  const ev = (action, x, y, delayMs, context) =>
+    (context ? { action, x, y, delayMs, context } : { action, x, y, delayMs });
+  const story = (events) => {
+    const out = transcribe({
+      id: 't', name: 't', kind: 'recorded', source: 'desktop',
+      payload: { kind: 'recorded', agent: 'desktop', version: '0.9.6', events, windows: [] },
+    });
+    return (out.segments || [])
+      .flatMap((seg) => [seg.text, ...(seg.steps || []).map((s) => s.what)])
+      .filter(Boolean).join(' | ');
+  };
+  /* Настоящая форма записи: клик приезжает парой Down/Release. Две пары в одной точке ближе 400мс - это
+   * то, что transcribe складывает в двойной клик. */
+  const twice = (context) => [
+    ev('Left Click Down', 400, 300, 500, context), ev('Left Click Release', 400, 300, 40),
+    ev('Left Click Down', 400, 300, 90, context), ev('Left Click Release', 400, 300, 40),
+  ];
+
+  let bare = null;
+  let threw = null;
+  try { bare = story(twice(null)); } catch (err) { threw = err; }
+  check('запись с безымянным двойным кликом вообще открывается', !threw,
+    threw ? threw.constructor.name + ': ' + threw.message : '');
+  check('и говорит, что это был двойной клик', /double-clicked/.test(bare || ''), String(bare));
+  check('называя координату, раз назвать больше нечего', /400,300/.test(bare || ''), String(bare));
+  /* Точки отдаются самой unnamedClicks, а не приклеиваются после неё: она сама решает, ставить ли запятую,
+   * и склейка снаружи давала «at 400,300 at 400,300». */
+  check('и называя её ОДИН раз', (String(bare).match(/400,300/g) || []).length === 1, String(bare));
+
+  const named = story(twice({ app: 'Microsoft Excel', control: 'Sheet1', type: 'tab' }));
+  check('а когда имя есть, читается по имени',
+    /double-clicked the "Sheet1" tab in Microsoft Excel/.test(named), named);
+
+  /* И сам вызов - той функции, которая существует. Проверка по исходнику, потому что ветка редкая:
+   * опечатку в имени вернут обратно, а тест выше поймает её только если кто-то соберёт ровно такой ввод. */
+  /* Комментарии сняты: файл ОБЪЯСНЯЕТ, чем была опечатка, и цитирует её. Искать её в исходнике целиком -
+   * значит найти собственное объяснение и посчитать его багом. Второй раз за сессию. */
+  const src = read('../api/_transcript.js')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  check('и зовётся функция, которая существует',
+    /unnamedClicks\(1, step\.ctx, \[step\.target\]\)/.test(src)
+      && !/[^s]unnamedClick\(/.test(src));
+}
+
 /* ------------------------------------------------------------------ имя без приписки приложения */
 
 /* Пришло как жалоба на внешний вид - «убери "использует 411 МБ памяти" из названия вкладок», - и оказалось

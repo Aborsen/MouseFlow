@@ -1773,10 +1773,20 @@ function placeStory(segment) {
       if (name && step.action === 'click') { namedRun.push(name); continue; }
       if (step.action === 'dblclick') {
         flushNamed();
+        /* unnamedClicks, во множественном - функция называется так, и единственного числа никогда не
+         * существовало. Ветка звала `unnamedClick(step.ctx)` с одним аргументом, то есть ReferenceError
+         * каждый раз, когда двойной клик пришёлся на то, чему дерево доступности не дало имени: холст,
+         * тело документа, окно приложения, которому не выдали разрешение. Такая запись не открывалась
+         * вообще - ни прочитать, ни отредактировать, ни сделать из неё скилл, - и падало это в transcribe(),
+         * то есть на маршруте, а не в браузере.
+         *
+         * Единица первым аргументом: клик здесь ровно один, и unnamedClicks(1, ...) не добавляет ни
+         * «twice», ни «N times», а отдаёт «clicked <что-то> at x,y» - ровно ту фразу, у которой этот вызов
+         * и отрезает начало. Точки передаются ей же, а не приклеиваются после: она сама решает, ставить ли
+         * запятую перед координатами, и склейка снаружи давала «...at 400,300 at 400,300». */
         clauses.push(name
           ? 'double-clicked ' + quoted(name)
-          : 'double-clicked ' + unnamedClick(step.ctx).replace(/^clicked /, '')
-            + atPoints([step.target]));
+          : 'double-clicked ' + unnamedClicks(1, step.ctx, [step.target]).replace(/^clicked /, ''));
         continue;
       }
       /* Counted rather than written out, so five clicks on the same unnamed thing are one clause. The named
