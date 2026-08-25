@@ -1588,9 +1588,9 @@ namespace MouseFlow
                      * name, the legacy anonymous typing event reads as a key called "Down", so replaying
                      * somebody typing would press the down arrow once per keystroke. It is excluded again
                      * here by name, for the reader who moves these branches around. */
-                    if (action != null && action.StartsWith("Key ") && action != "Key Down")
+                    if (e.Action != null && e.Action.StartsWith("Key ") && e.Action != "Key Down")
                     {
-                        string spec = action.Substring(4);
+                        string spec = e.Action.Substring(4);
                         string[] parts = spec.Split('+');
                         string name = parts.Length > 0 ? parts[parts.Length - 1] : "";
                         bool wantCtrl = false, wantShift = false, wantAlt = false;

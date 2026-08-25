@@ -187,8 +187,8 @@ check('и в общей ветке оно исключено ещё раз, яв
 check('названная клавиша уходит в тот же Input.key, что и /do',
   /Input\.key\(name, ctrl: mods\.contains\("ctrl"\)/.test(swift));
 check('на windows та же ловушка исключена так же',
-  ps.indexOf('case "Key Down":') < ps.indexOf('action.StartsWith("Key ")')
-  && /action\.StartsWith\("Key "\) && action != "Key Down"/.test(ps));
+  ps.indexOf('case "Key Down":') < ps.indexOf('e.Action.StartsWith("Key ")')
+  && /e\.Action\.StartsWith\("Key "\) && e\.Action != "Key Down"/.test(ps));
 check('и windows играет её через тот же PressKey, что и /do',
   /PressKey\(name, wantCtrl, wantShift, wantAlt\)/.test(ps));
 
