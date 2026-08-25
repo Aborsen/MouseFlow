@@ -236,6 +236,11 @@ export async function advance({ loop, shot, windows, results, ask }) {
   loop.turn += 1;
 
   // 4. The decision.
+  /* Timed, because "it sends a screenshot every four seconds" turned out to be neither a screenshot nor an
+   * interval, and that was established by subtracting one measurement from another rather than by measuring
+   * the thing itself. On this path the picture is taken by the agent and arrives with the request, so this
+   * side can only honestly time the decision - which is the part the subtraction said was almost all of it. */
+  const modelAt = Date.now();
   let answer;
   try {
     answer = await model({
@@ -247,6 +252,8 @@ export async function advance({ loop, shot, windows, results, ask }) {
   } catch (err) {
     return over({ ok: false, error: `The model could not be reached at step ${loop.stepNo}: ${err && err.message}` });
   }
+
+  const modelMs = Date.now() - modelAt;
 
   /* Too large to send. The step never happened, so it is not counted, and the picture that caused it is
    * taken back out of the conversation - the next request brings a smaller one in its place. */
@@ -307,7 +314,11 @@ export async function advance({ loop, shot, windows, results, ask }) {
       break;
     }
 
-    loop.steps.push({ tool: use.name || '?', input: use.input || {} });
+    /* The decision belongs to the TURN and is written onto each action it produced. A turn that returned
+     * three actions paid for one decision, so summing this column over-counts - the number to read is the
+     * per-turn one, and a reader who wants a total should take the distinct decisions. Said here because
+     * the shape invites the wrong sum. */
+    loop.steps.push({ tool: use.name || '?', input: use.input || {}, ms: { model: modelMs } });
 
     if (use.name === 'wait') {
       const ms = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input && use.input.ms) || 2000));

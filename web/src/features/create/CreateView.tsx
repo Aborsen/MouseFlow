@@ -584,7 +584,20 @@ export const CreateView = () => {
                       }
                     >
                       {event.type === 'tool'
-                        ? describe(event)
+                        ? (
+                          <>
+                            {describe(event)}
+                            {/* Читается только когда есть что читать. Разбивка нужна тому, кто смотрит на
+                              * бегущий прогон и думает «почему так медленно» - и отвечает она сразу: почти
+                              * всё время уходит на решение, а не на картинку. */}
+                            {event.spent && (
+                              <span className="ms-1.5 text-ink-inactive tabular-nums">
+                                {(event.spent.model / 1000).toFixed(1)}s
+                                {event.spent.shot >= 100 && ` · shot ${(event.spent.shot / 1000).toFixed(1)}s`}
+                              </span>
+                            )}
+                          </>
+                        )
                         : event.type === 'wave'
                           ? `Wave ${event.n} — carrying on from what it wrote down`
                           : event.text ?? event.message ?? ''}

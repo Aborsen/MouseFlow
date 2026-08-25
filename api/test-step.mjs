@@ -108,6 +108,22 @@ group('a finish that does not claim success is a failure that said why');
  * nothing, so reading it as success infers the one thing `finish` exists to make explicit. What ends this
  * way is a model that stalled, asked a question, or forgot to say it was done - and all three closed the
  * run green and were logged as `ok`. A false red is visible; a false green is not. */
+/* "It sends a screenshot every four seconds" was the report. The agent answers /shot in tens of
+ * milliseconds and this loop has no timer in it at all - so the four seconds were the decision, which was
+ * established by subtracting one measurement from another. Every step carries its own now. */
+group('a step says what it cost');
+{
+  const slow = async () => {
+    await new Promise((r) => setTimeout(r, 60));
+    return { status: 200, body: { stop_reason: 'tool_use', content: [use('click', { x: 1, y: 2 })] } };
+  };
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask: slow });
+  const step = out.loop.steps[0];
+  check('the decision is timed', !!step.ms && typeof step.ms.model === 'number');
+  check('and it is the time actually spent, not a guess',
+    step.ms.model >= 55, String(step.ms && step.ms.model));
+}
+
 group('a turn that called nothing has not succeeded');
 {
   const ask = scripted([answer([])]);

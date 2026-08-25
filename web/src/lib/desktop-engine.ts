@@ -85,13 +85,24 @@ export interface RunEvent {
   ms?: number;
   limit?: number;
   reason?: string;
+  /* What the turn that produced this step cost. On screen so the pace can be read while it runs, rather
+   * than reconstructed from the account afterwards - the question it answers, "why does this feel slow",
+   * is asked while watching, not later. */
+  spent?: { shot: number; model: number };
 }
 
 export interface RunResult {
   ok: boolean;
   said?: string;
   error?: string;
-  steps: { tool: string; input: Record<string, unknown> }[];
+  steps: RunStep[];
+}
+
+/** One decided action, and what it cost. `ms` is absent on any run recorded before it was measured. */
+export interface RunStep {
+  tool: string;
+  input: Record<string, unknown>;
+  ms?: { shot: number; model: number; act: number };
 }
 
 /** What is already open, in one line each - the mistake a picture cannot prevent. */
@@ -297,6 +308,13 @@ async function runWave(o: {
   for (let turn = 0; turn < WAVE_TURNS; turn++) {
     if (isAborted()) return { stepNo };
 
+    /* WHERE THE TIME GOES, measured rather than reasoned about.
+     *
+     * "It sends a screenshot every four seconds" was the report, and the four seconds turned out to be
+     * neither a screenshot nor an interval: the agent answers /shot in tens of milliseconds and there is no
+     * timer in this loop at all. But that was arrived at by subtracting one measurement from another, which
+     * is an argument, not a number. So each step now carries its own split. */
+    const shotAt = Date.now();
     let frame;
     try {
       frame = await machine.shot(shotWidth === DEFAULT_SHOT_W ? undefined : shotWidth);
@@ -335,7 +353,10 @@ async function runWave(o: {
     onEvent({ type: 'turn', n: stepNo, wave, inWave: turn + 1, of: WAVE_TURNS });
 
     const cutoff = new AbortController();
+    const shotMs = Date.now() - shotAt;
+
     const timer = setTimeout(() => cutoff.abort(), MODEL_TIMEOUT_MS);
+    const modelAt = Date.now();
     let res: Response;
     let text: string;
     try {
@@ -361,6 +382,7 @@ async function runWave(o: {
       };
     }
     clearTimeout(timer);
+    const modelMs = Date.now() - modelAt;
 
     if (res.status === 413 && shotWidth > 320) {
       shotWidth = Math.max(320, Math.round(shotWidth / 2));
@@ -478,8 +500,17 @@ async function runWave(o: {
         };
       }
 
-      onEvent({ type: 'tool', name: use.name, input: use.input });
-      steps.push({ tool: use.name ?? '?', input: (use.input ?? {}) as Record<string, unknown> });
+      onEvent({ type: 'tool', name: use.name, input: use.input, spent: { shot: shotMs, model: modelMs } });
+      const actAt = Date.now();
+      const trace: RunStep = {
+        tool: use.name ?? '?',
+        input: (use.input ?? {}) as Record<string, unknown>,
+        /* The picture and the decision belong to the TURN, not to this action - a turn that returned three
+         * of them paid for one of each. Written onto every step anyway, because the alternative is a shape
+         * where some steps have timings and some do not, and whoever reads them later has to know why. */
+        ms: { shot: shotMs, model: modelMs, act: 0 },
+      };
+      steps.push(trace);
 
       if (use.name === 'wait') {
         const limit = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input?.ms) || 2000));
@@ -506,6 +537,10 @@ async function runWave(o: {
         onEvent({ type: 'error', message: `${use.name} failed: ${message}` });
         results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: message });
       }
+
+      /* Before the settling pause, not after: the 350ms is a fixed cost of the LOOP, and folding it into
+       * the action would make every action look 350ms slower than it is. */
+      trace.ms!.act = Date.now() - actAt;
 
       // A moment for the screen to react before the next picture, or it shows the state before this.
       await new Promise((done) => setTimeout(done, 350));
