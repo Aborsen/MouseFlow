@@ -1911,6 +1911,28 @@ check('and "Agent offline" is no longer the answer to four different questions',
   /Blocked by browser/.test(read('../web/src/shell/AppLayout.tsx'))
   && /Check for agent/.test(read('../web/src/shell/AppLayout.tsx')));
 
+/* Dictation sends the user's voice somewhere. Which somewhere is a product decision, not a detail, and
+ * these hold it: local first, and said out loud either way. */
+group('dictation prefers the machine, and says so when it cannot');
+const speech = read('../web/src/features/create/dictation.ts');
+check('on-device availability is asked BEFORE falling back to a server',
+  /available\(\{ langs: \[lang\], processLocally: true/.test(speech)
+  && /available\(\{ langs: \[lang\], processLocally: false/.test(speech));
+check('and processLocally is only set once that answer said the language is here',
+  /if \(where === 'on-this-computer'\) rec\.processLocally = true;/.test(speech));
+check('a failed check does not get to claim the audio stays local',
+  /catch \(_\) \{[\s\S]{0,160}setWhere\('a-server'\)/.test(speech));
+check('the language comes from the browser, or Russian speech is recognised as English',
+  /rec\.lang = lang;/.test(speech) && /navigator\.language/.test(speech));
+check('where the audio goes is on screen before the microphone is pressed',
+  /dictation is sent to Google to be recognised/.test(read('../web/src/features/create/CreateView.tsx'))
+  && /dictation stays on this computer/.test(read('../web/src/features/create/CreateView.tsx')));
+check('only FINAL speech reaches the goal — interim text would rewrite itself under the cursor',
+  /if \(result\.isFinal\) sink\.current\(text\);/.test(speech)
+  && /else pending \+= text;/.test(speech));
+check('and a refused microphone says what to do, not what happened',
+  /Allow it for this site in the address bar/.test(speech));
+
 /* A flow dictated in chat can become a skill once it has actually run. The danger here is not that it
  * fails - it is that it quietly becomes a SECOND kind of skill, which is the thing da2b247 spent a whole
  * commit removing. So these hold it to one format and one save path. */

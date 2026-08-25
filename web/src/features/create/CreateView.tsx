@@ -17,7 +17,7 @@
  * Reloading the page clears the thread and loses nothing that matters.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { CircleDot, Crosshair, Monitor, Send, Sparkles, Square } from 'lucide-react';
+import { CircleDot, Crosshair, Mic, MicOff, Monitor, Send, Sparkles, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
@@ -45,6 +45,7 @@ import {
 } from '@/lib/desktop-engine';
 import { useAgent, useConsole } from '@/lib/store';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
+import { langName, useDictation } from './dictation';
 import { SaveDictatedSkill } from './SaveDictatedSkill';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Plan, askForPlan } from '@/lib/plan';
@@ -141,6 +142,15 @@ export const CreateView = () => {
     try { return localStorage.getItem(KEY) === 'desktop' ? 'desktop' : 'browser'; } catch (_) { return 'browser'; }
   });
   const [goal, setGoal] = useState('');
+
+  /* Готовые куски речи ДОПИСЫВАЮТСЯ к тому, что уже набрано, а не заменяют его: диктовка - это ещё один
+   * способ набирать в то же поле, а не отдельный режим ввода. Пробел ставится здесь, потому что
+   * распознавание отдаёт фразы без него. */
+  const dictation = useDictation((text) => {
+    const said = text.trim();
+    if (!said) return;
+    setGoal((now) => (now.trim() ? `${now.replace(/\s+$/, '')} ${said}` : said));
+  });
   const [turns, setTurns] = useState<Turn[]>([]);
   const [blocked, setBlocked] = useState<string | null>('Looking for what can carry this out…');
   const [running, setRunning] = useState(false);
@@ -776,6 +786,29 @@ export const CreateView = () => {
                 {' runs it without a plan'}
               </span>
             )}
+            {/* ГДЕ ОКАЗЫВАЕТСЯ ЗВУК, сказанное до нажатия. Chrome по умолчанию отправляет речь на свои
+              * серверы, а этот продукт обещает говорить, что уходит с машины - значит и это тоже.
+              * Скачиваемый пакет предлагается как кнопка, потому что это единственное, что отделяет
+              * человека от распознавания, которое никуда не отправляет. */}
+            {dictation.supported && !running && (
+              <span className="flex items-center gap-1.5">
+                <Mic className="size-3.5" />
+                {dictation.where === 'on-this-computer'
+                  ? `dictation stays on this computer · ${langName(dictation.lang)}`
+                  : dictation.where === 'downloadable' ? (
+                    <>
+                      {`dictation would go to Google · ${langName(dictation.lang)}`}
+                      <button
+                        type="button"
+                        onClick={() => void dictation.install()}
+                        className="underline underline-offset-2 hover:text-ink-body"
+                      >
+                        keep it on this computer
+                      </button>
+                    </>
+                  ) : `dictation is sent to Google to be recognised · ${langName(dictation.lang)}`}
+              </span>
+            )}
             {/* A run is meant to be left alone - the agent drives the real desktop, so the tab is behind
               * other windows on purpose. A finish is therefore announced: the tab title changes and, if the
               * browser was allowed to, a system notification appears; clicking it brings this tab forward.
@@ -876,6 +909,25 @@ export const CreateView = () => {
                 Plan it
               </Button>
             )}
+
+            {/* Микрофон стоит в одном ряду с остальным вводом, потому что это и есть ввод - другой способ
+              * набрать то же поле. Прятать его, пока не спросили разрешение, было бы кнопкой, которая
+              * появляется после того, как понадобилась. */}
+            {dictation.supported && !running && (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-pressed={dictation.listening}
+                aria-label={dictation.listening ? 'Stop dictating' : 'Dictate the goal'}
+                leftSlot={dictation.listening
+                  ? <MicOff className="size-4" />
+                  : <Mic className="size-4" />}
+                onClick={() => (dictation.listening ? dictation.stop() : dictation.start())}
+                className={cn(dictation.listening && 'text-fb-red-text')}
+              >
+                {dictation.listening ? 'Stop' : 'Dictate'}
+              </Button>
+            )}
             </span>
           </>
         }
@@ -889,12 +941,32 @@ export const CreateView = () => {
           }}
           disabled={running}
           rows={2}
-          placeholder={running ? 'Working…' : 'open my inbox and reply to Ann that the invoice is approved'}
+          placeholder={running
+            ? 'Working…'
+            : dictation.listening
+              ? 'Listening — say what it should do'
+              : 'open my inbox and reply to Ann that the invoice is approved'}
           className={cn(
             'max-h-[9rem] min-h-[3rem] w-full resize-none bg-transparent px-1.5 py-1 text-ink-primary',
             'placeholder:text-ink-inactive focus:outline-none disabled:opacity-disabled',
           )}
         />
+
+        {/* Ещё не решённое слово - отдельной строкой и приглушённо, а НЕ в самом поле.
+          *
+          * Промежуточный результат переписывается на каждом слоге. Дописывать его в цель значило бы, что
+          * текст под курсором пляшет, пока человек говорит, и правìть его в этот момент невозможно. Сюда
+          * попадает только то, что распознавание объявило окончательным. */}
+        {dictation.listening && dictation.interim && (
+          <Typography variant="p" className="px-1.5 text-ink-inactive text-[0.86rem] italic">
+            {dictation.interim}
+          </Typography>
+        )}
+        {dictation.problem && (
+          <Typography variant="p" className="px-1.5 text-fb-red-text text-[0.82rem]">
+            {dictation.problem}
+          </Typography>
+        )}
       </Composer>
       </div>
 
