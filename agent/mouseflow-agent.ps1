@@ -554,11 +554,99 @@ namespace MouseFlow
                     if (active)
                     {
                         KBDLLHOOKSTRUCT data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-                        if ((data.flags & Native.LLKHF_INJECTED) == 0) CaptureKey();
+                        if ((data.flags & Native.LLKHF_INJECTED) == 0)
+                        {
+                            string named = NamedKey((int)data.vkCode);
+                            if (named != null) CaptureNamedKey(named); else CaptureKey();
+                        }
                     }
                 }
             }
             return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
+
+        /* Keys that cannot spell anything, and chords that are instructions rather than text.
+         *
+         * Same rule as the macOS agent, and the same reason: without it a recording cannot say that the
+         * work ended by pressing Send, so a skill made from one types the message and never sends it.
+         * Everything capable of producing a character still goes to CaptureKey() and is counted without
+         * ever being identified - every letter, every digit, and every Shift chord, because a capital
+         * letter is still a letter.
+         *
+         * ALT IS NOT A COMMAND MODIFIER HERE, and that is the Windows-shaped trap. On many layouts AltGr
+         * is Ctrl+Alt and composes characters - Polish, Ukrainian, Hungarian - so a chord holding both is
+         * text being typed, not a command being given, and reading it would read the text. Ctrl without
+         * Alt, or the Windows key.
+         *
+         * The codes are the ones VkFor() below already uses to PLAY these keys, so the two directions
+         * cannot drift apart: Enter 0x0D, Tab 0x09, Escape 0x1B, Backspace 0x08, Delete 0x2E, the arrows
+         * 0x25-0x28 and the page keys 0x21-0x24. */
+        static string NamedKey(int vk)
+        {
+            string name = null;
+            switch (vk)
+            {
+                case 0x0D: name = "Enter"; break;
+                case 0x09: name = "Tab"; break;
+                case 0x1B: name = "Escape"; break;
+                case 0x08: name = "Backspace"; break;
+                case 0x2E: name = "Delete"; break;
+                case 0x25: name = "Left"; break;
+                case 0x26: name = "Up"; break;
+                case 0x27: name = "Right"; break;
+                case 0x28: name = "Down"; break;
+                case 0x21: name = "PageUp"; break;
+                case 0x22: name = "PageDown"; break;
+                case 0x23: name = "End"; break;
+                case 0x24: name = "Home"; break;
+                default: break;
+            }
+
+            bool ctrl = (Native.GetAsyncKeyState(0x11) & 0x8000) != 0;
+            bool alt = (Native.GetAsyncKeyState(0x12) & 0x8000) != 0;
+            bool shift = (Native.GetAsyncKeyState(0x10) & 0x8000) != 0;
+            bool win = ((Native.GetAsyncKeyState(0x5B) & 0x8000) != 0)
+                    || ((Native.GetAsyncKeyState(0x5C) & 0x8000) != 0);
+            bool commanded = (ctrl && !alt) || win;
+
+            if (name == null)
+            {
+                /* A letter or digit, and only under a command chord. The virtual key IS the shortcut -
+                 * Ctrl+C is Ctrl plus VK_C whatever the layout prints on the key - which is the same thing
+                 * VkFor's comment says about playing one back. */
+                if (!commanded) return null;
+                if (vk >= 0x41 && vk <= 0x5A) name = ((char)vk).ToString();
+                else if (vk >= 0x30 && vk <= 0x39) name = ((char)vk).ToString();
+                else return null;
+            }
+
+            string prefix = "";
+            if (win) prefix += "Win+";
+            if (ctrl && !alt) prefix += "Ctrl+";
+            if (alt && !ctrl) prefix += "Alt+";
+            if (shift) prefix += "Shift+";
+            return prefix + name;
+        }
+
+        /* A key that carries no text, recorded BY NAME. Never coalesced: two presses of Enter are two
+         * things that happened, and each resolves the focused element, because a commit is only an
+         * instruction when it says what it committed. */
+        static void CaptureNamedKey(string name)
+        {
+            Ev pending = null;
+            lock (Gate)
+            {
+                long now = _clock.ElapsedMilliseconds;
+                Ev e = new Ev();
+                e.X = _lastX;
+                e.Y = _lastY;
+                e.DelayMs = _buffer.Count == 0 ? 0 : (int)(now - _lastStamp);
+                e.Action = "Key " + name;
+                _buffer.Add(e);
+                _lastStamp = now;
+                pending = e;
+            }
+            if (pending != null) EnqueueFocused(pending);
         }
 
         static void CaptureKey()
@@ -1493,7 +1581,35 @@ namespace MouseFlow
                     lock (Gate) { _unplayable++; }
                     return;
 
-                default: return;
+                default:
+                    /* A key recorded BY NAME is played, through the same PressKey the /do route uses.
+                     *
+                     * The case above catches "Key Down" FIRST and that order is the guard: parsed as a
+                     * name, the legacy anonymous typing event reads as a key called "Down", so replaying
+                     * somebody typing would press the down arrow once per keystroke. It is excluded again
+                     * here by name, for the reader who moves these branches around. */
+                    if (action != null && action.StartsWith("Key ") && action != "Key Down")
+                    {
+                        string spec = action.Substring(4);
+                        string[] parts = spec.Split('+');
+                        string name = parts.Length > 0 ? parts[parts.Length - 1] : "";
+                        bool wantCtrl = false, wantShift = false, wantAlt = false;
+                        for (int m = 0; m < parts.Length - 1; m++)
+                        {
+                            string mod = parts[m].ToLowerInvariant();
+                            if (mod == "ctrl") wantCtrl = true;
+                            else if (mod == "shift") wantShift = true;
+                            else if (mod == "alt") wantAlt = true;
+                        }
+                        if (PressKey(name, wantCtrl, wantShift, wantAlt) != null)
+                        {
+                            /* PressKey refused the name - a recording from a later build naming a key this
+                             * one does not know. Counted, never guessed at. */
+                            lock (Gate) { _unplayable++; }
+                        }
+                        return;
+                    }
+                    return;
             }
 
             INPUT[] inputs = new INPUT[1];

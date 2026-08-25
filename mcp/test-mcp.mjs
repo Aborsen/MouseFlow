@@ -2018,6 +2018,23 @@ check('the wizard can build an instruction from it without a control name',
   && /if \(line\.action === 'press'\) return !!line\.pressed;/.test(
     read('../web/src/features/record/SkillWizard.tsx')));
 
+/* Pressing Return after typing is what a person does to a BOX. Nobody commits a canvas or a game that
+ * way, so a run terminated by one is a field as a matter of fact - which matters most on Windows, whose
+ * agent writes no accessibility role at all and therefore always took the guess path. */
+check('a run committed with Return is a field, and known rather than guessed', (() => {
+  const run = { action: 'type', control: 'Search', role: null, keys: 22 };
+  const guessed = classifyTyping(run, 'Some Window');
+  const known = classifyTyping(run, 'Some Window', 'Enter');
+  return guessed.field === true && guessed.sure === false
+    && known.field === true && known.sure === true;
+})());
+check('a chord counts, because Cmd+Enter sends things too',
+  classifyTyping({ action: 'type', control: 'Body', role: null, keys: 30 }, null, 'Cmd+Enter').sure === true);
+check('but Backspace is not a commit — it is more editing',
+  classifyTyping({ action: 'type', control: 'Body', role: null, keys: 30 }, null, 'Backspace').sure === false);
+check('and a role that says "not a text box" still wins over the inference',
+  classifyTyping({ action: 'type', control: 'Send', role: 'AXButton', keys: 22 }, null, 'Enter').field === false);
+
 /* Dictation sends the user's voice somewhere. Which somewhere is a product decision, not a detail, and
  * these hold it: local first, and said out loud either way. */
 group('dictation prefers the machine, and says so when it cannot');

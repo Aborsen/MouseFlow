@@ -132,7 +132,20 @@ group('typed text is not recorded, and that is checkable');
 /* Ключевое обещание протокола. На Windows охраной служит то, что vkCode/scanCode не читаются; на macOS - что
  * не читается keyboardEventKeycode. Проверяется отсутствие, потому что появление любого из них и есть
  * нарушение. */
-check('виндовый агент не читает код клавиши', !/vkCode\s*[;)=]/.test(ps.replace(/vkCode`/g, '')) || !ps.includes('data.vkCode'));
+/* Виндовый агент код клавиши ТОЖЕ читает, и проверка симметрична macOS: не отсутствие механизма, а само
+ * свойство. Отдельная ловушка здесь своя, платформенная - AltGr. На многих раскладках это Ctrl+Alt, и он
+ * складывает символы: поляк, украинец и венгр набирают текст аккордом, который наивная проверка сочтёт
+ * командой и прочитает. Поэтому командой считается Ctrl БЕЗ Alt, либо клавиша Windows. */
+check('windows: именуются только клавиши, которые ничего не пишут',
+  /static string NamedKey\(int vk\)/.test(ps)
+  && !/case 0x4[1-9A-F]: name = "[A-Z]"/.test(ps));
+check('windows: буква читается только под командным аккордом',
+  /if \(!commanded\) return null;/.test(ps)
+  && /vk >= 0x41 && vk <= 0x5A/.test(ps));
+check('windows: AltGr не считается командой, иначе он прочитает набранный текст',
+  /bool commanded = \(ctrl && !alt\) \|\| win;/.test(ps));
+check('windows: всё, что может написать символ, остаётся анонимным',
+  /if \(named != null\) CaptureNamedKey\(named\); else CaptureKey\(\);/.test(ps));
 /* macOS-агент КОД КЛАВИШИ ЧИТАЕТ - и это изменение, сделанное сознательно, поэтому проверка здесь другая.
  *
  * Раньше проверялось отсутствие механизма: `keyboardEventKeycode` не встречается - значит ничего не прочитано.
@@ -173,6 +186,11 @@ check('и в общей ветке оно исключено ещё раз, яв
   /event\.action\.hasPrefix\("Key "\), event\.action != "Key Down"/.test(swift));
 check('названная клавиша уходит в тот же Input.key, что и /do',
   /Input\.key\(name, ctrl: mods\.contains\("ctrl"\)/.test(swift));
+check('на windows та же ловушка исключена так же',
+  ps.indexOf('case "Key Down":') < ps.indexOf('action.StartsWith("Key ")')
+  && /action\.StartsWith\("Key "\) && action != "Key Down"/.test(ps));
+check('и windows играет её через тот же PressKey, что и /do',
+  /PressKey\(name, wantCtrl, wantShift, wantAlt\)/.test(ps));
 
 group('реплей не делает вид, что умеет непроигрываемое');
 check('windows считает unplayable', ps.includes('unplayable'));

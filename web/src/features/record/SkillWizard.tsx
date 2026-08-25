@@ -528,7 +528,22 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
         /* Is this a field, or is it Enter? See api/_typing.mjs - on a measured 6,617-event recording nine
          * of thirteen typing runs were one text box and the other four were keys pressed at a dialog. */
         const typed = flat.filter((l) => l.action === 'type');
-        const verdicts = new Map(typed.map((l) => [l.n, classifyTyping(l, l.where)]));
+        /* WHAT ENDED EACH RUN, taken from the FULL list rather than from the typing runs alone.
+         *
+         * A run committed with Return is a field as a matter of fact, not of guesswork - nobody presses
+         * Enter at a canvas. That evidence only exists from agent 0.9.4, which is the build that names the
+         * keys carrying no text, and it matters most on Windows, whose agent writes no accessibility role
+         * at all and therefore always took the guess path. Read off `flat`, because in `typed` the next
+         * entry is the next typing run and the commit between them has been filtered out. */
+        const after = new Map<number, string | null>();
+        for (let i = 0; i < flat.length; i++) {
+          if (flat[i].action !== 'type') continue;
+          const next = flat[i + 1];
+          after.set(flat[i].n, next && next.action === 'press' ? next.pressed ?? null : null);
+        }
+        const verdicts = new Map(
+          typed.map((l) => [l.n, classifyTyping(l, l.where, after.get(l.n) ?? null)]),
+        );
 
         /* How many FIELD runs share a control, counted before any of them is named.
          *

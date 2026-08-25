@@ -61,7 +61,26 @@ const same = (a, b) => !!a && !!b && String(a).trim() === String(b).trim();
  *   `sure`   was that read off the accessibility role, or guessed from the shape of the run?
  *   `why`    one clause, for the screen - never a sentence, the caller frames it
  */
-export function classifyTyping(step, windowTitle = null) {
+/* Keys that END a field rather than continue it.
+ *
+ * Pressing Return after typing is what a person does to a BOX - a search field, an address bar, a message.
+ * Nobody commits a canvas, a game or a keyboard shortcut that way. Tab is the same gesture with the cursor
+ * moving on. So a run terminated by one of these is a field as a matter of fact, not of guesswork.
+ *
+ * This only became knowable at agent 0.9.4, which is the build that names the keys that cannot spell
+ * anything. Before it every keystroke was anonymous and this evidence did not exist. */
+const COMMIT_KEYS = new Set(['enter', 'return', 'tab']);
+
+const commits = (key) => {
+  if (!key) return false;
+  const parts = String(key).split('+');
+  return COMMIT_KEYS.has(parts[parts.length - 1].trim().toLowerCase());
+};
+
+/**
+ * @param {string|null} committedBy  the key pressed IMMEDIATELY after this run, when it was named
+ */
+export function classifyTyping(step, windowTitle = null, committedBy = null) {
   const role = step && step.role ? String(step.role).trim() : '';
   const control = step && step.control ? String(step.control).trim() : '';
   const keys = Number(step && step.keys) || 0;
@@ -75,6 +94,14 @@ export function classifyTyping(step, windowTitle = null) {
   }
   if (NOT_TEXT_ROLES.has(role)) {
     return { field: false, sure: true, why: 'keys pressed here, not typed into a box' };
+  }
+
+  /* Typed, and then committed. This runs BELOW the two role checks on purpose - a role read off the
+   * accessibility tree is a fact about what the thing IS, and should not be overturned by an inference
+   * about what was done to it. Below them it does the one job worth having: it turns the guess path into a
+   * fact, which is the path Windows always takes, because that agent writes no role at all. */
+  if (commits(committedBy)) {
+    return { field: true, sure: true, why: 'typed, then committed with ' + committedBy };
   }
 
   /* No role, or one nobody has catalogued. Everything from here down is a guess. */
@@ -102,8 +129,15 @@ export function classifyTyping(step, windowTitle = null) {
 export function splitTyping(steps, windowTitleFor = () => null) {
   const fields = [];
   const aside = [];
-  for (const step of steps || []) {
-    const verdict = classifyTyping(step, windowTitleFor(step));
+  const list = steps || [];
+  for (let i = 0; i < list.length; i++) {
+    const step = list[i];
+    /* What came next, when the caller handed us the whole sequence. `steps` here is sometimes only the
+     * typing runs, in which case the neighbour is another run and commits() says no - which is the right
+     * answer rather than a wrong one. */
+    const next = list[i + 1];
+    const committedBy = next && next.action === 'press' && next.pressed ? next.pressed : null;
+    const verdict = classifyTyping(step, windowTitleFor(step), committedBy);
     (verdict.field ? fields : aside).push({ ...step, verdict });
   }
   return { fields, aside };
