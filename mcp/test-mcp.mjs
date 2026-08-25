@@ -2048,6 +2048,73 @@ check('editing a goal that is already long cannot silently shorten it',
   /if \(was\.length > GOAL_MAX\) return next\.length <= was\.length \? next : was;/
     .test(read('../web/src/features/record/SkillWizard.tsx')));
 
+/* A parameter's description came from a table keyed on its TYPE, so a skill taking a subject line and a
+ * body described both with the same canned sentence and a caller choosing between two string arguments
+ * chose on nothing. The model is asked to name them - which is the one thing here it can do without
+ * inventing, since the answer is derivable from instructions somebody already approved.
+ *
+ * Every guard below is enforced in code rather than requested in the prompt, and each is exercised. */
+group('the inputs a skill asks for get names and words');
+const { applyNames, promptFor: paramPrompt } = await import(
+  new URL('../api/_params.mjs', import.meta.url).href);
+const { structureOf } = await import(new URL('../api/_skill-schema.mjs', import.meta.url).href);
+{
+  const blanks = [
+    { n: 4, name: 'text', control: null, type: 'quoted' },
+    { n: 9, name: 'text2', control: null, type: 'quoted' },
+  ];
+  const good = applyNames(blanks, { inputs: [
+    { n: 4, name: 'Subject', about: 'The subject line of the message.' },
+    { n: 9, name: 'body', about: 'The text of the message.' },
+  ] });
+  check('a good answer replaces text and text2 with words that mean something',
+    good[0].name === 'subject' && good[1].name === 'body'
+    && /subject line/.test(String(good[0].about)));
+
+  const silent = applyNames(blanks, {});
+  check('silence keeps the derived names rather than emptying them',
+    silent[0].name === 'text' && silent[1].name === 'text2' && silent[0].about === null);
+
+  const clash = applyNames(blanks, { inputs: [
+    { n: 4, name: 'message', about: 'a' }, { n: 9, name: 'message', about: 'b' },
+  ] });
+  check('two blanks renamed to one word are separated, or the skill fills two from one',
+    clash[0].name === 'message' && clash[1].name === 'message2');
+
+  const braces = applyNames(blanks, { inputs: [
+    { n: 4, name: '{{subject}}', about: 'put {{subject}} here' },
+  ] });
+  check('a name carrying braces is stripped — nothing scans a goal for them',
+    braces[0].name === 'subject' && !/\{\{/.test(String(braces[0].about)));
+
+  const invented = applyNames(blanks, { inputs: [{ n: 99, name: 'invented', about: 'nope' }] });
+  check('a blank that was never sent cannot be invented',
+    invented.length === 2 && !invented.some((p) => p.name === 'invented'));
+
+  const twice = applyNames(blanks, { inputs: [
+    { n: 4, name: 'first', about: 'one' }, { n: 4, name: 'second', about: 'two' },
+  ] });
+  check('answered twice, the first stands', twice[0].name === 'first');
+
+  const { user } = paramPrompt({ opening: 'In Gmail:', steps: [{ n: 4, instruction: 'type into "Subject"' }], blanks });
+  check('the prompt names each blank by the step it belongs to',
+    /4: currently called "text"/.test(user));
+}
+check('and the author’s words reach the tool schema, with the canned sentence as the fallback', (() => {
+  const s = structureOf({
+    kind: 'created', source: 'desktop', name: 'Send', id: 's1', origins: [],
+    payload: {
+      kind: 'created', goalTemplate: 'send {{subject}} and {{body}}',
+      params: [
+        { name: 'subject', type: 'quoted', example: null, about: 'the subject line of the email' },
+        { name: 'body', type: 'quoted', example: null },
+      ],
+    },
+  });
+  return /subject line of the email/.test(s.schema.properties.subject.description)
+    && /a phrase the goal quotes/.test(s.schema.properties.body.description);
+})());
+
 /* An open tab never re-fetches its own JavaScript, so a deployment reaches nobody who already has the page
  * up - and every constant baked into it stays as it was, AGENT_WANTS included. Somebody sat looking at a
  * pill saying their agent was current while a newer one had been out for an hour, because the page whose

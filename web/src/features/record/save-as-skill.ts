@@ -48,6 +48,10 @@ export const hasSkillFor = (flows: Flow[], recordingId: string) =>
 
 export interface GoalParam {
   name: string;
+  /** Что это за значение, словами. Единственная честно пустая клетка формата: без него все `quoted`
+   *  описываются одной дежурной фразой, и модель, выбирающая между темой письма и его телом, выбирает
+   *  вслепую. */
+  about?: string | null;
   /** Один из трёх типов, которые знает parameterise() и умеет описывать api/_skill-schema.mjs. */
   type: 'quoted' | 'email' | 'url';
   /** Всегда null у визарда: пример - это ЛИЧНОЕ значение автора, а fillGoal подставляет его, когда поле

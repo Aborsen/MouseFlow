@@ -107,6 +107,8 @@ interface Blank {
   of: number;
   /** For `ask`: the parameter's name and type. For `fixed`: the text to type. */
   param: string;
+  /** Что это за значение, словами - от /api/params, и правится человеком на последнем шаге. */
+  about?: string | null;
   type: 'quoted' | 'email' | 'url';
   fixed: string;
 }
@@ -701,6 +703,55 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   const unnamed = typing.some((b) => b.fill === 'ask' && !b.param.trim());
   const unfilled = typing.some((b) => b.fill === 'fixed' && !b.fixed.trim());
 
+  /* Ask /api/params what the blanks are, on the way to the last screen.
+   *
+   * The one thing in this wizard a model can add without inventing: a parameter's name comes from the
+   * control it was typed into, and its description from a table keyed on its type - so a skill taking a
+   * subject line and a body describes both with the same canned sentence, and a caller choosing between two
+   * string arguments chooses on nothing. Where the accessibility tree named no control the names are `text`
+   * and `text2`, which say less still.
+   *
+   * Runs BESIDE compose rather than inside it: that one places what somebody wrote onto the steps, this one
+   * says what the blanks are. Independent questions, and folding them into one call is the arrangement this
+   * repository has spent commits taking apart.
+   *
+   * Every failure ends with the derived names, which is what this did before the route existed. */
+  const nameParams = async () => {
+    if (!lines) return;
+    const asking = typing.filter((b) => b.fill === 'ask' && b.param.trim());
+    if (!asking.length) return;
+    const { opening, steps } = goalParts(lines, kept, blanks);
+    if (!steps.length) return;
+
+    try {
+      const res = await fetch('/api/params', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          opening,
+          steps,
+          blanks: asking.map((b) => ({ n: b.n, name: b.param, control: b.control, type: b.type })),
+        }),
+      });
+      const body = await res.json();
+      if (!body || !body.ok || !Array.isArray(body.params)) return;
+      const byStep = new Map<number, { name: string; about: string | null }>(
+        body.params
+          .filter((p: { n?: unknown }) => typeof p.n === 'number')
+          .map((p: { n: number; name: string; about: string | null }) => [p.n, p]),
+      );
+      /* Applied to the blanks the person can still see and edit on the next screen. A name arriving from a
+       * model is a suggestion in a text box, not a decision taken behind them. */
+      setBlanks((was) => was.map((b) => {
+        const said = byStep.get(b.n);
+        return said ? { ...b, param: said.name, about: said.about } : b;
+      }));
+    } catch (_) {
+      /* The derived names stand. A model being unreachable must not stop anybody saving a skill. */
+    }
+  };
+
   /* Ask /api/compose to put the notes onto the steps, on the way to the last screen.
    *
    * Here rather than at run time, and that is the whole design: "finish by pressing Send, not Save" is a
@@ -756,6 +807,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
         .filter((b) => b.fill === 'ask')
         .map((b) => ({
           name: b.param.trim(),
+          about: b.about || null,
           type: b.type,
           /* No example. An example is the AUTHOR's own value and fillGoal falls back to it, so a skill
            * with one runs somebody else's errand when a field is left blank. A parameter with no example
@@ -1371,7 +1423,13 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   isLoading={composing}
                   onClick={() => {
                     /* Only on the way OFF the instructions step, and only when something was written. */
-                    if (stage === 1) void compose().then(() => setStage(2));
+                    /* Both, together, and the stage waits for both. They ask different questions of the
+                     * same screen - what the notes mean, and what the blanks are - and neither is allowed
+                     * to hold the other up, so they go at once. Every failure inside them is already
+                     * swallowed into the derived answer, which is why this only has to wait. */
+                    if (stage === 1) {
+                      void Promise.all([compose(), nameParams()]).then(() => setStage(2));
+                    }
                     else setStage(stage + 1);
                   }}
                 >

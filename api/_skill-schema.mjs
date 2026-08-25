@@ -32,7 +32,7 @@
  * does it is docs/product/21-mcp.md.
  */
 
-/** @typedef {{ name: string, type: string, example: string | null }} SkillParam */
+/** @typedef {{ name: string, type: string, example: string | null, about: string | null }} SkillParam */
 
 /* JSON Schema for what `parameterise()` produces. The types it emits are the three patterns it looks for,
  * and each maps onto a string with a format rather than onto a type of its own - which is what both
@@ -74,7 +74,13 @@ function paramsOf(payload) {
     // A parameter with no name cannot be a property. Dropped rather than named for the reader.
     if (!name || seen.has(name)) continue;
     seen.add(name);
-    out.push({ name, type: str(item.type) ?? 'quoted', example: str(item.example) });
+    /* WHAT THIS PARAMETER IS, in the author's words. The one honestly empty slot in this format: every
+     * `quoted` parameter is otherwise described to every model by the same canned sentence below, so a
+     * skill taking a subject line and a body describes both identically and the caller has no way to tell
+     * them apart. Null when nobody said, which is the honest state and reads as the canned sentence. */
+    out.push({
+      name, type: str(item.type) ?? 'quoted', example: str(item.example), about: str(item.about),
+    });
   }
   return out;
 }
@@ -133,7 +139,9 @@ export function structureOf(flow) {
          * their address, their file - and a default is sent when nothing else is, which would run somebody
          * else's errand for them. fillGoal() falls back to it locally, on the author's own machine, which
          * is a different thing from putting it on the wire. */
-        description: shape.what
+        /* The author's own words when there are any, and the canned clause only as the fallback. A model
+         * choosing between two string arguments is choosing on this sentence and nothing else. */
+        description: (param.about || shape.what)
           + (param.example ? `. The author's own run used something like "${param.example}"` : ''),
       };
       // Required when there is no example to fall back on - the same test missingParams() applies.
