@@ -25,6 +25,7 @@
 
 import { neon } from '@neondatabase/serverless';
 import { randomBytes } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { whoIsCalling, hashToken, DEVICE_TOKEN_PREFIX } from './_session.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -33,7 +34,54 @@ import { report, wrap } from './_report.js';
 const FLOWS_MAX = 300;        // per push
 const RUNS_MAX = 100;
 const RUNS_RETURNED = 60;
-const PAYLOAD_MAX_BYTES = 400_000;
+/* СКОЛЬКО МОЖЕТ ВЕСИТЬ ОДНА ЗАПИСЬ, и почему прежнее число было не потолком, а обрывом.
+ *
+ * Было 400_000 без объяснения. Человек записал полтора часа работы - 34 722 события, 525 кликов, 2098КБ, -
+ * и запись не уехала никуда: push отказал, транскрипт строится на сервере, а сервер её не видел, поэтому
+ * панель сказала «no recording with that id on this account». Час работы остался в браузере и не читался.
+ *
+ * Полтора часа - это не злоупотребление, это ровно то, что продукт предлагает делать: «нажмите стоп, когда
+ * задача закончена». Потолок, который режет обычное использование, - не защита, а поломка.
+ *
+ * Число взято из измерений, а не из головы. На живом аккаунте 2098КБ / 92 минуты ≈ 23КБ в минуту, значит:
+ *   час      ≈ 1.4МБ
+ *   три часа ≈ 4.1МБ
+ *   шесть    ≈ 8МБ
+ * Восемь мегабайт - это запись длиннее рабочего дня; дальше упирается сам рекордер, а не это число.
+ *
+ * ПОЧЕМУ ЭТО НЕ ЛОМАЕТ ЗАПРОС. У платформы тело ограничено 4.5МБ, и 8МБ JSON туда бы не влезли. Поэтому
+ * рядом появился `payloadZ`: события мыши сжимаются примерно в десять раз (замерено на настоящих записях
+ * аккаунта - 381КБ → 35КБ, 125КБ → 13КБ), так что шестичасовая запись едет мегабайтом. Проверяется всегда
+ * РАЗВЁРНУТЫЙ размер: сжатие меняет цену перевозки, а не то, сколько места это займёт у нас. */
+export const PAYLOAD_MAX_BYTES = 8_000_000;
+
+/* Столько же плюс запас - предел, до которого вообще разворачивается присланное. Стоит ОТДЕЛЬНО от
+ * проверки выше и раньше неё: проверять размер после распаковки значит сперва распаковать, а «сжатые
+ * несколько килобайт, которые разворачиваются в гигабайт» - это не гипотеза, это стандартный приём.
+ * gunzipSync с maxOutputLength обрывает такое на пороге, а не в памяти. */
+const INFLATE_MAX_BYTES = PAYLOAD_MAX_BYTES + 64_000;
+
+/** Развёрнутый payload, или null с причиной. Ничего не бросает: отказ - это строка для пользователя. */
+export function inflatePayload(said) {
+  if (typeof said !== 'string' || !said) return { why: 'the compressed payload was not a string' };
+  let raw;
+  try {
+    raw = gunzipSync(Buffer.from(said, 'base64'), { maxOutputLength: INFLATE_MAX_BYTES });
+  } catch (err) {
+    /* И «не gzip», и «больше потолка» приходят сюда одинаково, поэтому причина называется по размеру
+     * присланного, а не по тексту ошибки zlib, который читателю ничего не говорит. */
+    return { why: 'the compressed payload could not be read, or unpacks to more than '
+      + Math.round(PAYLOAD_MAX_BYTES / 1024) + 'KB' };
+  }
+  const text = raw.toString('utf8');
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== 'object') return { why: 'the compressed payload was not an object' };
+    return { value, encoded: text };
+  } catch (_) {
+    return { why: 'the compressed payload was not valid JSON' };
+  }
+}
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -234,15 +282,31 @@ async function push(req, res, sql, who) {
 
   for (const flow of flows) {
     const clientId = text(flow && flow.id, 80);
-    const payload = flow && flow.payload;
+    /* Два входа, одно значение. Старые клиенты - и оба агента, и расширение - шлют `payload`; браузер,
+     * у которого есть CompressionStream, шлёт `payloadZ`. Принимаются оба, потому что версия приложения
+     * и версия агента расходятся по определению, а запись, отказанная за то, что отправитель старый, -
+     * это та же потеря часа, только с другой причиной. */
+    let payload = flow && flow.payload;
+    let encoded = null;
+    if (!payload && flow && flow.payloadZ) {
+      const opened = inflatePayload(flow.payloadZ);
+      if (opened.why) {
+        problems.push('"' + (flow.name || clientId) + '": ' + opened.why);
+        continue;
+      }
+      payload = opened.value;
+      /* Уже есть текстом - второй раз в строку не сериализуется. */
+      encoded = opened.encoded;
+    }
     if (!clientId || !payload || typeof payload !== 'object') {
       problems.push('a flow arrived without an id or a payload');
       continue;
     }
-    const encoded = JSON.stringify(payload);
+    if (encoded === null) encoded = JSON.stringify(payload);
     if (encoded.length > PAYLOAD_MAX_BYTES) {
       problems.push('"' + (flow.name || clientId) + '" is too large to sync (' +
-        Math.round(encoded.length / 1024) + 'KB)');
+        Math.round(encoded.length / 1024) + 'KB, and the ceiling is '
+        + Math.round(PAYLOAD_MAX_BYTES / 1024) + 'KB)');
       continue;
     }
     const kind = flow.kind === 'created' ? 'created' : 'recorded';

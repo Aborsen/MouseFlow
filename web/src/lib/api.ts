@@ -188,14 +188,63 @@ export const setPref = (key: string, value: string) =>
     body: JSON.stringify({ key, value }),
   }).catch(() => undefined);
 
-export const push = (payload: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] }) =>
+/* Ниже этого размера сжимать нечего: gzip небольшого объекта стоит асинхронного шага и экономит
+ * килобайты. Записи, из-за которых всё это писалось, на два порядка больше. */
+const COMPRESS_OVER_BYTES = 100_000;
+
+/** Сжат ли этот браузер вообще умеет. Отсутствие - не ошибка, а старый браузер: payload поедет как был. */
+const canCompress = () => typeof CompressionStream === 'function';
+
+async function gzipToBase64(text: string): Promise<string> {
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  /* По кускам, а не String.fromCharCode(...bytes): развернуть мегабайтный массив в аргументы - это
+   * переполнение стека ровно на тех записях, ради которых сжатие и делается. */
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+/* ЗАПИСЬ ЕДЕТ СЖАТОЙ, и это не оптимизация, а то, что делает длинную запись возможной.
+ *
+ * Полтора часа работы - 34 722 события - весят 2098КБ в JSON. У платформы тело запроса ограничено 4.5МБ,
+ * так что без сжатия потолок записи упирался бы в три часа независимо от того, какое число стоит на
+ * сервере. События мыши повторяются почти дословно и жмутся примерно в десять раз (замерено на настоящих
+ * записях аккаунта: 381КБ → 35КБ, 125КБ → 13КБ), так что шестичасовая запись едет мегабайтом.
+ *
+ * Сжимается ЗДЕСЬ, в единственном месте, откуда флоу уходят на аккаунт. Строитель payload'а один
+ * (api/_flow-for.mjs) и четыре вызывающих; трогать его значило бы, что каждый из четырёх должен помнить
+ * про сжатие, а забудет тот, который вызовут реже всех. */
+async function packFlows(flows: unknown[]): Promise<unknown[]> {
+  if (!canCompress()) return flows;
+  return Promise.all(flows.map(async (flow) => {
+    const row = flow as { payload?: unknown } | null;
+    if (!row || !row.payload || typeof row.payload !== 'object') return flow;
+    const text = JSON.stringify(row.payload);
+    if (text.length < COMPRESS_OVER_BYTES) return flow;
+    try {
+      const { payload: _dropped, ...rest } = row as Record<string, unknown>;
+      return { ...rest, payloadZ: await gzipToBase64(text) };
+    } catch (_) {
+      /* Не сжалось - едет как было. Отказаться отправлять то, что раньше отправлялось, было бы худшим
+       * из возможных ответов на «не удалось сэкономить трафик». */
+      return flow;
+    }
+  }));
+}
+
+export const push = async (payload: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] }) =>
   /* The shape api/sync.js actually sends. It used to say `saved: { flows, runs }`, which is not on the wire
    * at all - the counts are top-level - and nothing noticed because the only field anybody reads is
    * `problems`, which is top-level in both. A test reading `flows` off a real response is what found it. */
   call<{ ok: true; flows: number; runs: number; deleted: number; problems: string[] }>('/api/sync', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(payload.flows
+      ? { ...payload, flows: await packFlows(payload.flows) }
+      : payload),
   });
 
 export const devices = () => call<{ ok: true; devices: Device[] }>('/api/sync?tokens=1');

@@ -2315,6 +2315,88 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------------- длинная запись доезжает до аккаунта */
+
+/* Человек записал полтора часа работы - 34 722 события, 2098КБ - и запись не уехала никуда. Потолок
+ * стоял на 400КБ без объяснения, push отказал, а транскрипт строится на сервере, который её не видел, -
+ * поэтому панель сказала «no recording with that id on this account». Час работы остался в браузере и не
+ * читался ничем.
+ *
+ * Полтора часа - это не злоупотребление, а ровно то, что продукт предлагает делать. Потолок, режущий
+ * обычное использование, - не защита, а поломка. */
+group('длинная запись доезжает до аккаунта');
+{
+  const { inflatePayload, PAYLOAD_MAX_BYTES } = await import(new URL('../api/sync.js', import.meta.url));
+  const { gzipSync } = await import('node:zlib');
+
+  /* Число взято из измерений: 23КБ в минуту на живом аккаунте. Восемь мегабайт - запись длиннее рабочего
+   * дня; полтора часа весят два. */
+  check('потолок вмещает запись длиной в рабочий день', PAYLOAD_MAX_BYTES >= 8_000_000,
+    String(PAYLOAD_MAX_BYTES));
+  check('и полуторачасовая запись, из-за которой это писалось, в него влезает',
+    2098 * 1024 < PAYLOAD_MAX_BYTES);
+
+  /* Круговой прогон: то, что кладёт браузер, сервер разворачивает побайтово тем же. */
+  const payload = {
+    kind: 'recorded', agent: 'desktop', version: '0.9.7', windows: [],
+    events: Array.from({ length: 4000 }, (_, i) => ({
+      action: 'Mouse Movement', x: 100 + (i % 900), y: 200 + (i % 500), delayMs: 10,
+    })),
+  };
+  const text = JSON.stringify(payload);
+  const wire = gzipSync(Buffer.from(text)).toString('base64');
+  const opened = inflatePayload(wire);
+  check('сжатый payload разворачивается', !opened.why, String(opened.why));
+  check('и разворачивается ровно в то, что было', opened.encoded === text);
+  check('и разбирается в тот же объект',
+    JSON.stringify(opened.value) === text, 'события: ' + (opened.value?.events?.length ?? 'нет'));
+  /* Ради чего всё: события мыши повторяются почти дословно. */
+  check('и на проводе оно на порядок меньше', wire.length < text.length / 5,
+    `${Math.round(text.length / 1024)}KB -> ${Math.round(wire.length / 1024)}KB`);
+
+  /* «Несколько килобайт, разворачивающихся в гигабайт» - не гипотеза, а стандартный приём. Проверка
+   * размера ПОСЛЕ распаковки означала бы сперва распаковать. */
+  const bomb = gzipSync(Buffer.alloc(50_000_000, 0x41)).toString('base64');
+  const stopped = inflatePayload(bomb);
+  check('зип-бомба обрывается на пороге, а не в памяти', !!stopped.why, JSON.stringify(stopped).slice(0, 80));
+  check('и человеку называется размер, а не текст ошибки zlib',
+    /unpacks to more than \d+KB/.test(stopped.why || ''), String(stopped.why));
+
+  check('не-gzip отвергается, а не роняет маршрут', !!inflatePayload('bm90IGd6aXA=').why);
+  check('и не-строка тоже', !!inflatePayload(null).why && !!inflatePayload(42).why);
+  /* Сжатое, но не JSON: разворачивается, а разобрать нечего. */
+  check('сжатый мусор отвергается на разборе',
+    /not valid JSON/.test(inflatePayload(gzipSync(Buffer.from('{{{')).toString('base64')).why || ''));
+
+  /* Оба входа принимаются: агенты и расширение шлют payload, браузер - payloadZ. Запись, отказанная за
+   * то, что отправитель старый, - та же потеря часа, только с другой причиной. */
+  const sync = read('../api/sync.js');
+  check('старый вход не отнят', /let payload = flow && flow\.payload;/.test(sync));
+  check('и новый добавлен рядом', /if \(!payload && flow && flow\.payloadZ\)/.test(sync));
+  /* Сжатие меняет цену перевозки, а не то, сколько это займёт места у нас. */
+  check('проверяется РАЗВЁРНУТЫЙ размер, а не тот, что приехал',
+    /if \(encoded\.length > PAYLOAD_MAX_BYTES\)/.test(sync));
+  check('и отказ называет потолок, а не только вес',
+    /and the ceiling is/.test(sync));
+
+  /* На клиенте сжатие стоит в ЕДИНСТВЕННОМ месте отправки: строитель payload'а один, а вызывающих
+   * четыре, и забыл бы тот, которого зовут реже всех. */
+  const api = read('../web/src/lib/api.ts');
+  check('клиент сжимает в одном месте, на выходе', /flows: await packFlows\(payload\.flows\)/.test(api));
+  check('только то, что того стоит', /if \(text\.length < COMPRESS_OVER_BYTES\) return flow;/.test(api));
+  check('и не шлёт обе формы разом', /const \{ payload: _dropped, \.\.\.rest \}/.test(api));
+  /* Развернуть мегабайтный массив в аргументы - переполнение стека ровно на тех записях, ради которых
+   * сжатие и делается. */
+  /* Блочные комментарии сняты - и ТОЛЬКО они. Файл объясняет, почему не делает spread, и цитирует его;
+   * искать запрещённое во всём тексте значит найти собственное объяснение. Снимать `//` нельзя: такой
+   * стриппер не отличает комментарий от строкового литерала и однажды уже срезал «//host» прямо из URL. */
+  const apiCode = api.replace(/\/\*[\s\S]*?\*\//g, '');
+  check('base64 собирается кусками, а не одним spread',
+    /i \+= 0x8000/.test(apiCode) && !/String\.fromCharCode\(\.\.\.bytes\)/.test(apiCode));
+  check('браузер без CompressionStream шлёт как раньше',
+    /if \(!canCompress\(\)\) return flows;/.test(api));
+}
+
 /* ------------------------------------------------------- двойной клик по тому, у чего нет имени */
 
 /* Ветка звала unnamedClick() - функции с таким именем никогда не существовало, она называется
