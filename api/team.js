@@ -48,6 +48,10 @@ import { invitationMail, mailProblem, sendMail } from './_mail.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
 const NAME_MAX = 60;
 const TEAMS_PER_PERSON = 20;
@@ -64,15 +68,6 @@ const ROLES = ['owner', 'admin', 'member'];
  * them is both exact and free of state. */
 const INVITES_PER_HOUR = 25;
 
-function cors(req, res) {
-  const origin = req.headers.origin || '';
-  res.setHeader('Access-Control-Allow-Origin',
-    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 const fail = (res, status, message) => res.status(status).json({ error: message });
 const text = (value, max) => (value == null ? null : String(value).trim().slice(0, max) || null);
@@ -488,7 +483,7 @@ async function deleteTeam(sql, who, teamId) {
 /* ------------------------------------------------------------------------------- the route */
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'GET, POST, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');
 

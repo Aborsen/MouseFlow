@@ -2326,6 +2326,67 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* --------------------------------------------- кому браузер разрешит прочитать наш ответ */
+
+/* НАЙДЕНО ИСПОЛНЕНИЕМ, а не чтением. Аудит прочитал все семь копий CORS и не заметил, что одна из них
+ * другая: чтобы увидеть, надо было послать запрос с чужим Origin и посмотреть на заголовки ОТВЕТА. Первый
+ * же такой запрос к живому развёртыванию вернул `access-control-allow-origin: https://evil.example` и
+ * `access-control-allow-credentials: true`.
+ *
+ * Вместе это значит: страница на evil.example делает fetch с credentials:'include', браузер прикладывает
+ * сессионную куку человека, сервер разрешает читать - и страница читает. За /api/chats лежат разговоры с
+ * ассистентом: полный текст каждого вопроса и ответа. Allow-Methods там же перечислял DELETE. */
+group('заголовки CORS - одно определение, и credentials не выдаются никому');
+{
+  const { cors } = await import(new URL('../api/_cors.mjs', import.meta.url));
+  const headersFor = (origin) => {
+    const h = {};
+    cors({ headers: origin ? { origin } : {} }, { setHeader: (k, v) => { h[k] = v; } }, 'GET, OPTIONS');
+    return h;
+  };
+
+  /* Главное: ни одному origin, никогда. Приложение с API однодоменно - CORS к нему не применяется вовсе, -
+   * а расширение шлёт токен заголовком, а не кукой. Куке незачем ездить кросс-доменно ни в одном
+   * настоящем случае, значит и разрешать это незачем. */
+  for (const o of ['https://mouseflowapp.vercel.app', 'chrome-extension://abcdefghijklmnopabcdefghijklmnop',
+    'https://evil.example', null]) {
+    check(`credentials не выдаются: ${o}`,
+      !('Access-Control-Allow-Credentials' in headersFor(o)));
+  }
+
+  check('свой адрес отражается', headersFor('https://mouseflowapp.vercel.app')['Access-Control-Allow-Origin']
+    === 'https://mouseflowapp.vercel.app');
+  check('и второе развёртывание тоже', headersFor('https://mouse-agent.vercel.app')['Access-Control-Allow-Origin']
+    === 'https://mouse-agent.vercel.app');
+  /* Id расширения у каждой установки свой, перечислить их нельзя. */
+  check('расширение отражается',
+    headersFor('chrome-extension://abc')['Access-Control-Allow-Origin'] === 'chrome-extension://abc');
+  check('чужой - нет', headersFor('https://evil.example')['Access-Control-Allow-Origin']
+    === 'https://mouseflowapp.vercel.app');
+  /* Хост целиком, а не префиксом. */
+  check('и поддомен, притворяющийся нашим',
+    headersFor('https://mouseflowapp.vercel.app.evil.example')['Access-Control-Allow-Origin']
+      === 'https://mouseflowapp.vercel.app');
+  /* Без этого кэш отдал бы одному origin ответ, приготовленный для другого. */
+  check('и ответ помечен зависящим от Origin', headersFor('https://evil.example').Vary === 'Origin');
+
+  /* Одна копия. Семь разошлись ровно там, где это стоило дороже всего. */
+  const routes = ['chats', 'chat', 'sync', 'gallery', 'insights', 'transcript', 'mcp',
+    'claude', 'compose', 'params', 'skill-md', 'team', 'account'];
+  for (const name of routes) {
+    const src = read(`../api/${name}.js`);
+    /* Комментарии сняты: каждый из этих файлов ЦИТИРУЕТ старую строку, объясняя, чем она была. */
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '');
+    check(`${name} не держит своей копии`, !/function cors\(req, res\)|const cors = \(req, res\)/.test(code));
+    check(`${name} не выдаёт credentials`, !/setHeader\('Access-Control-Allow-Credentials'/.test(code));
+  }
+  /* И называет те методы, которые правда принимает: preflight на DELETE у маршрута, который его не
+   * принимает, обещает то, чего нет. */
+  check('и каждый называет свои методы', /cors\(req, res, 'GET, POST, DELETE, OPTIONS'\)/.test(read('../api/sync.js'))
+    && /cors\(req, res, 'DELETE, OPTIONS'\)/.test(read('../api/account.js'))
+    && /cors\(req, res, 'GET, OPTIONS'\)/.test(read('../api/insights.js')));
+}
+
 /* ------------------------------------------------------- периметр расширения - один, и он в манифесте */
 
 /* `http://localhost/*` стоял в выпускаемом манифесте, а Chrome в таких шаблонах ПОРТ ИГНОРИРУЕТ - то есть

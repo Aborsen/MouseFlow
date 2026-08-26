@@ -59,6 +59,10 @@ import { report, reportSaid, wrap } from './_report.js';
 import { overSpend, spentWhy } from './_spend.mjs';
 /* Потолок на вес записи - тот же, что у api/sync.js: два писателя одной колонки не могут иметь два. */
 import { PAYLOAD_MAX_BYTES } from './_payload.mjs';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
 const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const NEWEST = '2025-06-18';
@@ -81,19 +85,6 @@ const CLAIM_POLL_MS = 1_000;
  * be repeated blind - so it is failed with a reason. */
 const CLAIM_STALE_MS = 45 * 60 * 1000;
 
-function cors(req, res) {
-  const origin = req.headers.origin || '';
-  /* An MCP client is not a browser page and sends no Origin; the ones that do are our own app and the
-   * extension. Same rule as every other route here, and no Allow-Credentials, which is what stops a
-   * cross-site page spending somebody's session. */
-  res.setHeader('Access-Control-Allow-Origin',
-    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization, mcp-session-id, mcp-protocol-version');
-  res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 /** RFC 6750 / RFC 9728: say it is a bearer resource and where the authorisation server will be found. */
 function unauthorized(req, res, why) {
@@ -1237,7 +1228,7 @@ async function workerRoute(action, req, res, sql, who) {
 /* ------------------------------------------------------------------------------- the route */
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'GET, POST, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
   /* Whoever opened this in a browser. Deliberately answerable without a token: it says nothing about

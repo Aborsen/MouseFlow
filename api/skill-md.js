@@ -22,6 +22,10 @@ import { portability, skillFileName, skillMarkdown, skillSlug, urlTrail } from '
 import { report, wrap } from './_report.js';
 /* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
 import { overSpend, spentWhy } from './_spend.mjs';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
 const TRIGGER_TOOL = {
   name: 'describe_the_skill',
@@ -64,15 +68,6 @@ const TRIGGER_TOOL = {
   },
 };
 
-function cors(req, res) {
-  const origin = req.headers.origin || '';
-  res.setHeader('Access-Control-Allow-Origin',
-    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 const fail = (res, status, message) =>
   res.status(status).json({ error: { type: 'skill_md_error', message } });
@@ -92,7 +87,7 @@ function briefOf(structure, name) {
 }
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'POST, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (req.method !== 'POST') return fail(res, 405, 'POST a skill id');
 

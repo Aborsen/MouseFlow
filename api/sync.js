@@ -31,22 +31,14 @@ import { whoIsCalling, hashToken, DEVICE_TOKEN_PREFIX } from './_session.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
 const FLOWS_MAX = 300;        // per push
 const RUNS_MAX = 100;
 const RUNS_RETURNED = 60;
-function cors(req, res) {
-  const origin = req.headers.origin || '';
-  res.setHeader('Access-Control-Allow-Origin',
-    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-  /* No Allow-Credentials, as everywhere else here: the page is same-origin so CORS does not apply to
-   * it, and the extension sends an explicit header. Not setting it is what stops a cross-site page
-   * spending someone's session. */
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 const fail = (res, status, message) =>
   res.status(status).json({ error: { type: 'sync_error', message } });
@@ -54,7 +46,7 @@ const fail = (res, status, message) =>
 const text = (value, max) => (value == null ? null : String(value).slice(0, max));
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');
 

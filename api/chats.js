@@ -32,17 +32,11 @@ import { whoIsCalling } from './_session.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
-const cors = (req, res) => {
-  const origin = req.headers.origin;
-  if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-  }
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-};
 
 const fail = (res, status, message) =>
   res.status(status).json({ error: { type: 'chat_store_error', message } });
@@ -218,7 +212,7 @@ async function remove(res, sql, userId, threadId) {
 }
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');
 

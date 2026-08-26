@@ -59,6 +59,10 @@ import { peopleFor, scopeFor } from './_team-scope.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
 const DAYS_DEFAULT = 30;
 const DAYS_MAX = 365;                 // a year of runs is a lot of jsonb to unroll; past that, ask again
@@ -97,18 +101,6 @@ const EVENT_GAP_MAX_MS = 120_000;
  *
  * Числа не потерялись: они перечислены в LIMITS одним списком, где их наконец можно сравнить. */
 
-function cors(req, res) {
-  const origin = req.headers.origin || '';
-  res.setHeader('Access-Control-Allow-Origin',
-    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-  /* No Allow-Credentials, as everywhere else here: the page is same-origin so CORS does not apply to
-   * it, and the extension sends an explicit header. Not setting it is what stops a cross-site page
-   * reading someone's history. */
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 const fail = (res, status, message) =>
   res.status(status).json({ error: { type: 'insights_error', message } });
@@ -133,7 +125,7 @@ const iso = (v) => (v == null ? null : v instanceof Date ? v.toISOString() : Str
 const share = (part, whole) => (num(whole) > 0 ? round(num(part) / num(whole), 4) : 0);
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (req.method !== 'GET') return fail(res, 405, 'GET only');
   if (!process.env.DATABASE_URL) return fail(res, 503, 'This deployment has no database configured.');

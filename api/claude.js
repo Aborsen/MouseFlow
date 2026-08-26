@@ -38,6 +38,10 @@ import { readSettings } from './admin.js';
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
 import { ALLOWED_MODELS, MAX_BODY_BYTES, MAX_MESSAGES, MAX_TOKENS_CAP, callModel } from './_vision.mjs';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
 /* The call itself, the caps on it, and the key it spends live in api/_vision.mjs - because the cloud step
  * makes the same call from inside another function, and a second copy of the caps is a second copy that can
@@ -52,32 +56,13 @@ import { ALLOWED_MODELS, MAX_BODY_BYTES, MAX_MESSAGES, MAX_TOKENS_CAP, callModel
  *
  * Числа не потерялись: они перечислены в LIMITS одним списком, где их наконец можно сравнить. */
 
-function cors(req, res) {
-  const origin = req.headers.origin || '';
-  /* CORS is not a security control here and should not be mistaken for one: it governs what a
-   * BROWSER will let a page read, and anything that is not a browser can POST regardless. What
-   * actually bounds this endpoint is the validation below. What CORS is for is not handing a
-   * browsable credential to every local dev server on the machine - localhost used to be
-   * reflected, which let any page on any local port read the responses.
-   *
-   * The extension's origin is chrome-extension://<id>, and an unpacked extension's id is derived
-   * from its folder path, so it cannot be listed - any extension origin is accepted. */
-  const allowed = /^chrome-extension:\/\//.test(origin)
-    ? origin
-    : 'https://mouse-agent.vercel.app';
-  res.setHeader('Access-Control-Allow-Origin', allowed);
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 function fail(res, status, message) {
   res.status(status).json({ error: { type: 'proxy_error', message } });
 }
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'POST, OPTIONS');
 
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 

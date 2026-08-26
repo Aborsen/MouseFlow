@@ -20,28 +20,15 @@ import { neon } from '@neondatabase/serverless';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
+/* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
+ * ровно в том месте, где это стоило дороже всего: chats.js отражал ЛЮБОЙ origin и выдавал
+ * Allow-Credentials, то есть чужая страница читала разговоры человека его же кукой. */
+import { cors } from './_cors.mjs';
 
 const AUTH_BASE = process.env.NEON_AUTH_BASE_URL;
 const PAGE_MAX = 50;
 const PAYLOAD_MAX_BYTES = 400_000;   // a long recording is large; a skill is not a file store
 
-function cors(req, res) {
-  /* The extension publishes directly, and an unpacked extension's id is derived from its folder
-   * path, so it cannot be listed - any extension origin is allowed. The gallery page is same-origin
-   * and needs nothing. As on the Claude proxy, CORS is not the access control here: the session is.
-   * Credentials are deliberately NOT allowed, because the session arrives as an explicit header
-   * rather than as an ambient cookie, which is what keeps this route immune to CSRF. */
-  const origin = req.headers.origin || '';
-  res.setHeader('Access-Control-Allow-Origin',
-    /^chrome-extension:\/\//.test(origin) ? origin : 'https://mouse-agent.vercel.app');
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'content-type, authorization');
-  /* Still no Allow-Credentials. The page does not need it - it is same-origin, so CORS does not apply
-   * to it at all - and the extension sends an explicit header rather than an ambient cookie. Not
-   * setting it is what keeps a cross-site page from spending someone's session. */
-  res.setHeader('Access-Control-Max-Age', '86400');
-}
 
 const fail = (res, status, message) =>
   res.status(status).json({ error: { type: 'gallery_error', message } });
@@ -156,7 +143,7 @@ function installable(payload) {
 }
 
 async function handler(req, res) {
-  cors(req, res);
+  cors(req, res, 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
 
   if (!process.env.DATABASE_URL) {
