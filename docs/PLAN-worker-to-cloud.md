@@ -170,7 +170,7 @@ Built at `fc7e9d8` (the brain) and the commit that follows it (the step and the 
 - `db/010_run_queue_loop.sql` — **`loop jsonb`, not `state jsonb`**: `state` is already this table's
   queued/claimed/done. Plus `stepping boolean`, so a machine running both a worker and an agent is on record
   as to which is driving.
-- `api/test-step.mjs` — 46 checks driving `advance()` against a scripted model. No database, no key, no
+- `api/_test-step.mjs` — 46 checks driving `advance()` against a scripted model. No database, no key, no
   agent. It is wired into `npm test`.
 
 **Nothing calls it yet**: no agent declares `steps: true`, and the claim filter only relaxes for a claimer
@@ -212,7 +212,7 @@ silently on somebody else's machine, and the Windows agent has still never been 
   through the account it already dials, so a crash arrives attached to an account and a build.
 - `POST /crash-test` on both agents, which WAITS and answers `{ reported }` — true only when Sentry itself
   took the event. Verified on this Mac: `{"ok":true,"reported":true}`.
-- `api/test-report.mjs` reads the envelope off a socket, because a hand-written wire format that was
+- `api/_test-report.mjs` reads the envelope off a socket, because a hand-written wire format that was
   reasoned about rather than observed is a thing that silently sends nothing.
 
 What cannot travel this way, and is written into the protocol: a failure whose cause is "cannot reach the

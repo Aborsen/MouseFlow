@@ -542,7 +542,7 @@ check('and a call with no worker listening is refused rather than left to hang',
   /No machine has ever asked this account for work/.test(route));
 group('a goal can be carried out by an agent with no worker behind it');
 {
-  /* The loop itself is driven and tested in api/test-step.mjs, which needs neither a database nor a key.
+  /* The loop itself is driven and tested in api/_test-step.mjs, which needs neither a database nor a key.
    * What can only be checked here is the ROUTE around it: that the state goes to the row rather than to
    * this function's memory, that a picture never lands in the queue, and that the machine is told to stop
    * when the job it is holding has been cancelled. */
@@ -2326,6 +2326,42 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* --------------------------------------------- ничего лишнего не выставлено наружу маршрутом */
+
+/* Vercel собирает в функцию каждый файл в api/, кроме начинающихся с подчёркивания. Два набора тестов
+ * лежали там без него - и это была не гипотеза аудита, а измеренный факт: GET /api/test-step.mjs отвечал
+ * 500 за полсекунды, а GET /api/test-report.mjs висел, пока его не оборвали на пятнадцатой. То есть любой,
+ * кто знает адрес, жёг чужое время на чужом счёте, без авторизации и без потолка.
+ *
+ * Проверяется правило, а не два имени: следующий такой файл будет называться иначе. */
+group('в api/ нет ничего, что не должно быть маршрутом');
+{
+  const { readdirSync } = await import('node:fs');
+  const here = new URL('../api/', import.meta.url);
+  const files = readdirSync(here).filter((n) => /\.(js|mjs)$/.test(n));
+
+  /* Что становится функцией: всё, что не начинается с подчёркивания. */
+  const routes = files.filter((n) => !n.startsWith('_'));
+  const looksLikeTest = routes.filter((n) => /(^|[-.])test([-.]|$)|\bcheck-/.test(n));
+  check('ни один набор тестов не выставлен маршрутом', looksLikeTest.length === 0, looksLikeTest.join(', '));
+
+  /* И наоборот: то, что тестами является, лежит под подчёркиванием - иначе следующий npm test позовёт
+   * файл, которого он не найдёт. */
+  for (const name of ['_test-step.mjs', '_test-report.mjs']) {
+    check(`${name} на месте и не маршрут`, files.includes(name));
+  }
+  const pkg = read('../package.json');
+  check('и npm test зовёт их по новым именам',
+    /node api\/_test-step\.mjs/.test(pkg) && /node api\/_test-report\.mjs/.test(pkg));
+
+  /* Список маршрутов целиком - на глаз, чтобы добавленный завтра был виден в диффе теста. */
+  const expected = ['account.js', 'admin.js', 'auth.js', 'chat.js', 'chats.js', 'claude.js', 'compose.js',
+    'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js', 'skill-md.js',
+    'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
+  const unexpected = routes.filter((n) => !expected.includes(n));
+  check('и новых маршрутов не появилось незамеченными', unexpected.length === 0, unexpected.join(', '));
+}
+
 /* --------------------------------------------- кому браузер разрешит прочитать наш ответ */
 
 /* НАЙДЕНО ИСПОЛНЕНИЕМ, а не чтением. Аудит прочитал все семь копий CORS и не заметил, что одна из них

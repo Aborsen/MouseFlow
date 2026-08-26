@@ -1,3 +1,17 @@
+/* ПОДЧЁРКИВАНИЕ В ИМЕНИ - НЕ СТИЛЬ, А ГРАНИЦА РАЗВЁРТЫВАНИЯ.
+ *
+ * Vercel собирает в функцию каждый файл в api/, КРОМЕ начинающихся с подчёркивания - поэтому
+ * _brain.mjs и _step.mjs функциями не становятся. Без него этот файл ею становился: набор тестов,
+ * висящий по публичному адресу, без авторизации и без потолка.
+ *
+ * Не догадка. Прогон против живого развёртывания:
+ *
+ *   GET /api/test-step.mjs    -> 500 за 0.5s   (падает, убивая инстанс)
+ *   GET /api/test-report.mjs  -> оборван на 15s (гоняет набор и висит)
+ *
+ * Второе хуже первого: это чужое время на чужом счёте, по одному запросу без единого условия.
+ * Аудит подтвердить этого не смог - он читал исходники, - и записал в «чего не проверили».
+ */
 /* The cloud driver, one turn at a time, against a scripted model.
  *
  * Nothing here talks to Anthropic, to a database or to an agent. `advance()` takes the loop, a screenshot
@@ -9,7 +23,7 @@
  * that a wave seam starts the next wave from the note rather than from nothing, and that a finish behind
  * another action in the same turn still happens after it.
  *
- * Run: node api/test-step.mjs
+ * Run: node api/_test-step.mjs
  */
 import { MAX_STEPS, MIN_SHOT_W, advance, startLoop } from './_step.mjs';
 import { BATCH_MAX, SETTLE_MAX_MS, WAVE_TURNS } from './_brain.mjs';

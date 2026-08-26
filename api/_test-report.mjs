@@ -1,3 +1,17 @@
+/* ПОДЧЁРКИВАНИЕ В ИМЕНИ - НЕ СТИЛЬ, А ГРАНИЦА РАЗВЁРТЫВАНИЯ.
+ *
+ * Vercel собирает в функцию каждый файл в api/, КРОМЕ начинающихся с подчёркивания - поэтому
+ * _brain.mjs и _step.mjs функциями не становятся. Без него этот файл ею становился: набор тестов,
+ * висящий по публичному адресу, без авторизации и без потолка.
+ *
+ * Не догадка. Прогон против живого развёртывания:
+ *
+ *   GET /api/test-step.mjs    -> 500 за 0.5s   (падает, убивая инстанс)
+ *   GET /api/test-report.mjs  -> оборван на 15s (гоняет набор и висит)
+ *
+ * Второе хуже первого: это чужое время на чужом счёте, по одному запросу без единого условия.
+ * Аудит подтвердить этого не смог - он читал исходники, - и записал в «чего не проверили».
+ */
 /* The crash reporter, against a Sentry that is really a socket on this machine.
  *
  * api/_report.js writes the envelope by hand rather than carrying the SDK, and its own header names the
@@ -9,7 +23,7 @@
  * The DSN points at a local server, which is the reason parseDsn takes the scheme from the DSN instead of
  * assuming https.
  *
- * Run: node api/test-report.mjs
+ * Run: node api/_test-report.mjs
  */
 import { createServer } from 'node:http';
 
