@@ -51,6 +51,10 @@
 
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+/* Потолок теперь считается в базе, а не в памяти процесса - см. api/_spend.mjs. Здешний Map жил в
+ * ОДНОМ тёплом инстансе, а сколько их, решает трафик: то есть настоящий предел умножался ровно тогда,
+ * когда был нужнее всего. Комментарий рядом со старым счётчиком это признавал. */
+import { overSpend, spentWhy } from './_spend.mjs';
 import { peopleFor, scopeFor } from './_team-scope.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -84,21 +88,14 @@ const EVENT_GAP_MAX_MS = 120_000;
  * recording in the window, which is the most expensive read in the product. Same construction as
  * api/claude.js - a serverless instance holds its own window, so the real limit is this times the
  * number of warm instances. It stops a stuck client, not a determined one. */
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 30;
-const hits = new Map();
-
-function rateLimited(key) {
-  const now = Date.now();
-  const seen = (hits.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  seen.push(now);
-  hits.set(key, seen);
-  // Unbounded growth would outlive the instance; drop windows nobody is using.
-  if (hits.size > 500) {
-    for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k);
-  }
-  return seen.length > RATE_MAX;
-}
+/* Потолок на звонящего переехал в api/_spend.mjs и считается в базе.
+ *
+ * Здесь стоял Map в области модуля, и его собственный комментарий признавал главное: на serverless
+ * каждый тёплый инстанс держит своё окно, так что настоящий предел был этим числом, умноженным на
+ * количество проснувшихся - то есть он рос ровно тогда, когда был нужнее всего. Шесть маршрутов
+ * повторяли эту конструкцию, каждый со своей копией и своим признанием.
+ *
+ * Числа не потерялись: они перечислены в LIMITS одним списком, где их наконец можно сравнить. */
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -154,10 +151,12 @@ async function handler(req, res) {
     return fail(res, 401, 'sign in on the web app, or pair this extension with a device token');
   }
 
-  if (rateLimited(who.id)) {
-    res.setHeader('Retry-After', '60');
-    return fail(res, 429, 'too many insight requests - wait a minute');
+  const budget = await overSpend(sql, who.id, 'insights');
+  if (!budget.ok) {
+    res.setHeader('Retry-After', String(Math.ceil(budget.retryInMs / 1000)));
+    return fail(res, 429, spentWhy(budget, 'reads'));
   }
+
 
   /* Two ways to name a window, and the explicit one wins.
    *

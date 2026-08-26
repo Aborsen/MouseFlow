@@ -271,11 +271,26 @@ export const MyAccountScreen = ({ say }: { say: Say }) => {
             setBusy(true);
             try {
               const body = await eraseAccount();
-              const { flows, runs, devices: gone, withdrawn } = body.deleted;
+              /* НАЗВАНО ТО, ЧТО И ПРАВДА УДАЛЕНО. Маршрут трогал четыре таблицы из четырнадцати, что
+               * держат содержимое человека, и отвечал «удалено всё»; экран пересказывал эти четыре. Теперь
+               * удаляются все, и сообщение перечисляет то, что было ненулевым: список из тринадцати нулей
+               * не читают, а «0 conversations» рядом с настоящими цифрами читается как ошибка. */
+              const d = body.deleted;
+              const counted: string[] = [];
+              const add = (n: number | undefined, one: string, many: string) => {
+                if (n) counted.push(`${n} ${n === 1 ? one : many}`);
+              };
+              add(d.flows, 'flow', 'flows');
+              add(d.runs, 'run', 'runs');
+              add(d.conversations, 'conversation', 'conversations');
+              add(d.devices, 'paired device', 'paired devices');
+              add(d.connectors, 'connector token', 'connector tokens');
+              add(d.queuedRuns, 'queued run', 'queued runs');
+              add(d.teamMemberships, 'team membership', 'team memberships');
+              add(d.teamsClosed, 'team you alone owned, closed', 'teams you alone owned, closed');
+              add(d.withdrawn, 'skill withdrawn from the gallery', 'skills withdrawn from the gallery');
               say({
-                text: `${flows} flows, ${runs} runs and ${gone} devices deleted${
-                  withdrawn ? `, ${withdrawn} withdrawn from the gallery` : ''
-                }. Signing out…`,
+                text: `${counted.length ? `Deleted: ${counted.join(', ')}.` : 'There was nothing left to delete.'} Signing out…`,
                 kind: 'good',
               });
               setTimeout(async () => {

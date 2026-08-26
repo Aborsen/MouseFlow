@@ -16,24 +16,22 @@
  */
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+/* Потолок теперь считается в базе, а не в памяти процесса - см. api/_spend.mjs. Здешний Map жил в
+ * ОДНОМ тёплом инстансе, а сколько их, решает трафик: то есть настоящий предел умножался ровно тогда,
+ * когда был нужнее всего. Комментарий рядом со старым счётчиком это признавал. */
+import { overSpend, spentWhy } from './_spend.mjs';
 import { ask, DEFAULT_MODEL, ProviderError } from './_provider.js';
 import { applyPlan, promptFor, PLAN_TOOL, MAX_STEPS } from './_compose.mjs';
 import { report, wrap } from './_report.js';
 
-const RATE_WINDOW_MS = 300_000;
-const RATE_MAX = 20;
-const hits = new Map();
-
-function tooMany(key) {
-  const now = Date.now();
-  const seen = (hits.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  seen.push(now);
-  hits.set(key, seen);
-  if (hits.size > 500) {
-    for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k);
-  }
-  return seen.length > RATE_MAX;
-}
+/* Потолок на звонящего переехал в api/_spend.mjs и считается в базе.
+ *
+ * Здесь стоял Map в области модуля, и его собственный комментарий признавал главное: на serverless
+ * каждый тёплый инстанс держит своё окно, так что настоящий предел был этим числом, умноженным на
+ * количество проснувшихся - то есть он рос ровно тогда, когда был нужнее всего. Шесть маршрутов
+ * повторяли эту конструкцию, каждый со своей копией и своим признанием.
+ *
+ * Числа не потерялись: они перечислены в LIMITS одним списком, где их наконец можно сравнить. */
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -76,7 +74,8 @@ async function handler(req, res) {
     return no(res, 'could not check who is calling');
   }
   if (!who) return no(res, 'sign in first — this spends the deployment’s own model key');
-  if (tooMany(who.id)) return no(res, 'too many of these in a row; the notes were added as written instead');
+  const budget = await overSpend(sql, who.id, 'compose');
+  if (!budget.ok) return no(res, spentWhy(budget, 'of these') + ' The notes were added as written instead.');
 
   const { system, user, dropped } = promptFor({ steps, notes });
 

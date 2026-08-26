@@ -29,6 +29,10 @@
 
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+/* Потолок теперь считается в базе, а не в памяти процесса - см. api/_spend.mjs. Здешний Map жил в
+ * ОДНОМ тёплом инстансе, а сколько их, решает трафик: то есть настоящий предел умножался ровно тогда,
+ * когда был нужнее всего. Комментарий рядом со старым счётчиком это признавал. */
+import { overSpend, spentWhy } from './_spend.mjs';
 import { readSettings } from './admin.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -39,29 +43,14 @@ import { ALLOWED_MODELS, MAX_BODY_BYTES, MAX_MESSAGES, MAX_TOKENS_CAP, callModel
  * makes the same call from inside another function, and a second copy of the caps is a second copy that can
  * drift. What is left here is what an ENDPOINT owes: CORS, who is calling, and a rate limit per account. */
 
-/* Per-caller rate limit.
+/* Потолок на звонящего переехал в api/_spend.mjs и считается в базе.
  *
- * The caps above bound what ONE request can cost; they do nothing about ten thousand of them, and
- * the earlier comment claiming they protected the credit balance was overstating it. This is
- * best-effort by construction: a serverless instance holds its own window, so the real limit is
- * this multiplied by however many instances are warm. It stops a stuck client and casual abuse,
- * not a determined one - put real auth in front of this if it outlives the demo.
- */
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 30;
-const hits = new Map();
-
-function rateLimited(key) {
-  const now = Date.now();
-  const seen = (hits.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  seen.push(now);
-  hits.set(key, seen);
-  // Unbounded growth would outlive the instance; drop windows nobody is using.
-  if (hits.size > 500) {
-    for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k);
-  }
-  return seen.length > RATE_MAX;
-}
+ * Здесь стоял Map в области модуля, и его собственный комментарий признавал главное: на serverless
+ * каждый тёплый инстанс держит своё окно, так что настоящий предел был этим числом, умноженным на
+ * количество проснувшихся - то есть он рос ровно тогда, когда был нужнее всего. Шесть маршрутов
+ * повторяли эту конструкцию, каждый со своей копией и своим признанием.
+ *
+ * Числа не потерялись: они перечислены в LIMITS одним списком, где их наконец можно сравнить. */
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -153,10 +142,10 @@ async function handler(req, res) {
     return;
   }
 
-  if (rateLimited(who.id)) {
-    res.setHeader('Retry-After', '60');
-    fail(res, 429, 'too many requests on the shared demo key - wait a minute, or add your ' +
-      'own API key in the extension');
+  const budget = await overSpend(neon(process.env.DATABASE_URL), who.id, 'claude');
+  if (!budget.ok) {
+    res.setHeader('Retry-After', String(Math.ceil(budget.retryInMs / 1000)));
+    fail(res, 429, spentWhy(budget, 'requests') + ' Or add your own API key in the extension.');
     return;
   }
 

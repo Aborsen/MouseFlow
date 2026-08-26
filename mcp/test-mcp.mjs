@@ -1784,7 +1784,7 @@ check('every refusal answers 200 with a reason, so a busy model is not a dead en
 check('it is behind whoIsCalling, because it spends the deployment’s own key',
   /whoIsCalling\(req, sql\)/.test(composeApi) && /if \(!who\) return no\(/.test(composeApi));
 check('and rate-limited per account rather than per address',
-  /tooMany\(who\.id\)/.test(composeApi));
+  /overSpend\(sql, who\.id, 'compose'\)/.test(composeApi));
 check('no notes means no model call at all',
   /if \(!notes\.trim\(\)\) return no\(/.test(composeApi));
 check('a deployment with no model key says so rather than reporting a crash',
@@ -2326,6 +2326,61 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------- потолок на общий ключ считается там, где он один */
+
+/* Шесть маршрутов держали счётчик в Map в области модуля, и каждый из них своим же комментарием признавал
+ * главное: на serverless окно живёт в ОДНОМ тёплом инстансе, а сколько их - решает трафик. То есть предел
+ * умножался ровно тогда, когда был нужнее всего. Ещё два не считали вовсе, и один из них - самый дорогой:
+ * ?worker=step ведёт прогон до 240 обращений к модели по 8000 токенов. */
+group('потолок на общий ключ считается в базе, а не в памяти инстанса');
+{
+  const spend = read('../api/_spend.mjs');
+  check('счётчик один на все маршруты', /export async function overSpend\(sql, userId, route\)/.test(spend));
+  check('и считает строки в таблице, а не в Map', /from model_call/.test(spend) && !/new Map\(\)/.test(spend));
+  /* Иначе первый же вызов считался бы вторым; и отказ ничего не стоил, значит в счёт не идёт.
+   *
+   * По ПОЛОЖЕНИЮ внутри самой функции, а не по близости: между счётом и вставкой стоит ещё запрос «когда
+   * освободится место», и проверка расстоянием мерила бы длину этого запроса. И не по всему файлу -
+   * сравнение индексов через весь файл однажды уже дало проходящую проверку не о том. */
+  const overSpendBody = (() => {
+    const at = spend.indexOf('export async function overSpend(');
+    return at < 0 ? '' : spend.slice(at);
+  })();
+  check('считает ДО того, как записать себя',
+    overSpendBody.indexOf('select count(*)::int as n from model_call') > 0
+      && overSpendBody.indexOf('select count(*)::int as n from model_call')
+        < overSpendBody.indexOf('insert into model_call'));
+  /* Потолок против цикла, а не замок: сбой базы, превращённый в «вы исчерпали лимит», - это маленькая
+   * авария, превращённая в неверное утверждение о человеке. */
+  check('и при сбое базы пропускает, а не отказывает',
+    /catch \(_\) \{[\s\S]{0,260}?return \{ ok: true \};/.test(spend));
+  check('а отказ говорит, когда пробовать', /retryInMs/.test(spend) && /Try again in about/.test(spend));
+
+  /* Все восемь тратящих маршрутов - через одну дверь. */
+  for (const route of ['claude', 'chat', 'insights', 'compose', 'params', 'transcript', 'skill-md']) {
+    const src = read(`../api/${route}.js`);
+    check(`${route} спрашивает общий потолок`, /overSpend\(/.test(src), 'нет вызова');
+    check(`${route} больше не считает в памяти`, !/rateLimited|function tooMany/.test(src));
+  }
+  const mcpApi = read('../api/mcp.js');
+  check('и самый дорогой маршрут - тоже', /overSpend\(sql, who\.id, 'step'\)/.test(mcpApi));
+  /* Через тот же fail(), что и всякая другая неудача этого маршрута: своя уборка была бы третьей версией
+   * того же самого и первой, про которую забудут. */
+  check('а упёршийся прогон заканчивается, а не висит claimed',
+    /return fail\(spentWhy\(budget, 'runs'\)\);/.test(mcpApi));
+
+  /* Числа наконец лежат одним списком, где их можно сравнить. */
+  check('и все потолки перечислены в одном месте', /export const LIMITS = \{/.test(spend));
+  check('включая тот, которого не было', /'skill-md': \{ max: \d+/.test(spend));
+
+  /* Таблица существует, чтобы посчитать последние минуты, а не чтобы помнить. */
+  const migration = read('../db/012_model_call.sql');
+  check('таблица есть и подметается', /create table if not exists model_call/.test(migration)
+    && /delete from model_call where at </.test(spend));
+  check('и индекс отвечает ровно на тот запрос, который есть',
+    /model_call_window on model_call \(user_id, route, at desc\)/.test(migration));
+}
+
 /* ------------------------------------------------------- чужие данные не достаются не тому */
 
 group('записи не переходят к следующему, кто вошёл на этой машине');

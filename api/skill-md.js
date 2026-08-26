@@ -20,6 +20,8 @@ import { ask, DEFAULT_MODEL, ProviderError } from './_provider.js';
 import { structureOf } from './_skill-schema.mjs';
 import { portability, skillFileName, skillMarkdown, skillSlug, urlTrail } from './_skill-md.mjs';
 import { report, wrap } from './_report.js';
+/* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
+import { overSpend, spentWhy } from './_spend.mjs';
 
 const TRIGGER_TOOL = {
   name: 'describe_the_skill',
@@ -152,10 +154,19 @@ async function handler(req, res) {
     return res.status(200).json({ ok: false, portable: true, why: portably.why });
   }
 
+  /* ПОТОЛОК НА ОБЩИЙ КЛЮЧ. Это был единственный маршрут, тратящий его без счёта вовсе: он проверяет, кто
+   * звонит, читает один принадлежащий звонящему флоу и идёт прямо в ask(). Всё, что для этого нужно, - id
+   * флоу, который у звонящего уже есть, то есть запрос повторяется тривиально.
+   *
+   * Отказ не роняет ответ: файл собирается из выведенного текста, ровно как при любой другой неудаче
+   * модели ниже - и это причина, по которой генератор принимает эти поля необязательными. */
+  const budget = await overSpend(sql, who.id, 'skill-md');
+
   /* Asked for, not required. Every failure below leaves `written` empty and the file is built from the
    * derived text - which is the whole reason the generator takes these as optional. */
   let written = {};
   try {
+    if (!budget.ok) throw new Error(spentWhy(budget, 'skill files'));
     const reply = await ask({
       model: process.env.ANTHROPIC_API_KEY ? DEFAULT_MODEL.anthropic : DEFAULT_MODEL.openai,
       system: 'You are writing the frontmatter of an agent skill. '

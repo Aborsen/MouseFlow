@@ -55,6 +55,8 @@ import { fillGoal, missingParams } from '../extension/skills.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, reportSaid, wrap } from './_report.js';
+/* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
+import { overSpend, spentWhy } from './_spend.mjs';
 
 const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const NEWEST = '2025-06-18';
@@ -1076,6 +1078,27 @@ async function workerRoute(action, req, res, sql, who) {
       /* Who is driving. A worker runs the loop itself and never writes here; recorded so that a machine
        * with both cannot end up driving one mouse twice. */
       await sql`update run_queue set stepping = true where id = ${id} and user_id = ${who.id}`;
+    }
+
+    /* ПОТОЛОК НА ОБЩИЙ КЛЮЧ - и это был самый дорогой маршрут без него.
+     *
+     * advance() зовёт callModel с ANTHROPIC_API_KEY развёртывания, по 8000 токенов на вызов, и прогон это
+     * до 240 таких подряд. Остальные тратящие маршруты считали вызовы на аккаунт; здесь не считал никто, и
+     * подписаться мог любой Google-аккаунт без единого платежа.
+     *
+     * Пятнадцать в минуту - примерно вдвое быстрее, чем настоящий прогон может идти (ход занимает секунд
+     * восемь), так что живая работа этого не почувствует, а зациклившаяся перестанет стоить денег в
+     * пределах минуты.
+     *
+     * Прогон при этом ЗАКАНЧИВАЕТСЯ, а не висит: очередь освобождается, строка пишется в лог как неудача с
+     * причиной, которую человек может прочитать. Оставить его claimed значило бы, что упёршийся в потолок
+     * прогон занимает место до самой уборки устаревших. */
+    const budget = await overSpend(sql, who.id, 'step');
+    if (!budget.ok) {
+      /* Через тот же fail(), что и всякая другая неудача этого маршрута, а не своим путём: он помечает
+       * строку failed с причиной, обнуляет loop и отвечает в форме, которую агент уже умеет читать.
+       * Собственная уборка здесь была бы третьей версией того же самого - и первой, про которую забудут. */
+      return fail(spentWhy(budget, 'runs'));
     }
 
     const out = await advance({ loop, shot: body.shot, windows: body.windows, results: body.results });

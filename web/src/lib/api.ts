@@ -327,8 +327,18 @@ export const mintDeviceToken = (label: string) =>
 export const revokeDevice = (id: string) =>
   call<{ ok: true }>(`/api/sync?token=${encodeURIComponent(id)}`, { method: 'DELETE' });
 
+/* Числа настоящие, и их четырнадцать, а не четыре. Маршрут удалял четыре таблицы из четырнадцати, что
+ * держат содержимое человека, и отвечал «удалено всё»; теперь удаляет все и умеет это назвать. */
 export const eraseAccount = () =>
-  call<{ ok: true; deleted: { flows: number; runs: number; devices: number; withdrawn: number }; note: string }>(
+  call<{
+    ok: true;
+    deleted: {
+      flows: number; runs: number; devices: number; conversations: number; messages: number;
+      preferences: number; queuedRuns: number; teamMemberships: number; teamShares: number;
+      invitations: number; teamsClosed: number; connectors: number; withdrawn: number;
+    };
+    note: string;
+  }>(
     '/api/account?erase=1',
     { method: 'DELETE' },
   );

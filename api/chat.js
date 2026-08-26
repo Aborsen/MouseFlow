@@ -63,6 +63,10 @@ import { neon } from '@neondatabase/serverless';
  * who may see whose work - see api/_team-scope.js. */
 import { peopleFor, scopeFor } from './_team-scope.js';
 import { whoIsCalling } from './_session.js';
+/* Потолок теперь считается в базе, а не в памяти процесса - см. api/_spend.mjs. Здешний Map жил в
+ * ОДНОМ тёплом инстансе, а сколько их, решает трафик: то есть настоящий предел умножался ровно тогда,
+ * когда был нужнее всего. Комментарий рядом со старым счётчиком это признавал. */
+import { overSpend, spentWhy } from './_spend.mjs';
 import { ask, MODELS, DEFAULT_MODEL, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
 import { recordingTools } from './_recording-tools.js';
 import { readSettings } from './admin.js';
@@ -106,21 +110,14 @@ const GROUPS_MAX = 30;
  *
  * Counted per QUESTION rather than per model call, because one question is up to seven calls plus a
  * handful of queries. Twelve questions in five minutes is a conversation; more than that is a loop. */
-const RATE_WINDOW_MS = 300_000;
-const RATE_MAX = 12;
-const hits = new Map();
-
-function rateLimited(key) {
-  const now = Date.now();
-  const seen = (hits.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  seen.push(now);
-  hits.set(key, seen);
-  // Unbounded growth would outlive the instance; drop windows nobody is using.
-  if (hits.size > 500) {
-    for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k);
-  }
-  return seen.length > RATE_MAX;
-}
+/* Потолок на звонящего переехал в api/_spend.mjs и считается в базе.
+ *
+ * Здесь стоял Map в области модуля, и его собственный комментарий признавал главное: на serverless
+ * каждый тёплый инстанс держит своё окно, так что настоящий предел был этим числом, умноженным на
+ * количество проснувшихся - то есть он рос ровно тогда, когда был нужнее всего. Шесть маршрутов
+ * повторяли эту конструкцию, каждый со своей копией и своим признанием.
+ *
+ * Числа не потерялись: они перечислены в LIMITS одним списком, где их наконец можно сравнить. */
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -1250,11 +1247,12 @@ async function handler(req, res) {
   }
 
   // This spends money on a shared key, so it is counted per account. An IP is not a person.
-  if (rateLimited(who.id)) {
-    res.setHeader('Retry-After', '60');
-    return fail(res, 429, 'too many questions in a row - one question is up to ' + (MAX_ROUNDS + 1)
-      + ' model calls, so this is capped at ' + RATE_MAX + ' every five minutes. Wait a minute.');
+  const budget = await overSpend(sql, who.id, 'chat');
+  if (!budget.ok) {
+    res.setHeader('Retry-After', String(Math.ceil(budget.retryInMs / 1000)));
+    return fail(res, 429, spentWhy(budget, 'questions'));
   }
+
 
   const body = req.body && typeof req.body === 'object' ? req.body : null;
   if (!body) return fail(res, 400, 'expected a JSON body: { question, model?, history? }');

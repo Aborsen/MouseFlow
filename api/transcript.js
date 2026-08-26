@@ -69,6 +69,10 @@
 
 import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
+/* Потолок теперь считается в базе, а не в памяти процесса - см. api/_spend.mjs. Здешний Map жил в
+ * ОДНОМ тёплом инстансе, а сколько их, решает трафик: то есть настоящий предел умножался ровно тогда,
+ * когда был нужнее всего. Комментарий рядом со старым счётчиком это признавал. */
+import { overSpend, spentWhy } from './_spend.mjs';
 import { transcribe, removeSteps } from './_transcript.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -93,21 +97,14 @@ const NAMED_MAX = 20;                 // how many offenders a refusal spells out
  * api/insights.js and the same honesty about it: a serverless instance holds its own window, so the
  * real ceiling is this times however many instances are warm. It stops a loop, not a determined
  * caller. */
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = 20;
-const hits = new Map();
-
-function rateLimited(key) {
-  const now = Date.now();
-  const seen = (hits.get(key) || []).filter((t) => now - t < RATE_WINDOW_MS);
-  seen.push(now);
-  hits.set(key, seen);
-  // Unbounded growth would outlive the instance; drop windows nobody is using.
-  if (hits.size > 500) {
-    for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k);
-  }
-  return seen.length > RATE_MAX;
-}
+/* Потолок на звонящего переехал в api/_spend.mjs и считается в базе.
+ *
+ * Здесь стоял Map в области модуля, и его собственный комментарий признавал главное: на serverless
+ * каждый тёплый инстанс держит своё окно, так что настоящий предел был этим числом, умноженным на
+ * количество проснувшихся - то есть он рос ровно тогда, когда был нужнее всего. Шесть маршрутов
+ * повторяли эту конструкцию, каждый со своей копией и своим признанием.
+ *
+ * Числа не потерялись: они перечислены в LIMITS одним списком, где их наконец можно сравнить. */
 
 function cors(req, res) {
   const origin = req.headers.origin || '';
@@ -269,11 +266,12 @@ async function handler(req, res) {
 
   try {
     if (req.method === 'GET') return await show(res, sql, who.id, flowId);
-    if (rateLimited(who.id)) {
-      res.setHeader('Retry-After', '60');
-      return fail(res, 429, 'too many edits in a row - each one rewrites the recording, so this is '
-        + 'capped at ' + RATE_MAX + ' a minute. Wait a minute.');
+    const budget = await overSpend(sql, who.id, 'transcript');
+    if (!budget.ok) {
+      res.setHeader('Retry-After', String(Math.ceil(budget.retryInMs / 1000)));
+      return fail(res, 429, spentWhy(budget, 'edits'));
     }
+
     return await edit(req, res, sql, who.id, flowId);
   } catch (err) {
     if (err instanceof Halt) return fail(res, err.status, err.message);
