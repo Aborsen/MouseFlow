@@ -429,6 +429,56 @@ group('a batch has a ceiling');
     out.loop.mine.length === many.length - BATCH_MAX, String(out.loop.mine.length));
 }
 
+group('a finish behind an action that FAILED is not honoured either');
+{
+  /* «Действия были отправлены и теперь выполнены» - это было допущением, а results лежит прямо здесь и
+   * знает ответ. Прогон, чей последний шаг вернулся ошибкой, объявлялся успешным. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10 }, 'c1'),
+    use('finish', { ok: true, said: 'Sent it.' }, 'f1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the action goes out and the ending waits', out.actions.length === 1 && out.loop.ending);
+
+  const done = await advance({
+    loop: out.loop, shot: SHOT, windows: WINDOWS, ask: scripted([]),
+    results: [{ id: 'c1', isError: true, output: 'the agent could not reach that point' }],
+  });
+  check('the run does not report success', done.done && done.done.ok === false,
+    JSON.stringify(done.done && done.done.ok));
+  check('and says the success was never checked against anything',
+    /did not go through/.test(String(done.done.error)), String(done.done.error));
+  /* Что модель написала, сохраняется: это обычно всё объяснение. */
+  check('but what it said is kept', done.done.said === 'Sent it.');
+}
+{
+  /* И обратное: действие прошло - окончание засчитывается, как и раньше. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10 }, 'c1'),
+    use('finish', { ok: true, said: 'Sent it.' }, 'f1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  const done = await advance({
+    loop: out.loop, shot: SHOT, windows: WINDOWS, ask: scripted([]),
+    results: [{ id: 'c1', output: 'done', moved: true }],
+  });
+  check('an action that worked still ends the run green', done.done && done.done.ok === true);
+}
+{
+  /* finish(ok:false) - это отчёт о неудаче, и он верен тем более, если вдобавок что-то не сработало. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10 }, 'c1'),
+    use('finish', { ok: false, said: 'Could not find it.' }, 'f1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  const done = await advance({
+    loop: out.loop, shot: SHOT, windows: WINDOWS, ask: scripted([]),
+    results: [{ id: 'c1', isError: true, output: 'nope' }],
+  });
+  check('a failure reported behind a failed action keeps its own words',
+    done.done && done.done.ok === false && /Could not find it/.test(String(done.done.error)));
+}
+
 group('a finish behind a cut turn is not honoured');
 {
   /* Ложный красный виден и оспорим, ложный зелёный - нет. Успех, обоснованный действиями, которых не

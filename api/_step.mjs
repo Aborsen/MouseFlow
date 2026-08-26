@@ -244,8 +244,26 @@ export async function advance({ loop, shot, windows, results, ask }) {
   }
 
   /* A finish that arrived behind other actions in the same turn. Those actions were sent and have now been
-   * carried out; the ending was always the answer and is honoured here rather than being dropped. */
-  if (loop.ending) return over(loop.ending);
+   * carried out; the ending was always the answer and is honoured here rather than being dropped.
+   *
+   * НО ТОЛЬКО ЕСЛИ ОНИ И ПРАВДА ВЫПОЛНИЛИСЬ. «Были отправлены и теперь выполнены» - это допущение, а
+   * `results` лежит прямо здесь и знает ответ: действие могло вернуться ошибкой или не вернуться вовсе.
+   * Засчитывать после этого finish(ok:true) значит объявлять успехом прогон, чей последний шаг не
+   * состоялся, - ровно тот ложный зелёный, против которого написан весь блок про turn-that-called-nothing:
+   * ложный красный виден и оспорим, ложный зелёный нет.
+   *
+   * Проверяется только на УСПЕШНОМ окончании. finish(ok:false) - это отчёт о неудаче, и он верен тем более,
+   * если вдобавок что-то не сработало. */
+  if (loop.ending) {
+    const broke = loop.ending.ok === true
+      && answered.some((block) => block && block.is_error === true);
+    if (broke) {
+      const why = 'It reported success, but the action it decided that on did not go through — so the '
+        + 'success was not checked against anything. Stopping instead of recording a finished run.';
+      return over({ ok: false, error: why, said: loop.ending.said || null });
+    }
+    return over(loop.ending);
+  }
 
   // 2. The seam between waves.
   if (loop.turn >= WAVE_TURNS) {

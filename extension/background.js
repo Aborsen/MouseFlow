@@ -261,9 +261,41 @@ async function ensureCapturing(tabId) {
 
 // Appends one event, tagged with its logical tab, and computes the gap since the previous
 // event. Consecutive edits to the same rich-text field in the same tab collapse to one.
+/* АДРЕС - ЭТО ПРОИСХОЖДЕНИЕ И ПУТЬ, И РЕЖЕТСЯ ОН ЗДЕСЬ.
+ *
+ * PROTOCOL.md:406 говорит это прямо, и объясняет почему: строка запроса - это место, где живут сессионный
+ * токен, одноразовая ссылка для входа и то, что человек набрал в поиске. Всё, что стоит за рекордером,
+ * копирует payload дальше - он уезжает на аккаунт, отдаётся модели, пишется в файлы, которые скачивают и
+ * пересылают, - и значение, которое НЕ ВОШЛО в запись, не утечёт ни по одному из этих путей; резать позже
+ * значило бы, что каждый из них обязан об этом помнить.
+ *
+ * Оба агента так и делают, у обоих это в коде у самого источника. Расширение - вторая реализация того же
+ * рекордера - писало tab.url целиком в трёх местах, и ничто дальше по цепочке это не срезало.
+ *
+ * ЧТО ЭТО СТОИТ, честно: повтор ведёт вкладку по ev.url, и флоу, записанный на странице результатов поиска,
+ * теперь приедет на голую страницу вместо неё. Это настоящая потеря, и она принята - ровно тем же доводом,
+ * которым протокол её объясняет: адрес с ?q= это уже содержание, а не место.
+ */
+function bareUrl(said) {
+  if (typeof said !== 'string' || !said) return said;
+  try {
+    const parsed = new URL(said);
+    /* Только http и https. chrome://, file:// и прочее сюда не попадает - isRestricted их отсекает
+       раньше, - но правило то же, что у агентов: не наш случай значит не трогаем и не пропускаем. */
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return said;
+    return parsed.origin + parsed.pathname;
+  } catch (_) {
+    return said;
+  }
+}
+
 function pushEvent(ev, tabKey) {
   const now = Date.now();
   const last = rec.events[rec.events.length - 1];
+
+  /* У самого входа, а не в трёх местах вызова: событие с адресом появляется у focus и у navigate, и
+     следующий появится не через них. */
+  if (typeof ev.url === 'string') ev.url = bareUrl(ev.url);
 
   /* Typing arrives one event per keystroke. Collapse a burst on the same field into a
    * single step carrying the final text, so "hello world" is one step and not eleven -

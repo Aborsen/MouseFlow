@@ -85,6 +85,28 @@ export function startReporting(): void {
     tracePropagationTargets: [/^\//, /^https:\/\/mouseflowapp\.vercel\.app/, /^https:\/\/mouse-agent\.vercel\.app/],
     enableLogs: true,
 
+    /* ТРАССИРОВКИ - ЭТО ВТОРОЙ КОНВЕРТ, И ПРАВИЛО НИЖЕ ИХ НЕ ВИДЕЛО.
+     *
+     * beforeSend в @sentry/react 10 вызывается на событиях ОШИБОК. Транзакции browserTracingIntegration
+     * идут своим путём и несут url каждого fetch - то есть ровно те адреса, ради которых scrubUrl и
+     * написан. Файл при этом заявляет своё правило как общее: «всё, что могло быть набранным значением,
+     * вынимается из адреса до того, как он покинет браузер». Правило было верное, применялось к половине.
+     *
+     * Спаны чистятся тоже: у них адрес лежит и в описании, и в атрибутах. */
+    beforeSendTransaction(event) {
+      if (event.request?.url) event.request.url = scrubUrl(event.request.url);
+      for (const span of event.spans ?? []) {
+        if (typeof span.description === 'string' && span.description.includes('?')) {
+          span.description = span.description.replace(/https?:\/\/\S+/g, (m) => scrubUrl(m));
+        }
+        const data = span.data as Record<string, unknown> | undefined;
+        for (const key of ['url', 'http.url', 'server.address']) {
+          if (data && typeof data[key] === 'string') data[key] = scrubUrl(data[key] as string);
+        }
+      }
+      return event;
+    },
+
     beforeSend(event) {
       if (event.request?.url) event.request.url = scrubUrl(event.request.url);
       /* The breadcrumb trail is where a URL turns up a second time — every navigation and every fetch

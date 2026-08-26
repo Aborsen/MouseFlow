@@ -2320,6 +2320,66 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------ что уходит с машины, и молчание о потерянном */
+
+group('адрес режется у источника на обеих половинах');
+{
+  const bg = read('../extension/background.js');
+  /* PROTOCOL.md:406 объясняет, почему резать надо в рекордере: значение, которое не вошло в запись, не
+   * утечёт ни по одному из путей, а резать позже значило бы, что каждый обязан об этом помнить. Оба агента
+   * так и делают; расширение писало tab.url целиком. */
+  check('расширение режет адрес до происхождения и пути', /return parsed\.origin \+ parsed\.pathname;/.test(bg));
+  /* У самого входа, а не в трёх местах вызова: следующее событие с адресом появится не через них. */
+  check('и делает это в pushEvent, а не в каждом вызывающем',
+    /if \(typeof ev\.url === 'string'\) ev\.url = bareUrl\(ev\.url\);/.test(bg));
+  check('и только для http и https', /parsed\.protocol !== 'http:' && parsed\.protocol !== 'https:'/.test(bg));
+
+  /* beforeSend в @sentry/react 10 работает на ошибках; транзакции идут своим конвертом и несут url
+   * каждого fetch - то есть ровно те адреса, ради которых scrubUrl и написан. */
+  const sentry = read('../web/src/lib/sentry.ts');
+  check('трассировки чистятся тем же правилом, что и ошибки',
+    /beforeSendTransaction\(event\) \{/.test(sentry));
+  check('включая описания и атрибуты спанов',
+    /span\.description = span\.description\.replace/.test(sentry)
+      && /\['url', 'http\.url', 'server\.address'\]/.test(sentry));
+}
+
+group('о потерянном говорят вслух');
+{
+  const recordView = read('../web/src/features/record/RecordView.tsx');
+  const sync = read('../api/sync.js');
+  const step = read('../api/_step.mjs');
+
+  /* `finished` верно и тогда, когда отправлять было нечего, а печаталась длина всего реестра: сессия, из
+   * которой уехало две части из пяти, сообщала «5 parts on the account». */
+  check('сессия сообщает, сколько частей ДОЕХАЛО',
+    /const landed = done\.parts\.filter\(\(p\) => p\.onAccount\)\.length;/.test(recordView));
+  check('и называет обе цифры, когда они разошлись',
+    /reached your account\. The rest were only ever in the tab that recorded them/.test(recordView));
+
+  /* Три среза молча теряли остаток, а ответ был 200 ok со счётчиками, равными уцелевшему. */
+  check('push называет отброшенный хвост', /were not saved — this takes/.test(sync));
+  /* Хуже всего на deleted: расширение чистит свой список по успешному ответу. */
+  check('включая удаления', /tooMany\(body\.deleted, removed\.length, 'deletions', FLOWS_MAX\)/.test(sync));
+
+  /* «Действия были отправлены и теперь выполнены» - допущение; results знает ответ. */
+  check('успех, объявленный за не сработавшим действием, не засчитывается',
+    /const broke = loop\.ending\.ok === true/.test(step)
+      && /answered\.some\(\(block\) => block && block\.is_error === true\)/.test(step));
+  /* finish(ok:false) - отчёт о неудаче, и он верен тем более. */
+  check('а отчёт о неудаче остаётся своим', /loop\.ending\.ok === true\n\s*&& answered\.some/.test(step));
+
+  /* Чужой скилл, положенный проиграть, - не работа этого человека, и на его аккаунте ему не место. */
+  const adopt = read('../web/src/features/record/adopt.ts');
+  const reconcile = read('../web/src/features/record/reconcile.ts');
+  check('взятое на время помечается', /borrowed: true,/.test(adopt));
+  check('и наверх не едет', /if \(rec\.borrowed\) continue;/.test(reconcile));
+
+  /* Документ утверждал, что страница Record говорит это в интерфейсе; предложение было комментарием. */
+  check('страница Record и правда говорит, куда это уезжает',
+    /is saved to your account/.test(recordView));
+}
+
 /* ------------------------------------------------------- публикация говорит, что именно уезжает */
 
 /* Две находки, одно свойство: публикация необратима, и человек должен видеть, ЧТО именно уезжает и КОМУ. */

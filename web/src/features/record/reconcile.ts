@@ -143,6 +143,10 @@ export function reconcile(
 
   // ---------------------------------------------------------------- up, and the tombstone rule
   for (const rec of local) {
+    /* ВЗЯТОЕ НА ВРЕМЯ НАВЕРХ НЕ ЕДЕТ. Копия чужого скилла, положенная сюда, чтобы её проиграть, - не работа
+     * этого человека; отправить её значило бы завести на его аккаунте запись, которую он не делал, и
+     * посчитать её в дашборде. Ни забыть её, ни проштамповать тоже нельзя: она просто не его. */
+    if (rec.borrowed) continue;
     if (theirs.has(rec.id)) {
       /* Held by both. Stamp it if it was never stamped, so the next reconcile can tell an unsynced recording
        * from one that was deleted elsewhere - which is the whole difference between sending it and dropping

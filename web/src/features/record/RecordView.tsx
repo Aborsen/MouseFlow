@@ -684,9 +684,24 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       update((prev) => ({
         sessions: [...((prev.sessions as Session[]) ?? []).filter((x) => x.id !== done.id), done],
       }));
+      /* СКОЛЬКО ДОЕХАЛО, а не сколько их было в реестре.
+       *
+       * `finished` - это `problem === null`, и оно верно ещё и тогда, когда отправлять было НЕЧЕГО: часть,
+       * чьи события остались во вкладке, которая её записала, в pending не попадает, и цикл выше её не
+       * трогает. Реестр при этом её помнит. Печаталось `done.parts.length` - вся длина реестра, - так что
+       * сессия, из которой на аккаунт уехало две части из пяти, сообщала «5 parts on the account», и это
+       * последнее, что человек про неё слышал.
+       *
+       * Считается по onAccount. Когда сходится - прежняя фраза; когда нет - названы обе цифры, потому что
+       * «часть работы потеряна» это ровно то, о чём говорят вслух. */
+      const landed = done.parts.filter((p) => p.onAccount).length;
       setNote(finished
-        ? `A session stopped at the agent was collected — ${done.parts.length} part${
-          done.parts.length === 1 ? '' : 's'} on the account.`
+        ? (landed === done.parts.length
+          ? `A session stopped at the agent was collected — ${landed} part${
+            landed === 1 ? '' : 's'} on the account.`
+          : `A session stopped at the agent was collected — ${landed} of ${done.parts.length} parts `
+            + 'reached your account. The rest were only ever in the tab that recorded them, and that tab '
+            + 'is gone.')
         : `Collected from the agent, but the account did not take it: ${problem}. Kept here — retrying.`);
       if (finished) await reload();
     } finally {
@@ -1021,9 +1036,17 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
               * readout; one slot, one height. */
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <Typography variant="p" className="min-w-0 flex-1 text-ink-inactive text-[0.85rem]">
+                {/* «Куда это уезжает» - вслух, здесь, а не только в документе.
+                  *
+                  * docs/product/17-privacy-security.md утверждал, что страница Record говорит это в
+                  * интерфейсе, и подавал это как позицию продукта - не оставлять такое на самостоятельное
+                  * открытие. Предложение существовало только комментарием в коде. Документ описывал
+                  * намерение, а читался как описание того, что человек увидит. */}
                 {recording
                   ? 'Capturing every click, drag, scroll and keystroke — press stop when the task is done.'
-                  : 'Captures every click, drag and scroll, with the application, window and control each one landed on. Typing is timed, never read.'}
+                  : 'Captures every click, drag and scroll, with the application, window and control each '
+                    + 'one landed on. Typing is timed, never read. When you stop, all of that — including '
+                    + 'window titles and control names — is saved to your account.'}
               </Typography>
 
               {session ? (

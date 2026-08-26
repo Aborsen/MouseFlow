@@ -68,6 +68,8 @@ function apply() {
         created: new Date().toISOString(),
         events,
         windows: payload.windows ?? [],
+        /* Чужая работа, взятая проиграть. Reconciler это читает и наверх не отправляет - см. Recording. */
+        borrowed: true,
       },
     ],
   }));

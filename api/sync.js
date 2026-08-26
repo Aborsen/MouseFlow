@@ -329,7 +329,33 @@ async function push(req, res, sql, who) {
   const runs = Array.isArray(body.runs) ? body.runs.slice(0, RUNS_MAX) : [];
   const removed = Array.isArray(body.deleted) ? body.deleted.slice(0, FLOWS_MAX) : [];
 
+  /* Объявлено ЗДЕСЬ, а не ниже у цикла: отброшенный хвост называется раньше, чем разбирается
+   * первый флоу, и `problems` должна уже существовать - иначе это ReferenceError в самом обычном push'е,
+   * который загрузка модуля не ловит, потому что он внутри функции. */
   const problems = [];
+
+  /* ОТБРОШЕННОЕ НАЗЫВАЕТСЯ. Три среза выше молча теряли остаток, и ответ был 200 ok со счётчиками, равными
+   * тому, что уцелело: отправитель не мог отличить «сохранено всё» от «сохранено первые триста».
+   *
+   * Хуже всего это на `deleted`: расширение чистит свой список удалённых по успешному ответу, так что
+   * тихо обрезанный хвост - это удаления, которые не случились и о которых больше никто не вспомнит.
+   *
+   * `problems` - именно то место, где это должно быть: комментарий ниже говорит, что он существует, чтобы
+   * одна плохая запись не теряла остаток push'а. Потерянный хвост - это тот же случай. */
+  const tooMany = (had, kept, what, cap) => {
+    const total = Array.isArray(had) ? had.length : 0;
+    if (total <= kept) return null;
+    return `${total - kept} ${what} were not saved — this takes ${cap} at a time. Send the rest in `
+      + 'another push.';
+  };
+  for (const line of [
+    tooMany(body.flows, flows.length, 'flows', FLOWS_MAX),
+    tooMany(body.runs, runs.length, 'runs', RUNS_MAX),
+    tooMany(body.deleted, removed.length, 'deletions', FLOWS_MAX),
+  ]) {
+    if (line) problems.push(line);
+  }
+
   let savedFlows = 0;
   let savedRuns = 0;
 
