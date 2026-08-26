@@ -337,7 +337,13 @@ export const ConnectView = () => {
     title: 'Keep it running after you log in',
     done: !!health?.autostart,
     note: mac
-      ? 'Already done: the installer makes it a login item, so it starts when you log in and comes back if it ever stops. There is nothing to launch by hand.'
+      /* `canAutostart` читается и на macOS. Раньше агент отвечал на него безусловным true, поэтому здесь
+       * стоял безусловный текст; с 0.9.7 автозапуск требует явного --allow-origin на ОБОИХ агентах, и
+       * агент, запущенный руками, отвечает false. Текст «уже сделано» под таким агентом был бы неправдой
+       * про единственное, что этот экран объясняет. */
+      ? health?.canAutostart
+        ? 'Already done: the installer makes it a login item, so it starts when you log in and comes back if it ever stops. There is nothing to launch by hand.'
+        : 'This agent was started by hand, without an origin pinned, so it cannot install itself as a login item. Run the install command again — it pins the origin and makes it a login item.'
       : health?.canAutostart
         ? 'Drops a launcher in your Startup folder. Only available when the agent was started from a downloaded file with a pinned origin — a piped start leaves nothing for the launcher to point at.'
         : 'Available once the agent has been started from a downloaded file with a pinned origin: a piped start leaves nothing for the launcher to point at.',

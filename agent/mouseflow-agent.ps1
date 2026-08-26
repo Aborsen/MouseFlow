@@ -72,10 +72,16 @@
   Loopback port to listen on. Default 8787.
 
 .PARAMETER AllowOrigin
-  Origin allowed to call the agent. '*' echoes whatever Origin asks, which lets
-  ANY site you visit drive your mouse while the agent runs. Pin it to your
-  deployment for anything beyond a local demo, e.g.
-    -AllowOrigin https://mouse-flow.vercel.app
+  Which page the agent answers. Left out, it answers MouseFlow's own pages and
+  anything on localhost, and refuses everything else - a request from any other
+  site is turned away before it reaches a route.
+
+  Pass an origin to narrow that to exactly one:
+    -AllowOrigin https://mouse-agent.vercel.app
+
+  Pass '*' to turn the check off entirely. That is what this agent did by default
+  until 0.9.7, and it means any site open in your browser can press keys on this
+  machine - CORS does not stop that, because a keystroke needs no reply.
 
 .PARAMETER MoveThrottleMs
   Minimum gap between recorded move events. Default 10.
@@ -126,7 +132,7 @@
 [CmdletBinding()]
 param(
     [int]$Port = 8787,
-    [string]$AllowOrigin = '*',
+    [string]$AllowOrigin = '',
     [int]$MoveThrottleMs = 10,
     [int]$MoveMinPx = 3,
     # The tray icon is how a person reaches the agent - starting and stopping a recording without the
@@ -398,7 +404,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.6";
+        public const string Version = "0.9.7";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -2511,14 +2517,16 @@ namespace MouseFlow
 
         public static bool CanAutostart()
         {
-            return ScriptPath.Length > 0 && AllowOrigin != "*";
+            /* Явный пин, а не просто "не звёздочка": по умолчанию AllowOrigin теперь пуст, и без
+               этой второй половины автозапуск стал бы доступен ненастроенному агенту. */
+            return ScriptPath.Length > 0 && AllowOrigin.Length > 0 && AllowOrigin != "*";
         }
 
         public static string EnableAutostart()
         {
             if (ScriptPath.Length == 0)
                 return "the agent was started from a pipe, so there is no file to run at logon - download mouseflow-agent.ps1 and start it from the file instead";
-            if (AllowOrigin == "*")
+            if (AllowOrigin.Length == 0 || AllowOrigin == "*")
                 return "restart the agent with -AllowOrigin set to your app origin before enabling autostart";
 
             try
@@ -2551,7 +2559,46 @@ namespace MouseFlow
 
         // ---------- HTTP ----------
 
-        public static string AllowOrigin = "*";
+        /* ПУСТАЯ СТРОКА, А НЕ ЗВЁЗДОЧКА - и это та же правка, что в Swift-агенте.
+           Раньше -AllowOrigin только отражался в заголовок и не отвергал ничего, а по умолчанию стоял "*",
+           так что агент, запущенный без аргументов, принимал action=type и action=key от ЛЮБОЙ страницы,
+           открытой в браузере. CORS этому не мешает: он мешает прочитать ответ, а не отправить запрос и
+           выполнить его - и ни нажатию клавиши, ни печати ответ не нужен.
+           Пусто теперь значит "собственные страницы продукта и loopback", а не "все". */
+        public static string AllowOrigin = "";
+
+        /* Собственные origin'ы продукта. Два, потому что развёртывания два, и агент, отказывающий
+           второму, - это агент, который "просто не находится". */
+        public static readonly string[] ShippedOrigins = new string[] {
+            "https://mouseflowapp.vercel.app",
+            "https://mouse-agent.vercel.app"
+        };
+
+        /* КТО ВООБЩЕ МОЖЕТ ГОВОРИТЬ С ЭТИМ АГЕНТОМ. Тот же порядок проверок, что в originAllowed() у
+           macOS-агента, и то же поведение на каждой ветке - PROTOCOL.md запрещает две схемы на два агента.
+
+           Отсутствие Origin - это не браузер: curl, mcp/worker.mjs, node fetch. Пропускается, и это не
+           дыра: страница Origin не подделает, его ставит браузер, а локальный процесс и так может всё. */
+        public static bool OriginAllowed(string origin)
+        {
+            if (origin == null || origin.Length == 0) return true;
+            if (AllowOrigin == "*") return true;
+            if (AllowOrigin.Length > 0) return origin == AllowOrigin;
+            for (int i = 0; i < ShippedOrigins.Length; i++)
+            {
+                if (origin == ShippedOrigins[i]) return true;
+            }
+            /* Хост проверяется целиком, через Uri, а не началом строки: https://localhost.evil.example
+               начинается с "https://localhost" и по префиксу прошло бы внутрь. */
+            Uri parsed;
+            if (Uri.TryCreate(origin, UriKind.Absolute, out parsed))
+            {
+                string host = parsed.Host;
+                bool web = parsed.Scheme == "http" || parsed.Scheme == "https";
+                if (web && (host == "localhost" || host == "127.0.0.1" || host == "::1")) return true;
+            }
+            return false;
+        }
 
         public static void ServeForever(int port)
         {
@@ -2637,7 +2684,18 @@ namespace MouseFlow
                     body = Encoding.UTF8.GetString(buf, 0, read);
                 }
 
-                Route(stream, method, path, query, body, origin);
+                /* ПОРОГ. Перед Route, а не внутри маршрутов: маршрут, добавленный завтра,
+                   наследует проверку, а не забывает её. */
+                if (!OriginAllowed(origin))
+                {
+                    Respond(stream, 403, "application/json",
+                        "{\"ok\":false,\"error\":\"this agent does not answer that page - it is pinned to another origin\"}",
+                        origin);
+                }
+                else
+                {
+                    Route(stream, method, path, query, body, origin);
+                }
             }
             catch (Exception ex)
             {
@@ -2691,7 +2749,7 @@ namespace MouseFlow
                     + ",\"playing\":" + (IsPlaying ? "true" : "false")
                     + ",\"autostart\":" + (AutostartEnabled() ? "true" : "false")
                     + ",\"canAutostart\":" + (CanAutostart() ? "true" : "false")
-                    + ",\"originPinned\":" + (AllowOrigin != "*" ? "true" : "false")
+                    + ",\"originPinned\":" + (AllowOrigin.Length > 0 && AllowOrigin != "*" ? "true" : "false")
                     /* So the app can tell an older agent from this one and say which. A missing
                        endpoint answers 404, which reads as "broken" rather than "out of date". */
                     + ",\"canSee\":true"
@@ -2935,15 +2993,22 @@ namespace MouseFlow
         static void Respond(NetworkStream stream, int status, string contentType, string body, string origin)
         {
             byte[] payload = Encoding.UTF8.GetBytes(body == null ? "" : body);
-            string allow = AllowOrigin;
+            /* ЭХО ТОЛЬКО ТОМУ, КОМУ РАЗРЕШЕНО. Пока запрос выполнялся в любом случае, отражение ничего
+               не разрешало - разрешать было нечего. Теперь отвергает OriginAllowed выше, и отразить
+               отказанному значило бы выдать ему право читать ответ, которого он не получил. */
+            string allow = AllowOrigin.Length == 0 ? (origin == null ? "" : origin) : AllowOrigin;
             if (allow == "*" && origin != null) allow = origin;   // PNA preflight dislikes a bare *
+            if (origin != null && !OriginAllowed(origin)) allow = "";
 
             StringBuilder sb = new StringBuilder();
             sb.Append("HTTP/1.1 ").Append(status.ToString(CultureInfo.InvariantCulture)).Append(" ").Append(StatusText(status)).Append("\r\n");
             sb.Append("Content-Type: ").Append(contentType).Append("; charset=utf-8\r\n");
             sb.Append("Content-Length: ").Append(payload.Length.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
-            sb.Append("Access-Control-Allow-Origin: ").Append(allow).Append("\r\n");
-            sb.Append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
+            if (allow.Length > 0) sb.Append("Access-Control-Allow-Origin: ").Append(allow).Append("\r\n");
+            /* DELETE перечислен, и без него "Отсоединить" в приложении не работало вовсе: браузер шлёт
+               preflight, не находит метода и отказывает сам, а экран сообщает, что агент недоступен -
+               хотя агент жив и по-прежнему привязан к аккаунту. */
+            sb.Append("Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n");
             sb.Append("Access-Control-Allow-Headers: Content-Type\r\n");
             // No Access-Control-Allow-Private-Network here on purpose. Chrome 142 replaced
             // Private Network Access with Local Network Access, which is a user permission -
@@ -4122,7 +4187,11 @@ Write-Host ""
 # was 0.2.0, so the one place a user checks which build they are running was the one place that lied.
 Write-Host ("  MouseFlow agent " + [MouseFlow.Agent]::Version) -ForegroundColor Cyan
 Write-Host "  listening   http://127.0.0.1:$Port"
-Write-Host "  origin      $AllowOrigin"
+if ($AllowOrigin) {
+    Write-Host "  origin      $AllowOrigin"
+} else {
+    Write-Host "  origin      the app's own pages, plus localhost (default)"
+}
 Write-Host "  move filter $MoveThrottleMs ms / $MoveMinPx px"
 Write-Host "  can see     yes - /shot, /do and /windows are available to the app"
 # Said in the banner as well as the tray: this is the one thing the agent does because a service asked, and
@@ -4154,8 +4223,8 @@ if ($heldAtStart -gt 0) {
 }
 Write-Host ""
 if ($AllowOrigin -eq '*') {
-    Write-Warning "Any site open in your browser can drive your mouse while this agent runs."
-    Write-Warning "Pin it before sharing:  -AllowOrigin https://your-app.vercel.app"
+    Write-Warning "-AllowOrigin '*' turns the check OFF: any site open in your browser can drive your mouse."
+    Write-Warning "Drop the flag to go back to answering only the app's own pages."
     Write-Host ""
 }
 Write-Host "  Hold ESC to abort a replay. Ctrl+C to stop the agent." -ForegroundColor DarkGray

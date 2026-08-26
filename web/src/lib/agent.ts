@@ -346,7 +346,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.9.6';
+export const AGENT_WANTS = '0.9.7';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

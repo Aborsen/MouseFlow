@@ -487,14 +487,47 @@ inside every sleep, and release every held button and key on every exit path, in
 a replay that dies holding the left mouse button leaves the machine unusable. The Windows agent also honours
 a held ESC as a hardware-level escape hatch, which is worth copying.
 
-## Authentication — being replaced, do not invent your own
+## Who may talk to the agent
 
-Today: **none**. Any process on the machine can POST `/do` and inject input, or GET `/shot` and capture every
-monitor. `-AllowOrigin` defaults to `*` and is only echoed as a response header, never used to reject.
+**The origin is checked, and until 0.9.7 it was not.** This section used to say authentication was "none",
+that `-AllowOrigin` defaulted to `*` and was "only echoed as a response header, never used to reject", and
+that a new agent should leave a seam and wait for a design. That reading cost the whole machine: a listener
+on 127.0.0.1 that carries out `action=key`, `action=type` and `action=click` will do so for **any page open
+in the user's browser**, because CORS stops a page *reading a reply*, not a request being sent and executed —
+and a keystroke needs no reply. A page in Safari or Firefox could open Spotlight, type a shell command and
+press Return.
 
-A design is being chosen now. Until it lands, a new agent should implement the table above **without** auth
-and leave a single seam for it — one function every route calls before doing anything. Do not design a scheme
-in parallel; two agents with two schemes is worse than one agent with none.
+Enforcing the pin was never a new scheme. It is the scheme both agents already shipped, already documented
+and already reported on `/health` as `originPinned`; the only thing missing was the `if`.
+
+The rule, identical in both agents (`originAllowed` in Swift, `OriginAllowed` in C#), applied **once, before
+routing** — never per route, so a route added later inherits the check rather than forgetting it:
+
+| Request | Verdict |
+|---|---|
+| No `Origin` header | **allowed** — not a browser (curl, `mcp/worker.mjs`, node fetch). A page cannot omit it; the browser sets it. A local process could, and a local process can already read `account.json` and press keys itself. |
+| Pin set, `Origin` equals it | allowed |
+| Pin set, anything else | **403**, and no CORS headers on the reply |
+| No pin, `Origin` is one of the product's own | allowed |
+| No pin, `Origin` is loopback (`localhost`, `127.0.0.1`, `::1`, http or https, host compared whole) | allowed — this is `npm run dev` |
+| No pin, anything else | **403** |
+| Pin is `*` | allowed — the check is off, and the banner says so |
+
+**Default is not `*` any more.** An agent started with no arguments answers the product's own pages and
+loopback. `*` still means "do not check", but it has to be asked for.
+
+**Autostart needs an explicit pin** on both agents — not merely a default. Installing a KeepAlive job that
+survives logout is a heavier decision than answering a request, so the threshold is different: not "a page we
+answer" but "an operator who named the page". The Windows agent always required this; macOS now does too, as
+the documentation had claimed all along.
+
+**`DELETE` belongs in `Access-Control-Allow-Methods`.** Without it the browser refuses its own preflight and
+Detach cannot be pressed at all — the one control that revokes "let my AI drive this PC" was unreachable
+while the agent stayed attached.
+
+What remains true, and is the reason this is a threshold and not an authentication scheme: **any process on
+the machine** can still POST `/do`. That is not something an origin check can address, and a process that far
+in has better tools than this port.
 
 ## macOS — what the second implementation chose
 

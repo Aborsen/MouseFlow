@@ -381,6 +381,88 @@ group('история читает ту запись, которая уже ес
       && /from '\.\/describe'/.test(create) && /from '\.\/describe'/.test(earlier));
 }
 
+/* ------------------------------------------------------------------- порог: кого агент слушает */
+
+/* До 0.9.7 -AllowOrigin только отражался в заголовок и не отвергал ничего - на ОБОИХ агентах, с одинаковым
+ * комментарием, объясняющим, что схему аутентификации выбирают и второй реализации нельзя изобретать свою.
+ * Прочтение было неверным: незаэнфорсенный пин это не незаконченная функция, а слушатель на 127.0.0.1,
+ * который выполнит `action=type text=curl … | sh` от любой страницы, открытой в Safari или Firefox.
+ *
+ * Здесь проверяется РОВНО ОДНО: что оба агента отвечают на этот вопрос одинаково. Исполнение правила
+ * проверяется в agent/check-swift.mjs, который компилирует вырезанную из исходника функцию и гоняет её на
+ * настоящих origin'ах; регулярка так не умеет и притворяться не должна. */
+group('оба агента одинаково решают, кого слушать');
+{
+  const sw = swift.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const ps1 = ps.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  check('у обоих есть функция допуска',
+    /func originAllowed\(_ origin: String\?\) -> Bool/.test(sw)
+      && /public static bool OriginAllowed\(string origin\)/.test(ps1));
+  /* Порог ДО маршрутизации: маршрут, добавленный завтра, наследует проверку, а не забывает её. */
+  check('и оба спрашивают её перед маршрутизацией, а не внутри маршрутов',
+    /if !originAllowed\(request\.origin\)/.test(sw) && /if \(!OriginAllowed\(origin\)\)/.test(ps1));
+
+  /* Умолчание перестало значить «все». Агент без аргументов - это то, что запускает «Quit & Reopen». */
+  check('умолчание у обоих - пусто, а не звёздочка',
+    /var allowOrigin = ""/.test(sw) && /public static string AllowOrigin = "";/.test(ps1));
+  check('и параметр PowerShell тоже', /\[string\]\$AllowOrigin = '',/.test(ps));
+
+  /* Список собственных origin'ов обязан совпадать: агент, знающий одно развёртывание из двух, - это агент,
+   * который «просто не находится» на втором. */
+  /* Из СЫРОГО исходника, а не из очищенного от комментариев: снятие `//` не различает комментарий и
+   * строковый литерал, и первая же попытка срезала «//mouseflowapp.vercel.app» прямо из URL, оставив
+   * «https:». Список читается из самого объявления, что заодно точнее - проверяется он, а не любой адрес,
+   * который случайно упомянут в файле. */
+  /* Swift закрывает список `]`, C# - `}`. Берётся то, что встретилось раньше: закрывающую скобку своего
+   * языка знает каждый, а тест, знающий только одну, молча читает пустой список и объявляет расхождение. */
+  const listOf = (text, from) => {
+    const at = text.indexOf(from);
+    if (at < 0) return [];
+    const ends = [text.indexOf(']', at + from.length), text.indexOf('}', at + from.length)]
+      .filter((i) => i >= 0);
+    if (!ends.length) return [];
+    return [...text.slice(at, Math.min(...ends)).matchAll(/"(https:\/\/[^"]+)"/g)].map((m) => m[1]);
+  };
+  const swShipped = listOf(swift, 'let SHIPPED_ORIGINS = [');
+  const psShipped = listOf(ps, 'public static readonly string[] ShippedOrigins = new string[] {');
+  for (const origin of ['https://mouseflowapp.vercel.app', 'https://mouse-agent.vercel.app']) {
+    check(`оба знают ${origin}`, swShipped.includes(origin) && psShipped.includes(origin),
+      `swift ${swShipped.join(',')} | ps ${psShipped.join(',')}`);
+  }
+
+  /* Хост сравнивается целиком. По префиксу `https://localhost.evil.example` прошло бы внутрь. */
+  check('loopback опознаётся по хосту, а не по началу строки',
+    /host == "localhost" \|\| host == "127\.0\.0\.1"/.test(sw)
+      && /host == "localhost" \|\| host == "127\.0\.0\.1"/.test(ps1));
+  check('и оба разбирают адрес разбором, а не строковой хирургией',
+    /URL\(string: origin\)/.test(sw) && /Uri\.TryCreate\(origin, UriKind\.Absolute, out parsed\)/.test(ps1));
+
+  /* Отражать отказанному его Origin значило бы выдать право читать ответ, которого он не получил. */
+  check('отказанному не отражается его origin ни там, ни там',
+    /!originAllowed\(asked\) \{ allow = "" \}/.test(sw)
+      && /if \(origin != null && !OriginAllowed\(origin\)\) allow = "";/.test(ps1));
+
+  /* Без DELETE браузер отказывает собственному preflight, и «Отсоединить» нажать нельзя вовсе. */
+  check('DELETE перечислен у обоих',
+    /Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS/.test(sw)
+      && /Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS/.test(ps1));
+
+  /* Автозапуск - решение другого веса: не «страница, которой мы отвечаем», а «оператор, назвавший её». */
+  check('автозапуск требует ЯВНОГО пина у обоих',
+    /allowOrigin\.isEmpty \|\| allowOrigin == "\*"/.test(sw)
+      && /AllowOrigin\.Length > 0 && AllowOrigin != "\*"/.test(ps1));
+  check('и оба сообщают «закреплён» одинаково - про названную страницу, а не про наличие проверки',
+    /!allowOrigin\.isEmpty && allowOrigin != "\*"/.test(sw)
+      && /AllowOrigin\.Length > 0 && AllowOrigin != "\*"/.test(ps1));
+
+  /* И протокол больше не учит следующую реализацию не проверять. */
+  check('протокол больше не говорит, что аутентификации нет',
+    !/Today: \*\*none\*\*/.test(protocol) && /Who may talk to the agent/.test(protocol));
+  check('и называет правило, которое обе стороны обязаны повторить',
+    /No `Origin` header \| \*\*allowed\*\*/.test(protocol));
+}
+
 /* --------------------------------------------------------------- пачка действий за один ход */
 
 /* Ход стоил снимок и решение, а нёс одно действие: «кликнуть в поле, напечатать адрес, нажать Tab» - три

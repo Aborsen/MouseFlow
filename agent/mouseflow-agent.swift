@@ -41,15 +41,36 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.6"
+let VERSION = "0.9.7"
 
 // ---------------------------------------------------------------- arguments
 
-/* Same three the Windows agent takes, same defaults. `--allow-origin` is echoed as a response header and,
- * as on Windows, is not used to reject anything - see the Authentication section of the protocol, which is
- * being replaced and which a second implementation must not invent its own answer to. */
+/* Same three the Windows agent takes, same defaults.
+ *
+ * `--allow-origin` IS USED TO REJECT, and until 0.9.7 it was not - it was echoed into a header and nothing
+ * else, on both agents, with a comment saying the protocol was choosing an authentication design and a
+ * second implementation must not invent one. That reading was wrong in a way that cost the whole machine:
+ * a pin that is not enforced is not an unfinished feature, it is a listener on 127.0.0.1 that will take
+ * `action=key key=space cmd=1`, `action=type text=Terminal`, `action=type text=curl … | sh` from ANY page
+ * open in Safari or Firefox and press the keys. CORS never stopped that, because CORS stops a page READING
+ * a reply, not the request being sent and carried out - and none of those need a reply.
+ *
+ * Enforcing the pin is not a new scheme. It is the scheme this agent already ships, already documents and
+ * already reports on /health as `originPinned`; the only thing missing was the `if`.
+ *
+ * DEFAULT IS NOT "EVERYONE" ANY MORE. It used to be `*`, and a no-argument agent - which is what "Quit &
+ * Reopen" starts - was therefore wide open. The default is now the product's own origins plus loopback for
+ * development, so an agent nobody configured still talks to the app and still refuses evil.example.
+ * `--allow-origin X` replaces the list; `--allow-origin '*'` restores the old behaviour for anyone who
+ * needs it, and says so loudly in the banner. */
 var port: UInt16 = 8787
-var allowOrigin = "*"
+/* Собственные origin'ы продукта: с них приходит приложение, и на них же указывает установщик. Два, потому
+ * что развёртывания два, и агент, отказывающий второму, - это агент, который «просто не находится». */
+let SHIPPED_ORIGINS = [
+    "https://mouseflowapp.vercel.app",
+    "https://mouse-agent.vercel.app",
+]
+var allowOrigin = ""
 var moveThrottleMsDefault = 10
 var moveMinPx = 3
 
@@ -1106,7 +1127,39 @@ enum Accessibility {
         "AXTable", "AXWebArea", "AXSheet", "AXDrawer",
     ]
 
-    private static func nameByClimbing(_ start: AXUIElement) -> Named {
+    /* ЗНАЧЕНИЕ ЭЛЕМЕНТА - ЭТО ИМЯ ТОЛЬКО У ТОГО, ЧТО НАЗЫВАЕТ СЕБЯ ЗНАЧЕНИЕМ.
+     *
+     * У поля ввода значение - это то, что в него набрали. Агент печатает на экране записи, что нажатия не
+     * записываются, и это правда про клавиатуру: обработчик читает только коды клавиш. Но имя элемента
+     * бралось из kAXValue, а у текстового поля kAXValue И ЕСТЬ его содержимое - так что набранное попадало
+     * в запись через другую дверь. Проверено на настоящих записях: 14 имён из 108 длиннее сорока символов,
+     * и среди них дословно фраза, набранная в поиске Google, лежащая там трижды.
+     *
+     * Обещание, которое неверно наполовину, хуже отсутствующего: его читают как «моего текста здесь нет».
+     *
+     * Спрашивается не список ролей, а САМО СВОЙСТВО: можно ли в это значение писать. Поле ввода отвечает
+     * да, статический текст - нет, и это не зависит ни от языка, ни от того, какие роли придумает
+     * следующая версия macOS. Роли всё же проверяются тоже - как второй замок на том, что дороже всего
+     * стоит перепутать. */
+    private static let TYPED_ROLES: Set<String> = [
+        "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField",
+    ]
+
+    private static func holdsTypedText(_ element: AXUIElement) -> Bool {
+        if let sub = stringAttr(element, kAXSubroleAttribute), sub == "AXSecureTextField" { return true }
+        if let role = stringAttr(element, kAXRoleAttribute), TYPED_ROLES.contains(role) { return true }
+        var settable: DarwinBoolean = false
+        if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
+           settable.boolValue {
+            return true
+        }
+        return false
+    }
+
+    /* @param valueMayName можно ли вообще смотреть на kAXValue. describeFocused передаёт false: у элемента,
+     *   в котором стоит каретка, значение - это набранное по определению, и никакой проверки роли тут не
+     *   нужно, потому что вопрос уже решён тем, ЧТО это за элемент. */
+    private static func nameByClimbing(_ start: AXUIElement, valueMayName: Bool = true) -> Named {
         var element: AXUIElement? = start
         var depth = 0
         var hitType: String?
@@ -1142,7 +1195,10 @@ enum Accessibility {
             if let name = stringAttr(current, kAXTitleAttribute) { out.control = name; out.type = type; return out }
             /* The label is its own element for a form field: AXTitleUIElement points at the static text
              * that names it, the way <label for> names an input, and the text of a static text lives in its
-             * value. */
+             * value.
+             *
+             * ЭТО ЧУЖОЕ значение, и потому остаётся: читается подпись «Кому», а не то, что набрали в поле
+             * под ней. Именно этот путь и делает запрет ниже терпимым - поля с подписью имя сохраняют. */
             if let label = elementAttr(current, kAXTitleUIElementAttribute),
                let name = stringAttr(label, kAXValueAttribute) ?? stringAttr(label, kAXTitleAttribute) {
                 out.control = name; out.type = type; return out
@@ -1152,7 +1208,10 @@ enum Accessibility {
              * kAXValue and nothing else. Value only on the element itself, never a parent's: a parent's
              * value is the document. */
             if let name = stringAttr(current, kAXDescriptionAttribute) { out.control = name; out.type = type; return out }
-            if depth == 0, let name = stringAttr(current, kAXValueAttribute) { out.control = name; out.type = type; return out }
+            if depth == 0, valueMayName, !holdsTypedText(current),
+               let name = stringAttr(current, kAXValueAttribute) {
+                out.control = name; out.type = type; return out
+            }
             /* Help is the tooltip. Last, because it describes rather than names - but a toolbar button that
              * names itself nowhere else usually says exactly the right thing here. */
             if let name = stringAttr(current, kAXHelpAttribute) { out.control = name; out.type = type; return out }
@@ -1499,7 +1558,9 @@ enum Accessibility {
         awaken(pid: pid)
         let app = AXUIElementCreateApplication(pid)
         guard let focused = elementAttr(app, kAXFocusedUIElementAttribute) else { return }
-        let named = nameByClimbing(focused)
+        /* valueMayName: false - и это не осторожность, а определение. Сфокусированный элемент это тот, в
+         * который сейчас печатают; его значение не может быть ничем, кроме набранного. */
+        let named = nameByClimbing(focused, valueMayName: false)
         job.target.control = named.control
         job.target.controlType = named.type
         job.target.role = named.role
@@ -3554,18 +3615,25 @@ func respond(_ fd: Int32, _ res: Response, origin: String? = nil) {
     var head = "HTTP/1.1 \(res.status) \(reason)\r\n"
     head += "Content-Type: \(res.contentType); charset=utf-8\r\n"
     head += "Content-Length: \(bytes.count)\r\n"
-    /* Echoed, never used to reject - the same as the Windows agent, and the same single seam the protocol
-     * says to leave for the authentication design that is being chosen.
+    /* ЭХО ТОЛЬКО ТОГО, КОМУ РАЗРЕШЕНО. Раньше здесь отражался любой присланный Origin, и это было
+     * безобидно ровно до тех пор, пока запрос всё равно выполнялся: отражение ничего не разрешало, потому
+     * что и запрещать было нечему. Теперь запрещает originAllowed выше, и отражать отказанного значило бы
+     * выдать ему разрешение читать ответ, которого он не получил.
      *
-     * A BARE STAR IS REPLACED BY THE CALLER'S OWN ORIGIN when one was sent. The Windows agent has done this
-     * since it met Chrome's private-network preflight, which will not accept "*" as the answer; this side
-     * kept sending the star, so the two agents differed in exactly the place that decides whether a browser
-     * will talk to them at all. An unpinned agent still allows everyone - the star is what it means - but it
-     * now says so in the form a browser accepts. */
-    var allow = allowOrigin
+     * Звёздочка заменяется на сам Origin, когда он есть: Chrome не принимает "*" в ответе на приветственный
+     * запрос к локальной сети, и когда-то два агента расходились ровно здесь.
+     *
+     * Preflight с чужого origin остаётся без этих заголовков вовсе - браузер сам не отправит настоящий
+     * запрос, - а запрос без preflight упирается в 403 выше. Оба пути закрыты. */
+    var allow = allowOrigin.isEmpty ? (origin ?? "") : allowOrigin
     if allow == "*", let asked = origin { allow = asked }
-    head += "Access-Control-Allow-Origin: \(allow)\r\n"
-    head += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+    if let asked = origin, !originAllowed(asked) { allow = "" }
+    if !allow.isEmpty { head += "Access-Control-Allow-Origin: \(allow)\r\n" }
+    /* DELETE перечислен, и без него «Отсоединить» в приложении не работало вовсе: браузер шлёт preflight,
+     * не находит метода в списке и отказывает сам, а экран сообщает, что агент недоступен - хотя агент жив
+     * и по-прежнему привязан к аккаунту. Единственная кнопка, отзывающая «пусть ИИ водит этот компьютер»,
+     * не работала из-за отсутствующего слова в заголовке. */
+    head += "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
     head += "Access-Control-Allow-Headers: content-type\r\n"
     head += "Access-Control-Max-Age: 600\r\n"
     /* Because the answer above now depends on the request. Without this a cache could hand one origin's
@@ -3649,6 +3717,42 @@ func find(_ haystack: [UInt8], _ needle: [UInt8]) -> Int? {
     return nil
 }
 
+/* КТО ВООБЩЕ МОЖЕТ ГОВОРИТЬ С ЭТИМ АГЕНТОМ.
+ *
+ * Отсутствие Origin - это НЕ браузер: curl, mcp/worker.mjs, node fetch. Такие пропускаются, и это не дыра.
+ * Страница forge'ить Origin не может - его ставит браузер, - а локальный процесс, который мог бы обойтись
+ * без него, и так может всё: прочитать account.json, вызвать osascript, нажать клавиши сам. Порог здесь
+ * стоит против УДАЛЁННОЙ страницы, и ровно её он и держит.
+ *
+ * Loopback разрешён без пина по той же причине: `npm run dev` на localhost:4400 - это разработка продукта,
+ * а злонамеренный локальный сервер уже находится по ту сторону порога, где выигрывать нечего.
+ *
+ * Звёздочка означает то, что означала: не проверять. Теперь её надо попросить.
+ */
+func originAllowed(_ origin: String?) -> Bool {
+    guard let origin, !origin.isEmpty else { return true }   // не браузер
+    if allowOrigin == "*" { return true }                     // открыт намеренно
+    if !allowOrigin.isEmpty { return origin == allowOrigin }  // закреплён оператором
+    if SHIPPED_ORIGINS.contains(origin) { return true }
+    /* Схема проверяется вместе с хостом: `https://localhost.evil.example` начинается с чего угодно, если
+     * сравнивать по префиксу, поэтому сравнивается порт-за-портом только то, что действительно loopback. */
+    if let url = URL(string: origin), let host = url.host,
+       host == "localhost" || host == "127.0.0.1" || host == "[::1]",
+       url.scheme == "http" || url.scheme == "https" {
+        return true
+    }
+    return false
+}
+
+/** Что видит страница, которой отказали. Без заголовков CORS - ей и читать нечего. */
+func refusedOrigin(_ origin: String) -> Response {
+    Response(status: 403, contentType: "application/json",
+             body: "{\"ok\":false,\"error\":" + jsonString(
+                "this agent does not answer " + origin
+                + " — it is pinned to another page. If this is your own deployment, restart the agent with "
+                + "--allow-origin " + origin) + "}")
+}
+
 // ================================================================ routes
 
 func route(method: String, path: String, query: String, body: String) -> Response {
@@ -3668,8 +3772,10 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         json += ",\"recording\":\(jsonBool(status.recording))"
         json += ",\"playing\":\(jsonBool(Replayer.shared.isPlaying))"
         json += ",\"autostart\":\(jsonBool(Autostart.enabled))"
-        json += ",\"canAutostart\":true"
-        json += ",\"originPinned\":\(jsonBool(allowOrigin != "*"))"
+        json += ",\"canAutostart\":\(jsonBool(!allowOrigin.isEmpty && allowOrigin != "*"))"
+        /* «Закреплён» - это про то, что оператор НАЗВАЛ страницу, а не про то, что проверка есть.
+         * Проверка теперь есть всегда; пустое значение означает умолчание, а не открытость. */
+        json += ",\"originPinned\":\(jsonBool(!allowOrigin.isEmpty && allowOrigin != "*"))"
         /* Whether this Mac is attached to an account, and whether it is taking work from it. Two facts, not
          * one: attached and not taking is the normal resting state, and an app that showed them as one
          * would offer to pair a Mac that is already paired. */
@@ -3830,6 +3936,17 @@ func route(method: String, path: String, query: String, body: String) -> Respons
 
     case "/autostart/enable":
         if method != "POST" { return Response(status: 405, body: "{\"ok\":false,\"error\":\"POST\"}") }
+        /* ЯВНЫЙ ПИН, как на Windows - и как документация утверждала про оба, будучи правой про один.
+         *
+         * Автозапуск ставит job с KeepAlive: агент переживает выход, перезагрузку и pkill. Установить его -
+         * решение другого веса, чем всё остальное здесь, и порог для него отдельный: не «страница, которой
+         * мы отвечаем», а «оператор, который назвал страницу». Умолчание (свои origin'ы плюс loopback)
+         * годится, чтобы работать; чтобы прописаться навсегда - нет. */
+        if allowOrigin.isEmpty || allowOrigin == "*" {
+            return Response(status: 409, body: "{\"ok\":false,\"error\":" + jsonString(
+                "restart the agent with --allow-origin set to your app origin before enabling autostart")
+                + "}")
+        }
         if let bad = Autostart.enable() {
             return Response(status: 500, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
         }
@@ -3996,7 +4113,7 @@ print("""
 
   MouseFlow agent \(VERSION) (macOS)
   listening     http://127.0.0.1:\(port)
-  origin        \(allowOrigin)
+  origin        \(allowOrigin.isEmpty ? "the app's own pages, plus localhost (default)" : allowOrigin)
   move filter   \(moveThrottleMsDefault) ms / \(moveMinPx) px
   accessibility \(axLine)
   screen        \(screenLine)
@@ -4040,9 +4157,16 @@ let acceptThread = Thread {
             setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
             guard let request = readRequest(client) else { return }
-            let result = route(
-                method: request.method, path: request.path, query: request.query, body: request.body
-            )
+            /* ПОРОГ. Перед switch, а не внутри маршрутов: маршрут, добавленный завтра, наследует проверку,
+             * а не забывает её. Это тот самый один шов, который PROTOCOL.md просил оставить. */
+            let result: Response
+            if !originAllowed(request.origin) {
+                result = refusedOrigin(request.origin ?? "")
+            } else {
+                result = route(
+                    method: request.method, path: request.path, query: request.query, body: request.body
+                )
+            }
             respond(client, result, origin: request.origin)
         }
     }

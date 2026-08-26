@@ -82,16 +82,29 @@ about one's own history, and masking would make it unanswerable.
 
 ## The agent's own security position
 
-- **`-AllowOrigin '*'` is the default and it is permissive.** While the agent runs, *any* site open in your
-  browser can reach `127.0.0.1:8787` and drive your mouse, or take a screenshot of every monitor. That is
-  fine for a demo on your own machine; **pin the origin for anything else.**
-- **There is no authentication on the agent, today.** `-AllowOrigin` is only echoed as a response header,
-  never used to reject. Any process on the machine can POST `/do`. A design is being chosen; until it lands, a
-  new agent should leave a single seam for it rather than inventing a scheme in parallel.
+- **The origin is checked, from 0.9.7.** Before that it was not, and this section said so in a way that read
+  as a known limit rather than as the hole it was: `-AllowOrigin` defaulted to `*`, was echoed into a response
+  header and never used to reject, and the advice given here — "pin the origin for anything else" — did
+  nothing at all, because pinning changed one header and no behaviour. While the agent ran, **any page open in
+  Safari or Firefox** could POST `action=key key=space cmd=1`, `action=type text=…` and press Return. CORS
+  does not prevent this: it stops a page *reading a reply*, and a keystroke needs no reply. Chrome 142+ was
+  the only browser where this was hard, and only because its Local Network Access permission stands in front
+  of the request.
+- **What it does now.** A request whose `Origin` is not allowed is refused with 403 before it reaches a route,
+  and gets no CORS headers back. Unpinned no longer means open: an agent started with no arguments answers
+  MouseFlow's own pages and loopback, and refuses everything else. `--allow-origin URL` narrows that to one
+  page; `--allow-origin '*'` turns the check off and says so in the banner. A request with **no** `Origin` is
+  allowed — that is not a browser, and a local process is already past this threshold. See the protocol's
+  "Who may talk to the agent" for the table both agents implement.
+- **A process on the machine can still POST `/do`.** An origin check cannot address that, and anything with
+  that much access has better tools than this port. What changed is that a *remote page* is no longer one of
+  those things.
 - **Loopback only.** Never bind `0.0.0.0`.
 - **Autostart is restricted twice**, because a web page asking a local service to create a persistent launcher
   is exactly the shape of an attack: the launcher is built only from the agent's own launch arguments (nothing
-  from the HTTP request reaches the file), and it is refused unless `-AllowOrigin` is pinned.
+  from the HTTP request reaches the file), and it is refused unless the origin was **explicitly** pinned — the
+  default is not enough for this one. Until 0.9.7 that second restriction existed only on Windows while this
+  page claimed both; macOS now enforces it too.
 - **Antivirus and EDR are untested.** A process that installs a global mouse hook and calls `SendInput` looks
   exactly like a RAT. Test that before a corporate machine.
 
