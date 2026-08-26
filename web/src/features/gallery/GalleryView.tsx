@@ -23,7 +23,13 @@ import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { Said } from '@/components/Said';
 import { SearchField } from '@/components/SearchField';
-import { type GallerySkill, galleryGet, galleryList, push } from '@/lib/api';
+import {
+  galleryGet,
+  galleryList,
+  galleryPublish,
+  push,
+  type GallerySkill,
+} from '@/lib/api';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { Page } from '@/shell/Surface';
@@ -72,6 +78,56 @@ const matches = (skill: GallerySkill, term: string): boolean => {
   return haystack.includes(t);
 };
 
+/* СКИЛЛ, ПРИЕХАВШИЙ ИЗ РАСШИРЕНИЯ ВО ФРАГМЕНТЕ АДРЕСА.
+ *
+ * У расширения свои скиллы, лежащие у него, а сессия - здесь. Поэтому «Publish» в попапе открывает эту
+ * страницу и кладёт скилл во фрагмент: фрагмент не уходит на сервер, так что скилл не проезжает через
+ * журнал запросов по дороге к публикации. Замысел был этот; дописана была только отправляющая половина.
+ *
+ * Ссылка вела на /gallery.html - страницы с таким именем в проекте нет вовсе, SPA-переписывание отдавало
+ * index.html, а прочитать `#publish=` было некому. То есть кнопка открывала вкладку, скилл молча
+ * выбрасывался, и попап отвечал ok:true. Худший род поломки: сообщает об успехе и не делает ничего.
+ *
+ * base64url, потому что это адрес: + / и = там имеют своё значение.
+ */
+const skillFromHash = (hash: string): unknown | null => {
+  const found = /[#&]publish=([A-Za-z0-9_-]+)/.exec(hash || '');
+  if (!found) return null;
+  try {
+    const base64 = found[1].replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4));
+    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+    const parsed = JSON.parse(new TextDecoder().decode(bytes));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    /* Испорченный фрагмент - это не повод падать: человек пришёл по ссылке, которую не он составлял. */
+    return null;
+  }
+};
+
+/* То же, что показывает Skills перед публикацией, и по той же причине. Дублировать список сюда нельзя -
+ * два места, говорящие человеку разное про одно необратимое действие, хуже одного, говорящего мало. */
+const whatTravels = (payload: unknown): string[] => {
+  const p = payload as {
+    origins?: unknown[];
+    events?: { context?: { window?: unknown }; url?: unknown }[];
+  } | null | undefined;
+  const seen = new Set<string>();
+  const add = (value: unknown) => {
+    const said = String(value ?? '').trim();
+    if (said) seen.add(said.length > 70 ? `${said.slice(0, 70)}…` : said);
+  };
+  for (const o of Array.isArray(p?.origins) ? p.origins : []) add(o);
+  for (const e of Array.isArray(p?.events) ? p.events : []) {
+    add(e?.context?.window);
+    if (typeof e?.url === 'string') {
+      try { add(new URL(e.url).host); } catch (_) { /* не адрес */ }
+    }
+  }
+  const all = [...seen];
+  return all.length > 8 ? [...all.slice(0, 8), `and ${all.length - 8} more`] : all;
+};
+
 export const GalleryView = () => {
   const { flows, reload } = useAccount();
   const [local] = useConsole();
@@ -109,6 +165,44 @@ export const GalleryView = () => {
   }, []);
 
   useEffect(() => { void load(''); }, [load]);
+
+  /* ПРИЁМНАЯ ПОЛОВИНА публикации из расширения. Спрашивает, как спрашивает Skills - именами окон и
+   * хостами из самого payload'а, - потому что назад этого не забрать и «anyone with the link» здесь так же
+   * буквально. Фрагмент стирается в любом случае: и после публикации, и после отказа, чтобы перезагрузка
+   * страницы не предлагала то же самое второй раз. */
+  const [offered, setOffered] = useState(false);
+  useEffect(() => {
+    if (offered) return;
+    const skill = skillFromHash(window.location.hash);
+    if (!skill) return;
+    setOffered(true);
+    const name = String((skill as { name?: unknown }).name || 'this skill');
+    const inIt = whatTravels(skill);
+    const shown = inIt.length
+      ? `\n\nIt carries:\n${inIt.map((line) => `  • ${line}`).join('\n')}`
+      : '';
+    const wanted = confirm(
+      `Publish "${name}" to the gallery?\n\nIt came from the MouseFlow extension. Anyone with the link `
+      + `can read it — no account needed, and it cannot be un-read once it is out.${shown}`,
+    );
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (!wanted) {
+      setSaid({ text: 'Nothing was published.', kind: 'good' });
+      return;
+    }
+    void (async () => {
+      try {
+        await galleryPublish(skill, 'extension');
+        setSaid({ text: `"${name}" is in the gallery.`, kind: 'good' });
+        await load('');
+      } catch (err) {
+        setSaid({
+          text: err instanceof Error ? err.message : 'it could not be published',
+          kind: 'bad',
+        });
+      }
+    })();
+  }, [offered, load]);
 
   // Debounced, because every keystroke is a request otherwise.
   useEffect(() => {

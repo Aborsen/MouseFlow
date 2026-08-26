@@ -299,7 +299,10 @@ export function publishLink(skill, appUrl) {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   const base64url = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  return String(appUrl).replace(/\/$/, '') + '/gallery.html#publish=' + base64url;
+  /* /gallery, а не /gallery.html. Страницы с таким именем в проекте нет вовсе - SPA-переписывание отдавало
+     index.html, читать фрагмент было некому, и кнопка молча выбрасывала скилл, отвечая ok:true. Приёмная
+     половина теперь есть: web/src/features/gallery/GalleryView.tsx. */
+  return String(appUrl).replace(/\/$/, '') + '/gallery#publish=' + base64url;
 }
 
 /* --------------------------------------------------------------------------- running */

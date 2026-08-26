@@ -2320,6 +2320,47 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------------- публикация говорит, что именно уезжает */
+
+/* Две находки, одно свойство: публикация необратима, и человек должен видеть, ЧТО именно уезжает и КОМУ. */
+group('публикация называет и содержимое, и аудиторию');
+{
+  const skills = read('../web/src/features/skills/SkillsView.tsx');
+  const gallery = read('../web/src/features/gallery/GalleryView.tsx');
+  const ext = read('../extension/skills.js');
+  const galleryApi = read('../api/gallery.js');
+
+  /* «Anyone signed in can install it» было неправдой дважды. Во-первых, ?id= не зовёт caller() вовсе. */
+  check('галерея по ссылке и правда читается без сессии - вот почему текст был ложью',
+    /if \(id\) \{[\s\S]{0,400}?select \* from gallery_skill where id =/.test(galleryApi)
+      && !/if \(id\) \{[\s\S]{0,300}?await caller\(req\)/.test(galleryApi));
+  /* Комментарии сняты: файл цитирует старую формулировку, объясняя, чем она была ложью. */
+  const skillsCode = skills.replace(/\/\*[\s\S]*?\*\//g, '');
+  check('подтверждение больше не говорит «anyone signed in»',
+    !/Anyone signed in can install it/.test(skillsCode));
+  /* По кускам, а не одной фразой: обе строки разорваны переносом внутри шаблона, и проверка, требующая
+   * их слитно, проверяет форматирование, а не смысл. */
+  check('а говорит про любого, у кого есть ссылка',
+    /no account needed/.test(skills) && /cannot be un-read once it is out/.test(skills));
+  /* Во-вторых, «install» описывает намерение, а уезжает содержимое: имена окон и адреса. */
+  check('и показывает, что внутри, а не спрашивает «уверены?»',
+    /It carries:/.test(skills) && /const whatTravels/.test(skills));
+  /* Путь и строка запроса - это уже содержание, а не место. */
+  check('от адреса берётся только хост', /add\(new URL\(e\.url\)\.host\)/.test(skills));
+
+  /* Кнопка в попапе открывала /gallery.html - страницы с таким именем в проекте нет, читать фрагмент было
+   * некому, скилл молча выбрасывался, а попап отвечал ok:true. */
+  check('ссылка расширения ведёт на маршрут, который существует',
+    /'\/gallery#publish=' \+ base64url/.test(ext) && !/gallery\.html#publish/.test(ext));
+  check('и приёмная половина наконец есть', /const skillFromHash = \(hash: string\)/.test(gallery));
+  check('она тоже спрашивает, а не публикует молча',
+    /no account needed/.test(gallery) && /cannot be un-read once it is out/.test(gallery));
+  /* Иначе перезагрузка страницы предложит то же самое второй раз. */
+  check('и стирает фрагмент в обоих исходах',
+    /window\.history\.replaceState\(null, '', window\.location\.pathname/.test(gallery));
+  check('испорченный фрагмент не роняет страницу', /return null;\n\s*\}\n\};/.test(gallery));
+}
+
 /* ------------------------------------------------ выключатель означает то, что про него написано */
 
 /* «The agent has no outbound network code at all» стояло в четырёх местах, включая экран, который читают

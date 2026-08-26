@@ -471,6 +471,37 @@ const Structure = ({ skill, flowId, wire, onWire }: {
   );
 };
 
+/* ЧТО В ЭТОМ СКИЛЛЕ ВИДНО ПОСТОРОННЕМУ - из самого payload'а, а не из описания.
+ *
+ * Имена окон и адреса страниц: по ним читается, в каком банке у человека счёт, как называется его
+ * внутренняя вики и над каким клиентом он работает. Показывается перед публикацией, потому что публикация
+ * необратима, а список - это единственный способ увидеть, что именно уезжает.
+ *
+ * Только различные значения и не больше восьми: подтверждение на три экрана не читают, а не читают его
+ * целиком. Сколько осталось - сказано числом, чтобы «и ещё» не выглядело как «и ничего важного». */
+const whatTravels = (payload: unknown): string[] => {
+  const p = payload as {
+    origins?: unknown[];
+    events?: { context?: { window?: unknown; app?: unknown }; url?: unknown }[];
+    steps?: { name?: unknown }[];
+  } | null | undefined;
+  const seen = new Set<string>();
+  const add = (value: unknown) => {
+    const said = String(value ?? '').trim();
+    if (said) seen.add(said.length > 70 ? `${said.slice(0, 70)}…` : said);
+  };
+  for (const o of Array.isArray(p?.origins) ? p.origins : []) add(o);
+  for (const e of Array.isArray(p?.events) ? p.events : []) {
+    add(e?.context?.window);
+    if (typeof e?.url === 'string') {
+      /* Только хост: путь и строка запроса - это уже содержание, а не место. */
+      try { add(new URL(e.url).host); } catch (_) { /* не адрес */ }
+    }
+  }
+  const all = [...seen];
+  return all.length > 8 ? [...all.slice(0, 8), `and ${all.length - 8} more`] : all;
+};
+
 export const SkillsView = () => {
   /* `known`, not `flows.length`, and not `loaded` either - the three are different questions.
    *
@@ -831,7 +862,30 @@ export const SkillsView = () => {
   }, [bridge, autoTried, connect]);
 
   const publish = useCallback(async (flow: Flow) => {
-    if (!confirm(`Publish "${flow.name}" to the gallery? Anyone signed in can install it.`)) return;
+    /* ЧТО ИМЕННО УЕЗЖАЕТ И КОМУ - названо, потому что назад этого не забрать.
+     *
+     * Стояло «Anyone signed in can install it», и неправдой это было дважды. Во-первых, никакого «signed
+     * in»: GET /api/gallery?id= не зовёт caller() вовсе (api/gallery.js), так что payload читает кто
+     * угодно, у кого есть ссылка. Во-вторых, «install» описывает намерение, а уезжает СОДЕРЖИМОЕ - имена
+     * окон и адреса страниц, по которым видно, чем человек занимается и где у него аккаунты.
+     *
+     * Поэтому спрашивается не «уверены?», а показывается список: окна и хосты из самого payload'а. Согласие
+     * на то, чего не показали, - не согласие, а формальность, и цена ошибки здесь односторонняя. */
+    let payload;
+    try {
+      payload = await payloadOf(flow);
+    } catch (_) {
+      setSaid({ text: 'That skill could not be loaded, so nothing was published.', kind: 'bad' });
+      return;
+    }
+    const inIt = whatTravels(payload);
+    const shown = inIt.length
+      ? `\n\nIt carries:\n${inIt.map((line) => `  • ${line}`).join('\n')}`
+      : '';
+    if (!confirm(
+      `Publish "${flow.name}" to the gallery?\n\nAnyone with the link can read it — no account needed, `
+      + `and it cannot be un-read once it is out.${shown}`,
+    )) return;
     try {
       /* Опубликовать запись без событий - это опубликовать пустоту, и ошибкой это не выглядит: карточка
        * появится, а установивший получит скилл, который ничего не делает. */
