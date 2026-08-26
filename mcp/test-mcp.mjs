@@ -2320,6 +2320,52 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------ выключатель означает то, что про него написано */
+
+/* «The agent has no outbound network code at all» стояло в четырёх местах, включая экран, который читают
+ * ровно перед тем, как скачать и установить агента. Написано было, когда было правдой, и оставлено, когда
+ * перестало: у агента есть курьер и репортер крашей.
+ *
+ * И вторая половина: меню говорит «Off. Nothing leaves this Mac», курьер `taking` проверял, а репортер
+ * крашей - нет. То есть предложение было правдой про опрос и неправдой про отчёты - ровно в том месте,
+ * где человек ищет свой единственный выключатель. */
+group('выключатель означает то, что про него написано');
+{
+  /* Оба агента читаются здесь: `swift` и `ps` - переменные соседнего набора (agent/test-contract.mjs),
+   * и брать их по имени значило бы полагаться на порядок файлов, которого нет. */
+  const swiftCode = read('../agent/mouseflow-agent.swift')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const psCode = read('../agent/mouseflow-agent.ps1').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  check('macOS: краш не уходит, когда работа не берётся',
+    /guard let link = Account\.link, link\.taking,/.test(swiftCode));
+  check('Windows: то же самое, той же проверкой', /if \(!Account\.Taking\) return;/.test(psCode));
+
+  /* Четыре места. Комментарии сняты - каждое из них объясняет, чем была старая формулировка. */
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  for (const [what, text] of [
+    ['экран установки', strip(read('../web/src/features/connect/ConnectView.tsx'))],
+    ['README', read('../README.md')],
+    ['документ про приватность', read('../docs/product/17-privacy-security.md')],
+  ]) {
+    check(`${what} больше не обещает, что исходящих вызовов нет вовсе`,
+      !/no outbound network code/.test(text));
+  }
+  /* И говорит то, что правда: до привязки - тишина, после - разговор с аккаунтом. */
+  check('а экран установки называет оба состояния',
+    /makes no outbound call at all; attached, it asks your account for work/
+      .test(read('../web/src/features/connect/ConnectView.tsx')));
+  /* Таблица «что куда уходит» имела одну строку про агента и отвечала «нет». */
+  check('таблица в документе различает привязанного и непривязанного',
+    /Agent traffic, attached and taking work/.test(read('../docs/product/17-privacy-security.md')));
+
+  /* Маршрут крашей обосновывался тем, что приходящее «уже привязано к аккаунту», и не привязывал: в Sentry
+   * все краши всех агентов лежали одной кучей. */
+  check('форварднутый краш несёт, чей он', /user: \{ id: who\.id \},/.test(read('../api/mcp.js')));
+  check('но только id, не почту - sendDefaultPii здесь выключен намеренно',
+    /user: said && said\.user && said\.user\.id \? \{ id: String\(said\.user\.id\)/.test(read('../api/_report.js')));
+}
+
 /* --------------------------------------------- обещание про захват текста считается, а не объявляется */
 
 /* До 0.9.7 macOS-агент брал имя элемента из kAXValue, а у текстового поля kAXValue и есть содержимое.

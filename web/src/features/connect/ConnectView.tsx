@@ -381,9 +381,14 @@ export const ConnectView = () => {
               {health ? (stale ? 'The agent needs updating' : 'Connected') : 'Connect the agent'}
             </Typography>
             <Typography variant="p" className="mt-1 max-w-[68ch] text-ink-secondary text-[0.88rem]">
+              {/* «has no outbound network code of its own» - было написано здесь, на экране, который
+                * читают ровно перед тем, как скачать и установить агента. Неправда: у агента есть курьер,
+                * забирающий работу с аккаунта, и репортер крашей. Оба молчат, пока агент не привязан, - и
+                * это и есть то верное предложение, которое стояло сказать вместо. */}
               A browser tab cannot see mouse events outside its own window or inject real clicks, so one
-              small helper runs on your machine — it talks to this page over loopback only, and has no
-              outbound network code of its own.
+              small helper runs on your machine. Until you attach it to your account it talks to this page
+              over loopback and makes no outbound call at all; attached, it asks your account for work, and
+              that is a switch in its own menu.
             </Typography>
           </div>
 

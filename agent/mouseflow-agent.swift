@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.7"
+let VERSION = "0.9.8"
 
 // ---------------------------------------------------------------- arguments
 
@@ -2789,8 +2789,19 @@ enum Crash {
     }
 
     static func say(_ message: String, at where_: String, level: String = "error", trace: Bool = true) {
-        /* Not linked: there is nowhere to send it and nobody to attach it to. The log still has it. */
-        guard let link = Account.link, let url = URL(string: link.base + "/api/mcp?worker=crash") else { return }
+        /* Not linked: there is nowhere to send it and nobody to attach it to. The log still has it.
+         *
+         * И НЕ БЕРЁТ РАБОТУ - тоже молчит. Раньше здесь стояла проверка только на привязку, а меню и
+         * документация говорят про этот переключатель буквально: «Off. Nothing leaves this Mac» и «off, it
+         * makes no outbound call at all». Опрос очереди действительно останавливался - Courier `taking`
+         * проверяет, - а репортер крашей нет, и предложение было неправдой ровно настолько, насколько его
+         * и читают: как обещание, что выключатель означает тишину.
+         *
+         * Цена известна и принята: краш привязанного, но неработающего агента до нас не доедет. Обещание,
+         * данное человеку про его собственную машину, стоит дороже телеметрии - тем более что в логе агента
+         * и в его меню этот краш по-прежнему есть. */
+        guard let link = Account.link, link.taking,
+              let url = URL(string: link.base + "/api/mcp?worker=crash") else { return }
 
         let key = where_ + "|" + message
         gate.lock()

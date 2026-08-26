@@ -190,6 +190,11 @@ export async function reportSaid(said) {
     environment: process.env.VERCEL_ENV || 'development',
     exception: { values: [{ type, value: message }] },
     tags: said && said.tags ? said.tags : undefined,
+    /* ЧЕЙ ЭТО КРАШ. Только id, никогда не почта: sendDefaultPii здесь выключен намеренно, и смысл этого
+     * поля не в том, чтобы узнать человека, а в том, чтобы «агент упал у троих» отличалось от «агент упал
+     * триста раз у одного». Без него api/mcp.js обосновывал свой маршрут тем, что приходящее «уже привязано
+     * к аккаунту и машине», - и не привязывал. */
+    user: said && said.user && said.user.id ? { id: String(said.user.id).slice(0, 64) } : undefined,
     extra: stack ? { ...(said.extra || {}), stack } : (said && said.extra) || undefined,
   });
 }

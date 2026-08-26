@@ -175,8 +175,10 @@ Read this before sharing the link.
   site open in your browser can reach `127.0.0.1:8787` and drive your mouse. That is fine for
   a demo on your own machine; pin the origin for anything else.
 - **The hook is always installed** while the agent runs, but events are only stored between
-  `/record/start` and `/record/stop`. Nothing is written to disk and nothing leaves the
-  machine — the agent has no outbound network code at all.
+  `/record/start` and `/record/stop`. Nothing is captured unasked, and until the agent is attached
+  to an account nothing leaves the machine — it answers this page over loopback and makes no
+  outbound call at all. Attached and taking work, it asks the account what to do and sends back
+  screenshots and results; that is one switch, in its own menu.
 - **Recordings live in `localStorage`**, i.e. in the browser, not on a server. Clearing site
   data deletes them. Export anything you want to keep.
 

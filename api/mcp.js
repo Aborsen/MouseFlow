@@ -1172,6 +1172,10 @@ async function workerRoute(action, req, res, sql, who) {
           platform: String(body.platform || 'unknown').slice(0, 20),
           version: String(body.version || 'unknown').slice(0, 20),
         },
+        /* Тот, кому принадлежит машина - id и только id. Абзац выше обосновывает весь этот маршрут
+         * тем, что приходящее «уже привязано к аккаунту и машине»: привязка была в рассуждении и не была
+         * в событии, так что в Sentry все краши всех агентов лежали одной кучей. */
+        user: { id: who.id },
         extra: { where: String(body.where || '').slice(0, 200) },
       });
     } catch (_) {

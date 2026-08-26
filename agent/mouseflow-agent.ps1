@@ -404,7 +404,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.7";
+        public const string Version = "0.9.8";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -3376,8 +3376,13 @@ namespace MouseFlow
         {
             string token = Account.Token;
             string root = Account.Base;
-            /* Not linked: there is nowhere to send it and nobody to attach it to. The console still has it. */
+            /* Not linked: there is nowhere to send it and nobody to attach it to. The console still has it.
+
+               И НЕ БЕРЁТ РАБОТУ - тоже молчит, как на macOS. Меню и документация говорят про этот
+               переключатель буквально: выключен - ничего не уходит. Опрос очереди останавливался, репортер
+               крашей нет, и предложение было неправдой ровно настолько, насколько его и читают. */
             if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(root)) return;
+            if (!Account.Taking) return;
             if (string.IsNullOrEmpty(message)) return;
 
             string key = where + "|" + message;

@@ -10,8 +10,14 @@ Read this before sharing the link, and before putting the agent on a machine tha
 | **Extension** | Clicks, scrolls and the pointer path inside the watched tab; the selector, tag and visible text of what was clicked; the page each event happened on | **Typed text.** No other page text, no screenshots. |
 
 **The hooks stay installed while the agent runs, but events are only stored between `/record/start` and
-`/record/stop`.** Nothing is captured unasked. The agent has **no outbound network code at all** — it cannot
-send anything anywhere.
+`/record/stop`.** Nothing is captured unasked.
+
+**Outbound traffic depends on one switch, and this page used to claim there was none at all.** That was
+written when it was true and left standing when it stopped being: the agent grew a courier (it asks the
+account for work and posts back screenshots and results) and a crash reporter. Both are silent until the
+agent is attached to an account, and from 0.9.8 both are silent again when **Let My AI Act On This Mac** is
+off — until 0.9.8 the crash reporter ignored that switch, so "off, nothing leaves this Mac" was true of the
+polling and false of the reporting.
 
 ### Typing, stated precisely
 
@@ -42,7 +48,9 @@ The consequences are real and are stated wherever they matter:
 | A goal you typed | the model provider, and `user_run` | **yes** |
 | An assistant question | the model provider, with whatever the tools returned | **yes** |
 | A published skill | `gallery_skill`, publicly readable | **yes, deliberately** |
-| Agent traffic | loopback only | no |
+| Agent traffic, not attached to an account | loopback only | no |
+| Agent traffic, attached and taking work | your deployment: screenshots, window titles, results | **yes** |
+| Agent crash reports | your deployment, then Sentry | **yes**, while taking work |
 
 The Record page says the first of these out loud rather than leaving it to be discovered: the events, the
 window titles and the control names go to the user's own account when a recording stops. That is the same data
