@@ -103,7 +103,13 @@ const ShellFrame = () => {
       <AppSidebar onOpenSettings={(screen) => setSettings(screen ?? 'account')} />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center gap-3 border-stroke border-b bg-surface-page/85 px-5 py-3 backdrop-blur">
+        {/* ВЫСОТА ЗАДАНА, а не получается. Страница, которая занимает остаток окна, вычитает высоту этой
+          * шапки числом (Surface.APP_PAGE_HEIGHT), и число это было догадкой: вычиталось 3.25rem, а шапка
+          * с её содержимым выходила 65px. Тринадцать пикселей, и видно их было снизу - правая колонка на
+          * Create уезжала под нижний край окна вместе со своим нижним отступом, так что сверху зазор был,
+          * а снизу нет. Теперь высота здесь объявлена, а не складывается из padding'а и того, что внутрь
+          * положили: h-16 - это ровно те 4rem, которые вычитает Surface, и разойтись им больше негде. */}
+        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-stroke border-b bg-surface-page/85 px-5 backdrop-blur">
           <Typography variant="h1" weight="semibold" className="text-[0.98rem]">
             {TITLES[path] ?? 'MouseFlow'}
           </Typography>

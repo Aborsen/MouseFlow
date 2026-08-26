@@ -55,6 +55,7 @@ import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skil
 import { langName, useDictation } from './dictation';
 import { SaveDictatedSkill } from './SaveDictatedSkill';
 import { useAccount } from '@/shell/AccountProvider';
+import { usePageChrome } from '@/shell/Surface';
 import { type Plan, askForPlan } from '@/lib/plan';
 import { EarlierPanel } from './EarlierPanel';
 import { describe } from './describe';
@@ -493,6 +494,10 @@ export const CreateView = () => {
     void pollExtension();
   }, [target, pollExtension, gate]);
 
+  /* Высоту страницы даёт оболочка, а не собственная копия числа - см. Surface.tsx. Копия здесь и была
+   * третьей, о которой тот файл писал, и она же была неверной на тринадцать пикселей. */
+  const page = usePageChrome();
+
   const engine = target === 'desktop'
     ? health ? `agent ${health.version}${stale ? ' · out of date' : ''}` : 'agent offline'
     : extension.present ? `extension ${extension.version ?? ''}` : 'extension not found';
@@ -501,6 +506,27 @@ export const CreateView = () => {
    * кнопка и стрелка выбора рядом с ней, - и это должно быть одним значением: пока каждый считал сам,
    * кнопка могла говорить одно, а клавиша делать другое, что и произошло. Дописал слово к уже построенному
    * плану - план перестал быть про эту формулировку, и все трое узнают об этом разом. */
+  /* ДВЕ ПРАВКИ НАД УЖЕ ЗАПИСАННЫМ ПРОГОНОМ, обе через тот же push, что и всё остальное на этой странице.
+   *
+   * Бросают, а не возвращают ok/не-ok: у обеих ровно один вызывающий, и ему нужно показать причину рядом с
+   * той строкой, которую правили. `problems` в ответе - это то, что сервер отказался сделать при HTTP 200
+   * (например, «такого прогона на этом аккаунте нет»), и молча проглотить его значило бы нарисовать
+   * успех - строка вернулась бы на место при следующей перезагрузке аккаунта, и никто бы не понял почему.
+   *
+   * reload() ПОСЛЕ, а не оптимистично: список читается с аккаунта, и второй, местной копии, которая могла
+   * бы с ним разойтись, у этой страницы нет - см. заголовок Earlier.tsx. */
+  const renameRun = useCallback(async (id: string, name: string | null) => {
+    const saved = await push({ renamedRuns: [{ id, name }] });
+    if (saved.problems?.length) throw new Error(saved.problems[0]);
+    await reload();
+  }, [reload]);
+
+  const deleteRun = useCallback(async (id: string) => {
+    const saved = await push({ deletedRuns: [id] });
+    if (saved.problems?.length) throw new Error(saved.problems[0]);
+    await reload();
+  }, [reload]);
+
   /* Прогоны, показанные живьём в этой же сессии. Считается один раз на оба вида истории - колонку и
    * ленту, - чтобы они не могли разойтись в том, что уже показано. */
   const earlierHide = useMemo(
@@ -525,7 +551,7 @@ export const CreateView = () => {
      *
      * The right one used to hold a thumbnail of the desktop - see EarlierPanel for why it does not any
      * more. Below xl there is no second column at all, and the history moves to the top of the thread. */
-    <div className="flex h-[calc(100dvh-3.25rem)] gap-4">
+    <div className={cn('flex gap-4', page.height)}>
       <div className="flex min-w-0 flex-1 flex-col">
       <Thread>
         {/* ЧТО БЫЛО РАНЬШЕ - наверху ленты, из записи на аккаунте, а не из второй копии рядом с ней.
@@ -548,6 +574,8 @@ export const CreateView = () => {
             openByDefault={turns.length === 0}
             onAskAgain={setGoal}
             onSaveAsSkill={(run, goal) => setSaving({ run, goal })}
+            onRename={renameRun}
+            onDelete={deleteRun}
           />
         </div>}
 
@@ -1118,6 +1146,8 @@ export const CreateView = () => {
           hide={earlierHide}
           onAskAgain={setGoal}
           onSaveAsSkill={(run, goal) => setSaving({ run, goal })}
+          onRename={renameRun}
+          onDelete={deleteRun}
         />
       </div>
 

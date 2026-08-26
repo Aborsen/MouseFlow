@@ -51,6 +51,13 @@ export const took = (run: Run) => {
 export const goalRuns = (runs: Run[], hide: Set<string>) =>
   runs.filter((r) => r.kind === 'agent' && !!r.goal && !hide.has(r.id));
 
+/* КАК ПРОГОН НАЗЫВАЕТСЯ В СПИСКЕ. Подпись, если её дали, иначе цель - и цель при этом никуда не девается:
+ * она остаётся тем, что действительно ушло в работу, и тем, что пошлёт «Ask again». Именно поэтому
+ * переименование не правит `goal`: иначе строка после правки утверждала бы, что запускали не то, что
+ * запускали. См. db/013_run_named.sql. */
+export const titleOf = (run: Run) =>
+  (run.name && run.name.trim()) || run.goal || 'a run with no goal recorded';
+
 export const stepsOf = (run: Run): Step[] => (looksLikeDesktopRun(run.steps) ? run.steps : []);
 
 export const wordsOf = (run: Run): string[] =>

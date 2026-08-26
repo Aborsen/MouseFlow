@@ -21,6 +21,11 @@ const deletedFlows = new Set<string>();
  * not that it survives a restart. */
 const withdrawnListings = new Set<string>();
 const pushedRuns: unknown[] = [];
+/* Подписи и надгробия прогонов - как у настоящего эндпоинта, иначе превью показывало бы, что
+ * переименование и удаление «работают», ничего не меняя: ровно та ошибка, о которой предупреждает
+ * комментарий у POST ниже. */
+const runNames = new Map<string, string | null>();
+const deletedRuns = new Set<string>();
 
 /* Conversations, as the real store would hold them. In memory, so they last as long as the dev server does -
  * which is the same lifetime as the signed-out flag below and for the same reason. */
@@ -347,7 +352,10 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       let text = '';
       req.on('data', (chunk) => { text += chunk; });
       req.on('end', () => {
-        let body: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] } = {};
+        let body: {
+          flows?: unknown[]; runs?: unknown[]; deleted?: string[];
+          renamedRuns?: unknown[]; deletedRuns?: unknown[];
+        } = {};
         try {
           body = text ? JSON.parse(text) : {};
         } catch (_) {
@@ -368,6 +376,15 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         }
         const runs = Array.isArray(body.runs) ? body.runs : [];
         for (const run of runs) pushedRuns.push(run);
+        const renamed = Array.isArray(body.renamedRuns) ? body.renamedRuns : [];
+        for (const item of renamed) {
+          const id = String((item as { id?: unknown }).id ?? '');
+          const name = (item as { name?: unknown }).name;
+          if (id) runNames.set(id, typeof name === 'string' && name.trim() ? name.trim() : null);
+        }
+        for (const id of Array.isArray(body.deletedRuns) ? body.deletedRuns : []) {
+          deletedRuns.add(String(id));
+        }
 
         /* The counts where the real endpoint puts them - top level - not under a `saved` key that only ever
          * existed in the type. A fixture answering the type instead of the server is a fixture that confirms
@@ -377,6 +394,8 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           flows: flows.length,
           runs: runs.length,
           deleted: Array.isArray(body.deleted) ? body.deleted.length : 0,
+          renamedRuns: renamed.length,
+          deletedRuns: Array.isArray(body.deletedRuns) ? body.deletedRuns.length : 0,
           problems: [],
         });
       });
@@ -427,7 +446,13 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           },
         };
       }),
-      runs: [...RUNS, ...pushedRuns],
+      /* Живые прогоны, с подписями. Надгробия не отдаются вовсе - как у настоящего. */
+      runs: [...RUNS, ...pushedRuns]
+        .filter((r) => !deletedRuns.has(String((r as { id?: unknown }).id ?? '')))
+        .map((r) => {
+          const id = String((r as { id?: unknown }).id ?? '');
+          return runNames.has(id) ? { ...(r as object), name: runNames.get(id) } : r;
+        }),
       you: ACCOUNT,
     });
   }

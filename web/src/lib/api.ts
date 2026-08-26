@@ -55,6 +55,10 @@ export interface Run {
   id: string;
   kind: 'agent' | 'replay';
   goal: string | null;
+  /* КАК ЧЕЛОВЕК НАЗВАЛ ЭТОТ ПРОГОН, если называл. Рядом с целью, а не вместо неё: цель - то, что
+   * действительно ушло в работу, и её же посылает «Ask again». Переписывать её значило бы менять запись о
+   * том, что произошло, ради подписи. Пусто - показывается цель. См. db/013_run_named.sql. */
+  name?: string | null;
   model: string | null;
   flowId: string | null;
   outcome: 'ok' | 'failed' | 'stopped' | 'running';
@@ -294,11 +298,22 @@ export const payloadOf = async (flow: Flow): Promise<Flow['payload']> => {
   return fetchPayload(flow.id);
 };
 
-export const push = async (payload: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] }) =>
+export const push = async (payload: {
+  flows?: unknown[];
+  runs?: unknown[];
+  deleted?: string[];
+  /* Две операции над уже записанным прогоном. Не через `runs`: тот путь пишет прогон целиком и требует
+   * всего, что о нём известно, а этим двум нужен только id. */
+  renamedRuns?: { id: string; name: string | null }[];
+  deletedRuns?: string[];
+}) =>
   /* The shape api/sync.js actually sends. It used to say `saved: { flows, runs }`, which is not on the wire
    * at all - the counts are top-level - and nothing noticed because the only field anybody reads is
    * `problems`, which is top-level in both. A test reading `flows` off a real response is what found it. */
-  call<{ ok: true; flows: number; runs: number; deleted: number; problems: string[] }>('/api/sync', {
+  call<{
+    ok: true; flows: number; runs: number; deleted: number;
+    renamedRuns: number; deletedRuns: number; problems: string[];
+  }>('/api/sync', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload.flows

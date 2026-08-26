@@ -1,7 +1,7 @@
 /* One account, one set of flows and runs, wherever you are looking from.
  *
  *   GET    /api/sync              your flows and your recent runs
- *   POST   /api/sync              push flows and runs (upsert)
+ *   POST   /api/sync              push flows and runs (upsert), rename and delete runs
  *   POST   /api/sync?issue=1      mint a device token, shown once  (session only)
  *   GET    /api/sync?tokens=1     list your paired devices          (session only)
  *   DELETE /api/sync?token=<id>   revoke one                        (session only)
@@ -188,10 +188,10 @@ async function pull(res, sql, who) {
     order by updated_at desc
   `;
   const runs = await sql`
-    select client_id, kind, goal, model, flow_id, outcome, summary, error,
+    select client_id, kind, goal, name, model, flow_id, outcome, summary, error,
            steps, said, extension, started_at, finished_at
     from user_run
-    where user_id = ${who.id}
+    where user_id = ${who.id} and deleted_at is null
     order by started_at desc nulls last limit ${RUNS_RETURNED}
   `;
   /* Facts about the PERSON, not their work. Small enough to ride along with every read rather than earn a
@@ -237,7 +237,11 @@ async function pull(res, sql, who) {
       },
     })),
     runs: runs.map((r) => ({
-      id: r.client_id, kind: r.kind, goal: r.goal, model: r.model, flowId: r.flow_id,
+      id: r.client_id, kind: r.kind, goal: r.goal,
+      /* Что человек назвал этим прогоном, если называл. РЯДОМ с целью, а не вместо: цель - то, что
+       * действительно ушло в работу, и её же посылает «Ask again». См. db/013. */
+      name: r.name,
+      model: r.model, flowId: r.flow_id,
       outcome: r.outcome, summary: r.summary, error: r.error, steps: r.steps, said: r.said,
       extension: r.extension, startedAt: r.started_at, finishedAt: r.finished_at,
     })),
@@ -272,6 +276,12 @@ async function push(req, res, sql, who) {
   const flows = Array.isArray(body.flows) ? body.flows.slice(0, FLOWS_MAX) : [];
   const runs = Array.isArray(body.runs) ? body.runs.slice(0, RUNS_MAX) : [];
   const removed = Array.isArray(body.deleted) ? body.deleted.slice(0, FLOWS_MAX) : [];
+  /* Две операции над УЖЕ записанными прогонами. Отдельными полями, а не через `runs`: тот путь пишет
+   * прогон целиком и требует всего, что о нём известно, - шагов, слов, исхода. Переименование и удаление
+   * знают только id, и слать ради них весь прогон обратно значило бы дать клиенту возможность затереть
+   * запись о том, что произошло, ради смены подписи. */
+  const renamedRuns = Array.isArray(body.renamedRuns) ? body.renamedRuns.slice(0, RUNS_MAX) : [];
+  const deletedRuns = Array.isArray(body.deletedRuns) ? body.deletedRuns.slice(0, RUNS_MAX) : [];
 
   /* Объявлено ЗДЕСЬ, а не ниже у цикла: отброшенный хвост называется раньше, чем разбирается
    * первый флоу, и `problems` должна уже существовать - иначе это ReferenceError в самом обычном push'е,
@@ -296,12 +306,16 @@ async function push(req, res, sql, who) {
     tooMany(body.flows, flows.length, 'flows', FLOWS_MAX),
     tooMany(body.runs, runs.length, 'runs', RUNS_MAX),
     tooMany(body.deleted, removed.length, 'deletions', FLOWS_MAX),
+    tooMany(body.renamedRuns, renamedRuns.length, 'run names', RUNS_MAX),
+    tooMany(body.deletedRuns, deletedRuns.length, 'run deletions', RUNS_MAX),
   ]) {
     if (line) problems.push(line);
   }
 
   let savedFlows = 0;
   let savedRuns = 0;
+  let namedRuns = 0;
+  let droppedRuns = 0;
 
   for (const flow of flows) {
     const clientId = text(flow && flow.id, 80);
@@ -451,6 +465,14 @@ async function push(req, res, sql, who) {
       continue;
     }
 
+    /* НЕ ВОСКРЕШАТЬ УДАЛЁННОЕ. Прогон пишется, ПОКА ИДЁТ - api/mcp.js обновляет строку на каждом ходу, -
+     * так что удалить идущий прогон и получить его обратно следующим ходом было бы поведением по
+     * умолчанию, без единого следа, что кто-то его удалял. См. db/013. */
+    const [before] = await sql`
+      select deleted_at from user_run where user_id = ${who.id} and client_id = ${clientId}
+    `;
+    if (before && before.deleted_at) continue;
+
     await sql`
       insert into user_run
         (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
@@ -468,11 +490,42 @@ async function push(req, res, sql, who) {
     savedRuns++;
   }
 
+  /* ИМЯ, А НЕ ЦЕЛЬ. `goal` не трогается ни здесь, ни где-либо ещё после записи: это то, что действительно
+   * ушло в работу, и то, что «Ask again» пошлёт снова. Пустое имя стирает подпись и возвращает строке её
+   * собственную цель - это «убрать название», а не «назвать пустым». */
+  for (const item of renamedRuns) {
+    const clientId = text(item && item.id, 80);
+    if (!clientId) { problems.push('a rename arrived without a run id'); continue; }
+    const name = text(item.name, 200);
+    const trimmed = name && name.trim() ? name.trim() : null;
+    const done = await sql`
+      update user_run set name = ${trimmed}
+      where user_id = ${who.id} and client_id = ${clientId} and deleted_at is null
+      returning client_id
+    `;
+    if (done.length) namedRuns++;
+    else problems.push('"' + clientId + '" is not a run on this account, so it was not renamed.');
+  }
+
+  /* Надгробие, а не delete - причина в db/013, и она не та же, что у скиллов. */
+  for (const id of deletedRuns) {
+    const clientId = text(id, 80);
+    if (!clientId) continue;
+    const done = await sql`
+      update user_run set deleted_at = now()
+      where user_id = ${who.id} and client_id = ${clientId} and deleted_at is null
+      returning client_id
+    `;
+    if (done.length) droppedRuns++;
+  }
+
   return res.status(200).json({
     ok: true,
     flows: savedFlows,
     runs: savedRuns,
     deleted: removed.length,
+    renamedRuns: namedRuns,
+    deletedRuns: droppedRuns,
     // Reported rather than thrown: one bad flow should not lose the rest of the push.
     problems,
   });

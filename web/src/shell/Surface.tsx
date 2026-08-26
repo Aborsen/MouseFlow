@@ -10,8 +10,8 @@
  * In the panel it is wrong four times over. Panel.tsx's <main> already pads and already scrolls, so the
  * same `p-5` is 40px of a 400px width spent on nothing (measured: the gallery's cards had 196px of a 320px
  * panel to live in, and 64px of it was two paddings); the view's own `overflow-y-auto` is a second
- * scrollbar inside the first; and `h-[calc(100dvh-3.25rem)]` subtracts the height of a top bar the panel
- * does not have.
+ * scrollbar inside the first; and a full-window height claims the space of a top bar the panel does not
+ * have.
  *
  * WHY NOT `if (inExtension)` IN FIVE FILES. Because then five files have to know where they are, and the
  * sixth one added will not. Here the surface is declared once, by whoever mounts the screens, and a screen
@@ -36,8 +36,19 @@ export const useSurface = () => useContext(SurfaceContext);
  * spelt out rather than composed from a constant on purpose: Tailwind finds classes by SCANNING this file
  * as text, so a height built by interpolating a constant into a template literal is a class that is never
  * generated and a rule that silently does nothing. Written whole it is still in ONE place, which was the
- * point: three screens used to carry their own copy of this number. */
-const APP_PAGE_HEIGHT = 'h-[calc(100dvh-3.25rem)]';
+ * point: three screens used to carry their own copy of this number.
+ *
+ * И ЧИСЛО ТЕПЕРЬ ВЕРНОЕ, потому что шапка его ОБЪЯВЛЯЕТ, а не складывает. Здесь стояло 3.25rem, а шапка со
+ * своим padding'ом и своей кнопкой выходила 65px - разница в тринадцать пикселей, которую было видно снизу:
+ * правая колонка на Create уезжала под нижний край окна вместе со своим нижним отступом, так что сверху
+ * зазор был, а снизу нет. Само число почини́ть было мало - оно снова разошлось бы, как только в шапку
+ * положат что-нибудь повыше, - поэтому у шапки теперь `h-16`, ровно эти 4rem, и складываться там нечему.
+ *
+ * ПОЧЕМУ НЕ `flex-1` ВМЕСТО ЧИСЛА. Пробовал: оболочка - `min-h-screen`, то есть высота у неё не заданная, а
+ * не меньше экрана. Внутри такой высоты `flex-1` ничего не ограничивает - контейнер просто вырастает под
+ * содержимое, - и Dashboard, который до этого держался ровно в окне, стал длиной 2057px и потянул за собой
+ * скролл всего документа. Заданная высота у шапки решает то же самое, ничего не ломая. */
+const APP_PAGE_HEIGHT = 'h-[calc(100dvh-4rem)]';
 
 export interface PageChrome {
   /** The page gutter. Empty on a surface that has already padded us. */

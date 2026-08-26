@@ -22,15 +22,16 @@
  * а лента тот же самый нет.
  */
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, RotateCcw, Sparkles } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Pencil, RotateCcw, Sparkles, X } from 'lucide-react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { AgentTurn, StepLine, UserTurn } from '@/components/chat';
+import { ArmedButton } from '@/components/ArmedButton';
 import type { Flow, Run } from '@/lib/api';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
 import { asDid, describe } from './describe';
-import { dictatedFrom, goalRuns, provable, stepsOf, took, when, wordsOf } from './run-history';
+import { dictatedFrom, goalRuns, provable, stepsOf, titleOf, took, when, wordsOf } from './run-history';
 
 /* Сколько показать сразу. Аккаунт отдаёт до шестидесяти прогонов, и вывалить их все над строкой ввода
  * значило бы заменить одну проблему другой: было не найти вчерашнее, стало не добраться до сегодняшнего. */
@@ -42,6 +43,8 @@ export const Earlier = ({
   hide,
   onAskAgain,
   onSaveAsSkill,
+  onRename,
+  onDelete,
   openByDefault,
 }: {
   runs: Run[];
@@ -50,11 +53,34 @@ export const Earlier = ({
   hide: Set<string>;
   onAskAgain: (goal: string) => void;
   onSaveAsSkill: (run: DictatedRun, goal: string) => void;
+  /** Пустое имя стирает подпись и возвращает строке её собственную цель. Бросает, если не записалось. */
+  onRename: (id: string, name: string | null) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
   /** Развернуть сразу, когда в ленте больше нечего показать: за историей человек и пришёл. */
   openByDefault: boolean;
 }) => {
   const [open, setOpen] = useState(openByDefault);
   const [all, setAll] = useState(false);
+  /** Какой прогон сейчас переименовывают, и что набрали. */
+  const [naming, setNaming] = useState<{ id: string; text: string } | null>(null);
+  /** Взведённая кнопка удаления - одна на всю ленту: см. ArmedButton. */
+  const [armed, setArmed] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  /* Отказ называется, а не глотается: молча проглоченный выглядит как «удалилось», а строка потом
+   * возвращается при следующей перезагрузке аккаунта, и понять почему уже невозможно. */
+  const act = async (id: string, what: () => Promise<void>) => {
+    setBusy(id);
+    setProblem(null);
+    try {
+      await what();
+    } catch (err) {
+      setProblem(err instanceof Error ? err.message : 'the account did not take that change');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const mine = goalRuns(runs, hide);
   if (!mine.length) return null;
@@ -83,6 +109,10 @@ export const Earlier = ({
 
       {open && (
         <>
+          {problem && (
+            <Typography variant="p" className="text-fb-red-text text-[0.82rem]">{problem}</Typography>
+          )}
+
           {hidden > 0 && (
             <button
               type="button"
@@ -101,13 +131,69 @@ export const Earlier = ({
 
             return (
               <div key={run.id} className="flex flex-col gap-3 opacity-90">
-                <UserTurn
-                  meta={[when(run.startedAt), length && `took ${length}`].filter(Boolean).join(' · ')}
-                >
-                  {run.goal}
-                </UserTurn>
+                {naming?.id === run.id ? (
+                  /* Поле стоит НА МЕСТЕ реплики, а не в отдельном окне: видно, что именно правится. */
+                  <div className="flex items-center justify-end gap-1">
+                    <input
+                      autoFocus
+                      value={naming.text}
+                      onChange={(ev) => setNaming({ id: run.id, text: ev.target.value })}
+                      onKeyDown={(ev) => {
+                        if (ev.key === 'Escape') { ev.preventDefault(); setNaming(null); }
+                        if (ev.key === 'Enter') {
+                          ev.preventDefault();
+                          const name = naming.text.trim();
+                          setNaming(null);
+                          void act(run.id, () => onRename(run.id, name || null));
+                        }
+                      }}
+                      placeholder={run.goal ?? 'Name this run'}
+                      aria-label="Name for this run"
+                      className={cn(
+                        'min-w-0 max-w-[75%] flex-1 rounded-md border-brand-primary/60 border',
+                        'bg-surface-card2 px-2.5 py-1.5 text-[0.9rem] text-ink-primary',
+                        'placeholder:text-ink-inactive focus:outline-none',
+                      )}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label="Save this name"
+                      isLoading={busy === run.id}
+                      onClick={() => {
+                        const name = naming.text.trim();
+                        setNaming(null);
+                        void act(run.id, () => onRename(run.id, name || null));
+                      }}
+                    >
+                      <Check className="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label="Leave the name as it was"
+                      onClick={() => setNaming(null)}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                ) : (
+                  <UserTurn
+                    meta={[when(run.startedAt), length && `took ${length}`].filter(Boolean).join(' · ')}
+                  >
+                    {titleOf(run)}
+                  </UserTurn>
+                )}
 
                 <AgentTurn tone={run.outcome === 'ok' ? 'ok' : run.outcome === 'running' ? 'running' : 'failed'}>
+                  {/* НАЗВАНА - значит цель под ней всё ещё видна. Иначе подпись подменяла бы собой то,
+                    * что на самом деле запускали, и «Ask again» посылал бы неожиданное. */}
+                  {run.name && run.name.trim() && run.goal && (
+                    <Typography variant="p" className="text-ink-inactive text-[0.82rem] italic">
+                      asked for: {run.goal}
+                    </Typography>
+                  )}
+
                   {words.map((word, i) => (
                     <StepLine key={`w${i}`} kind="say">{word}</StepLine>
                   ))}
@@ -175,6 +261,31 @@ export const Earlier = ({
                         </Button>
                       )
                     )}
+
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      leftSlot={<Pencil className="size-4" />}
+                      onClick={() => setNaming({ id: run.id, text: run.name ?? '' })}
+                    >
+                      Rename
+                    </Button>
+
+                    {/* Спрашивает дважды, и вторая надпись говорит, что именно уходит: строка прогона -
+                      * единственная его запись, и вместе с ней исчезают и итоги на Dashboard, и то, что о
+                      * нём знает ассистент. */}
+                    <ArmedButton
+                      label="Delete"
+                      armedLabel="Delete for good — press again"
+                      armed={armed === run.id}
+                      busy={busy === run.id}
+                      onArm={() => setArmed(run.id)}
+                      onDisarm={() => setArmed((was) => (was === run.id ? null : was))}
+                      onConfirm={() => {
+                        setArmed(null);
+                        void act(run.id, () => onDelete(run.id));
+                      }}
+                    />
                   </div>
                 </AgentTurn>
               </div>

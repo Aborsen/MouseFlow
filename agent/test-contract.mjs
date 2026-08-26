@@ -837,5 +837,83 @@ group('кнопка говорит, что произойдёт, и Enter дел
     /checkpoints: approved\?\.checkpoints,/.test(code) && /onCheckpoint: approved/.test(code));
 }
 
+/* Переименовать и удалить прогон - и ни то, ни другое не переписывает того, что произошло.
+ *
+ * Подпись живёт РЯДОМ с целью, а не вместо неё: цель - то, что действительно ушло в работу, и то, что
+ * посылает «Ask again». Дать её переписать значило бы, что строка после правки утверждает, будто запускали
+ * не то, что запускали, - и следующее нажатие «Ask again» это доказало бы.
+ *
+ * Удаление - надгробие, и причина не та же, что у скиллов: прогон пишется, ПОКА ИДЁТ (api/mcp.js обновляет
+ * строку на каждом ходу), так что hard delete идущего прогона вернул бы его следующим ходом молча. */
+group('прогон можно назвать и удалить, не переписав того, что было');
+{
+  const sync = read('api/sync.js');
+  const rules = read('web/src/features/create/run-history.ts');
+  const panel = read('web/src/features/create/EarlierPanel.tsx');
+  const feed = read('web/src/features/create/Earlier.tsx');
+  const migration = read('db/013_run_named.sql');
+
+  check('колонки заведены миграцией',
+    /add column if not exists name text/.test(migration)
+    && /add column if not exists deleted_at timestamptz/.test(migration));
+
+  /* Читается только живое, и подпись едет вместе со строкой. */
+  check('список не отдаёт удалённые', /from user_run\s*\n\s*where user_id = \$\{who\.id\} and deleted_at is null/.test(sync));
+  check('и везёт подпись', /select client_id, kind, goal, name,/.test(sync) && /name: r\.name,/.test(sync));
+
+  /* САМОЕ ВАЖНОЕ ЗДЕСЬ. Ни один путь после записи не трогает goal - искать это можно только в коде, потому
+   * что абзацы вокруг рассказывают про goal теми же словами. */
+  const syncCode = sync.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  check('переименование правит подпись, а не цель',
+    /update user_run set name = /.test(syncCode) && !/set goal/.test(syncCode));
+  check('удаление ставит надгробие, а не удаляет строку',
+    /update user_run set deleted_at = now\(\)/.test(syncCode) && !/delete from user_run/.test(syncCode));
+  /* Иначе идущий прогон воскресает следующим же ходом - без следа, что его удаляли. */
+  check('и запись прогона не воскрешает удалённый',
+    /select deleted_at from user_run[\s\S]{0,200}if \(before && before\.deleted_at\) continue;/.test(syncCode));
+
+  /* Показывается подпись, если она есть, - но цель при этом остаётся видна в обоих видах. */
+  check('в списке показывается подпись, а под ней - настоящая цель',
+    /\(run\.name && run\.name\.trim\(\)\) \|\| run\.goal/.test(rules)
+    && /asked for: \{run\.goal\}/.test(panel) && /asked for: \{run\.goal\}/.test(feed));
+  /* «Ask again» посылает то, что запускали, а не то, как это назвали. */
+  check('и «Ask again» посылает цель, а не подпись',
+    /onAskAgain\(run\.goal!\)/.test(panel) && /onAskAgain\(run\.goal!\)/.test(feed));
+
+  /* Строка прогона - единственная его запись: удаление уносит и итоги на Dashboard, и то, что видит
+   * ассистент. Поэтому спрашивается дважды, обоими видами, одной и той же кнопкой. */
+  check('удаление спрашивает дважды в обоих видах',
+    (panel.match(/<ArmedButton/g) || []).length === 1 && (feed.match(/<ArmedButton/g) || []).length === 1);
+  /* Отказ сервера при HTTP 200 приезжает в `problems`; проглотить его значило бы нарисовать успех. */
+  check('отказ аккаунта называется, а не глотается',
+    /if \(saved\.problems\?\.length\) throw new Error\(saved\.problems\[0\]\)/.test(read('web/src/features/create/CreateView.tsx')));
+
+  /* Секцию можно свернуть, и выбор переживает перезагрузку - как остальные предпочтения этой страницы. */
+  check('секцию истории можно свернуть',
+    /aria-expanded=\{shown\}/.test(panel) && /localStorage\.setItem\(OPEN_KEY/.test(panel));
+}
+
+/* Высота шапки и высота страницы - одно число в двух файлах, и разошлись они молча.
+ *
+ * Страница, занимающая остаток окна, вычитает высоту шапки числом. Вычиталось 3.25rem, а шапка со своим
+ * padding'ом выходила 65px: тринадцать пикселей, которые видно СНИЗУ - правая колонка на Create уезжала под
+ * нижний край окна вместе со своим нижним отступом, так что сверху зазор был, а снизу нет.
+ *
+ * Чинится это не тем, что число поправили, а тем, что шапка его теперь ОБЪЯВЛЯЕТ: у неё задана высота, и
+ * складываться из содержимого ей больше нечего. Проверка держит обе половины вместе. */
+group('шапка объявляет свою высоту, и страница вычитает ту же самую');
+{
+  const layout = read('web/src/shell/AppLayout.tsx');
+  const surface = read('web/src/shell/Surface.tsx');
+  check('у шапки задана высота, а не padding', /<header className="[^"]*\bh-16\b/.test(layout));
+  check('и padding по вертикали ей больше не нужен', !/<header className="[^"]*\bpy-3\b/.test(layout));
+  check('страница вычитает ровно её', /const APP_PAGE_HEIGHT = 'h-\[calc\(100dvh-4rem\)\]'/.test(surface));
+  /* Третья копия этого числа жила в CreateView - о чём Surface.tsx писал в собственном комментарии, - и
+   * именно она была неверной дольше всех. */
+  check('и своей копии числа у Create больше нет',
+    !/100dvh/.test(read('web/src/features/create/CreateView.tsx'))
+    && /const page = usePageChrome\(\)/.test(read('web/src/features/create/CreateView.tsx')));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
