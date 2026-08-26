@@ -17,9 +17,16 @@
  * Reloading the page clears the thread and loses nothing that matters.
  */
 import { useNavigate } from '@tanstack/react-router';
-import { CircleDot, Crosshair, Mic, MicOff, Monitor, Send, Sparkles, Square } from 'lucide-react';
+import { ChevronDown, CircleDot, Crosshair, Mic, MicOff, Monitor, Send, Sparkles, Square } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from '@insightis/ui/DropdownMenu';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
@@ -32,7 +39,7 @@ import {
   Thread,
   UserTurn,
 } from '@/components/chat';
-import { AGENT_WANTS, hostOS, localMachine, shot, windows } from '@/lib/agent';
+import { AGENT_WANTS, localMachine, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
 import { push } from '@/lib/api';
 import {
@@ -60,6 +67,18 @@ import { desktopModel } from '@/lib/model-config';
 
 type Target = 'browser' | 'desktop';
 const KEY = 'mouseflow.create.target';
+
+/* Что делает главная кнопка: строит план или запускает прогон. Тип, а не булево, потому что читается это
+ * в шести местах и `starts === true` не сказало бы, что именно true. */
+type StartWith = 'plan' | 'run';
+
+/* Обе половинки выбора, вместе с тем, что каждая на самом деле делает. Ровно одна строчка описания на
+ * каждую, и обе говорят про последствия, а не про механику: разница между ними в том, произойдёт ли
+ * что-нибудь на настоящем экране до того, как человек это увидел. */
+const START_WITH: { id: StartWith; label: string; detail: string }[] = [
+  { id: 'plan', label: 'Plan it', detail: 'Says what it will do. Nothing happens yet.' },
+  { id: 'run', label: 'Run it', detail: 'Starts working straight away, with no checkpoints.' },
+];
 
 interface ExtensionStatus {
   ok?: boolean;
@@ -160,6 +179,24 @@ export const CreateView = () => {
   const wantsForward = useCallback((on: boolean) => {
     setBringForward(on);
     try { localStorage.setItem('mouseflow.bringForward', on ? '1' : '0'); } catch (_) { /* private mode */ }
+  }, []);
+
+  /* С ЧЕГО НАЧИНАЕТСЯ НАЖАТИЕ - план или сразу прогон.
+   *
+   * Раньше это была не настройка, а расхождение: кнопка говорила «Plan it», Enter отправлял, и разницу
+   * объясняла строчка под полем. Строчку читают один раз, а Enter жмут каждый раз, так что настоящим
+   * умолчанием было не то, что написано на кнопке. Теперь выбор один и он виден: что написано на кнопке,
+   * то и происходит - от нажатия мышью, от Enter, всегда.
+   *
+   * Помнится между прогонами, как и остальные предпочтения здесь: человек, который водит один и тот же
+   * рабочий стол каждый день, не должен выбирать это заново каждое утро. По умолчанию план - один лишний
+   * вызов модели ловит непонимание до того, как что-то нажато на настоящем экране. */
+  const [startWith, setStartWith] = useState<StartWith>(() => {
+    try { return localStorage.getItem('mouseflow.startWith') === 'run' ? 'run' : 'plan'; } catch (_) { return 'plan'; }
+  });
+  const wantsToStart = useCallback((how: StartWith) => {
+    setStartWith(how);
+    try { localStorage.setItem('mouseflow.startWith', how); } catch (_) { /* private mode */ }
   }, []);
 
   /** Only ever the turn being run; a finished turn is never rewritten. */
@@ -460,14 +497,20 @@ export const CreateView = () => {
     ? health ? `agent ${health.version}${stale ? ' · out of date' : ''}` : 'agent offline'
     : extension.present ? `extension ${extension.version ?? ''}` : 'extension not found';
 
-  /* Есть ли план ИМЕННО для того текста, что сейчас в поле. Спрашивают об этом четверо - карточка плана,
-   * главная кнопка, подсказка под полем и Enter, - и это должно быть одним значением: пока их было четыре,
-   * кнопка могла говорить одно, а клавиша делать другое, что и произошло. Дописал слово к уже
-   * построенному плану - план перестал быть про эту формулировку, и всё четверо об этом узнают разом. */
+  /* Есть ли план ИМЕННО для того текста, что сейчас в поле. Спрашивают об этом трое - карточка плана, сама
+   * кнопка и стрелка выбора рядом с ней, - и это должно быть одним значением: пока каждый считал сам,
+   * кнопка могла говорить одно, а клавиша делать другое, что и произошло. Дописал слово к уже построенному
+   * плану - план перестал быть про эту формулировку, и все трое узнают об этом разом. */
   const planned = !!plan && plan.for === goal.trim();
 
-  /* Как называется быстрый путь на ЭТОЙ машине. «Ctrl» на маке - это другая клавиша, а не синоним. */
-  const mod = hostOS() === 'macos' ? '\u2318' : 'Ctrl+';
+  /* ЧТО СЕЙЧАС СДЕЛАЕТ КНОПКА - и, значит, что сделает Enter, потому что это одно и то же действие.
+   *
+   * Пока план уже построен для этой формулировки, выбирать нечего: карточка плана на экране, и нажатие
+   * его запускает. В остальное время решает переключатель. */
+  const wants: StartWith = planned ? 'run' : startWith;
+
+  /* То, что делает кнопка, и то, что делает Enter, - одно выражение. Пока их было два, они разошлись. */
+  const act = () => (wants === 'run' ? send() : makePlan());
 
   return (
     /* Two columns on a wide window: the thread, and what the executor can see. The shell gives this route a
@@ -796,8 +839,12 @@ export const CreateView = () => {
       )}
 
       <Composer
-        /* Справка под полем: бюджет шагов, версия агента и то, что делает Enter. Ни одно из этого не решение,
-         * которое принимают, набирая задачу - а в строке управления они выдавливали кнопку на второй ряд. */
+        /* Справка под полем: бюджет шагов, версия агента, куда уходит речь. Ни одно из этого не решение,
+         * которое принимают, набирая задачу - а в строке управления они выдавливали кнопку на второй ряд.
+         *
+         * Про Enter здесь больше ничего не написано, и это не упущение: пока разницу между кнопкой и
+         * клавишей приходилось объяснять словами, разница и была багом. Теперь объяснять нечего - Enter
+         * делает то, что написано на кнопке, а что там написано, выбирают стрелкой рядом с ней. */
         hint={(
           <>
             <span className="flex items-center gap-1.5">
@@ -809,24 +856,6 @@ export const CreateView = () => {
                 ? `${WAVE_TURNS} steps a wave, up to ${MAX_WAVES}`
                 : 'aims at elements, not positions'}
             </span>
-            {/* Что сделает Enter - и это меняется вместе с кнопкой, потому что делает он то же самое.
-              * Быстрый путь назван здесь, а не только в этом комментарии: он существует, но его надо
-              * попросить, и человек должен знать чем. */}
-            {!running && (
-              <span>
-                <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">Enter</kbd>
-                {planned ? ' runs it' : ' plans it first'}
-                {!planned && (
-                  <>
-                    {' · '}
-                    <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">
-                      {`${mod}Enter`}
-                    </kbd>
-                    {' runs it without a plan'}
-                  </>
-                )}
-              </span>
-            )}
             {/* ГДЕ ОКАЗЫВАЕТСЯ ЗВУК, сказанное до нажатия. Chrome по умолчанию отправляет речь на свои
               * серверы, а этот продукт обещает говорить, что уходит с машины - значит и это тоже.
               * Скачиваемый пакет предлагается как кнопка, потому что это единственное, что отделяет
@@ -945,29 +974,57 @@ export const CreateView = () => {
               >
                 {stopping ? 'Stopping…' : 'Stop'}
               </Button>
-            ) : planned ? (
-              <Button
-                size="sm"
-                leftSlot={<Send className="size-4" />}
-                disabled={!!blocked}
-                onClick={send}
-              >
-                Run it
-              </Button>
             ) : (
-              /* План по умолчанию - и Enter теперь тоже, потому что кнопка и клавиша обязаны совпадать.
-                 Пока они расходились, умолчанием было не то, что написано на кнопке, а то, что происходит
-                 от привычки. Стоит один лишний вызов модели, и он ловит непонимание до того, как что-то
-                 нажато на настоящем рабочем столе. */
-              <Button
-                size="sm"
-                leftSlot={<Sparkles className="size-4" />}
-                isLoading={planning}
-                disabled={!!blocked || !goal.trim()}
-                onClick={() => void makePlan()}
-              >
-                Plan it
-              </Button>
+              /* ОДНА КНОПКА, И НА НЕЙ НАПИСАНО, ЧТО ПРОИЗОЙДЁТ.
+                 *
+                 * Стрелка рядом - не второе действие, а выбор того, чем эта кнопка является. Пока плана нет,
+                 * выбирать есть из чего; когда план уже на экране, выбора нет - карточка построена, и
+                 * нажатие её запускает, - поэтому стрелка тогда и не показывается. Кнопка, которая
+                 * предлагает выбор, ничего не меняющий, хуже, чем её отсутствие. */
+              <span className="flex items-stretch">
+                <Button
+                  size="sm"
+                  leftSlot={wants === 'run' ? <Send className="size-4" /> : <Sparkles className="size-4" />}
+                  isLoading={planning}
+                  disabled={!!blocked || !goal.trim()}
+                  onClick={() => void act()}
+                  className={cn(!planned && 'rounded-e-none')}
+                >
+                  {wants === 'run' ? 'Run it' : 'Plan it'}
+                </Button>
+
+                {!planned && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        size="sm"
+                        aria-label="Choose what this button does"
+                        disabled={!!blocked}
+                        /* Тонкая грань между половинками, иначе это читается как одна широкая кнопка. */
+                        className="rounded-s-none border-s border-s-black/25 px-1.5"
+                      >
+                        <ChevronDown className="size-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    {/* Вверх, потому что строка управления стоит у нижнего края окна. */}
+                    <DropdownMenuContent align="end" side="top">
+                      <DropdownMenuRadioGroup
+                        value={startWith}
+                        onValueChange={(how) => wantsToStart(how as StartWith)}
+                      >
+                        {START_WITH.map((how) => (
+                          <DropdownMenuRadioItem key={how.id} value={how.id} className="py-2">
+                            <span className="flex min-w-0 flex-col">
+                              <span className="font-semibold text-ink-primary">{how.label}</span>
+                              <span className="text-[0.78rem] text-ink-inactive">{how.detail}</span>
+                            </span>
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </span>
             )}
 
             {/* Микрофон стоит в одном ряду с остальным вводом, потому что это и есть ввод - другой способ
@@ -996,19 +1053,17 @@ export const CreateView = () => {
           value={goal}
           onChange={(ev) => setGoal(ev.target.value)}
           onKeyDown={(ev) => {
-            /* Enter делает ровно то, что делает главная кнопка, - а она «Plan it», пока плана нет.
+            /* Enter делает ровно то, что написано на кнопке - что бы там ни было написано.
              *
-             * Раньше Enter отправлял. Под полем об этом было написано - «Enter runs it without a plan», - и
-             * это ровно тот случай, когда сноска не работает: человек печатает задачу, по привычке жмёт
-             * Enter, и агент уже водит мышью по настоящему рабочему столу. Ничего не подтверждали; а раз
-             * плана нет, то нет и чекпоинтов, то есть остановить его посреди дела нечему. Быстрый путь
-             * никуда не делся - он просто перестал быть тем, что происходит само: ⌘/Ctrl+Enter.
+             * Раньше кнопка говорила «Plan it», а Enter отправлял; разницу объясняла строчка под полем.
+             * Строчку читают один раз, а Enter жмут каждый раз - и человек, напечатавший задачу, по
+             * привычке запускал агента по настоящему рабочему столу, ничего не подтвердив. Плана нет -
+             * значит нет и чекпоинтов, то есть остановить его посреди дела нечем.
              *
              * Shift+Enter по-прежнему перевод строки. */
             if (ev.key !== 'Enter' || ev.shiftKey) return;
             ev.preventDefault();
-            if (planned || ev.metaKey || ev.ctrlKey) void send();
-            else void makePlan();
+            void act();
           }}
           disabled={running}
           rows={2}
