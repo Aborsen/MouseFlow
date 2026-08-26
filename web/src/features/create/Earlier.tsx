@@ -15,6 +15,11 @@
  * ЧЕГО В ЗАПИСИ НЕТ, честно: паузы, волны, снимки экрана и порядок, в котором слова перемежались шагами.
  * Это события живого цикла, они никуда не писались и не пишутся. История показывает то, что записано, и
  * выглядит поэтому суше живого хода - но не притворяется им.
+ *
+ * ЭТО ВИД ДЛЯ УЗКОГО ОКНА. На широком та же история стоит колонкой справа - см. EarlierPanel, - и лента
+ * ниже xl скрыта. Два вида, одни правила: всё, от чего зависит, какой прогон показывать и можно ли из него
+ * сделать скилл, лежит в run-history.ts и читается обоими. Иначе колонка однажды посчитала бы прогон удачным,
+ * а лента тот же самый нет.
  */
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, RotateCcw, Sparkles } from 'lucide-react';
@@ -25,40 +30,11 @@ import { AgentTurn, StepLine, UserTurn } from '@/components/chat';
 import type { Flow, Run } from '@/lib/api';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
 import { asDid, describe } from './describe';
+import { dictatedFrom, goalRuns, provable, stepsOf, took, when, wordsOf } from './run-history';
 
 /* Сколько показать сразу. Аккаунт отдаёт до шестидесяти прогонов, и вывалить их все над строкой ввода
  * значило бы заменить одну проблему другой: было не найти вчерашнее, стало не добраться до сегодняшнего. */
 const SHOWN = 8;
-
-/** Шаг прогона, как он лежит на аккаунте. Форма принадлежит тому, кто прогон записал. */
-type Step = { tool?: string; input?: Record<string, unknown> | null };
-
-/* ДЕСКТОПНЫЙ ЛИ ЭТО ПРОГОН - по форме шагов, а не по отсутствию поля.
- *
- * `saveDictatedAsGoalSkill` собирает скилл с `agent: 'desktop'` из шагов вида {tool, input}. Расширение
- * пишет шаги другой формы, и предложить сделать из них десктопный скилл значило бы собрать скилл, который
- * не запустится там, куда его положили. Спрашивается поэтому именно то, от чего зависит ответ: есть ли у
- * шагов `tool`. Различать по `extension === null` было бы догадкой по пустому месту. */
-const looksLikeDesktopRun = (steps: unknown): steps is Step[] =>
-  Array.isArray(steps) && steps.length > 0 && steps.every((s) => s && typeof (s as Step).tool === 'string');
-
-const when = (iso: string | null) => {
-  if (!iso) return '';
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return '';
-  const days = Math.floor((Date.now() - at.getTime()) / 86_400_000);
-  const clock = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  if (days === 0) return clock;
-  if (days === 1) return `yesterday ${clock}`;
-  return `${at.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${clock}`;
-};
-
-const took = (run: Run) => {
-  if (!run.startedAt || !run.finishedAt) return null;
-  const ms = new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime();
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  return ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)} min`;
-};
 
 export const Earlier = ({
   runs,
@@ -80,9 +56,7 @@ export const Earlier = ({
   const [open, setOpen] = useState(openByDefault);
   const [all, setAll] = useState(false);
 
-  /* Только прогоны по цели. Повтор записи - это `kind: 'replay'`, у него нет цели, и в ленте, которая
-   * читается как разговор, реплика без слов не реплика. */
-  const mine = runs.filter((r) => r.kind === 'agent' && !!r.goal && !hide.has(r.id));
+  const mine = goalRuns(runs, hide);
   if (!mine.length) return null;
 
   /* Аккаунт отдаёт новые сверху; лента читается сверху вниз и кончается сегодняшним. */
@@ -120,14 +94,10 @@ export const Earlier = ({
           )}
 
           {shown.map((run) => {
-            const steps = looksLikeDesktopRun(run.steps) ? run.steps : [];
-            const words = Array.isArray(run.said) ? run.said.filter((w) => typeof w === 'string') : [];
+            const steps = stepsOf(run);
+            const words = wordsOf(run);
             const note = run.summary ?? run.error ?? null;
             const length = took(run);
-            /* Скилл делается только из ДОКАЗАННОГО прогона - того, что дошёл до конца и записал шаги.
-             * Ровно то же условие, что у живого хода; разница лишь в том, что здесь оно проверяется по
-             * записи, а не по тому, что помнит страница. */
-            const provable = run.outcome === 'ok' && steps.length > 0;
 
             return (
               <div key={run.id} className="flex flex-col gap-3 opacity-90">
@@ -189,7 +159,7 @@ export const Earlier = ({
                     {/* Та самая кнопка, которую уход со страницы уносил навсегда. Исчезает, когда скилл
                       * уже сделан: второе приглашение сделать то же самое читается как «первое не
                       * сработало». */}
-                    {provable && (
+                    {provable(run) && (
                       hasSkillForRun(flows, run.id) ? (
                         <Typography variant="p" className="ms-1 text-ink-inactive text-[0.82rem]">
                           Saved as a skill.
@@ -199,20 +169,7 @@ export const Earlier = ({
                           variant="ghost"
                           size="sm"
                           leftSlot={<Sparkles className="size-4" />}
-                          onClick={() => onSaveAsSkill(
-                            {
-                              runId: run.id,
-                              /* ОКНА НЕ ВОССТАНОВИТЬ, и выдумывать их нельзя. У живого хода этот список
-                               * спрашивается у машины в момент, когда прогон закончился; неделю спустя на
-                               * машине открыто другое, а строка прогона окон не хранит. Пустой список
-                               * значит «скилл не сужен» - это правда. Список наугад значил бы «применим
-                               * вот здесь» про места, которых никто не проверял. */
-                              windows: [],
-                              steps: steps.map((s) => ({ tool: s.tool!, input: s.input ?? {} })),
-                              at: run.startedAt ?? new Date().toISOString(),
-                            },
-                            run.goal!,
-                          )}
+                          onClick={() => onSaveAsSkill(dictatedFrom(run), run.goal!)}
                         >
                           Save as skill
                         </Button>

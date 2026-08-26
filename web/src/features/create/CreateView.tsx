@@ -18,7 +18,7 @@
  */
 import { useNavigate } from '@tanstack/react-router';
 import { ChevronDown, CircleDot, Crosshair, Mic, MicOff, Monitor, Send, Sparkles, Square } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@insightis/ui/Button';
 import {
   DropdownMenu,
@@ -56,7 +56,7 @@ import { langName, useDictation } from './dictation';
 import { SaveDictatedSkill } from './SaveDictatedSkill';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Plan, askForPlan } from '@/lib/plan';
-import { LiveContext } from './LiveContext';
+import { EarlierPanel } from './EarlierPanel';
 import { describe } from './describe';
 import { Earlier } from './Earlier';
 /* Сказать о конце прогона тому, кто на эту вкладку не смотрит. Смысл прогона в том, что человек уходит
@@ -501,6 +501,13 @@ export const CreateView = () => {
    * кнопка и стрелка выбора рядом с ней, - и это должно быть одним значением: пока каждый считал сам,
    * кнопка могла говорить одно, а клавиша делать другое, что и произошло. Дописал слово к уже построенному
    * плану - план перестал быть про эту формулировку, и все трое узнают об этом разом. */
+  /* Прогоны, показанные живьём в этой же сессии. Считается один раз на оба вида истории - колонку и
+   * ленту, - чтобы они не могли разойтись в том, что уже показано. */
+  const earlierHide = useMemo(
+    () => new Set(turns.map((t) => t.proved?.runId).filter(Boolean) as string[]),
+    [turns],
+  );
+
   const planned = !!plan && plan.for === goal.trim();
 
   /* ЧТО СЕЙЧАС СДЕЛАЕТ КНОПКА - и, значит, что сделает Enter, потому что это одно и то же действие.
@@ -513,33 +520,36 @@ export const CreateView = () => {
   const act = () => (wants === 'run' ? send() : makePlan());
 
   return (
-    /* Two columns on a wide window: the thread, and what the executor can see. The shell gives this route a
-     * header and nothing else, so the thread owns the height and only it scrolls.
+    /* Two columns on a wide window: what is happening now, and what happened before. The shell gives this
+     * route a header and nothing else, so each column owns its own height and scrolls on its own.
      *
-     * The panel is desktop-only, and it says so rather than disappearing. The browser half drives a tab
-     * through the extension and aims at page ELEMENTS, so a screenshot of the desktop there would be a
-     * picture of something the executor does not use - and a column that vanishes when you flip a toggle
-     * raises a worse question than one that explains itself. */
+     * The right one used to hold a thumbnail of the desktop - see EarlierPanel for why it does not any
+     * more. Below xl there is no second column at all, and the history moves to the top of the thread. */
     <div className="flex h-[calc(100dvh-3.25rem)] gap-4">
       <div className="flex min-w-0 flex-1 flex-col">
       <Thread>
         {/* ЧТО БЫЛО РАНЬШЕ - наверху ленты, из записи на аккаунте, а не из второй копии рядом с ней.
           *
+          * ТОЛЬКО НА УЗКОМ ОКНЕ. С xl та же история стоит колонкой справа, где она видна сразу и не
+          * соревнуется за место с тем, что происходит сейчас; ниже xl колонки нет вовсе, и без этой ленты
+          * история стала бы недостижимой на ноутбуке поменьше. Один источник, два вида - см. run-history.ts.
+          *
           * Развёрнуто, когда живых ходов нет: человек, открывший пустую страницу Create, пришёл либо
-          * начать новое, либо найти старое, и второе до этой правки было негде. Свёрнуто, когда он уже
-          * работает: тогда старое - это шум над тем, что происходит сейчас.
+          * начать новое, либо найти старое. Свёрнуто, когда он уже работает.
           *
           * `hide` - прогоны, показанные живьём в этой же сессии. После удачного прогона страница
           * перечитывает аккаунт, и без этого он появился бы в ленте дважды: один раз как ход, второй раз
           * как история этого же хода. */
-        <Earlier
-          runs={runs}
-          flows={flows}
-          hide={new Set(turns.map((t) => t.proved?.runId).filter(Boolean) as string[])}
-          openByDefault={turns.length === 0}
-          onAskAgain={setGoal}
-          onSaveAsSkill={(run, goal) => setSaving({ run, goal })}
-        />}
+        <div className="xl:hidden">
+          <Earlier
+            runs={runs}
+            flows={flows}
+            hide={earlierHide}
+            openByDefault={turns.length === 0}
+            onAskAgain={setGoal}
+            onSaveAsSkill={(run, goal) => setSaving({ run, goal })}
+          />
+        </div>}
 
         {turns.length === 0 ? (
           <Opener
@@ -1096,25 +1106,19 @@ export const CreateView = () => {
       </Composer>
       </div>
 
-      {/* Its own scroller, so a long window list cannot push the thread's height around. */}
-      <div className="hidden w-[24rem] shrink-0 overflow-y-auto py-4 pr-5 xl:block">
-        {target === 'desktop' ? (
-          <LiveContext port={state.port} enabled={!!health && !health.recording} />
-        ) : (
-          <aside className="rounded-xl border-stroke border bg-surface-card p-3.5">
-            <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
-              Live context
-            </Typography>
-            <Typography variant="span" weight="semibold" className="mt-1.5 block text-[0.9rem]">
-              Not used in this browser
-            </Typography>
-            <Typography variant="p" className="mt-1 text-ink-inactive text-[0.8rem]">
-              The extension aims at page elements rather than at positions on a screen, so it does not work
-              from a picture and there is nothing here to show it. Switch to <strong>On this computer</strong>
-              {' '}to see what the agent sees.
-            </Typography>
-          </aside>
-        )}
+      {/* История прогонов. Своя высота и свой скроллер, чтобы длинный список не тянул ленту.
+        *
+        * Одинаковая для обоих исполнителей, в отличие от того, что здесь стояло раньше: прогон в браузере
+        * и прогон на машине - это одна и та же просьба, записанная одной и той же строкой, и делить их
+        * колонкой значило бы прятать половину своей истории за положением тумблера. */}
+      <div className="hidden w-[24rem] shrink-0 py-4 pr-5 xl:flex xl:flex-col">
+        <EarlierPanel
+          runs={runs}
+          flows={flows}
+          hide={earlierHide}
+          onAskAgain={setGoal}
+          onSaveAsSkill={(run, goal) => setSaving({ run, goal })}
+        />
       </div>
 
       {saving && (

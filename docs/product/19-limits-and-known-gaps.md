@@ -114,23 +114,21 @@ cancels part-way — the same shape as the existing suites, against a route that
 
 Reported rather than fixed, because documenting was the task. Each is small and each has a named site.
 
-### 1. `image/${format}` produces `image/image/jpeg` — three sites
+### 1. `image/${format}` produces `image/image/jpeg` — three sites — **closed**
 
 Both agents send `format: "image/jpeg"` on `/shot` — a **full MIME type**, which is what
-[`agent/PROTOCOL.md`](../../agent/PROTOCOL.md) requires and what `desktop-engine.ts` handles correctly through
-`mediaType()`. Three other places still treat it as a bare extension and prefix `image/` again:
+[`agent/PROTOCOL.md`](../../agent/PROTOCOL.md) requires. Three places treated it as a bare extension and
+prefixed `image/` again: the model request in `plan.ts`, the checkpoint gate's thumbnail in `CreateView.tsx`,
+and the Live Context panel. The first was a hard **HTTP 400** — *Plan it* failed whenever **Stay on this
+window** was on, which is the only case that attaches a screenshot; the other two depended on how tolerant a
+browser is about a malformed data-URL MIME type.
 
-| Site | Consequence |
-|---|---|
-| [`web/src/lib/plan.ts:95`](../../web/src/lib/plan.ts) | `media_type: "image/image/jpeg"` in the model request. The API accepts four exact strings; anything else is an **HTTP 400** — so *Plan it* fails whenever **Stay on this window** is on, which is the only case that attaches a screenshot. |
-| [`web/src/features/create/CreateView.tsx:633`](../../web/src/features/create/CreateView.tsx) | `data:image/image/jpeg;base64,…` for the checkpoint gate's *Look at the screen* thumbnail. |
-| [`web/src/features/create/LiveContext.tsx:126`](../../web/src/features/create/LiveContext.tsx) | The same, for the Live Context thumbnail. |
-
-The two `<img src>` cases depend on how tolerant the browser is about a malformed data-URL MIME type; the
-model request is a hard 400. **This is the exact bug class the protocol document already carries a paragraph
-about** — "This line used to say `'jpeg'`, the second implementation followed it, and generating a flow
-answered 400 on that machine until somebody tried it" — and the fix is the existing helper:
-`mediaType(shot.format)` for the request, and `data:${mediaType(shot.format)};base64,…` for the two images.
+All three now go through the existing helper — `mediaType(shot.format)` for the request and
+`data:${mediaType(shot.format)};base64,…` for the images — and the third site no longer exists at all: the
+Live Context panel was removed when the Create page's right column became the run history. **This is the
+exact bug class the protocol document already carries a paragraph about** — "This line used to say `'jpeg'`,
+the second implementation followed it, and generating a flow answered 400 on that machine until somebody
+tried it" — which is why it is worth leaving written down rather than deleting.
 
 ### 2. The service worker is dead code
 

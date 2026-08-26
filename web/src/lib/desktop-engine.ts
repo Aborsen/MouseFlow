@@ -62,8 +62,8 @@ import {
 } from '../../../api/_brain.mjs';
 import type { ShotFrame } from '../../../api/_brain.d.mts';
 
-/* Re-exported so nothing else has to know the brain moved: the Create page counts waves, the plan preview
- * and LiveContext normalise a picture's format, and both are imported from here everywhere. */
+/* Re-exported so nothing else has to know the brain moved: the Create page counts waves, and the plan
+ * preview and the checkpoint gate's thumbnail normalise a picture's format through mediaType. */
 export { MAX_WAVES, WAVE_TURNS, actionBody, mediaType };
 export type { ShotFrame };
 
