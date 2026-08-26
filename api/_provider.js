@@ -41,6 +41,28 @@ const OPENAI_URL = 'https://api.openai.com/v1/responses';
 const OPENAI_DEFAULT = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
 export const DEFAULT_EFFORT = process.env.OPENAI_REASONING_EFFORT || 'high';
 
+/* Room the model may spend THINKING, on top of the room the caller asked for.
+ *
+ * Every caller in this repo passes `maxTokens` meaning "how long may the ANSWER be" - api/chat.js names its
+ * number ANSWER_TOKENS, and that is what the number is for. On Anthropic that is exactly what max_tokens
+ * means, because no thinking budget is sent alongside it. On the OpenAI Responses API it is not:
+ * `max_output_tokens` bounds reasoning AND the answer together, and reasoning is invisible, uncapped by
+ * anything else, and at effort 'high' routinely longer than whatever the model then writes.
+ *
+ * So the assistant on this deployment - gpt-5.6 at effort high, ANSWER_TOKENS = 2000 - spent the entire
+ * ceiling reasoning and came back `status: incomplete, reason: max_output_tokens` carrying no text at all.
+ * Read below as 'truncated', refused by api/chat.js as not an answer, and shown to the person as "the model
+ * ran out of room before finishing the answer. Ask something narrower" - advice that could not have helped,
+ * because the question was never the problem. Every one of those reasoning tokens was paid for first.
+ *
+ * A CEILING IS NOT A SPEND. Adding room costs nothing on a question answered in four hundred tokens; what
+ * it stops is the answers that were bought and then thrown away. The reserve is per effort because that is
+ * what decides how much thinking there is to hold, and the figures follow OpenAI's own guidance on leaving
+ * reasoning room. Anthropic is untouched: without a thinking budget its ceiling really is the answer's.
+ */
+const ROOM_TO_THINK = { low: 4_000, medium: 12_000, high: 25_000 };
+const roomToThink = (effort) => (effort ? ROOM_TO_THINK[effort] ?? ROOM_TO_THINK.medium : 0);
+
 /* Which models this file will talk to, per provider. An allowlist rather than a passthrough for the same
  * reason api/claude.js has one: this spends somebody's money, and an unbounded model name is an unbounded
  * price. The first entry is the default.
@@ -190,8 +212,10 @@ function toOpenAI({ system, messages, tools, maxTokens, model, effort }) {
     model,
     input,
     ...(system ? { instructions: system } : {}),
-    // `max_output_tokens`, not max_tokens and not max_completion_tokens.
-    max_output_tokens: maxTokens,
+    /* `max_output_tokens`, not max_tokens and not max_completion_tokens - and not the caller's number
+     * either, because on this API the ceiling covers the model's private reasoning as well as its answer.
+     * See ROOM_TO_THINK: `maxTokens` stays what every caller means by it, room for the answer. */
+    max_output_tokens: maxTokens + roomToThink(effort),
     /* Reasoning effort as a nested object, which is the whole reason this endpoint is in use. Sent only when
      * asked for: a model that does not reason refuses the field rather than ignoring it. */
     ...(effort ? { reasoning: { effort } } : {}),

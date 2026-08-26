@@ -32,7 +32,7 @@ import {
   Thread,
   UserTurn,
 } from '@/components/chat';
-import { AGENT_WANTS, localMachine, shot, windows } from '@/lib/agent';
+import { AGENT_WANTS, hostOS, localMachine, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
 import { push } from '@/lib/api';
 import {
@@ -301,7 +301,7 @@ export const CreateView = () => {
 
     /* План именно этого прогона, до того как состояние очистится. И цикл, и turn берут его отсюда, чтобы
      * показанное и переданное не могли разойтись. */
-    const planned = plan && plan.for === text ? plan.plan : undefined;
+    const approved = plan && plan.for === text ? plan.plan : undefined;
 
     const id = `t${Date.now()}`;
     const startedAt = new Date().toISOString();
@@ -315,7 +315,7 @@ export const CreateView = () => {
       state: 'running',
       /* План остаётся в turn'е, над фидом: сверху то, что она собиралась сделать, снизу то, что делала.
        * Сопоставления шагов с чекпоинтами здесь нет - это было бы гарантией на самоотчёте. */
-      plan: planned,
+      plan: approved,
       pinned,
     }]);
     setGoal('');
@@ -335,8 +335,8 @@ export const CreateView = () => {
       void runOnDesktop({
         /* Шлюзы — только когда план действительно спрашивали. Без плана нет границ, и инструмент чекпоинта
          * даже не предлагается модели. */
-        checkpoints: planned?.checkpoints,
-        onCheckpoint: planned
+        checkpoints: approved?.checkpoints,
+        onCheckpoint: approved
           ? (at) => new Promise<GateAnswer>((resolve) => {
             setGateShot(null);
             setGate({ ...at, answer: (a) => { setGate(null); setGateShot(null); resolve(a); } });
@@ -459,6 +459,15 @@ export const CreateView = () => {
   const engine = target === 'desktop'
     ? health ? `agent ${health.version}${stale ? ' · out of date' : ''}` : 'agent offline'
     : extension.present ? `extension ${extension.version ?? ''}` : 'extension not found';
+
+  /* Есть ли план ИМЕННО для того текста, что сейчас в поле. Спрашивают об этом четверо - карточка плана,
+   * главная кнопка, подсказка под полем и Enter, - и это должно быть одним значением: пока их было четыре,
+   * кнопка могла говорить одно, а клавиша делать другое, что и произошло. Дописал слово к уже
+   * построенному плану - план перестал быть про эту формулировку, и всё четверо об этом узнают разом. */
+  const planned = !!plan && plan.for === goal.trim();
+
+  /* Как называется быстрый путь на ЭТОЙ машине. «Ctrl» на маке - это другая клавиша, а не синоним. */
+  const mod = hostOS() === 'macos' ? '\u2318' : 'Ctrl+';
 
   return (
     /* Two columns on a wide window: the thread, and what the executor can see. The shell gives this route a
@@ -740,7 +749,7 @@ export const CreateView = () => {
         * Подпись говорит ровно то, что есть: цикл решает каждый шаг заново по экрану и этого плана не видит.
         * Чекпоинты с номерами, читающиеся как программа, были бы худшим видом полировки - выглядят как
         * гарантия и ею не являются. */}
-      {plan && plan.for === goal.trim() && (
+      {plan && planned && (
         <section className="mx-auto mb-3 w-full max-w-[46rem] rounded-xl border-brand-primary/40 border bg-surface-card p-3.5">
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Sparkles className="size-4 shrink-0 text-brand-primary" />
@@ -800,10 +809,22 @@ export const CreateView = () => {
                 ? `${WAVE_TURNS} steps a wave, up to ${MAX_WAVES}`
                 : 'aims at elements, not positions'}
             </span>
+            {/* Что сделает Enter - и это меняется вместе с кнопкой, потому что делает он то же самое.
+              * Быстрый путь назван здесь, а не только в этом комментарии: он существует, но его надо
+              * попросить, и человек должен знать чем. */}
             {!running && (
               <span>
                 <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">Enter</kbd>
-                {' runs it without a plan'}
+                {planned ? ' runs it' : ' plans it first'}
+                {!planned && (
+                  <>
+                    {' · '}
+                    <kbd className="rounded border-stroke border bg-surface-card2 px-1 py-0.5 font-mono text-[0.7rem]">
+                      {`${mod}Enter`}
+                    </kbd>
+                    {' runs it without a plan'}
+                  </>
+                )}
               </span>
             )}
             {/* ГДЕ ОКАЗЫВАЕТСЯ ЗВУК, сказанное до нажатия. Chrome по умолчанию отправляет речь на свои
@@ -924,7 +945,7 @@ export const CreateView = () => {
               >
                 {stopping ? 'Stopping…' : 'Stop'}
               </Button>
-            ) : plan && plan.for === goal.trim() ? (
+            ) : planned ? (
               <Button
                 size="sm"
                 leftSlot={<Send className="size-4" />}
@@ -934,8 +955,10 @@ export const CreateView = () => {
                 Run it
               </Button>
             ) : (
-              /* План по умолчанию, а Enter остаётся быстрым путём: одно нажатие - и прогон, без плана.
-                 Стоит один лишний вызов модели, и он ловит непонимание до того, как что-то нажато. */
+              /* План по умолчанию - и Enter теперь тоже, потому что кнопка и клавиша обязаны совпадать.
+                 Пока они расходились, умолчанием было не то, что написано на кнопке, а то, что происходит
+                 от привычки. Стоит один лишний вызов модели, и он ловит непонимание до того, как что-то
+                 нажато на настоящем рабочем столе. */
               <Button
                 size="sm"
                 leftSlot={<Sparkles className="size-4" />}
@@ -973,8 +996,19 @@ export const CreateView = () => {
           value={goal}
           onChange={(ev) => setGoal(ev.target.value)}
           onKeyDown={(ev) => {
-            // Enter sends, Shift+Enter breaks the line - what a chat does. A goal is usually one sentence.
-            if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); void send(); }
+            /* Enter делает ровно то, что делает главная кнопка, - а она «Plan it», пока плана нет.
+             *
+             * Раньше Enter отправлял. Под полем об этом было написано - «Enter runs it without a plan», - и
+             * это ровно тот случай, когда сноска не работает: человек печатает задачу, по привычке жмёт
+             * Enter, и агент уже водит мышью по настоящему рабочему столу. Ничего не подтверждали; а раз
+             * плана нет, то нет и чекпоинтов, то есть остановить его посреди дела нечему. Быстрый путь
+             * никуда не делся - он просто перестал быть тем, что происходит само: ⌘/Ctrl+Enter.
+             *
+             * Shift+Enter по-прежнему перевод строки. */
+            if (ev.key !== 'Enter' || ev.shiftKey) return;
+            ev.preventDefault();
+            if (planned || ev.metaKey || ev.ctrlKey) void send();
+            else void makePlan();
           }}
           disabled={running}
           rows={2}

@@ -383,6 +383,12 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     };
   }, [health, port, reload]);
 
+  /* Whether a recording is running, which is not the same as whether THIS component knows about it: the
+   * agent keeps recording across a remount, a reload and a tab left for an hour, and `health` is how the
+   * page finds that out. Declared here rather than beside the markup that shows it, because the poller
+   * below is keyed on it and a value used by an effect belongs above the effect. */
+  const recording = live !== null || !!health?.recording;
+
   /* Two pollers while recording, at different cadences on purpose: the counter should feel live, and the
    * window list needs one sample a second at most - an application you passed through for half a second is
    * not what the flow is about.
@@ -392,10 +398,21 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
    * four times a second - and the 1000ms sampler never reached its first tick. Every desktop recording came
    * out with payload.windows empty and a transcript saying "No window was recorded", which is why this is
    * worth a paragraph: the bug was invisible in the thing it broke. Nothing here reads the object, only
-   * writes it, so the dependency was inherited rather than needed. */
-  const capturing = live !== null;
+   * writes it, so the dependency was inherited rather than needed.
+   *
+   * AND KEYED ON `recording`, WHICH IS WHAT THE CARD SAYS - not on `live`, which is what this component
+   * happens to remember. Those are two different questions and the answer differed exactly when it mattered:
+   * `live` is state, so it is null after any remount, while the recording itself belongs to the agent and
+   * runs on. Leave this page and come back, reload the tab, or start from the macOS menu bar, and the card
+   * read "Recording · 00:00 · 0 events" and stayed there - because `recording` is true through `health` and
+   * lights the word up, while the only thing that could have moved the clock was gated on `live` and never
+   * started. A frozen clock over a running recorder is worse than no clock: the number is not missing, it
+   * is wrong, and the one thing somebody watches it for is whether the recording is still going.
+   *
+   * The elapsed time survives the remount because it was never this tab's to keep - /record/status carries
+   * the agent's own session clock, so the first tick after a reload answers with the real figure. */
   useEffect(() => {
-    if (!capturing) return;
+    if (!recording) return;
 
     const counter = setInterval(async () => {
       try {
@@ -453,6 +470,9 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
           }
         }
       } catch (_) {
+        /* One failed poll is not a stopped recording. Nulling `live` used to end the polling too - the
+         * effect was keyed on it - so a single blip left the counter dead until the page was reloaded.
+         * Now it only clears the numbers, and the next tick 250ms later puts them back. */
         setLive(null);
       }
     }, 250);
@@ -475,7 +495,7 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       clearInterval(counter);
       clearInterval(sampler);
     };
-  }, [capturing, port]);
+  }, [recording, port]);
 
   const end = useCallback(async () => {
     /* One mutex for every door into stopping: the Stop button, the poller's collect of an agent-side stop,
@@ -715,11 +735,11 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
    * status read; collection is guarded by the same mutex as every other stop. */
   const agentUp = health != null;
   useEffect(() => {
-    if (!agentUp || capturing) return;
+    if (!agentUp || recording) return;
     void collectHeld();
     const check = setInterval(() => { void collectHeld(); }, 3000);
     return () => clearInterval(check);
-  }, [agentUp, capturing, collectHeld]);
+  }, [agentUp, recording, collectHeld]);
 
   /* The ledger, kept in the store on every change rather than at the end.
    *
@@ -973,7 +993,6 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     }));
   }, [state.recordings, update]);
 
-  const recording = live !== null || !!health?.recording;
 
   return (
     /* One column, not two: a row of a recording carries a name, three replay controls, a date and six
