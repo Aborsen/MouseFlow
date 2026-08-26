@@ -221,6 +221,31 @@ recording or replay actually starts.**
 2. **Load unpacked** → select the `extension/` folder
 3. Pin it, open any site, click the icon → **Start recording**
 
+### Which pages may talk to it, and why localhost is not one of them
+
+The extension answers exactly two origins: `mouseflowapp.vercel.app` and `mouse-agent.vercel.app`. That
+list lives in `manifest.json` — in `content_scripts.matches` and `externally_connectable.matches` — and the
+worker **derives its own check from that same manifest** (`originsFromManifest` in `background.js`) rather
+than keeping a second list. A second list is exactly what went wrong: it knew one of the two origins, so
+the bridge was injected on `mouse-agent` and silently could do nothing there, and it *also* accepted all of
+localhost, which the manifest had put there for development.
+
+`http://localhost/*` in a Chrome match pattern **ignores the port**, so that was every page on every
+localhost port: a project preview, a docs server started with `python -m http.server`, the web UI of any
+locally installed program. One `window.postMessage` from such a page re-paired the extension to somebody
+else's account — and because sync runs both ways, the person's skills went there and the attacker's skills
+came back.
+
+**To develop against a local copy of the app**, build with the flag:
+
+```bash
+MOUSEFLOW_DEV_BRIDGE=1 npm --prefix web run build:extension
+```
+
+That adds the two local origins to the manifest **in `extension/dist` only** — the source manifest is never
+touched, so a development build cannot become a commit — and prints a warning saying the build must not be
+shipped. Load `extension/dist` rather than `extension/` when you use it.
+
 ## Testing without loading it
 
 Both halves run under Node against stubs, which is how the motion work was verified:

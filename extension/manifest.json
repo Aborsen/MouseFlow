@@ -41,18 +41,14 @@
   "externally_connectable": {
     "matches": [
       "https://mouseflowapp.vercel.app/*",
-      "https://mouse-agent.vercel.app/*",
-      "http://localhost/*",
-      "http://127.0.0.1/*"
+      "https://mouse-agent.vercel.app/*"
     ]
   },
   "content_scripts": [
     {
       "matches": [
         "https://mouseflowapp.vercel.app/*",
-        "https://mouse-agent.vercel.app/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*"
+        "https://mouse-agent.vercel.app/*"
       ],
       "js": [
         "bridge.js"

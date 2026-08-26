@@ -1553,17 +1553,52 @@ const OPEN_WITHOUT_ACCOUNT = new Set([
   'app/fetch',
 ]);
 
-/* Which pages may hand a token in. The bridge content script runs only on the app's own origin
- * (see the manifest), and this is the other half of that: a message claiming to be the bridge is
- * checked against where it actually came from. */
-const BRIDGE_ORIGINS = new Set([APP_URL]);
-const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+/* КОМУ МЫ ОТВЕЧАЕМ - ВЫВОДИТСЯ ИЗ МАНИФЕСТА, а не перечисляется вторым списком.
+ *
+ * Манифест и есть настоящий периметр: страница, не попавшая в content_scripts.matches, bridge.js не
+ * получает вовсе, а не попавшая в externally_connectable не может позвать нас напрямую. Эта функция -
+ * вторая половина того же вопроса, и пока она была отдельным списком, она с манифестом РАСХОДИЛАСЬ в обе
+ * стороны сразу:
+ *
+ *   уже - BRIDGE_ORIGINS знал один адрес, а манифест перечислял два, так что на mouse-agent.vercel.app
+ *         мост внедрялся и молча ничего не мог;
+ *   шире - и, что важнее, здесь стоял LOCAL_ORIGIN: любая страница на любом порту localhost принималась
+ *         ровно как страница приложения. Не гипотетическая: локальный превью проекта, документация,
+ *         поднятая `python -m http.server`, веб-интерфейс любой установленной программы. Такая страница
+ *         одним window.postMessage перепривязывала расширение к чужому аккаунту - после чего скиллы
+ *         человека уезжали туда, а оттуда приезжали чужие, потому что синхронизация двусторонняя.
+ *
+ * Теперь список один, и он тот, по которому Chrome и решает, куда внедрять. Разойтись нечему.
+ *
+ * Порт не указан в шаблоне - значит любой: так эти шаблоны понимает Chrome, и так же понимаем мы. Хост
+ * сравнивается целиком: `https://mouseflowapp.vercel.app.evil.example` начинается с нашего адреса и по
+ * префиксу прошло бы внутрь. */
+function originsFromManifest() {
+  const manifest = chrome.runtime.getManifest();
+  const patterns = [
+    ...((manifest.content_scripts || []).flatMap((entry) => entry.matches || [])),
+    ...((manifest.externally_connectable || {}).matches || []),
+  ];
+  const seen = new Map();
+  for (const pattern of patterns) {
+    const found = /^(https?):\/\/([^/*]+)\/\*?$/.exec(pattern);
+    if (!found) continue;                                  // шаблон с * в хосте мы не выпускаем
+    const key = `${found[1]}://${found[2]}`;
+    if (!seen.has(key)) {
+      seen.set(key, new RegExp(`^${found[1]}://${found[2].replace(/\./g, '\\.')}(:\\d+)?$`));
+    }
+  }
+  return [...seen.values()];
+}
+
+let bridgeOrigins = null;
 
 function fromBridge(sender) {
   if (!sender || !sender.tab) return false;               // a real page, not an extension view
   const origin = sender.origin || (sender.url ? new URL(sender.url).origin : '');
-  // localhost on any port too, for development against a local copy of the app.
-  return BRIDGE_ORIGINS.has(origin) || LOCAL_ORIGIN.test(origin);
+  if (!origin) return false;
+  if (!bridgeOrigins) bridgeOrigins = originsFromManifest();
+  return bridgeOrigins.some((allowed) => allowed.test(origin));
 }
 
 /* -------------------------------------------------------------------- routing */

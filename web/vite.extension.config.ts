@@ -21,7 +21,7 @@
  *
  * The result lands in extension/dist, which is what "Load unpacked" is pointed at now.
  */
-import { cpSync, existsSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import react from '@vitejs/plugin-react';
@@ -52,6 +52,26 @@ const COPY = [
   'icons',
 ];
 
+/* ЛОКАЛЬНАЯ РАЗРАБОТКА - ТОЛЬКО ПО ПРОСЬБЕ, И ГРОМКО.
+ *
+ * `http://localhost/*` и `http://127.0.0.1/*` стояли в выпускаемом манифесте, и Chrome в таких шаблонах
+ * порт игнорирует - то есть мост внедрялся в КАЖДУЮ страницу на КАЖДОМ порту localhost. Не гипотетическую:
+ * локальный превью проекта, документация под `python -m http.server`, веб-интерфейс любой установленной
+ * программы. Такая страница одним window.postMessage перепривязывала расширение к чужому аккаунту, после
+ * чего скиллы человека уезжали туда, а оттуда приезжали чужие - синхронизация двусторонняя.
+ *
+ * Разработке они по-прежнему нужны, поэтому не удалены, а вынесены за флаг. Флаг печатает предупреждение:
+ * сборка, которую нельзя выпускать, обязана говорить об этом в тот момент, когда её делают, а не в тот,
+ * когда кто-то заметит лишнюю строку в манифесте. */
+const DEV_BRIDGE = ['http://localhost/*', 'http://127.0.0.1/*'];
+
+function openManifestForDev(path: string) {
+  const manifest = JSON.parse(readFileSync(path, 'utf8'));
+  manifest.externally_connectable.matches.push(...DEV_BRIDGE);
+  for (const entry of manifest.content_scripts) entry.matches.push(...DEV_BRIDGE);
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 const packExtension = (): Plugin => ({
   name: 'mouseflow-pack-extension',
   apply: 'build',
@@ -61,6 +81,13 @@ const packExtension = (): Plugin => ({
       const src = join(from, name);
       if (!existsSync(src)) throw new Error(`extension/${name} is missing - the build would ship without it`);
       cpSync(src, join(OUT, name), { recursive: true });
+    }
+    /* Правится КОПИЯ в dist, а не исходник: иначе разработочная сборка оставила бы после себя изменённый
+     * manifest.json, и первый же коммит выпустил бы то, что здесь и закрывается. */
+    if (process.env.MOUSEFLOW_DEV_BRIDGE === '1') {
+      openManifestForDev(join(OUT, 'manifest.json'));
+      console.warn('\n  ⚠ MOUSEFLOW_DEV_BRIDGE=1 — localhost is in this build\'s manifest.');
+      console.warn('    Any page on any localhost port can talk to this extension. Do not ship it.\n');
     }
   },
 });

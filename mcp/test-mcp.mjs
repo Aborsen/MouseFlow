@@ -2326,6 +2326,70 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------------- периметр расширения - один, и он в манифесте */
+
+/* `http://localhost/*` стоял в выпускаемом манифесте, а Chrome в таких шаблонах ПОРТ ИГНОРИРУЕТ - то есть
+ * мост внедрялся в каждую страницу на каждом порту localhost. Не гипотетическую: локальный превью проекта,
+ * документация под `python -m http.server`, веб-интерфейс любой установленной программы. Такая страница
+ * одним window.postMessage перепривязывала расширение к чужому аккаунту, после чего скиллы человека
+ * уезжали туда, а оттуда приезжали чужие - синхронизация двусторонняя. */
+group('периметр расширения один, и он выводится из манифеста');
+{
+  const manifest = JSON.parse(read('../extension/manifest.json'));
+  const bg = read('../extension/background.js');
+  const conf = read('../web/vite.extension.config.ts');
+
+  const shipped = [
+    ...manifest.content_scripts.flatMap((e) => e.matches),
+    ...manifest.externally_connectable.matches,
+  ];
+  /* Проверяется НЕ «нет строки localhost», а «нет ничего, что Chrome сочтёт локальным»: file://, любой
+   * шаблон со звёздочкой в хосте и всё, что не https на нашем домене. */
+  const local = shipped.filter((m) => /localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|^file:/.test(m));
+  check('в выпускаемом манифесте нет ничего локального', local.length === 0, local.join(', '));
+  check('и нет шаблона со звёздочкой в хосте',
+    !shipped.some((m) => /^https?:\/\/[^/]*\*/.test(m)), shipped.join(', '));
+  check('а остались только собственные адреса продукта',
+    shipped.every((m) => /^https:\/\/(mouseflowapp|mouse-agent)\.vercel\.app\/\*$/.test(m)),
+    shipped.join(', '));
+
+  /* Второй список расходился с манифестом в ОБЕ стороны: он знал один адрес из двух (значит на
+   * mouse-agent мост внедрялся и молча ничего не мог) и добавлял весь localhost. */
+  check('фон больше не держит своего списка origin', !/const BRIDGE_ORIGINS/.test(bg)
+    && !/const LOCAL_ORIGIN/.test(bg));
+  check('а выводит его из того же манифеста, по которому решает Chrome',
+    /chrome\.runtime\.getManifest\(\)/.test(bg) && /function originsFromManifest\(\)/.test(bg));
+
+  /* ИСПОЛНЕНИЕМ, а не чтением: правило про порты и поддомены регуляркой в тесте не проверить - её пришлось
+   * бы написать второй раз, и проверялась бы она, а не код. */
+  const body = bg.slice(bg.indexOf('function originsFromManifest()'), bg.indexOf('let bridgeOrigins = null;'));
+  const build = (m) => {
+    const fn = new Function('chrome', `${body}; return originsFromManifest;`)({ runtime: { getManifest: () => m } });
+    const rules = fn();
+    return (origin) => rules.some((r) => r.test(origin));
+  };
+  const allows = build(manifest);
+  check('своя страница проходит', allows('https://mouseflowapp.vercel.app'));
+  check('и второе развёртывание тоже', allows('https://mouse-agent.vercel.app'));
+  check('ЛЮБОЙ порт localhost отвергается',
+    !allows('http://localhost:4400') && !allows('http://127.0.0.1:8000') && !allows('http://localhost'));
+  check('чужая страница отвергается', !allows('https://evil.example'));
+  /* Хост целиком, а не префиксом. */
+  check('и поддомен, притворяющийся нашим', !allows('https://mouseflowapp.vercel.app.evil.example'));
+  /* Тот же адрес по http - не тот же адрес. */
+  check('и наш адрес по http', !allows('http://mouseflowapp.vercel.app'));
+
+  /* Разработке они нужны - поэтому не удалены, а за флагом, и флаг кричит. */
+  check('локальные адреса остались доступны разработке за флагом',
+    /MOUSEFLOW_DEV_BRIDGE/.test(conf) && /const DEV_BRIDGE = /.test(conf));
+  check('и сборка с ним предупреждает, что её нельзя выпускать',
+    /Do not ship it/.test(conf));
+  /* Иначе разработочная сборка оставила бы после себя изменённый manifest.json, и первый же коммит
+   * выпустил бы то, что здесь и закрывается. */
+  check('а правится копия в dist, а не исходник',
+    /openManifestForDev\(join\(OUT, 'manifest\.json'\)\)/.test(conf));
+}
+
 /* -------------------------------------------- синхронизация не воскрешает и не откатывает */
 
 /* Три находки, и все три - «клиент прислал, сервер записал». Расширение шлёт свою библиотеку ЦЕЛИКОМ при
