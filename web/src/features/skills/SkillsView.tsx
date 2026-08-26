@@ -19,6 +19,7 @@ import { ArmedButton } from '@/components/ArmedButton';
 import { SortButton } from '@/components/SortButton';
 import { Said } from '@/components/Said';
 import { type Flow, galleryPublish, galleryWithdraw, mintDeviceToken, push } from '@/lib/api';
+import { skillForGallery } from '@/lib/gallery-skill';
 import { handToExtension, watchBridge } from '@/lib/bridge';
 import { listedInSkills } from '@/lib/flow-role';
 import { SearchField } from '@/components/SearchField';
@@ -889,7 +890,20 @@ export const SkillsView = () => {
     try {
       /* Опубликовать запись без событий - это опубликовать пустоту, и ошибкой это не выглядит: карточка
        * появится, а установивший получит скилл, который ничего не делает. */
-      const body = await galleryPublish(await payloadOf(flow), flow.source === 'desktop' ? 'desktop' : 'extension');
+      /* ЧЕРЕЗ ПЕРЕВОДЧИК, а не payload'ом как есть.
+       *
+       * Здесь стоял `await payloadOf(flow)` - собственный payload приложения, - и галерея отвечала на него
+       * «unrecognised skill format» КАЖДЫЙ раз: формат придуман для расширения, строку `format` ставит
+       * только оно, а payload приложения её не несёт вовсе. То есть кнопка Publish не работала ни для
+       * одного скилла, который это приложение умеет делать.
+       *
+       * skillForGallery() ставит формат, берёт имя, описание и origins со СТРОКИ (переименование правит
+       * её, а не payload) и вычищает то, что верно только на этой машине: id этой публикации и ссылки на
+       * запись и прогон, которых на чужом аккаунте нет. См. api/_gallery-skill.mjs. */
+      const body = await galleryPublish(
+        skillForGallery(flow, await payloadOf(flow) as Record<string, unknown>),
+        flow.source === 'desktop' ? 'desktop' : 'extension',
+      );
       /* Written down, because nothing else can answer it later. gallery_skill has no back-reference to the
        * flow it came from, and the listing does not carry the payload, so reading the gallery to find out
        * whether THIS skill is in it would be a fetch per skill. This is knowledge we have at the moment we

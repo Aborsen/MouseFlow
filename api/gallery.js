@@ -17,6 +17,7 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+import { SKILL_FORMAT } from './_gallery-skill.mjs';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
@@ -222,8 +223,11 @@ async function publish(req, res, sql) {
   /* Validated here as well as in the extension. The extension is the friendly path, not the only
    * one - anything can POST - so the rules the gallery depends on are enforced where the gallery
    * is. */
-  if (payload.format !== 'mouseflow.skill/1') {
-    return fail(res, 400, 'unrecognised skill format');
+  /* Строка одна на обе половины продукта - см. api/_gallery-skill.mjs. Здесь она стояла литералом, а
+   * ставило её только расширение, так что приложение получало этот отказ на каждый свой скилл. */
+  if (payload.format !== SKILL_FORMAT) {
+    return fail(res, 400, 'unrecognised skill format — this needs a skill in the '
+      + SKILL_FORMAT + ' shape');
   }
   const kind = payload.kind === 'created' ? 'created' : 'recorded';
   if (kind === 'recorded' && (!Array.isArray(payload.events) || !payload.events.length)) {
