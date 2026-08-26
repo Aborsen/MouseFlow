@@ -2326,6 +2326,51 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------ открытый вопрос «что умеет это развёртывание» стоит дёшево */
+
+/* Два маршрута отвечают на него БЕЗ входа, и оба обязаны: расширение спрашивает до того, как человек вошёл,
+ * а десктопный движок узнаёт здесь, какой моделью ехать. Но каждый из них читал app_setting на КАЖДЫЙ
+ * запрос - то есть любой, кто знает адрес, заставлял базу работать одним curl, без счёта и без условия.
+ *
+ * Найдено прогоном против живого развёртывания. Аудит отметил один из двух (api/chat.js:1228), второй -
+ * api/claude.js - не заметил вовсе; оба подтверждены запросом, оба отвечают 200 без сессии. */
+group('открытый вопрос «что умеет развёртывание» не ходит в базу каждый раз');
+{
+  const { readSettings, forgetSettings } = await import(new URL('../api/admin.js', import.meta.url));
+  let hits = 0;
+  const sql = () => { hits += 1; return Promise.resolve([{ key: 'model.chat_default', value: 'claude-opus-5' }]); };
+
+  forgetSettings();
+  for (let i = 0; i < 10; i += 1) await readSettings(sql);
+  check('десять запросов подряд - одно обращение к базе', hits === 1, String(hits));
+
+  /* Админ, не увидевший собственной правки, нажмёт ещё раз. */
+  forgetSettings();
+  const before = hits;
+  await readSettings(sql);
+  check('а запись настройки сбрасывает кэш там же, где происходит', hits === before + 1);
+  const admin = read('../api/admin.js');
+  check('и сброс стоит на обоих путях записи',
+    (admin.match(/forgetSettings\(\);/g) || []).length >= 2);
+
+  /* Пустое означает «ничего не настроено», и заминка базы переключила бы модель посреди работы. */
+  const broken = () => Promise.reject(new Error('down'));
+  const kept = await readSettings(broken);
+  check('сбой базы отдаёт последнее известное, а не пустоту',
+    kept['model.chat_default'] === 'claude-opus-5');
+  forgetSettings();
+  const cold = await readSettings(broken);
+  check('а если не читали никогда - пусто, ровно как до появления таблицы',
+    JSON.stringify(cold) === '{}');
+
+  /* Кэш в памяти процесса тут уместен, в отличие от счётчика трат: это ЧТЕНИЕ, одинаковое для всех, а не
+   * счёт, который на каждом инстансе свой. Разница названа в комментарии, чтобы следующий не скопировал
+   * не тот вывод. */
+  check('и сказано, чем это отличается от счётчика трат',
+    /отличие от счётчика трат/.test(admin)
+      && /а не счёт, который на каждом инстансе свой/.test(admin));
+}
+
 /* --------------------------------------------- ничего лишнего не выставлено наружу маршрутом */
 
 /* Vercel собирает в функцию каждый файл в api/, кроме начинающихся с подчёркивания. Два набора тестов

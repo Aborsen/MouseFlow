@@ -61,14 +61,52 @@ function validSetting(key, value) {
       PROVIDERS.map((p) => p + ' (' + MODELS[p].join(', ') + ')').join(' and ') + '.';
 }
 
+/* ЧИТАЕТСЯ РАЗ В ТРИДЦАТЬ СЕКУНД, А НЕ НА КАЖДЫЙ ЗАПРОС.
+ *
+ * Два маршрута отвечают на вопрос «что это развёртывание умеет» БЕЗ входа, и оба обязаны - расширение
+ * спрашивает до того, как человек вошёл, а десктопный движок узнаёт здесь, какой моделью ехать. Открытыми
+ * они и останутся. Но каждый из них звал эту функцию, то есть любой, кто знает адрес, заставлял базу
+ * работать одним curl, без счёта и без условия:
+ *
+ *   GET /api/chat    -> configuredDefault(await readSettings(...))
+ *   GET /api/claude  -> await readSettings(...)
+ *
+ * Найдено прогоном против живого развёртывания; аудит отметил только первый из двух.
+ *
+ * Кэш здесь, а не у вызывающих, по той же причине, по которой заголовки CORS оказались в одном файле: три
+ * копии одного решения - это три места, где следующий забудет. И кэш в памяти процесса тут УМЕСТЕН, в
+ * отличие от счётчика трат: это ЧТЕНИЕ, одинаковое для всех, а не счёт, который на каждом инстансе свой.
+ *
+ * Тридцать секунд - это задержка, с которой правка в админке доезжает до других инстансов. Комментарий у
+ * claude.js обещает «changing it in the admin panel changes the next run everywhere without a deploy», и
+ * это остаётся правдой: полминуты - не деплой. Сам админ видит своё изменение сразу, потому что запись
+ * сбрасывает кэш там же, где происходит.
+ */
+const SETTINGS_TTL_MS = 30_000;
+let settingsCache = null;
+let settingsAt = 0;
+
+/** Сбросить кэш там, где настройки только что изменили. */
+export function forgetSettings() {
+  settingsCache = null;
+  settingsAt = 0;
+}
+
 /** What the rest of the code reads. Missing table or missing rows both mean "the defaults" - a deployment
  *  that has never been configured must behave exactly as it did before this table existed. */
 export async function readSettings(sql) {
+  const now = Date.now();
+  if (settingsCache && now - settingsAt < SETTINGS_TTL_MS) return settingsCache;
   try {
     const rows = await sql`select key, value from app_setting`;
-    return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    settingsCache = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+    settingsAt = now;
+    return settingsCache;
   } catch (_) {
-    return {};
+    /* База не ответила. Последнее известное вернее пустого: пустое означает «ничего не настроено», и
+     * заминка базы переключила бы модель посреди работы. Никогда не читали - тогда и правда пусто, ровно
+     * как до появления этой таблицы. */
+    return settingsCache ?? {};
   }
 }
 
@@ -303,6 +341,7 @@ async function handler(req, res) {
       if (!(key in SETTING_KEYS)) return fail(res, 400, 'not a setting this deployment has');
       if (value === '') {
         await sql`delete from app_setting where key = ${key}`;
+        forgetSettings();
         return res.status(200).json({ ok: true, cleared: key });
       }
       const bad = validSetting(key, value);
@@ -311,6 +350,8 @@ async function handler(req, res) {
         insert into app_setting (key, value, updated_by) values (${key}, ${value}, ${who.id})
         on conflict (key) do update set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by
       `;
+      /* Здесь, а не через тридцать секунд: админ, не увидевший собственной правки, нажмёт ещё раз. */
+      forgetSettings();
       return res.status(200).json({ ok: true, saved: key });
     }
 
