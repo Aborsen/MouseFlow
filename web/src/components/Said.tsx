@@ -11,7 +11,15 @@
  *
  * Colour is not the message. Red and green carry the tone; the words carry the meaning, and they have to,
  * because a third of people cannot separate those two hues reliably.
+ *
+ * И ОНО САМО ПОКАЗЫВАЕТСЯ НА ГЛАЗА. Reported: «когда скилл запаблишился - у меня не было уведомления».
+ * Уведомление было - вот эта строка, - но живёт она наверху страницы, а кнопку Publish жмут в строке
+ * таблицы, до которой пролистали. Сказать человеку об исходе за пределами экрана - это не сказать: он
+ * видит только, что ничего не произошло, и жмёт второй раз. Скролл делается ТОЛЬКО когда строка не видна
+ * (block: 'nearest'), так что на короткой странице ничего не дёргается; и `role="status"` остаётся тем,
+ * чем был - объявляет, не забирая фокус. Прокрутка фокус тоже не забирает.
  */
+import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '@insightis/ui/cn';
 
@@ -31,9 +39,23 @@ export interface SaidProps {
 }
 
 export const Said = ({ note, variant = 'block', onDismiss, className }: SaidProps) => {
+  const box = useRef<HTMLDivElement>(null);
+
+  /* На текст, а не на объект: восемь экранов зовут setSaid новым объектом каждый раз, и эффект на `note`
+   * прокручивал бы на каждый ререндер. Меняется то, что сказали, - тогда и показываем. */
+  const text = note?.text ?? null;
+  useEffect(() => {
+    if (!text || !box.current) return;
+    /* Уже на экране - ничего не делаем: `nearest` прокручивает ровно столько, сколько нужно, и ноль,
+     * когда не нужно. Плавно, если человек не просил меньше движения. */
+    const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    box.current.scrollIntoView({ block: 'nearest', behavior: still ? 'auto' : 'smooth' });
+  }, [text]);
+
   if (!note) return null;
   return (
     <div
+      ref={box}
       role="status"
       className={cn(
         'break-words',
