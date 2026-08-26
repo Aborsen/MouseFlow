@@ -2326,6 +2326,71 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* -------------------------------------------- синхронизация не воскрешает и не откатывает */
+
+/* Три находки, и все три - «клиент прислал, сервер записал». Расширение шлёт свою библиотеку ЦЕЛИКОМ при
+ * каждой синхронизации, так что «последний пишет» здесь означает не «свежее побеждает», а «кто нажал
+ * позже». */
+group('синхронизация не воскрешает удалённое и не откатывает свежее');
+{
+  const sync = read('../api/sync.js');
+  const flowFor = read('../api/_flow-for.mjs');
+  const reconciler = read('../web/src/features/record/Reconciler.tsx');
+
+  /* `deleted_at = null` стояло в upsert безусловно: удаление, сделанное в приложении, возвращалось
+   * следующим нажатием Sync в расширении. */
+  check('upsert больше не снимает надгробие', !/updated_at = now\(\), deleted_at = null/.test(sync));
+  check('а удалённое отказывается принимать', /was deleted on this account, so it was not/.test(sync));
+  /* Отказ сам по себе оставил бы запись здесь непроштампованной - то есть следующий проход отправил бы её
+   * снова, и так навсегда. */
+  check('и клиент перестаёт пытаться', /was deleted on this account/.test(reconciler)
+    && /const forget = new Set\(\[\.\.\.plan\.forget, \.\.\.buried\]\)/.test(reconciler));
+
+  /* Переименование в приложении меняло name и payload; машина, не синхронизировавшаяся с тех пор,
+   * возвращала старое имя И старый payload поверх нового - молча, и счётчик считал это сохранением. */
+  check('устаревшее не перезаписывает свежее',
+    /is older here than on the account, so it was not/.test(sync));
+  check('и клиент присылает, насколько свежа его копия', /updated: rec\.syncedAt \?\? null,/.test(flowFor));
+  /* И РАСШИРЕНИЕ ТОЖЕ - оно и есть тот клиент, который откатывал переименования: библиотека шлётся
+   * целиком при каждом Sync, так что «последний пишет» означало «кто нажал позже», а не «у кого свежее». */
+  const bgSrc = read('../extension/background.js');
+  check('расширение тоже, иначе именно оно и откатывало',
+    /updated: skill\.updated \|\| null,/.test(bgSrc));
+  check('и отмечает свои изменения', /skill\.updated = now;/.test(bgSrc)
+    && /skill\.updated = new Date\(\)\.toISOString\(\);/.test(bgSrc));
+  /* Иначе скачанный скилл выглядел бы никогда не менявшимся и первый же push отправил бы его обратно. */
+  check('а скачанное считается свежим настолько, насколько сказал аккаунт',
+    /updated: s2\.updated \|\| new Date\(\)\.toISOString\(\),/.test(bgSrc));
+  /* Клиент, который его не шлёт, ведёт себя как раньше - это не ослабление, раньше так вели себя все. */
+  check('а без этого поля работает по-старому', /const mine = when\(flow\.updated\);/.test(sync)
+    && /if \(row && mine &&/.test(sync));
+
+  /* Строка, которую Postgres датой не признаёт, роняла insert - а значит ВЕСЬ push, а значит и каждый
+   * следующий, потому что клиент шлёт библиотеку целиком. Взяться ей есть откуда: extension/skills.js
+   * принимает created любой строкой, и скилл можно ввезти файлом. */
+  check('даты разбираются, а не кладутся как есть', /function when\(said\) \{/.test(read('../api/_payload.mjs')));
+  check('и применяются ко всем трём',
+    /\$\{when\(flow\.created\)\}/.test(sync)
+      && /\$\{when\(run\.startedAt\)\}, \$\{when\(run\.finishedAt\)\}/.test(sync));
+
+  /* Шаг со скриншотом в data-URL - ровно то, что db/010 запрещает для run_queue; здесь запрета не было.
+   * Четыреста шагов по 161КБ это шестьдесят четыре мегабайта в строке, которую потом возит каждый список. */
+  check('трасса прогона ограничена по весу, а не только по числу шагов',
+    /trace\.length \+ words\.length > RUN_MAX_BYTES/.test(sync));
+  check('и отказ называет обычную причину', /A step carrying a screenshot/.test(sync));
+  check('origins ограничены и по длине', /\.map\(\(o\) => text\(o, 200\)\)/.test(sync));
+
+  /* Писателей у payload двое, и потолок стоял у одного. */
+  const mcpApi = read('../api/mcp.js');
+  check('второй писатель payload знает тот же потолок',
+    /import \{ PAYLOAD_MAX_BYTES \} from '\.\/_payload\.mjs';/.test(mcpApi)
+      && /if \(encoded\.length > PAYLOAD_MAX_BYTES\)/.test(mcpApi));
+  /* По неразорванному куску: обе половины фразы лежат по разные стороны переноса внутри шаблона, и между
+   * ними остаётся `+ '` - проверка на слитность мерила бы форматирование, а не смысл. */
+  check('и отказывает строкой, которую человек прочитает',
+    /so it was not saved/.test(mcpApi) && /stop it in shorter stretches/.test(mcpApi));
+}
+
 /* ------------------------------------------- потолок на общий ключ считается там, где он один */
 
 /* Шесть маршрутов держали счётчик в Map в области модуля, и каждый из них своим же комментарием признавал
@@ -2765,7 +2830,10 @@ group('список не везёт события, и от этого ниче�
  * обычное использование, - не защита, а поломка. */
 group('длинная запись доезжает до аккаунта');
 {
-  const { inflatePayload, PAYLOAD_MAX_BYTES } = await import(new URL('../api/sync.js', import.meta.url));
+  /* Переехали в api/_payload.mjs: писателей у user_flow.payload двое - api/sync.js принимает push, а
+   * api/mcp.js кладёт запись, остановленную агентом без открытого браузера, - и потолок стоял только у
+   * первого. Два писателя одной колонки не могут иметь два представления о том, что в неё влезает. */
+  const { inflatePayload, PAYLOAD_MAX_BYTES } = await import(new URL('../api/_payload.mjs', import.meta.url));
   const { gzipSync } = await import('node:zlib');
 
   /* Число взято из измерений: 23КБ в минуту на живом аккаунте. Восемь мегабайт - запись длиннее рабочего

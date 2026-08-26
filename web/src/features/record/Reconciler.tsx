@@ -56,12 +56,31 @@ export const Reconciler = () => {
     busy.current = true;
     (async () => {
       let sent: string[] = [];
+      /* Записи, которые аккаунт назвал удалёнными. Отдельно от `sent`: их не приняли, но и пробовать
+       * снова незачем - см. ниже. */
+      const buried = new Set<string>();
       try {
         if (plan.push.length) {
           /* Up first. If this fails, nothing else in the plan is wrong - but a recording that exists only
            * here is the one thing that can actually be lost, so it goes before any local change. */
           const saved = await push({ flows: plan.push.map((rec) => flowFor(rec, health)) });
           if (!saved.problems.length) sent = plan.push.map((rec) => rec.id);
+          /* УДАЛЁННОЕ НА АККАУНТЕ - ЗАБЫВАЕТСЯ И ЗДЕСЬ.
+           *
+           * Сервер перестал воскрешать удалённые записи: расширение шлёт свою библиотеку целиком при
+           * каждой синхронизации, и раньше удаление, сделанное в приложении, возвращалось следующим
+           * нажатием Sync. Но отказ сам по себе оставляет эту запись здесь непроштампованной - то есть
+           * следующий проход отправит её снова, и так навсегда.
+           *
+           * Имя в отказе - единственное, что связывает строку с записью: `problems` это строки для
+           * человека, а не коды. Сопоставление по имени было бы догадкой, если бы имён могло совпасть
+           * два; поэтому сверяется и имя, и то, что запись вообще отправлялась в этой пачке. */
+          for (const line of saved.problems) {
+            if (!/was deleted on this account/.test(line)) continue;
+            for (const rec of plan.push) {
+              if (line.includes(`"${rec.name}"`) || line.includes(`"${rec.id}"`)) buried.add(rec.id);
+            }
+          }
         }
       } catch (_) {
         /* Offline. The recordings stay here, unstamped, and the next reconcile tries again - which is the
@@ -69,7 +88,9 @@ export const Reconciler = () => {
       }
 
       const stamped = new Set([...plan.stamp, ...sent]);
-      const forget = new Set(plan.forget);
+      /* Забытое включает похороненное аккаунтом: удаление, сделанное на другой машине, доходит сюда именно
+       * так - не тем, что запись пропала из списка, а тем, что аккаунт отказался её принимать. */
+      const forget = new Set([...plan.forget, ...buried]);
       const now = new Date().toISOString();
 
       /* ВНИЗ - ПО ОДНОЙ, И ТОЛЬКО ТЕ, КОГО ЗАБИРАЕМ.

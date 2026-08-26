@@ -26,6 +26,14 @@ export function flowFor(rec, health) {
     description: `${s.count} events · ${s.clicks} click${s.clicks === 1 ? '' : 's'} · ${fmtMs(s.durationMs)}`,
     origins: where.map((w) => w.title).filter(Boolean).slice(0, 12),
     created: rec.created,
+    /* КОГДА ЭТА КОПИЯ В ПОСЛЕДНИЙ РАЗ СХОДИЛАСЬ С АККАУНТОМ.
+     *
+     * Сервер сравнивает это со своим updated_at и отказывается писать более старое поверх более нового -
+     * иначе машина, не синхронизировавшаяся с тех пор, молча возвращала переименование и payload назад.
+     *
+     * `syncedAt` - честный ответ на «насколько эта копия свежая»: он ставится, когда аккаунт её принял.
+     * Пусто у записи, которой аккаунт ещё не видел, и это правильно: ей нечего перезаписывать. */
+    updated: rec.syncedAt ?? null,
     payload: {
       version: 1,
       kind: 'recorded',

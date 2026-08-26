@@ -663,6 +663,13 @@ async function saveSkill(msg) {
   if (msg.description) skill.description = String(msg.description).slice(0, 400);
 
   const skills = await listSkills();
+  /* КОГДА ЭТУ КОПИЮ ПОСЛЕДНИЙ РАЗ МЕНЯЛИ ЗДЕСЬ.
+   *
+   * Едет на аккаунт как `updated`, и сервер отказывается писать более старое поверх более нового. Без
+   * этого расширение, не синхронизировавшееся с момента переименования в приложении, возвращало старое
+   * имя И старый payload назад - молча, при следующем нажатии Sync, потому что оно шлёт свою библиотеку
+   * целиком и «последний пишет» означало «кто нажал позже», а не «у кого свежее». */
+  skill.updated = now;
   skills.unshift(skill);
   await putSkills(skills);
   return { ok: true, skill };
@@ -799,6 +806,9 @@ function flowFromSkill(skill) {
     description: skill.description || '',
     origins: skill.origins || [],
     created: skill.created || null,
+    /* Насколько свежа ЭТА копия. Пусто у скиллов, записанных до того, как это поле появилось - и такие
+     * ведут себя ровно как раньше, последний пишет: это не ослабление, раньше так вели себя все. */
+    updated: skill.updated || null,
     payload: skill,
   };
 }
@@ -884,7 +894,12 @@ async function syncNow() {
       // A flow this build cannot read is left alone rather than dropped from the account.
     }
   }
-  if (incoming.length) await putSkills(incoming.concat(skills));
+  /* Пришедшее сверху свежо ровно настолько, насколько сказал аккаунт: без этой отметки скачанный скилл
+   * выглядел бы никогда не менявшимся и первый же push отправил бы его обратно как более старый. */
+  const stampedIncoming = incoming.map((s2) => Object.assign({}, s2, {
+    updated: s2.updated || new Date().toISOString(),
+  }));
+  if (stampedIncoming.length) await putSkills(stampedIncoming.concat(skills));
 
   const who = (remote && remote.you) || null;
   const at = new Date().toISOString();
@@ -1715,6 +1730,9 @@ const ROUTES = {
     if (!skill) throw new Error('that skill is no longer here');
     if (msg.name) skill.name = String(msg.name).slice(0, 80);
     if (msg.description != null) skill.description = String(msg.description).slice(0, 400);
+    /* Переименование - это изменение, и без отметки сервер счёл бы эту копию такой же старой, какой она
+     * была до него, и отказался бы её принять. */
+    skill.updated = new Date().toISOString();
     await putSkills(skills);
     return { ok: true, skill };
   },

@@ -25,7 +25,8 @@
 
 import { neon } from '@neondatabase/serverless';
 import { randomBytes } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
+/* Потолок на вес и распаковка сжатого payload - общие с api/mcp.js, вторым писателем этой колонки. */
+import { PAYLOAD_MAX_BYTES, RUN_MAX_BYTES, inflatePayload } from './_payload.mjs';
 import { whoIsCalling, hashToken, DEVICE_TOKEN_PREFIX } from './_session.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -34,55 +35,6 @@ import { report, wrap } from './_report.js';
 const FLOWS_MAX = 300;        // per push
 const RUNS_MAX = 100;
 const RUNS_RETURNED = 60;
-/* СКОЛЬКО МОЖЕТ ВЕСИТЬ ОДНА ЗАПИСЬ, и почему прежнее число было не потолком, а обрывом.
- *
- * Было 400_000 без объяснения. Человек записал полтора часа работы - 34 722 события, 525 кликов, 2098КБ, -
- * и запись не уехала никуда: push отказал, транскрипт строится на сервере, а сервер её не видел, поэтому
- * панель сказала «no recording with that id on this account». Час работы остался в браузере и не читался.
- *
- * Полтора часа - это не злоупотребление, это ровно то, что продукт предлагает делать: «нажмите стоп, когда
- * задача закончена». Потолок, который режет обычное использование, - не защита, а поломка.
- *
- * Число взято из измерений, а не из головы. На живом аккаунте 2098КБ / 92 минуты ≈ 23КБ в минуту, значит:
- *   час      ≈ 1.4МБ
- *   три часа ≈ 4.1МБ
- *   шесть    ≈ 8МБ
- * Восемь мегабайт - это запись длиннее рабочего дня; дальше упирается сам рекордер, а не это число.
- *
- * ПОЧЕМУ ЭТО НЕ ЛОМАЕТ ЗАПРОС. У платформы тело ограничено 4.5МБ, и 8МБ JSON туда бы не влезли. Поэтому
- * рядом появился `payloadZ`: события мыши сжимаются примерно в десять раз (замерено на настоящих записях
- * аккаунта - 381КБ → 35КБ, 125КБ → 13КБ), так что шестичасовая запись едет мегабайтом. Проверяется всегда
- * РАЗВЁРНУТЫЙ размер: сжатие меняет цену перевозки, а не то, сколько места это займёт у нас. */
-export const PAYLOAD_MAX_BYTES = 8_000_000;
-
-/* Столько же плюс запас - предел, до которого вообще разворачивается присланное. Стоит ОТДЕЛЬНО от
- * проверки выше и раньше неё: проверять размер после распаковки значит сперва распаковать, а «сжатые
- * несколько килобайт, которые разворачиваются в гигабайт» - это не гипотеза, это стандартный приём.
- * gunzipSync с maxOutputLength обрывает такое на пороге, а не в памяти. */
-const INFLATE_MAX_BYTES = PAYLOAD_MAX_BYTES + 64_000;
-
-/** Развёрнутый payload, или null с причиной. Ничего не бросает: отказ - это строка для пользователя. */
-export function inflatePayload(said) {
-  if (typeof said !== 'string' || !said) return { why: 'the compressed payload was not a string' };
-  let raw;
-  try {
-    raw = gunzipSync(Buffer.from(said, 'base64'), { maxOutputLength: INFLATE_MAX_BYTES });
-  } catch (err) {
-    /* И «не gzip», и «больше потолка» приходят сюда одинаково, поэтому причина называется по размеру
-     * присланного, а не по тексту ошибки zlib, который читателю ничего не говорит. */
-    return { why: 'the compressed payload could not be read, or unpacks to more than '
-      + Math.round(PAYLOAD_MAX_BYTES / 1024) + 'KB' };
-  }
-  const text = raw.toString('utf8');
-  try {
-    const value = JSON.parse(text);
-    if (!value || typeof value !== 'object') return { why: 'the compressed payload was not an object' };
-    return { value, encoded: text };
-  } catch (_) {
-    return { why: 'the compressed payload was not valid JSON' };
-  }
-}
-
 function cors(req, res) {
   const origin = req.headers.origin || '';
   res.setHeader('Access-Control-Allow-Origin',
@@ -419,8 +371,44 @@ async function push(req, res, sql, who) {
     /* Which half made it. Not inferred from the payload: the shapes are similar enough that a guess
      * would sometimes be wrong, and a flow labelled runnable by the wrong half is a broken button. */
     const source = flow.source === 'desktop' ? 'desktop' : 'web';
+    /* По ДЛИНЕ тоже, а не только по числу: двенадцать origins по мегабайту - это двенадцать мегабайт в
+     * строке, которую потом возит каждый список. Счёт ограничивал количество и ничего не говорил о весе. */
     const origins = Array.isArray(flow.origins)
-      ? flow.origins.filter((o) => typeof o === 'string').slice(0, 12) : [];
+      ? flow.origins.filter((o) => typeof o === 'string').slice(0, 12).map((o) => text(o, 200)) : [];
+
+    /* УДАЛЁННОЕ НЕ ВОСКРЕСАЕТ, И УСТАРЕВШЕЕ НЕ ПЕРЕЗАПИСЫВАЕТ.
+     *
+     * `deleted_at = null` стояло здесь безусловно, а расширение при каждой синхронизации шлёт свою
+     * библиотеку ЦЕЛИКОМ - то есть запись, удалённая в приложении, возвращалась на аккаунт со следующим
+     * нажатием Sync в расширении. Удаление, которое не держится, - это не медленная синхронизация, это
+     * функция, которая не работает.
+     *
+     * И то же самое со временем. Переименование в приложении меняло name и payload; расширение, не
+     * синхронизировавшееся с тех пор, при следующем Sync возвращало старое имя И старый payload поверх
+     * нового. Молча, без единого слова в ответе - счётчик flows считал такую запись сохранённой.
+     *
+     * Оба случая - один вопрос: имеет ли право пришедшее заменить лежащее. Ответ читается из строки, а не
+     * из порядка запросов, и оба отказа НАЗЫВАЮТСЯ в `problems` - молчаливый отказ отличается от
+     * молчаливой перезаписи только тем, что теряется.
+     *
+     * `updated` необязателен: клиент, который его не шлёт (расширение до этой правки, любой сторонний),
+     * ведёт себя ровно как раньше - последний пишет. Это не ослабление: раньше так вели себя ВСЕ. */
+    const [row] = await sql`
+      select deleted_at, updated_at from user_flow
+      where user_id = ${who.id} and client_id = ${clientId}
+      limit 1
+    `;
+    if (row && row.deleted_at) {
+      problems.push('"' + (flow.name || clientId) + '" was deleted on this account, so it was not '
+        + 'restored. Delete it here too, or make a new one.');
+      continue;
+    }
+    const mine = when(flow.updated);
+    if (row && mine && new Date(mine).getTime() < new Date(row.updated_at).getTime()) {
+      problems.push('"' + (flow.name || clientId) + '" is older here than on the account, so it was not '
+        + 'written. Sync down first — something else changed it after this copy.');
+      continue;
+    }
 
     await sql`
       insert into user_flow
@@ -428,11 +416,11 @@ async function push(req, res, sql, who) {
       values
         (${who.id}, ${clientId}, ${source}, ${kind}, ${text(flow.name, 80) || ''},
          ${text(flow.description, 400) || ''}, ${encoded}, ${origins},
-         ${flow.created || null}, now())
+         ${when(flow.created)}, now())
       on conflict (user_id, client_id) do update set
         source = excluded.source, kind = excluded.kind, name = excluded.name,
         description = excluded.description, payload = excluded.payload, origins = excluded.origins,
-        updated_at = now(), deleted_at = null
+        updated_at = now()
     `;
     savedFlows++;
   }
@@ -457,6 +445,20 @@ async function push(req, res, sql, who) {
     const steps = Array.isArray(run.steps) ? run.steps.slice(0, 400) : [];
     const said = Array.isArray(run.said) ? run.said.slice(0, 200) : [];
 
+    /* И ЭТИ ДВА - ПО ВЕСУ, а не только по количеству. Шаг, несущий скриншот в data-URL, - это ровно то,
+     * что db/010 запрещает для run_queue и что _step.mjs там срезает; здесь такого запрета не было.
+     * Четыреста шагов по 161КБ - это шестьдесят четыре мегабайта, предложенных одной строке, которую
+     * потом отдаёт каждый список прогонов. */
+    const trace = JSON.stringify(steps);
+    const words = JSON.stringify(said);
+    if (trace.length + words.length > RUN_MAX_BYTES) {
+      problems.push('the trace of run "' + clientId + '" is '
+        + Math.round((trace.length + words.length) / 1024) + 'KB, and the ceiling is '
+        + Math.round(RUN_MAX_BYTES / 1024) + 'KB — the run was not saved. A step carrying a screenshot '
+        + 'is the usual cause; those belong nowhere near a row.');
+      continue;
+    }
+
     await sql`
       insert into user_run
         (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
@@ -464,8 +466,8 @@ async function push(req, res, sql, who) {
       values
         (${who.id}, ${clientId}, ${kind}, ${text(run.goal, 4000)}, ${text(run.model, 60)},
          ${text(run.flowId, 80)}, ${outcome}, ${text(run.summary, 2000)}, ${text(run.error, 2000)},
-         ${JSON.stringify(steps)}, ${JSON.stringify(said)}, ${text(run.extension, 20)},
-         ${run.startedAt || null}, ${run.finishedAt || null})
+         ${trace}, ${words}, ${text(run.extension, 20)},
+         ${when(run.startedAt)}, ${when(run.finishedAt)})
       on conflict (user_id, client_id) do update set
         outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
         steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at,

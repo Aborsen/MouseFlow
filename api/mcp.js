@@ -57,6 +57,8 @@ import { fillGoal, missingParams } from '../extension/skills.js';
 import { report, reportSaid, wrap } from './_report.js';
 /* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
 import { overSpend, spentWhy } from './_spend.mjs';
+/* Потолок на вес записи - тот же, что у api/sync.js: два писателя одной колонки не могут иметь два. */
+import { PAYLOAD_MAX_BYTES } from './_payload.mjs';
 
 const SPOKEN = new Set(['2024-11-05', '2025-03-26', '2025-06-18']);
 const NEWEST = '2025-06-18';
@@ -767,12 +769,26 @@ async function saveRecording(sql, who, macro, health) {
   };
   const row = flowFor(rec, health);
 
+  /* ТОТ ЖЕ ПОТОЛОК, ЧТО И У ВТОРОГО ПИСАТЕЛЯ. Эта функция пишет в user_flow.payload наравне с
+   * api/sync.js, и потолок стоял только там - то есть запись, слишком большую, чтобы синхронизироваться,
+   * можно было положить сюда, и она бы легла. Отказ здесь - строка, которую человек прочитает; отсутствие
+   * отказа - строка, которую он потом не сможет ни открыть, ни забрать. */
+  const encoded = JSON.stringify(row.payload);
+  if (encoded.length > PAYLOAD_MAX_BYTES) {
+    return {
+      ok: false,
+      said: `That recording is ${Math.round(encoded.length / 1024)}KB, and the ceiling is `
+        + `${Math.round(PAYLOAD_MAX_BYTES / 1024)}KB, so it was not saved. It is still on the machine `
+        + 'that recorded it — stop it in shorter stretches, or collect it from the app.',
+    };
+  }
+
   await sql`
     insert into user_flow
       (user_id, client_id, source, kind, name, description, payload, origins, created_at, updated_at)
     values
       (${who.id}, ${row.id}, 'desktop', 'recorded', ${row.name}, ${row.description},
-       ${JSON.stringify(row.payload)}, ${row.origins}, ${row.created}, now())
+       ${encoded}, ${row.origins}, ${row.created}, now())
     on conflict (user_id, client_id) do update set
       name = excluded.name, description = excluded.description, payload = excluded.payload,
       origins = excluded.origins, updated_at = now(), deleted_at = null
