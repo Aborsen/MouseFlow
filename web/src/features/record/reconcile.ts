@@ -37,9 +37,18 @@ import { sessionOf } from './long-session';
  * transcript and the dashboard read them from anyway. Said out loud rather than silently truncated. */
 export const PULL_BUDGET_BYTES = 3_000_000;
 
+/** Запись, которую надо забрать: кто она, но ещё не чем является. Содержимое догружает Reconciler. */
+export interface Wanted {
+  id: string;
+  name: string;
+  created: string;
+}
+
 export interface Plan {
-  /** Account rows to add to this browser, newest first. */
-  pull: Recording[];
+  /* Account rows to add to this browser, newest first - НАЗВАННЫЕ, а не собранные. События к ним
+   * догружаются по одному (payloadOf), потому что список их больше не везёт: 28 записей на живом
+   * аккаунте это 3213КБ на каждую загрузку приложения. */
+  pull: Wanted[];
   /** Local recordings the account has never acknowledged. */
   push: Recording[];
   /** Local recordings the account acknowledged and no longer has: deleted elsewhere. */
@@ -50,9 +59,29 @@ export interface Plan {
   left: { id: string; name: string }[];
 }
 
-const eventsOf = (flow: Flow): unknown[] => {
+/* ЧТО ЗНАЕТ СПИСОК, НЕ ОТКРЫВАЯ ЗАПИСЬ.
+ *
+ * Список перестал везти `events`: 28 записей на живом аккаунте это 3213КБ на каждую загрузку приложения.
+ * Решения здесь принимаются по сводке, которую сервер считает в SQL, а сам payload догружает тот, кто
+ * запись действительно забирает.
+ *
+ * Обе ветки в каждой из трёх: payload первым, когда он есть. Ответ старого развёртывания сводки не несёт,
+ * и мок в web/src/dev тоже - а reconcile обязан работать против обоих, иначе первый же прогон против
+ * старого сервера решит, что записей нет, и предложит стереть локальные. */
+const countOf = (flow: Flow): number => {
   const payload = flow.payload as { events?: unknown } | undefined;
-  return Array.isArray(payload?.events) ? payload.events : [];
+  if (Array.isArray(payload?.events)) return payload.events.length;
+  return flow.summary?.events ?? 0;
+};
+
+const sizeOf = (flow: Flow): number => {
+  if (flow.payload && !flow.payloadOmitted) return JSON.stringify(flow.payload).length;
+  return flow.summary?.bytes ?? 0;
+};
+
+const sessionOfFlow = (flow: Flow) => {
+  if (flow.payload && !flow.payloadOmitted) return sessionOf(flow.payload);
+  return sessionOf(flow.summary?.session ? { session: flow.summary.session } : null);
 };
 
 /* Rows that are recordings, as opposed to everything else sharing the table.
@@ -64,8 +93,8 @@ const isRecording = (flow: Flow): boolean => (
   flow.kind === 'recorded'
   && roleOf(flow) !== SKILL_ROLE
   && !flow.id.startsWith('dr_')
-  && !sessionOf(flow.payload)
-  && eventsOf(flow).length > 0
+  && !sessionOfFlow(flow)
+  && countOf(flow) > 0
 );
 
 const newestFirst = (a: Flow, b: Flow) => {
@@ -76,22 +105,18 @@ const newestFirst = (a: Flow, b: Flow) => {
   return at(b) - at(a);
 };
 
-const recordingFrom = (flow: Flow): Recording => {
-  const payload = flow.payload as {
-    events?: Recording['events'];
-    windows?: Recording['windows'];
-  } | undefined;
-  return {
-    id: flow.id,
-    name: flow.name || 'From your account',
-    created: flow.created ?? new Date().toISOString(),
-    events: payload?.events ?? [],
-    windows: payload?.windows ?? [],
-    /* Stamped on arrival: it came FROM the account, so the account has acknowledged it by definition. Without
-     * this the next reconcile would try to push back what it just pulled. */
-    syncedAt: new Date().toISOString(),
-  };
-};
+/* КОГО ЗАБРАТЬ - решает эта функция; ЧЕМ он окажется - решает тот, кто заберёт.
+ *
+ * Раньше здесь собиралась целая Recording, потому что события лежали прямо во флоу. Теперь их надо
+ * догрузить, а reconcile обязан остаться ЧИСТОЙ функцией - «правила можно прогнать, а не прочитать», как
+ * сказано ниже, и на этом стоят все её тесты. Асинхронность внутри убила бы ровно это.
+ *
+ * Поэтому план называет тех, кого забрать, а Reconciler.tsx их догружает и собирает. */
+const wantedFrom = (flow: Flow): Wanted => ({
+  id: flow.id,
+  name: flow.name || 'From your account',
+  created: flow.created ?? new Date().toISOString(),
+});
 
 /** What to do, given what each side holds. Pure, so the rules can be run rather than read. */
 export function reconcile(
@@ -107,13 +132,13 @@ export function reconcile(
   let spent = 0;
   for (const flow of [...theirs.values()].sort(newestFirst)) {
     if (mine.has(flow.id)) continue;
-    const size = JSON.stringify(flow.payload ?? {}).length;
+    const size = sizeOf(flow);
     if (spent + size > budgetBytes && plan.pull.length > 0) {
       plan.left.push({ id: flow.id, name: flow.name || 'a recording' });
       continue;
     }
     spent += size;
-    plan.pull.push(recordingFrom(flow));
+    plan.pull.push(wantedFrom(flow));
   }
 
   // ---------------------------------------------------------------- up, and the tombstone rule

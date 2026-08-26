@@ -13,13 +13,41 @@ export interface Flow {
   origins: string[];
   created: string | null;
   updated?: string | null;
-  payload: {
+  /* МОЖЕТ НЕ ПРИЕХАТЬ - и тип об этом говорит, потому что молчащий тип здесь стоил бы часа чужой работы.
+   *
+   * Пока здесь стояло обязательное поле, каждое место, читающее payload записи, получало бы undefined
+   * молча: публикация ушла бы пустой, переименование пришло бы на сервер без событий, «скопировать JSON»
+   * скопировал бы ничто. Ни одно из них не выглядит как ошибка на экране. Сделав поле необязательным,
+   * компилятор перечислил их все за секунду. */
+  payload?: {
     version?: number;
     kind?: string;
     agent?: string;
     name?: string;
     events?: unknown[];
     windows?: { title: string; process: string }[];
+  };
+  /* НЕ ПРИСЛАЛИ - положительным признаком, а не отсутствием поля.
+   *
+   * Список перестал везти `events` записей: 28 записей на живом аккаунте это 3213КБ на каждую загрузку
+   * приложения, а четыре скилла - 5КБ. Скиллы payload везут по-прежнему (их запускают прямо из списка);
+   * записи - нет.
+   *
+   * Флаг именно положительный, потому что `payload.events === undefined` читается и как «не приехало», и
+   * как «пусто», и место, которое перепутает их и запушит обратно, сотрёт час работы. Переименование в
+   * Skills делает ровно `{ ...flow.payload, name }` - и Skills показывает записи тоже.
+   *
+   * Всё, что собирается ОТПРАВИТЬ payload обратно, обязано пройти через payloadOf(). Сервер это же
+   * проверяет у себя (api/sync.js отказывается писать пустые events поверх непустых), потому что «клиент
+   * не забудет» - надежда, а не гарантия. */
+  payloadOmitted?: boolean;
+  /** То, на чём принимают решения, не открывая payload. Отсутствует у ответа старого развёртывания. */
+  summary?: {
+    events: number;
+    bytes: number;
+    windows: { title: string; process: string }[];
+    session: { id?: string; part?: number } | null;
+    role: string | null;
   };
 }
 
@@ -235,6 +263,37 @@ async function packFlows(flows: unknown[]): Promise<unknown[]> {
   }));
 }
 
+/* ОДИН PAYLOAD, КОГДА ОН ДЕЙСТВИТЕЛЬНО НУЖЕН.
+ *
+ * Кэш на время жизни страницы: за один сеанс одну и ту же запись открывают, переименовывают и публикуют, и
+ * возить два мегабайта трижды - это ровно та трата, ради устранения которой список перестал их возить.
+ * Ключ - id и только id: payload меняется через push, а push сам чистит запись отсюда. */
+const loaded = new Map<string, Promise<Flow['payload']>>();
+
+export const fetchPayload = (id: string): Promise<Flow['payload']> => {
+  const have = loaded.get(id);
+  if (have) return have;
+  const asked = call<{ ok: true; id: string; payload: Flow['payload'] }>(
+    `/api/sync?flow=${encodeURIComponent(id)}`,
+  ).then((body) => body.payload);
+  loaded.set(id, asked);
+  /* Неудача не кэшируется: сеть моргнула - следующая попытка должна быть попыткой, а не тем же отказом. */
+  void asked.catch(() => loaded.delete(id));
+  return asked;
+};
+
+/**
+ * Payload этого флоу, откуда бы он ни взялся.
+ *
+ * ЧЕРЕЗ ЭТО ОБЯЗАН ИДТИ КАЖДЫЙ, кто собирается payload прочитать целиком или отправить обратно. Скилл
+ * отдаёт свой сразу - он приехал со списком; запись догружается. Разница видна здесь и больше нигде, что и
+ * есть смысл этой функции.
+ */
+export const payloadOf = async (flow: Flow): Promise<Flow['payload']> => {
+  if (!flow.payloadOmitted && flow.payload) return flow.payload;
+  return fetchPayload(flow.id);
+};
+
 export const push = async (payload: { flows?: unknown[]; runs?: unknown[]; deleted?: string[] }) =>
   /* The shape api/sync.js actually sends. It used to say `saved: { flows, runs }`, which is not on the wire
    * at all - the counts are top-level - and nothing noticed because the only field anybody reads is
@@ -245,6 +304,15 @@ export const push = async (payload: { flows?: unknown[]; runs?: unknown[]; delet
     body: JSON.stringify(payload.flows
       ? { ...payload, flows: await packFlows(payload.flows) }
       : payload),
+  }).then((body) => {
+    /* Что записали - то больше не то, что лежит в кэше. Чистится ПОСЛЕ ответа, а не до: отказ ничего не
+     * изменил, и выбрасывать из-за него верный payload значило бы платить за неудачу лишним запросом. */
+    for (const flow of payload.flows ?? []) {
+      const id = (flow as { id?: unknown } | null)?.id;
+      if (typeof id === 'string') loaded.delete(id);
+    }
+    for (const id of payload.deleted ?? []) loaded.delete(id);
+    return body;
   });
 
 export const devices = () => call<{ ok: true; devices: Device[] }>('/api/sync?tokens=1');

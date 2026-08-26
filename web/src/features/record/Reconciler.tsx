@@ -8,8 +8,8 @@
  * stores and the network, and is therefore the part worth keeping small.
  */
 import { useEffect, useRef } from 'react';
-import { push } from '@/lib/api';
-import { useAgent, useConsole } from '@/lib/store';
+import { fetchPayload, push } from '@/lib/api';
+import { type Recording, useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { flowFor } from './flow-for';
 import { reconcile } from './reconcile';
@@ -65,7 +65,42 @@ export const Reconciler = () => {
       const forget = new Set(plan.forget);
       const now = new Date().toISOString();
 
-      if (plan.pull.length || stamped.size || forget.size) {
+      /* ВНИЗ - ПО ОДНОЙ, И ТОЛЬКО ТЕ, КОГО ЗАБИРАЕМ.
+       *
+       * Список перестал везти события: 28 записей на живом аккаунте это 3213КБ на каждую загрузку
+       * приложения, а нужны они ровно тем, кого забирают в этот браузер - обычно никому, потому что
+       * во второй раз всё уже здесь.
+       *
+       * Не Promise.all: это мегабайты, и десяток параллельных запросов на старте страницы - это та же
+       * трата, от которой уходим, только сжатая во времени. Последовательно, и каждая неудача роняет
+       * ОДНУ запись, а не весь план: следующий проход попробует её снова, потому что она так и осталась
+       * не здесь. */
+      const pulled: Recording[] = [];
+      for (const want of plan.pull) {
+        try {
+          const payload = await fetchPayload(want.id) as {
+            events?: Recording['events']; windows?: Recording['windows'];
+          } | undefined;
+          const events = payload?.events ?? [];
+          /* Пустая запись не кладётся: она бы вытеснила ту, что лежит на аккаунте целой, и следующий
+           * проход посчитал бы, что здесь уже всё есть. */
+          if (!events.length) continue;
+          pulled.push({
+            id: want.id,
+            name: want.name,
+            created: want.created,
+            events,
+            windows: payload?.windows ?? [],
+            /* Stamped on arrival: it came FROM the account, so the account has acknowledged it by
+             * definition. Without this the next reconcile would try to push back what it just pulled. */
+            syncedAt: now,
+          });
+        } catch (_) {
+          /* Сеть моргнула. Запись осталась на аккаунте, и следующий проход придёт за ней снова. */
+        }
+      }
+
+      if (pulled.length || stamped.size || forget.size) {
         update((prev) => ({
           recordings: [
             ...prev.recordings
@@ -73,13 +108,15 @@ export const Reconciler = () => {
               .map((rec) => (stamped.has(rec.id) ? { ...rec, syncedAt: rec.syncedAt ?? now } : rec)),
             /* Appended, and the ids are the account's own, so a second pass finds them already here rather
              * than pulling a duplicate under a new name. */
-            ...plan.pull.filter((rec) => !prev.recordings.some((had) => had.id === rec.id)),
+            ...pulled.filter((rec) => !prev.recordings.some((had) => had.id === rec.id)),
           ],
           /* Said, not silent. Recordings appearing is welcome; recordings DISAPPEARING because another
            * machine deleted them is the kind of thing somebody needs to be told once. */
           lastSync: {
             at: now,
-            pulled: plan.pull.length,
+            /* Сколько ДОЕХАЛО, а не сколько собирались забрать: план - это намерение, а человеку
+             * сообщают о состоявшемся. */
+            pulled: pulled.length,
             pushed: sent.length,
             forgotten: plan.forget.length,
             left: plan.left.length,

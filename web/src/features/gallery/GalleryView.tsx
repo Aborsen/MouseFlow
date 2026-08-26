@@ -162,7 +162,7 @@ export const GalleryView = () => {
         setSaid({ text: 'That one has nothing a replay can use.', kind: 'bad' });
         return;
       }
-      adoptRecording({
+      void adoptRecording({
         id: `gal_${skill.id}`,
         source: 'desktop',
         kind: body.skill.kind,

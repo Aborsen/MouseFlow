@@ -26,7 +26,14 @@
 /** What the row says it is, or null if it was written before rows said. */
 export function roleOf(flow) {
   const payload = flow.payload;
-  const said = payload && typeof payload.role === 'string' ? payload.role : null;
+  /* Из СВОДКИ, когда payload не приехал. Список приложения перестал везти payload записей - он весил
+   * мегабайты на каждую загрузку, - и без этой второй половины roleOf возвращал бы null для КАЖДОЙ записи.
+   * Тихо: null это законный ответ («не проштампован»), поэтому запись, помеченная как skill, просто
+   * перестала бы ею считаться, и экран Skills показал бы не то. Сводка несёт role ровно для этого.
+   *
+   * Payload первым: он точнее - это то, что записано, - а сводка лишь пересказ. */
+  const said = payload && typeof payload.role === 'string' ? payload.role
+    : (flow.summary && typeof flow.summary.role === 'string' ? flow.summary.role : null);
   return said === 'recording' || said === 'skill' ? said : null;
 }
 /** The stamp to write. Kept here so the three writers cannot disagree about the spelling. */

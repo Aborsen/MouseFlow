@@ -383,14 +383,50 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       return undefined;
     }
     if (req.method === 'DELETE') return json(res, 200, { ok: true });
+
+    const live = [
+      ...FLOWS.filter((f) => !deletedFlows.has(f.id) && !pushedFlows.has(f.id)),
+      ...pushedFlows.values(),
+    ] as { id: string; kind?: string; payload?: Record<string, unknown> }[];
+
+    /* ОДИН PAYLOAD ПО ПРОСЬБЕ - тот же маршрут, что у настоящего эндпоинта. Без него превью показывало бы
+     * пустые записи при работающем коде: список их больше не везёт, а взять их было бы неоткуда. */
+    const asked = url.match(/[?&]flow=([^&]+)/);
+    if (asked) {
+      const want = decodeURIComponent(asked[1]);
+      const found = live.find((f) => f.id === want);
+      if (!found) {
+        return json(res, 404, { error: { type: 'sync_error', message: 'no flow with that id on this account' } });
+      }
+      return json(res, 200, { ok: true, id: want, payload: found.payload ?? {} });
+    }
+
     return json(res, 200, {
       ok: true,
       /* Фикстуры плюс записанное, минус помеченное удалённым - то есть тот же порядок правил, что у
-       * настоящего эндпоинта, и «сохранил → видно» наконец проверяется. */
-      flows: [
-        ...FLOWS.filter((f) => !deletedFlows.has(f.id) && !pushedFlows.has(f.id)),
-        ...pushedFlows.values(),
-      ],
+       * настоящего эндпоинта, и «сохранил → видно» наконец проверяется.
+       *
+       * И СВОДКА ВМЕСТО СОБЫТИЙ у записей, как на сервере. Мок, который везёт payload там, где сервер его
+       * не везёт, - это мок, под которым забытая догрузка выглядит работающей: третий раз за файл, и
+       * дважды из трёх это стоило дороже, чем написать правильно. */
+      flows: live.map((f) => {
+        const recorded = f.kind !== 'created';
+        const payload = f.payload ?? {};
+        const events = Array.isArray(payload.events) ? payload.events : [];
+        if (!recorded) return { ...f, payloadOmitted: false };
+        const { payload: _held, ...rest } = f;
+        return {
+          ...rest,
+          payloadOmitted: true,
+          summary: {
+            events: events.length,
+            bytes: JSON.stringify(payload).length,
+            windows: Array.isArray(payload.windows) ? payload.windows : [],
+            session: (payload.session as unknown) ?? null,
+            role: typeof payload.role === 'string' ? payload.role : null,
+          },
+        };
+      }),
       runs: [...RUNS, ...pushedRuns],
       you: ACCOUNT,
     });

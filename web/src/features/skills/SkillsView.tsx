@@ -28,6 +28,8 @@ import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { Page } from '@/shell/Surface';
 import { adoptRecording } from '@/features/record/adopt';
+/* Payload записи догружается: список его больше не везёт. Скилл отдаёт свой сразу. */
+import { payloadOf } from '@/lib/api';
 import { zip } from './zip';
 import { describeRecording, hasSkillFor } from '@/features/record/save-as-skill';
 import { SkillWizard } from '@/features/record/SkillWizard';
@@ -585,8 +587,13 @@ export const SkillsView = () => {
           created: flow.created,
           /* The payload carries a name of its own - saveAsGoalSkill writes one - and the two have to move
            * together. Left behind, it would be the name a restored copy came back under, which is a rename
-           * that undoes itself the next time somebody syncs. */
-          payload: { ...(flow.payload as Record<string, unknown>), name },
+           * that undoes itself the next time somebody syncs.
+           *
+           * ЧЕРЕЗ payloadOf, а не через flow.payload напрямую: список перестал везти события записей, а
+           * Skills показывает и записи тоже. Развернуть здесь undefined значило бы отправить запись без
+           * событий - то есть стереть час работы переименованием. Сервер это отказывается принимать
+           * (api/sync.js), но полагаться на его отказ здесь было бы «мы сломаем, а он поймает». */
+          payload: { ...(await payloadOf(flow) as Record<string, unknown>), name },
         }],
       });
       if (saved.problems.length) throw new Error(saved.problems.join('; '));
@@ -734,7 +741,8 @@ export const SkillsView = () => {
     setSaid(null);
     try {
       const { alreadyGone } = await galleryWithdraw(listing);
-      const payload = { ...(flow.payload as Record<string, unknown>) };
+      /* Тот же довод, что у переименования: это payload, который поедет ОБРАТНО. */
+      const payload = { ...(await payloadOf(flow) as Record<string, unknown>) };
       delete payload.publishedAs;
       delete payload.publishedAt;
       const saved = await push({
@@ -825,7 +833,9 @@ export const SkillsView = () => {
   const publish = useCallback(async (flow: Flow) => {
     if (!confirm(`Publish "${flow.name}" to the gallery? Anyone signed in can install it.`)) return;
     try {
-      const body = await galleryPublish(flow.payload, flow.source === 'desktop' ? 'desktop' : 'extension');
+      /* Опубликовать запись без событий - это опубликовать пустоту, и ошибкой это не выглядит: карточка
+       * появится, а установивший получит скилл, который ничего не делает. */
+      const body = await galleryPublish(await payloadOf(flow), flow.source === 'desktop' ? 'desktop' : 'extension');
       /* Written down, because nothing else can answer it later. gallery_skill has no back-reference to the
        * flow it came from, and the listing does not carry the payload, so reading the gallery to find out
        * whether THIS skill is in it would be a fetch per skill. This is knowledge we have at the moment we
@@ -843,7 +853,7 @@ export const SkillsView = () => {
             origins: flow.origins,
             created: flow.created,
             payload: {
-              ...(flow.payload as Record<string, unknown>),
+              ...(await payloadOf(flow) as Record<string, unknown>),
               publishedAs: listedId,
               publishedAt: new Date().toISOString(),
             },
@@ -1319,7 +1329,7 @@ export const SkillsView = () => {
                           size="sm"
                           leftSlot={<Monitor className="size-4" />}
                           onClick={() => {
-                            adoptRecording(flow);
+                            void adoptRecording(flow);
                             void navigate({ to: '/record' });
                           }}
                         >
@@ -1432,7 +1442,8 @@ export const SkillsView = () => {
                           leftSlot={<Copy className="size-4" />}
                           onClick={async () => {
                             try {
-                              await navigator.clipboard.writeText(JSON.stringify(flow.payload, null, 2));
+                              await navigator.clipboard.writeText(
+                                JSON.stringify(await payloadOf(flow), null, 2));
                               setSaid({ text: 'Copied it.', kind: 'good' });
                             } catch (_) {
                               setSaid({ text: 'The clipboard was blocked.', kind: 'bad' });

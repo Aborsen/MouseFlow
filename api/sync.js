@@ -133,6 +133,10 @@ async function handler(req, res) {
       if (who.via !== 'session') return fail(res, 403, 'only a signed-in browser can revoke a device');
       return await revokeToken(req, res, sql, who);
     }
+    /* ОДИН PAYLOAD, ПО ПРОСЬБЕ. Список их больше не везёт (см. pull), а нужны они там, где с записью
+     * действительно что-то делают: забирают в браузер, переименовывают, публикуют, открывают. Все эти
+     * случаи - действие человека, а не открытие страницы, и лишний запрос там незаметен. */
+    if (req.method === 'GET' && query.flow) return await onePayload(res, sql, who, query.flow);
     if (req.method === 'GET') return await pull(res, sql, who);
     if (req.method === 'PATCH') return await setPref(req, res, sql, who);
     if (req.method === 'POST') return await push(req, res, sql, who);
@@ -211,8 +215,30 @@ async function revokeToken(req, res, sql, who) {
 /* ----------------------------------------------------------------------- reading */
 
 async function pull(res, sql, who) {
+  /* СОБЫТИЯ НЕ ЕДУТ В СПИСКЕ, и это разница между 3.2МБ и 8КБ на каждую загрузку приложения.
+   *
+   * Замерено на живом аккаунте: 28 записей несут 3213КБ, 4 скилла - 5КБ. То есть 99.8% веса этого ответа
+   * это `events`, а нужны они ровно в двух случаях: когда запись ЗАБИРАЮТ в браузер и когда с ней что-то
+   * делают. Оба - действия, а не открытие списка.
+   *
+   * Поэтому запись отдаёт СВОДКУ: сколько событий, в каких окнах, часть ли это длинной сессии, сколько
+   * весит. Ровно то, на чём reconcile принимает решения (см. web/src/features/record/reconcile.ts) - и
+   * ничего сверх. Сам payload берут по одному, через ?flow=<id>.
+   *
+   * Скиллы payload ВЕЗУТ: пять килобайт на все, и без него скилл нельзя запустить - а запустить его можно
+   * из списка, не открывая ничего.
+   *
+   * Считается в SQL, а не в JS: тянуть 3МБ из базы, чтобы посчитать длину массива и выбросить, - это та же
+   * работа, только на другой стороне провода. */
   const flows = await sql`
-    select client_id, source, kind, name, description, payload, origins, created_at, updated_at
+    select client_id, source, kind, name, description, origins, created_at, updated_at,
+           octet_length(payload::text) as bytes,
+           case when kind = 'created' then payload else null end as payload,
+           case when jsonb_typeof(payload->'events') = 'array'
+                then jsonb_array_length(payload->'events') else 0 end as events,
+           payload->'windows' as windows,
+           payload->'session' as session,
+           payload->'role' as role
     from user_flow
     where user_id = ${who.id} and deleted_at is null
     order by updated_at desc
@@ -253,6 +279,18 @@ async function pull(res, sql, who) {
     flows: flows.map((f) => ({
       id: f.client_id, source: f.source, kind: f.kind, name: f.name, description: f.description,
       payload: f.payload, origins: f.origins, created: f.created_at, updated: f.updated_at,
+      /* ПОЛОЖИТЕЛЬНЫЙ признак, а не отсутствие поля. «payload === undefined» читается и как «не приехал», и
+       * как «пустой», и первое же место, которое перепутает их и запушит обратно, сотрёт запись. Здесь
+       * сказано прямо: его НЕ ПРИСЛАЛИ, спрашивай отдельно. */
+      payloadOmitted: f.payload === null || f.payload === undefined,
+      /* То, на чём принимают решения, не открывая payload. */
+      summary: {
+        events: Number(f.events) || 0,
+        bytes: Number(f.bytes) || 0,
+        windows: Array.isArray(f.windows) ? f.windows : [],
+        session: f.session && typeof f.session === 'object' ? f.session : null,
+        role: typeof f.role === 'string' ? f.role : null,
+      },
     })),
     runs: runs.map((r) => ({
       id: r.client_id, kind: r.kind, goal: r.goal, model: r.model, flowId: r.flow_id,
@@ -260,6 +298,21 @@ async function pull(res, sql, who) {
       extension: r.extension, startedAt: r.started_at, finishedAt: r.finished_at,
     })),
   });
+}
+
+/** Один payload по клиентскому id. Ничего, кроме него: список уже рассказал, что это за флоу. */
+async function onePayload(res, sql, who, id) {
+  const clientId = text(id, 80);
+  if (!clientId) return fail(res, 400, 'which flow?');
+  const rows = await sql`
+    select payload from user_flow
+    where user_id = ${who.id} and client_id = ${clientId} and deleted_at is null
+    limit 1
+  `;
+  /* 404, а не пустой payload: «нет такой записи» и «запись без содержимого» - разные ответы, и клиент,
+   * который получит второй вместо первого, запишет пустоту поверх. */
+  if (!rows.length) return fail(res, 404, 'no flow with that id on this account');
+  return res.status(200).json({ ok: true, id: clientId, payload: rows[0].payload });
 }
 
 /* ----------------------------------------------------------------------- writing */
@@ -308,6 +361,33 @@ async function push(req, res, sql, who) {
         Math.round(encoded.length / 1024) + 'KB, and the ceiling is '
         + Math.round(PAYLOAD_MAX_BYTES / 1024) + 'KB)');
       continue;
+    }
+    /* ЗАПИСЬ НЕ ТЕРЯЕТ СОБЫТИЯ ПРИ ОБНОВЛЕНИИ. Инвариант, а не аккуратность на вызывающей стороне.
+     *
+     * Список больше не везёт `events`, и в приложении есть места, которые берут флоу из списка,
+     * разворачивают его payload и пушат обратно: переименование в Skills делает ровно
+     * `{ ...flow.payload, name }`. Забыть там дозагрузку - значит записать пустоту поверх часа работы,
+     * молча и необратимо. Клиент это делает правильно (payloadOf), но «клиент делает правильно» - это не
+     * гарантия, а надежда: клиентов четыре, включая расширение и агентов, и следующий появится завтра.
+     *
+     * Обратного случая нет. Обрезка шагов (removeSteps) события сохраняет; скилл из записи пишется под
+     * своим id (`gs_`/`gd_`), а не поверх неё. Запись, у которой events становятся пустыми, - это всегда
+     * ошибка, а не намерение. */
+    const incoming = Array.isArray(payload.events) ? payload.events.length : 0;
+    if (!incoming) {
+      const had = await sql`
+        select case when jsonb_typeof(payload->'events') = 'array'
+                    then jsonb_array_length(payload->'events') else 0 end as events
+        from user_flow
+        where user_id = ${who.id} and client_id = ${clientId} and deleted_at is null
+        limit 1
+      `;
+      if (had.length && Number(had[0].events) > 0) {
+        problems.push('"' + (flow.name || clientId) + '" arrived with no events, and the account holds '
+          + had[0].events + ' — refusing to overwrite a recording with an empty one. Load its payload '
+          + 'first (GET /api/sync?flow=' + clientId + ') and send it back whole.');
+        continue;
+      }
     }
     const kind = flow.kind === 'created' ? 'created' : 'recorded';
     /* Which half made it. Not inferred from the payload: the shapes are similar enough that a guess

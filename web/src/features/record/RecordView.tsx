@@ -47,6 +47,8 @@ import { SkillWizard } from './SkillWizard';
 import type { GoalSkillSource } from './save-as-skill';
 import { WaitingForThisMac } from './WaitingForThisMac';
 import { flowFor } from './flow-for';
+/* Payload записи догружается по просьбе: список его больше не везёт. */
+import { payloadOf } from '@/lib/api';
 
 /* mm:ss, for the readout beside the disc.
  *
@@ -928,20 +930,30 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
    * `from_<id>`, чтобы копия для проигрывания не путалась с оригиналом на аккаунте. Здесь копии нет - это та
    * же запись, и под новым id она осталась бы сиротой: строка аккаунта по-прежнему ни с чем не совпадает,
    * полоса не уходит, дашборд считает её дважды. На этом и попалось в браузере. */
-  const adoptOrphan = useCallback((flow: Flow) => {
-    const events = flow.payload?.events as RecordedEvent[] | undefined;
+  const adoptOrphan = useCallback(async (flow: Flow) => {
+    if (state.recordings.some((rec) => rec.id === flow.id)) return;
+    /* Догружается: список перестал везти события записей - см. payloadOf. Проверка «уже здесь» подняте
+     * ВЫШЕ загрузки, потому что тащить два мегабайта ради того, чтобы выяснить, что они уже лежат в этом
+     * браузере, - это ровно та трата, от которой уходим. */
+    let payload;
+    try {
+      payload = await payloadOf(flow);
+    } catch (_) {
+      setNote(`"${flow.name}" could not be loaded from your account just now. Try again.`);
+      return;
+    }
+    const events = payload?.events as RecordedEvent[] | undefined;
     if (!Array.isArray(events) || !events.length) {
       setNote(`"${flow.name}" has no events stored, so there is nothing to bring here.`);
       return;
     }
-    if (state.recordings.some((rec) => rec.id === flow.id)) return;
     update((prev) => ({
       recordings: [...prev.recordings, {
         id: flow.id,
         name: flow.name || 'From the account',
         created: flow.created ?? new Date().toISOString(),
         events,
-        windows: (flow.payload?.windows as { title: string; process: string }[] | undefined) ?? [],
+        windows: (payload?.windows as { title: string; process: string }[] | undefined) ?? [],
       }],
     }));
   }, [state.recordings, update]);
@@ -1112,9 +1124,12 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
            * so calling it a stray is technically true and substantively wrong. Worse, the strip offers to
            * "bring them here", which for sixteen parts is exactly the several megabytes of events that made
            * eight hours impossible in the first place. */
-          && !sessionOf(flow.payload)
+          /* Из СВОДКИ, когда payload не приехал: список перестал везти события записей, а без этой второй
+           * половины ни одна часть длинной сессии не опознавалась бы как часть - и полоса предложила бы
+           * «забрать сюда» те самые несколько мегабайт, ради которых сессии и режутся. */
+          && !sessionOf(flow.payload ?? (flow.summary?.session ? { session: flow.summary.session } : null))
         ))}
-        onAdopt={(flow) => adoptOrphan(flow)}
+        onAdopt={(flow) => { void adoptOrphan(flow); }}
         onImport={(files) => { void importFiles(files); }}
         /* Over on the Skills page, not here.
          *

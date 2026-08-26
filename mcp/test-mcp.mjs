@@ -1014,7 +1014,12 @@ check('a skill can be renamed, which the account always allowed and the page nev
   /const rename = useCallback\(async \(flow: Flow, next: string\)/.test(skillsView));
 /* payload.name is written by saveAsGoalSkill; left behind it is the name a restored copy comes back under. */
 check('and the payload name moves with it, or the rename undoes itself on the next sync',
-  /payload: \{ \.\.\.\(flow\.payload as Record<string, unknown>\), name \}/.test(skillsView));
+  /\.\.\.\(await payloadOf\(flow\) as Record<string, unknown>\), name \}/.test(skillsView));
+/* И ЧЕРЕЗ payloadOf, а не через flow.payload напрямую. Список приложения перестал везти события записей
+ * (28 записей = 3213КБ на каждую загрузку), а Skills показывает записи тоже - значит развернуть здесь
+ * flow.payload значило бы отправить запись БЕЗ событий, то есть стереть час работы переименованием. */
+check('и payload догружается, а не берётся из списка, который его больше не везёт',
+  !/\{ \.\.\.\(flow\.payload as Record<string, unknown>\)/.test(skillsView));
 check('and the person is told the tool name an AI calls changed too',
   /pointed at the old name will need the new one/.test(skillsView));
 
@@ -2315,6 +2320,82 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------- события не едут в списке, а приезжают по просьбе */
+
+/* GET /api/sync отдавал payload КАЖДОГО флоу без limit. Замерено на живом аккаунте: 28 записей - 3213КБ,
+ * 4 скилла - 5КБ. То есть 99.8% веса ответа это `events`, и приложение возило их на каждой загрузке, хотя
+ * нужны они ровно двум действиям: забрать запись в браузер и что-то с ней сделать.
+ *
+ * Опасность правки не в том, что что-то не покажется, а в том, что что-то СОТРЁТСЯ: переименование в
+ * Skills делает `{ ...payload, name }` и пушит обратно, а Skills показывает и записи тоже. */
+group('список не везёт события, и от этого ничего не теряется');
+{
+  const sync = read('../api/sync.js');
+  const api = read('../web/src/lib/api.ts');
+  const reconcile = read('../web/src/features/record/reconcile.ts');
+  const reconciler = read('../web/src/features/record/Reconciler.tsx');
+
+  /* Считается в SQL: вытащить 3МБ, чтобы посчитать длину массива и выбросить, - та же работа, только на
+   * другой стороне провода. */
+  check('список считает сводку в SQL, а не тянет payload, чтобы посчитать',
+    /jsonb_array_length\(payload->'events'\)/.test(sync)
+      && /octet_length\(payload::text\) as bytes/.test(sync));
+  /* Скиллы payload везут: пять килобайт на все, и запустить скилл можно прямо из списка. */
+  check('но скиллы payload по-прежнему везут, их запускают из списка',
+    /case when kind = 'created' then payload else null end as payload/.test(sync));
+  check('и есть маршрут за одним payload', /query\.flow\) return await onePayload/.test(sync));
+  /* «Нет такой записи» и «запись без содержимого» - разные ответы, и клиент, получивший второй вместо
+   * первого, запишет пустоту поверх. */
+  check('которого нет - это 404, а не пустой payload',
+    /no flow with that id on this account/.test(sync));
+
+  /* ГЛАВНОЕ: инвариант на сервере. Клиент делает правильно, но клиентов четыре, включая расширение и
+   * агентов, и следующий появится завтра. */
+  check('сервер отказывается писать пустые события поверх непустых',
+    /refusing to overwrite a recording with an empty one/.test(sync));
+  check('и говорит, что делать вместо этого', /GET \/api\/sync\?flow=/.test(sync));
+
+  /* Положительный признак, а не отсутствие поля: undefined читается и как «не приехало», и как «пусто». */
+  check('«не приехал» сказано прямо, а не оставлено на догадку',
+    /payloadOmitted: f\.payload === null \|\| f\.payload === undefined/.test(sync)
+      && /payloadOmitted\?: boolean;/.test(api));
+  check('и тип признаёт, что payload может не приехать', /payload\?: \{/.test(api));
+  check('есть одна дверь, через которую его берут', /export const payloadOf = async/.test(api));
+  check('и она кэширует на время жизни страницы', /const loaded = new Map<string, Promise</.test(api));
+  /* Сеть моргнула - следующая попытка должна быть попыткой, а не тем же отказом. */
+  check('но не кэширует отказ', /void asked\.catch\(\(\) => loaded\.delete\(id\)\)/.test(api));
+  /* Что записали - то больше не то, что лежит в кэше. */
+  check('и push чистит то, что сам переписал', /for \(const id of payload\.deleted \?\? \[\]\) loaded\.delete\(id\)/.test(api));
+
+  /* «Правила можно прогнать, а не прочитать» - на этом стоят все её тесты, и асинхронность внутри убила
+   * бы ровно это. */
+  check('reconcile осталась чистой: план НАЗЫВАЕТ, кого забрать',
+    /pull: Wanted\[\];/.test(reconcile) && !/await/.test(reconcile));
+  check('и решает по сводке, когда payload не приехал',
+    /return flow\.summary\?\.events \?\? 0;/.test(reconcile)
+      && /return flow\.summary\?\.bytes \?\? 0;/.test(reconcile));
+  /* Ответ старого развёртывания сводки не несёт, и мок тоже - а первый же прогон против такого сервера
+   * решил бы, что записей нет, и предложил стереть локальные. */
+  check('но payload читается первым, когда он есть',
+    /if \(Array\.isArray\(payload\?\.events\)\) return payload\.events\.length;/.test(reconcile));
+
+  /* Десяток параллельных запросов по мегабайту на старте страницы - та же трата, только сжатая во времени. */
+  check('забирает по одной, а не Promise.all',
+    /for \(const want of plan\.pull\)/.test(reconciler) && !/Promise\.all\(plan\.pull/.test(reconciler));
+  /* Пустая запись вытеснила бы целую, и следующий проход счёл бы, что здесь уже всё есть. */
+  check('и не кладёт пустую запись поверх непришедшей',
+    /if \(!events\.length\) continue;/.test(reconciler));
+  check('а человеку сообщает, сколько ДОЕХАЛО', /pulled: pulled\.length/.test(reconciler));
+
+  /* roleOf читает payload.role. Без второй половины он вернул бы null для КАЖДОЙ записи - тихо, потому
+   * что null законный ответ, - и Skills показал бы не то. */
+  const role = read('../api/_flow-role.mjs');
+  check('роль читается из сводки, когда payload не приехал',
+    /flow\.summary && typeof flow\.summary\.role === 'string'/.test(role));
+  check('и payload остаётся первым, потому что он точнее',
+    /payload && typeof payload\.role === 'string' \? payload\.role/.test(role));
+}
+
 /* ------------------------------------------------------- длинная запись доезжает до аккаунта */
 
 /* Человек записал полтора часа работы - 34 722 события, 2098КБ - и запись не уехала никуда. Потолок
