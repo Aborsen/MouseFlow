@@ -141,7 +141,7 @@ export const TeamView = () => {
   const { account, flows } = useAccount();
   /* Read once for the whole session and kept, so coming back to this page does not sit on "Reading…" for a
    * round trip that answers the same list. See the note on `teams` in AccountProvider. */
-  const { teams, mail, problem: teamsProblem, refresh: loadTeams } = useTeams();
+  const { teams, invitations, mail, problem: teamsProblem, refresh: loadTeams } = useTeams();
   const [openId, setOpenId] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
@@ -294,6 +294,27 @@ export const TeamView = () => {
    * ONLY THE ONES YOU OWN can be ticked, because only an owner may delete a team. A tick that leads to
    * "not found" is a promise the row could not keep, and the row knows in advance. */
   const [pickedTeams, setPickedTeams] = useState<Set<string>>(new Set());
+  /* Ответ на приглашение. Одно из двух и оба необратимы по-разному: вступление открывает команде часть
+   * того, что происходит на аккаунте, отказ убирает приглашение совсем. Поэтому кнопки две и обе названы
+   * глаголом, а не «ок». */
+  const [answering, setAnswering] = useState<string | null>(null);
+  const answerInvite = useCallback(async (id: string, join: boolean, name: string) => {
+    setAnswering(id);
+    setSaid(null);
+    try {
+      await callTeams(`?id=${encodeURIComponent(id)}&${join ? 'accept' : 'decline'}=1`, { method: 'POST' });
+      await loadTeams();
+      setSaid({
+        text: join ? `You are in "${name}".` : `The invitation to "${name}" is gone.`,
+        kind: 'good',
+      });
+    } catch (err) {
+      setSaid({ text: err instanceof Error ? err.message : 'that did not go through', kind: 'bad' });
+    } finally {
+      setAnswering(null);
+    }
+  }, [loadTeams]);
+
   const ownTeams = useMemo(() => (teams ?? []).filter((t) => t.role === 'owner').map((t) => t.id), [teams]);
   const liveTeams = useMemo(
     () => new Set([...pickedTeams].filter((id) => ownTeams.includes(id))),
@@ -383,6 +404,56 @@ export const TeamView = () => {
         </header>
 
         <Said note={said} onDismiss={() => setSaid(null)} className="mb-4" />
+
+        {/* ПРИГЛАШЕНИЯ - НАД СПИСКОМ, И НА НИХ ОТВЕЧАЮТ.
+          *
+          * До этого их не существовало как вещи: сервер превращал приглашение в членство при первом же
+          * чтении списка, а для существующего аккаунта не спрашивал и вовсе - писал в team_member прямо.
+          * То есть любой, кто знает чужой адрес, заводил команду, добавлял туда человека и получал его
+          * цели прогонов и заголовки записанных окон. Человек узнавал об этом, только заглянув сюда.
+          *
+          * Над списком, а не в нём: он в этих командах НЕ состоит, и показать их вперемешку значило бы
+          * повторить ту же ошибку в интерфейсе. */}
+        {invitations.length > 0 && (
+          <section className="mb-4 rounded-xl border border-brand-primary/40 bg-surface-accent p-3.5">
+            <Typography variant="p" weight="semibold" className="text-[0.92rem]">
+              {invitations.length === 1 ? 'You have been invited to a team' : `You have ${invitations.length} team invitations`}
+            </Typography>
+            <Typography variant="p" className="mt-1 max-w-[74ch] text-ink-secondary text-[0.84rem]">
+              Joining lets the people running that team see that work is happening on your account — who
+              recorded, when, and how runs ended. It does not open what is inside a recording.
+            </Typography>
+            <div className="mt-3 flex flex-col gap-2">
+              {invitations.map((invite) => (
+                <div key={invite.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-stroke bg-surface-card px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <Typography variant="p" weight="semibold" className="truncate text-[0.9rem]">
+                      {invite.name}
+                    </Typography>
+                    <Typography variant="p" className="text-ink-inactive text-[0.78rem]">
+                      as {invite.role} · {invite.members} {invite.members === 1 ? 'member' : 'members'}
+                    </Typography>
+                  </div>
+                  <Button
+                    size="sm"
+                    isLoading={answering === invite.id}
+                    onClick={() => { void answerInvite(invite.id, true, invite.name); }}
+                  >
+                    Join
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    isLoading={answering === invite.id}
+                    onClick={() => { void answerInvite(invite.id, false, invite.name); }}
+                  >
+                    Decline
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* Naming it happens here rather than in a dialog: it is one field, and a dialog for one field is a
           * second window to open and close for something that takes four seconds. */}

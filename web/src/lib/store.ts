@@ -123,10 +123,40 @@ const EMPTY: Console = {
   flowForever: false,
 };
 
-function read(): Console {
+/* ЧЬИ ЭТО ЗАПИСИ. По слоту на аккаунт, и указатель на последний - синхронно.
+ *
+ * lib/kept.ts уже носит и механизм, и предупреждение: «кэш чужих скилов, отданный следующему, кто вошёл на
+ * этой машине, - это не медленная страница, это утечка». И там же сказано, что ЭТО хранилище по человеку
+ * не ключуется. Последствие было хуже, чем показ чужого: Reconciler считает местную запись без штампа
+ * работой того, кто сейчас вошёл, и отправляет её наверх - то есть записи A появлялись на аккаунте B.
+ * Достаточно было, чтобы одна из них не проштамповалась (например, не влезла в потолок синхронизации),
+ * а A вышел и B вошёл на том же ноутбуке.
+ *
+ * ПОЧЕМУ НЕ ПРОСТО «ЧИТАТЬ, КОГДА УЗНАЕМ, КТО ВОШЁЛ». Чтение здесь синхронное, на загрузке модуля, и
+ * ровно поэтому страница Record открывается сразу со всем, что на ней есть. Ждать сессию значило бы
+ * менять утечку на секунду ожидания для КАЖДОГО - при том, что общий браузер редок.
+ *
+ * Поэтому указатель. Пересечение аккаунтов случается по пути «A вышел → B вошёл», а выход - это наш
+ * собственный код: он указатель стирает, и следующая загрузка начинает с пустого. Если A не выходил,
+ * пересечения и нет - сессия по-прежнему его.
+ *
+ * И на всякий случай второй замок: claimStore() сверяет слот с настоящим id, когда тот приезжает, а
+ * Reconciler до этого наверх ничего не шлёт. */
+const WHO = 'mouseflow.who';
+const slotFor = (id: string) => `${KEY}:${id}`;
+
+/** Кем этот браузер пользовались в прошлый раз. Стирается выходом - см. AccountProvider.leave. */
+function lastWho(): string | null {
+  try { return localStorage.getItem(WHO); } catch (_) { return null; }
+}
+
+/** Чей слот сейчас в памяти. null - ничей: либо ещё не знаем, либо предыдущий вышел. */
+let heldFor: string | null = null;
+
+function readSlot(key: string): Console | null {
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return EMPTY;
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
     const saved = JSON.parse(raw) as Partial<Console>;
     return {
       ...EMPTY,
@@ -139,19 +169,66 @@ function read(): Console {
       port: Number.isFinite(saved.port) ? (saved.port as number) : 8787,
     };
   } catch (_) {
-    return EMPTY;
+    return null;
   }
+}
+
+function read(): Console {
+  const who = lastWho();
+  if (who) {
+    heldFor = who;
+    const mine = readSlot(slotFor(who));
+    if (mine) return mine;
+  }
+  /* Ничего под указателем - но под старым общим ключом может лежать то, что писали до этой правки.
+   * Забирается ОДИН раз, тем, кто первым назовёт себя (см. claimStore): выбросить это значило бы стереть
+   * чужие записи при обновлении, а раздавать всем подряд - то, что здесь и чинится. */
+  return EMPTY;
 }
 
 /* One copy in memory, shared by every component that asks, so two lists of recordings can never disagree
  * about what is in them. */
 let current = read();
+
+/**
+ * Кто это на самом деле - как только аккаунт ответил.
+ *
+ * Совпало с указателем - ничего не происходит, страница уже открыта с их записями. Не совпало - в памяти
+ * оказывается ИХ слот, а чужой остаётся на диске нетронутым: человек, вернувшийся на этот ноутбук, найдёт
+ * свои записи там, где оставил.
+ */
+export function claimStore(id: string | null): void {
+  if (!id) return;
+  if (heldFor === id) return;
+  const mine = readSlot(slotFor(id));
+  /* Наследство от сборки без слотов. Достаётся первому, кто назвался, и только если своего слота у него
+   * ещё нет: сегодня эти записи видит КТО УГОДНО, кто откроет страницу, так что забрать их однажды - строго
+   * лучше, чем оставить как есть, и ничего не теряет. */
+  const legacy = mine ? null : readSlot(KEY);
+  heldFor = id;
+  try { localStorage.setItem(WHO, id); } catch (_) { /* private mode */ }
+  if (legacy) { try { localStorage.removeItem(KEY); } catch (_) { /* ignore */ } }
+  commit(mine ?? legacy ?? EMPTY);
+}
+
+/** Чей слот сейчас в памяти. Reconciler спрашивает это, прежде чем что-либо отправить. */
+export const storeHeldFor = (): string | null => heldFor;
+
+/** На выходе: в памяти пусто, указателя нет, диск не тронут. */
+export function releaseStore(): void {
+  heldFor = null;
+  try { localStorage.removeItem(WHO); } catch (_) { /* private mode */ }
+  commit(EMPTY);
+}
 const listeners = new Set<() => void>();
 
 function commit(next: Console) {
   current = next;
   try {
-    localStorage.setItem(KEY, JSON.stringify(next));
+    /* В слот того, чьё это. Пока никто не назвался, на диск не пишется вовсе: запись, сделанная до того,
+     * как аккаунт ответил, не знает, чья она, и класть её в общий ключ значило бы завести ровно ту кучу,
+     * из-за которой всё это переписано. В памяти она есть и никуда не денется - claimStore её сохранит. */
+    if (heldFor) localStorage.setItem(slotFor(heldFor), JSON.stringify(next));
   } catch (_) {
     // Private mode, or a full quota. The session still works; only persistence is lost.
   }

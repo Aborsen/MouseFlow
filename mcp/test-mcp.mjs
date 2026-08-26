@@ -1136,8 +1136,14 @@ check('and the kept copy does not make the account look answered',
   /setKnown\(true\);\n      \}/.test(provider)
     && !/setLoaded\(true\);\n        setKnown/.test(provider));
 check('so the reconciliation still waits for the real answer',
-  /const \{ flows, loaded, reload \} = useAccount\(\)/.test(read('../web/src/features/record/Reconciler.tsx'))
+  /const \{ account, flows, loaded, reload \} = useAccount\(\)/.test(read('../web/src/features/record/Reconciler.tsx'))
     && /if \(!loaded\) return;/.test(read('../web/src/features/record/Reconciler.tsx')));
+/* И ЧЬИ ЭТО ЗАПИСИ - второй вопрос, не тот же самый. `loaded` отвечает «аккаунт ответил»; то, что лежит в
+ * этом браузере, могло быть записано предыдущим человеком, и Reconciler считает местную запись без штампа
+ * работой того, кто сейчас вошёл. */
+check('и чьи это записи - тоже, иначе они уедут не на тот аккаунт',
+  /if \(!account \|\| storeHeldFor\(\) !== account\.id\) return;/
+    .test(read('../web/src/features/record/Reconciler.tsx')));
 /* One place applies a sync answer now. Two copies of that drifted once already - the file's opening note is
  * about three separate reads of /api/sync that could and did disagree. */
 check('and one place applies an answer, whether it came at boot or later',
@@ -2320,6 +2326,91 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* ------------------------------------------------------- чужие данные не достаются не тому */
+
+group('записи не переходят к следующему, кто вошёл на этой машине');
+{
+  const store = read('../web/src/lib/store.ts');
+  const provider = read('../web/src/shell/AccountProvider.tsx');
+  const bg = read('../extension/background.js');
+
+  /* lib/kept.ts носил и механизм, и предупреждение - «кэш чужих скилов, отданный следующему, кто вошёл на
+   * этой машине, это не медленная страница, это утечка», - и там же сказано, что ЭТО хранилище по человеку
+   * не ключуется. Последствие было хуже показа: Reconciler отправлял чужие записи на аккаунт вошедшего. */
+  check('у записей теперь слот на аккаунт', /const slotFor = \(id: string\) => `\$\{KEY\}:\$\{id\}`;/.test(store));
+  check('и на диск не пишется, пока никто не назвался',
+    /if \(heldFor\) localStorage\.setItem\(slotFor\(heldFor\)/.test(store));
+  /* Указатель - то, что сохраняет мгновенное открытие страницы: ждать сессию значило бы менять утечку на
+   * секунду ожидания для каждого. Пересечение случается по пути «A вышел → B вошёл», а выход это наш код. */
+  check('выход стирает указатель, но не диск',
+    /export function releaseStore\(\): void \{[\s\S]{0,200}?localStorage\.removeItem\(WHO\)/.test(store));
+  check('и вызывается на выходе', /releaseStore\(\);/.test(provider));
+  check('а вход сверяет слот с настоящим id', /claimStore\(me\?\.id \?\? null\);/.test(provider));
+  /* Наследство от сборки без слотов достаётся первому, кто назвался: сегодня эти записи видит кто угодно,
+   * так что забрать их однажды строго лучше, чем оставить. */
+  check('и наследство забирается один раз, а не раздаётся всем',
+    /const legacy = mine \? null : readSlot\(KEY\);/.test(store)
+      && /localStorage\.removeItem\(KEY\)/.test(store));
+
+  /* Расширение: скиллы и следы прогонов живут в chrome.storage.local и ни к какому аккаунту не привязаны. */
+  check('расширение сверяет, кто был привязан раньше',
+    /const wasSomebodyElse = !syncWho \|\| !who \|\| syncWho\.id !== who\.id;/.test(bg));
+  /* Чистится, а не «не отправляется»: не отправлять значило бы оставить чужие скиллы лежать и показывать
+   * их новому человеку в его собственном списке. */
+  check('и чистит местное ДО того, как что-либо уедет',
+    /remove\(\['skills', 'agentTrace', 'agentTraceHistory', 'syncDeleted', 'syncedAt'\]\)/.test(bg));
+}
+
+group('в команду попадают по согласию, а не по чужому решению');
+{
+  const team = read('../api/team.js');
+
+  /* Была развилка: существующий аккаунт вписывался в team_member прямо, без приглашения и без спроса. */
+  /* Именно в addMember, а не во всём файле: acceptInvite членство пишет - там оно и должно появляться,
+   * это и есть согласие. Проверка на весь файл ловила бы правильный код и требовала его убрать. */
+  const addMemberBody = (() => {
+    const at = team.indexOf('async function addMember(');
+    if (at < 0) return '';
+    const next = team.indexOf('\nasync function ', at + 10);
+    return team.slice(at, next < 0 ? undefined : next);
+  })();
+  check('тело addMember найдено', addMemberBody.length > 200, String(addMemberBody.length));
+  check('добавление больше не пишет членство напрямую',
+    !/insert into team_member/.test(addMemberBody));
+  check('а всегда пишет приглашение', /insert into team_invite \(team_id, email, role, invited_by\) values/.test(team));
+  /* И вторая половина: claimInvites превращал приглашение в членство при чтении списка - то есть согласие
+   * было побочным эффектом того, что человек открыл страницу. */
+  check('и чтение списка больше никого никуда не вступает', !/claimInvites\(sql, who\)/.test(team));
+  check('вступление - отдельное действие', /async function acceptInvite\(sql, who, teamId\)/.test(team));
+  check('и отказ тоже', /async function declineInvite\(sql, who, teamId\)/.test(team));
+  /* Токен коннектора получен по согласию, перечисляющему три возможности, и вступления в команду там нет. */
+  check('ответить на приглашение можно только из браузера',
+    /only a signed-in browser can answer an invitation/.test(team));
+  /* DELETE ?team=1 с Bearer-токеном сносил команду для всех участников, а каскадом - общие записи. */
+  check('и разрушительное в командах - тоже только из браузера',
+    /only a signed-in browser can change a team/.test(team));
+
+  /* Лимит считал team_invite, а ветка для существующего аккаунта строк туда не писала - значит счёт был
+   * вечным нулём, и письма любому зарегистрированному пользователю ничем не ограничивались. Теперь строка
+   * пишется всегда, и тот же запрос наконец считает то, на что смотрит. */
+  check('лимит приглашений считает таблицу, в которую теперь и правда пишут',
+    /select count\(\*\)::int as sent from team_invite/.test(team)
+      && /insert into team_invite \(team_id, email, role, invited_by\) values/.test(team));
+  /* Второе письмо тому, кто уже в команде, - это не приглашение. */
+  check('и тому, кто уже в команде, второго письма не шлют',
+    /if \(already\.length\) \{[\s\S]{0,160}?mailed: false/.test(team));
+
+  /* Приглашение - не команда: человек в ней не состоит, и складывать их в один список значило бы
+   * повторить ту же ошибку в интерфейсе. */
+  const view = read('../web/src/features/team/TeamView.tsx');
+  check('экран показывает приглашения отдельно от команд',
+    /invitations\.length > 0 && \(/.test(view) && /You have been invited to a team/.test(view));
+  check('и предлагает оба ответа глаголом, а не «ок»',
+    />\s*Join\s*<\/Button>/.test(view) && />\s*Decline\s*<\/Button>/.test(view));
+  check('и говорит, что вступление открывает',
+    /see that work is happening on your account/.test(view));
+}
+
 /* ------------------------------------------------ что уходит с машины, и молчание о потерянном */
 
 group('адрес режется у источника на обеих половинах');

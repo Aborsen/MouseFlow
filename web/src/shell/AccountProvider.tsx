@@ -11,8 +11,10 @@ import {
   createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
 import { type Account, type Flow, type Run, pull, signOut, whoAmI } from '@/lib/api';
-import { type MailState, type TeamList, type TeamRow, callTeams } from '@/lib/teams';
+import { type MailState, type TeamInvite, type TeamList, type TeamRow, callTeams } from '@/lib/teams';
 import { KEPT_ACCOUNT, KEPT_TEAMS, forget, keep, kept } from '@/lib/kept';
+/* Записи в этом браузере ключуются аккаунтом - см. lib/store.ts. */
+import { claimStore, releaseStore } from '@/lib/store';
 import { LANDINGS } from '@/features/auth/shared';
 
 interface AccountValue {
@@ -54,6 +56,8 @@ interface AccountValue {
    * page made with `flows`. Nothing renders "you are not in a team" off a null.
    */
   teams: TeamRow[] | null;
+  /* Приглашения, ждущие ответа. НЕ команды: человек в них не состоит. */
+  invitations: TeamInvite[];
   /** Whether an invitation would actually be delivered. Arrives with the list; only the Teams page reads it. */
   teamsMail: MailState | null;
   /** The endpoint's own words when the read failed, or null. `teams` stays null, so nothing claims emptiness. */
@@ -122,9 +126,9 @@ export const useAccount = () => {
  * a timer would put "Reading…" back for no reason anybody could see.
  */
 export const useTeams = () => {
-  const { teams, teamsMail, teamsProblem, ensureTeams, refreshTeams } = useAccount();
+  const { teams, invitations, teamsMail, teamsProblem, ensureTeams, refreshTeams } = useAccount();
   useEffect(() => { void ensureTeams(); }, [ensureTeams]);
-  return { teams, mail: teamsMail, problem: teamsProblem, refresh: refreshTeams };
+  return { teams, invitations, mail: teamsMail, problem: teamsProblem, refresh: refreshTeams };
 };
 
 export const AccountProvider = ({ children }: { children: ReactNode }) => {
@@ -165,6 +169,10 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   const accountId = useRef<string | null>(null);
 
   const [teams, setTeams] = useState<TeamRow[] | null>(null);
+  /* Приглашения, ждущие ответа. Отдельным состоянием, а не внутри `teams`: это НЕ команды - человек в них
+   * не состоит, - и складывать их в один список значило бы показать его участником там, где его только
+   * позвали. Ровно та ошибка, из-за которой всё это переписано. */
+  const [invitations, setInvitations] = useState<TeamInvite[]>([]);
   const [teamsMail, setTeamsMail] = useState<MailState | null>(null);
   const [teamsProblem, setTeamsProblem] = useState<string | null>(null);
   /* Whether the read has been STARTED, which is not the same question as whether it has finished, and is why
@@ -177,6 +185,7 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
     try {
       const body = await callTeams<TeamList>('');
       setTeams(body.teams);
+      setInvitations(body.invitations ?? []);
       setTeamsMail(body.mail ?? null);
       setTeamsProblem(null);
       keep(KEPT_TEAMS, accountId.current, body);
@@ -248,6 +257,10 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
       const me = await whoAmI();
       setAccount(me);
       accountId.current = me?.id ?? null;
+      /* ЧЬИ ЗАПИСИ ЛЕЖАТ В ЭТОМ БРАУЗЕРЕ - как только стало известно, кто вошёл. Совпало с тем, что уже
+       * открыто, - ничего не происходит; не совпало - в памяти оказывается их собственный слот, а чужой
+       * остаётся на диске нетронутым. См. lib/store.ts: до этого вызова Reconciler наверх не шлёт ничего. */
+      claimStore(me?.id ?? null);
       setChecked(true);
       if (!me) return;
 
@@ -291,6 +304,9 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
      * business sitting in a browser. */
     forget(KEPT_ACCOUNT);
     forget(KEPT_TEAMS);
+    /* И записи - из памяти и из указателя, но НЕ с диска: человек, вернувшийся на этот ноутбук, найдёт их
+     * там, где оставил. Стёртый указатель и есть то, что не даёт следующему увидеть их вовсе. */
+    releaseStore();
     try {
       await signOut();
     } catch (err) {
@@ -331,11 +347,11 @@ export const AccountProvider = ({ children }: { children: ReactNode }) => {
   const value = useMemo(
     () => ({
       account, flows, runs, loaded, known, readFailed, reload, leave, leaveProblem: leaving,
-      teams, teamsMail, teamsProblem, ensureTeams, refreshTeams,
+      teams, invitations, teamsMail, teamsProblem, ensureTeams, refreshTeams,
     }),
     [
       account, flows, runs, loaded, known, readFailed, reload, leave, leaving,
-      teams, teamsMail, teamsProblem, ensureTeams, refreshTeams,
+      teams, invitations, teamsMail, teamsProblem, ensureTeams, refreshTeams,
     ],
   );
 

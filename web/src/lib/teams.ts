@@ -24,8 +24,23 @@ export interface TeamRow {
 /** Whether a message would actually reach anybody, answered by the endpoint before an address is typed. */
 export interface MailState { configured: boolean; problem: string | null }
 
+/* ПРИГЛАШЕНИЕ, КОТОРОЕ ЖДЁТ ОТВЕТА.
+ *
+ * Раньше приглашений на клиенте не существовало вовсе: сервер превращал их в членство сам, при первом же
+ * чтении списка. То есть согласие было побочным эффектом того, что человек открыл страницу - а для
+ * существующего аккаунта его не спрашивали и того меньше, там шла прямая запись в team_member.
+ *
+ * Отсутствует у ответа старого развёртывания, поэтому необязательное. */
+export interface TeamInvite {
+  id: string;
+  name: string;
+  role: TeamRole;
+  members: number;
+  created_at?: string;
+}
+
 /** What `GET /api/team` answers with. `mail` is absent on a deployment older than that field. */
-export interface TeamList { teams: TeamRow[]; mail?: MailState }
+export interface TeamList { teams: TeamRow[]; invitations?: TeamInvite[]; mail?: MailState }
 
 /* See the note above: both shapes, and a status when neither is there. */
 const saidWrong = (body: unknown, status: number): string => {

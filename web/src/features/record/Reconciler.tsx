@@ -9,13 +9,13 @@
  */
 import { useEffect, useRef } from 'react';
 import { fetchPayload, push } from '@/lib/api';
-import { type Recording, useAgent, useConsole } from '@/lib/store';
+import { type Recording, storeHeldFor, useAgent, useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { flowFor } from './flow-for';
 import { reconcile } from './reconcile';
 
 export const Reconciler = () => {
-  const { flows, loaded, reload } = useAccount();
+  const { account, flows, loaded, reload } = useAccount();
   const [local, update] = useConsole();
   const { health } = useAgent();
 
@@ -39,6 +39,13 @@ export const Reconciler = () => {
      * empty one means "every recording you have was deleted somewhere else". Found in the browser, where the
      * rows came back a moment later and hid it. */
     if (!loaded) return;
+    /* И ЧЬИ ЭТО ЗАПИСИ - тоже. `loaded` отвечает «аккаунт ответил», а этот вопрос другой: то, что лежит в
+     * этом браузере, могло быть записано предыдущим человеком. Reconciler считает местную запись без штампа
+     * работой того, кто сейчас вошёл, и отправляет её наверх - значит без этой проверки записи A уезжали на
+     * аккаунт B. Достаточно было, чтобы одна не проштамповалась, а A вышел и B вошёл на том же ноутбуке.
+     *
+     * Сравнение с id, а не «не пусто»: claimStore выставляет его только тому, чей слот сейчас в памяти. */
+    if (!account || storeHeldFor() !== account.id) return;
     if (!flows.length && !local.recordings.length) return;
 
     const plan = reconcile({ flows, local: local.recordings });
@@ -127,7 +134,7 @@ export const Reconciler = () => {
       if (sent.length) await reload();
       busy.current = false;
     })();
-  }, [flows, loaded, local.recordings, health, reload, update]);
+  }, [account, flows, loaded, local.recordings, health, reload, update]);
 
   return null;
 };

@@ -758,8 +758,28 @@ async function syncPair(raw) {
     throw new Error((body && body.error && body.error.message) || 'the server rejected that token');
   }
   const who = (body && body.you) || null;
+
+  /* ЧЕЙ ЭТО БРАУЗЕР ТЕПЕРЬ - и что делать с тем, что в нём уже лежит.
+   *
+   * Скиллы и следы прогонов живут в chrome.storage.local и ни к какому аккаунту не привязаны. syncNow
+   * отправляет их наверх по текущему токену - то есть на общем или демонстрационном ноутбуке скиллы
+   * тестировщика A уезжали на аккаунт B сразу после того, как B привязался: появлялись у него в Skills, в
+   * дашборде, а его прогоны считались вместе с чужими.
+   *
+   * Сравнивается с тем, кто был привязан РАНЬШЕ. Тот же человек - ничего не происходит, это обычная
+   * перепривязка. Другой (или прежнего стёрли отвязкой) - местное чистится ПЕРЕД тем, как что-либо уедет.
+   *
+   * Чистится, а не «не отправляется»: не отправлять значило бы оставить чужие скиллы лежать в этом
+   * браузере и показывать их B в его собственном списке. Работа A при этом не теряется - она уже на её
+   * аккаунте, если синхронизация случилась, а если нет, то отвязка была решением A. */
+  const { syncWho } = await chrome.storage.local.get('syncWho');
+  const wasSomebodyElse = !syncWho || !who || syncWho.id !== who.id;
+  if (wasSomebodyElse) {
+    await chrome.storage.local.remove(['skills', 'agentTrace', 'agentTraceHistory', 'syncDeleted', 'syncedAt']);
+  }
+
   await chrome.storage.local.set({ syncToken: token, syncWho: who });
-  return { ok: true, who };
+  return { ok: true, who, cleared: wasSomebodyElse };
 }
 
 async function syncUnpair() {

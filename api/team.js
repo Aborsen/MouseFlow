@@ -84,27 +84,61 @@ const newId = () => `t_${randomBytes(8).toString('hex')}`;
  * putting this in the hot path would cost every /api/sync a second query for a row that almost never exists.
  * Matched case-insensitively, because an address is not case-sensitive in the half that matters and people
  * type it either way. */
-async function claimInvites(sql, who) {
-  if (!who.email) return;
-  const invites = await sql`
-    select i.team_id, i.role, i.invited_by from team_invite i
+/* ПРИГЛАШЕНИЯ, КОТОРЫЕ ЖДУТ ОТВЕТА - а не членство, случившееся само.
+ *
+ * Раньше здесь стоял claimInvites: открытие страницы превращало приглашение в членство. Это делало
+ * согласие побочным эффектом чтения - человек не соглашался, он просто зашёл, - и вместе со второй
+ * половиной (существующий аккаунт вписывался в team_member напрямую, вообще без приглашения) давало
+ * следующее: любой, кто знает чужой адрес, заводил команду, добавлял туда этого человека и читал его цели
+ * прогонов, трассы шагов и заголовки записанных окон через /api/insights?team=…&person=…
+ *
+ * Теперь членства без действия не бывает. Приглашение показывается, и его принимают или отклоняют. */
+async function pendingFor(sql, who) {
+  if (!who.email) return [];
+  return sql`
+    select i.team_id as id, t.name, i.role, i.created_at,
+           (select count(*)::int from team_member x where x.team_id = t.id) as members
+    from team_invite i
     join team t on t.id = i.team_id and t.deleted_at is null
     where lower(i.email) = lower(${who.email})
+    order by i.created_at
   `;
-  for (const invite of invites) {
-    await sql`
-      insert into team_member (team_id, user_id, role, invited_by)
-      values (${invite.team_id}, ${who.id}, ${invite.role}, ${invite.invited_by})
-      on conflict (team_id, user_id) do nothing
-    `;
-    await sql`delete from team_invite where team_id = ${invite.team_id} and lower(email) = lower(${who.email})`;
-  }
+}
+
+/** Согласие - действие, и оно совершается ровно здесь. */
+async function acceptInvite(sql, who, teamId) {
+  if (!who.email) return { status: 400, body: { error: 'this account has no email address' } };
+  const [invite] = await sql`
+    select i.role, i.invited_by from team_invite i
+    join team t on t.id = i.team_id and t.deleted_at is null
+    where i.team_id = ${teamId} and lower(i.email) = lower(${who.email})
+    limit 1
+  `;
+  /* 404, а не 403: приглашения, которого нет, не существует и для того, кому его не присылали. */
+  if (!invite) return { status: 404, body: { error: 'no invitation to that team' } };
+
+  const [{ n }] = await sql`select count(*)::int as n from team_member where team_id = ${teamId}`;
+  if (n >= MEMBERS_MAX) return { status: 400, body: { error: 'that team is full' } };
+
+  await sql`
+    insert into team_member (team_id, user_id, role, invited_by)
+    values (${teamId}, ${who.id}, ${invite.role}, ${invite.invited_by})
+    on conflict (team_id, user_id) do nothing
+  `;
+  await sql`delete from team_invite where team_id = ${teamId} and lower(email) = lower(${who.email})`;
+  return { status: 200, body: { ok: true, joined: true } };
+}
+
+/** Отказ. Приглашение исчезает; пригласивший узнает об этом по тому, что человек не появился. */
+async function declineInvite(sql, who, teamId) {
+  if (!who.email) return { status: 400, body: { error: 'this account has no email address' } };
+  await sql`delete from team_invite where team_id = ${teamId} and lower(email) = lower(${who.email})`;
+  return { status: 200, body: { ok: true, joined: false } };
 }
 
 /* ------------------------------------------------------------------------------- reads */
 
 async function myTeams(sql, who) {
-  await claimInvites(sql, who);
   const teams = await sql`
     select t.id, t.name, t.created_at, m.role, m.joined_at,
            (select count(*)::int from team_member x where x.team_id = t.id) as members
@@ -117,7 +151,10 @@ async function myTeams(sql, who) {
    * after. The screen that adds people is the only place this matters, and being told "no email could be
    * sent" AFTER inviting four colleagues is the wrong minute to find out. */
   const problem = mailProblem();
-  return { teams, mail: { configured: !problem, problem } };
+  /* Приглашения - рядом со списком, а не отдельным запросом: экран Teams это единственное место, где на
+   * них отвечают, и он и так сюда ходит. */
+  const invitations = await pendingFor(sql, who);
+  return { teams, invitations, mail: { configured: !problem, problem } };
 }
 
 /** One team. Activity is included only for the roles that may see it; a member gets the roster. */
@@ -266,25 +303,34 @@ async function addMember(sql, who, teamId, body, origin) {
   const found = await sql`
     select u.id::text as id from neon_auth."user" u where lower(to_jsonb(u)->>'email') = lower(${email}) limit 1
   `;
-  const added = found.length > 0;
-  if (added) {
-    await sql`
-      insert into team_member (team_id, user_id, role, invited_by)
-      values (${teamId}, ${found[0].id}, ${wanted}, ${who.id})
-      on conflict (team_id, user_id) do update set role = excluded.role
-    `;
-  } else {
-    /* The row IS the invitation, and it is written before anything is sent. Membership is decided by the
-     * address on the account when they open the page - so a message that never arrives costs them a
-     * conversation, not a seat. */
-    await sql`
-      insert into team_invite (team_id, email, role, invited_by) values (${teamId}, ${email}, ${wanted}, ${who.id})
-      on conflict (team_id, email) do update set role = excluded.role
-    `;
+  /* ВСЕГДА ПРИГЛАШЕНИЕ, НИКОГДА ЧЛЕНСТВО.
+   *
+   * Здесь была развилка: если адрес принадлежит существующему аккаунту - вписать в team_member сразу.
+   * То есть любой, кто знает чужой адрес, заводил команду, добавлял туда человека и получал доступ к его
+   * целям прогонов, трассам шагов и заголовкам окон через /api/insights?team=…&person=… Человека при этом
+   * никто не спрашивал, и узнать он мог только заглянув в Teams.
+   *
+   * Существует аккаунт или нет - разница только в том, что написать в письме («откройте приложение» против
+   * «заведите аккаунт»); на то, кто попадёт в команду, она влиять не может.
+   *
+   * `already` - это не приглашение: человек уже в команде, и второе письмо ему не нужно. */
+  const already = found.length > 0
+    ? await sql`select 1 from team_member where team_id = ${teamId} and user_id = ${found[0].id} limit 1`
+    : [];
+  if (already.length) {
+    return { status: 200, body: { ok: true, added: true, already: true, mailed: false } };
   }
 
-  const post = await tellThem(who, email, team && team.name, wanted, added, origin);
-  return { status: 200, body: { ok: true, added, ...post } };
+  const [invited] = await sql`
+    insert into team_invite (team_id, email, role, invited_by) values (${teamId}, ${email}, ${wanted}, ${who.id})
+    on conflict (team_id, email) do update set role = excluded.role
+    returning created_at
+  `;
+
+  const post = await tellThem(who, email, team && team.name, wanted, found.length > 0, origin);
+  /* `added` теперь всегда false: никто не добавлен, приглашение отправлено. Поле оставлено, потому что
+   * старый клиент его читает, и врать ему «добавлен» было бы хуже, чем сказать правду. */
+  return { status: 200, body: { ok: true, added: false, invited: !!invited, ...post } };
 }
 
 /* Telling somebody they are in a team.
@@ -481,6 +527,21 @@ async function handler(req, res) {
     if (req.method === 'POST') {
       const flowId = text(query.share, 80);
       const again = text(query.remind, 200);
+      /* СОГЛАСИЕ - ДЕЙСТВИЕ ЧЕЛОВЕКА, И ТОЛЬКО ИЗ СЕССИИ.
+       *
+       * Токен коннектора получен по согласию, которое перечисляет ровно три возможности: видеть записи,
+       * просить машину записать или запустить скилл, и не читать набранное. Вступления в команду от чужого
+       * имени там нет, и его туда не добавит ни один список областей, которого пока не существует. */
+      if (query.accept || query.decline) {
+        if (who.via !== 'session') {
+          return fail(res, 403, 'only a signed-in browser can answer an invitation');
+        }
+        if (!teamId) return fail(res, 400, 'which team?');
+        const out = query.accept
+          ? await acceptInvite(sql, who, teamId)
+          : await declineInvite(sql, who, teamId);
+        return res.status(out.status).json(out.body);
+      }
       const out = !teamId ? await createTeam(sql, who, body)
         : flowId ? await share(sql, who, teamId, flowId, true)
           : again ? await remind(sql, who, teamId, again, origin)
@@ -490,6 +551,10 @@ async function handler(req, res) {
 
     if (req.method === 'PATCH') {
       if (!teamId) return fail(res, 400, 'which team?');
+      /* Смена роли и переименование - тоже не то, за чем приходил коннектор. См. ниже про DELETE. */
+      if (who.via !== 'session') {
+        return fail(res, 403, 'only a signed-in browser can change a team');
+      }
       /* A body carrying a name renames; one carrying a member and a role moves them. Told apart by what
        * was sent rather than by a mode flag, since the two bodies have no field in common. */
       const out = body && body.name !== undefined
@@ -500,6 +565,18 @@ async function handler(req, res) {
 
     if (req.method === 'DELETE') {
       if (!teamId) return fail(res, 400, 'which team?');
+      /* РАЗРУШИТЕЛЬНОЕ - ТОЛЬКО ИЗ БРАУЗЕРА, как в account.js и sync.js.
+       *
+       * Экран согласия коннектора обещает три вещи и ни одна из них не «удалить команду» или «выкинуть из
+       * неё человека». Между тем DELETE /api/team?id=…&team=1 с Bearer-токеном сносил команду для всех её
+       * участников, а вместе с ней - через каскад - и общие записи. Регистрация клиентов открыта, так что
+       * клиентом мог стать кто угодно.
+       *
+       * Проверяется способ, а не область: областей у токенов пока нет вовсе, и притворяться, что есть,
+       * значило бы завести вторую систему прав, которая ничего не проверяет. */
+      if (who.via !== 'session') {
+        return fail(res, 403, 'only a signed-in browser can change a team');
+      }
       const flowId = text(query.share, 80);
       const invited = text(query.invite, 200);
       if (flowId) {
