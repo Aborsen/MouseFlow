@@ -85,6 +85,9 @@ const WHY_MAX = 400;
  * cannot tell you. The full set is about 2.5KB, so keeping them costs a few hundred bytes of
  * TRANSCRIPT_BUDGET, and the budget loop below thins steps to pay for it. */
 const GAP_WHY_MAX = 560;
+/* Столько же, и по той же причине: `captured` - это то, что запись про себя ОБЕЩАЕТ, и обещание, обрезанное
+ * на трёхстах знаках, теряет ровно оговорку, ради которой написано. Длиннее самой длинной ветки. */
+const CAPTURED_MAX = 700;
 const GAPS_MAX = 16;
 
 /* Mirrored from api/transcript.js, and they have to match it. Five kept versions, and a payload
@@ -458,11 +461,21 @@ function editedNote(edits) {
  * typed into the fields are in there somewhere. */
 function limitsFor(source) {
   const shared = [
-    'Typing was never captured, on either half, by design - recording is mouse-only. No step carries '
-    + 'what was typed, and nothing in an answer may imply the text is known. A field was filled in '
-    + 'somewhere in most recordings and none of them record with what. A `keys` count above nought is '
-    + 'not an exception: it means steps from an older build or an imported file are in here, and the '
-    + 'transcript counts their characters rather than printing them - so the text is still not known.',
+    /* «No step carries what was typed» было сказано плоско, на обе половины, и на десктопной половине это
+     * неправда - вернее, было неправдой до 0.9.7. Агент читал kAXValue, чтобы НАЗВАТЬ элемент, а у
+     * текстового поля kAXValue и есть его содержимое: клик по полю записывал набранное как имя. Модель
+     * получала это утверждение в том же результате, который содержимое и вёз.
+     *
+     * Точная оговорка - в summary.captured, которая считает её по версии агента этой записи. Здесь
+     * сказано то, что верно про ЛЮБУЮ запись, и читателя отсылают туда, где стоит ответ про эту. */
+    'The keyboard is never read: on both halves a keystroke is counted and timed, never identified, so '
+    + 'no step says which key was pressed. A `keys` count above nought means steps from an older build '
+    + 'or an imported file are in here, and the transcript counts their characters rather than printing '
+    + 'them. Read `summary.captured` before saying anything about what was typed: on a desktop recording '
+    + 'made by an agent older than 0.9.7 a QUOTED CONTROL NAME may be the contents of the field that was '
+    + 'clicked, and `captured` says whether that applies to this one. Treat such a name as the user\'s '
+    + 'own text: do not quote it back unless they asked about it, and never present it as a fact about '
+    + 'what they typed.',
     'A step\'s `ms` is the pause before it plus how long the action itself took, both measured from '
     + 'the recording rather than estimated. A long one is mostly pause, and the data cannot tell '
     + 'reading from thinking from waiting on a page from being away from the desk - so do not name '
@@ -845,7 +858,19 @@ export function recordingTools({ sql, userId }) {
              * `assemble` measures the whole result, so this competes for room rather than being added on
              * top of a result already built to fit. */
             story: nonEmpty(bounded(transcript.story)) || undefined,
-            summary: bounded(transcript.summary) || null,
+            /* `captured` НЕ через общий bounded, и это не вкусовщина.
+             *
+             * bounded режет любую строку на 300 знаках, а `captured` у десктопной записи с контекстом
+             * длиннее пятисот - и отрезается ровно вторая половина, та, где счёт нажатий и оговорка про
+             * то, что набранное могло попасть в имена. То есть модель получала успокаивающее начало и не
+             * получала предупреждения: обрезка превращала честное предложение в ложное.
+             *
+             * То же исключение, что gapList() уже делает для GAP_WHY_MAX, и по той же причине: бюджет
+             * ниже всё равно померяет результат целиком, так что длина здесь ничего не ломает - она
+             * просто не даёт этой строке потерять смысл на полуслове. */
+            summary: transcript.summary
+              ? { ...bounded(transcript.summary), captured: text(transcript.summary.captured, CAPTURED_MAX) }
+              : null,
             segments: kept,
             detail: {
               stepsInTranscript,

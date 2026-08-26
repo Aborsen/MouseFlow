@@ -2320,6 +2320,71 @@ check('both agents echo the caller origin rather than a bare star, and vary on i
   && /Vary: Origin/.test(read('../agent/mouseflow-agent.swift')));
 
 /* A picture that 404s is the documentation's version of the same bug. */
+/* --------------------------------------------- обещание про захват текста считается, а не объявляется */
+
+/* До 0.9.7 macOS-агент брал имя элемента из kAXValue, а у текстового поля kAXValue и есть содержимое.
+ * Агент это чинит - но чинит БУДУЩЕЕ: сто с лишним записей уже лежат, и транскрипт читает и те, и другие.
+ * Значит ответ на «есть ли тут мой текст» разный для разных записей, и постоянной строкой его дать нельзя
+ * ни в одну сторону: безусловное «нет» врёт про старые, безусловное «может быть» пугает без причины на
+ * новых. */
+group('обещание про захват текста считается по записи, а не объявляется');
+{
+  const { transcribe } = await import(new URL('../api/_transcript.js', import.meta.url));
+  const made = (version, extra = {}) => {
+    const events = [
+      { action: 'Left Click Down', x: 400, y: 300, delayMs: 500,
+        context: { app: 'Google Chrome', window: 'Search', control: 'что-то набранное', type: 'text field' } },
+      { action: 'Left Click Release', x: 400, y: 300, delayMs: 40 },
+    ];
+    return transcribe({
+      id: 't', name: 't', kind: 'recorded', source: 'desktop',
+      payload: {
+        kind: 'recorded', agent: 'desktop', events, windows: [],
+        recorder: version === null ? undefined : { version, canName: true, canKeys: true },
+        ...extra,
+      },
+    }).summary.captured;
+  };
+
+  check('запись старого агента предупреждает, что имя может быть набранным текстом',
+    /Text can still appear in the names above/.test(made('0.9.2')), made('0.9.2').slice(-120));
+  check('и запись без версии тоже - исключить нельзя, а молчать нечестно',
+    /Text can still appear in the names above/.test(made(null)));
+  /* Ровно та же запись, только помеченная новым агентом: предупреждения быть не должно. */
+  check('а запись сегодняшнего агента - НЕ предупреждает, потому что он значений не читает',
+    !/Text can still appear/.test(made('0.9.7')), made('0.9.7').slice(-120));
+  check('и более новая тоже', !/Text can still appear/.test(made('0.10.0')));
+
+  /* Оговорка стояла ВНУТРИ ветки «были нажатия»: запись без единой клавиши, но с кликами в поля,
+   * показывала читателю только успокаивающую половину. */
+  const src = read('../api/_transcript.js');
+  check('оговорка вынесена из ветки про клавиатуру',
+    /\+ \(namesMayHoldTyping\(recorder, perStep, counts\)/.test(src));
+  check('и версия сравнивается числами, а не строками',
+    /function olderVersion\(said, than\)/.test(src));
+
+  /* Две ветки говорили «Nothing typed» безусловно, при том что counts.keys лежит рядом. */
+  check('«ничего не набрано» больше нигде не говорится безусловно',
+    !/Nothing typed, no screenshots/.test(src) && !/Nothing typed, no other page text/.test(src));
+
+  /* И то же самое - в результате, который читает ассистент. bounded() резал на 300 знаках, а оговорка
+   * живёт за пятисотым: модель получала успокаивающее начало и не получала предупреждения. */
+  const tools = read('../api/_recording-tools.js');
+  check('captured не проходит через общую обрезку на 300',
+    /captured: text\(transcript\.summary\.captured, CAPTURED_MAX\)/.test(tools));
+  check('и потолок для неё длиннее самой длинной ветки', /const CAPTURED_MAX = 700;/.test(tools));
+  /* Комментарии сняты - файл объясняет, чем была старая формулировка, и цитирует её. Четвёртый раз за
+   * сессию, когда негативная проверка ловит собственное объяснение; правило простое - искать отсутствие
+   * можно только в коде, а не в тексте, который про этот код рассказывает. */
+  const toolsCode = tools.replace(/\/\*[\s\S]*?\*\//g, '');
+  check('ассистенту больше не обещают, что ни один шаг не несёт набранного',
+    !/No step carries what was typed/.test(toolsCode));
+  check('а отсылают туда, где стоит ответ про ЭТУ запись',
+    /Read `summary\.captured` before saying anything about what was typed/.test(tools));
+  check('и говорят, что делать с таким именем',
+    /do not quote it back unless they asked about it/.test(tools));
+}
+
 /* ------------------------------------------------- события не едут в списке, а приезжают по просьбе */
 
 /* GET /api/sync отдавал payload КАЖДОГО флоу без limit. Замерено на живом аккаунте: 28 записей - 3213КБ,

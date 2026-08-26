@@ -149,6 +149,44 @@ function isoOf(value) {
  *
  * Absent on every recording made before this was written, and absent has to stay answerable as "not
  * known" rather than collapsing into either yes or no. */
+/* МОГ ЛИ НАБРАННЫЙ ТЕКСТ ПОПАСТЬ В ИМЕНА - вычисляется, а не объявляется.
+ *
+ * До 0.9.7 macOS-агент брал имя элемента из kAXValue, а у текстового поля kAXValue И ЕСТЬ его содержимое:
+ * клик по полю записывал набранное как имя того, во что кликнули. Проверено на настоящих записях этого
+ * аккаунта - фраза, набранная в поиске Google, лежала там трижды. С 0.9.7 агент значение редактируемого
+ * элемента не читает вовсе.
+ *
+ * Значит ответ разный для разных записей, и постоянной строкой его дать нельзя. Раньше здесь стояла
+ * оговорка «текст всё же может появиться», написанная безусловно - и это чинило ложь одного рода ложью
+ * другого: запись, сделанная сегодняшним агентом, честно ничего такого не несёт, а читателю говорили, что
+ * несёт. Обещание, которое пугает без причины, портят так же, как обещание, которое врёт.
+ *
+ * Три ветки, и «не знаю» остаётся отдельным ответом:
+ *   имён нет вовсе          - брать содержимое было неоткуда;
+ *   версия известна и новая - агент значения не читал;
+ *   версии нет              - исключить нельзя, и молчать об этом нечестно.
+ */
+const CLEAN_NAMES_FROM = '0.9.7';
+
+/** Меньше ли `said` чем `than`, по числам через точку. Недостающие части считаются нулями. */
+function olderVersion(said, than) {
+  const parts = (v) => String(v || '').split('.').map((n) => parseInt(n, 10) || 0);
+  const a = parts(said);
+  const b = parts(than);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
+function namesMayHoldTyping(recorder, perStep, counts) {
+  if (!perStep || !counts || !counts.ctxNamed) return false;
+  if (!recorder || !recorder.version) return true;
+  return olderVersion(recorder.version, CLEAN_NAMES_FROM);
+}
+
 function recorderOf(payload) {
   const raw = payload && typeof payload.recorder === 'object' && payload.recorder !== null
     ? payload.recorder : null;
@@ -2091,9 +2129,12 @@ export function transcribe(flow) {
              *
              * So the claim was accurate about the mechanism it described and wrong about the thing anybody
              * reads it for. A promise like this is read as "my typing is not in here", and it has to be
-             * true of the recording rather than of one route into it. */
-            + 'Text can still appear: where a click landed on a field, what was in that field is recorded '
-            + 'as the name of the thing clicked. '
+             * true of the recording rather than of one route into it.
+             *
+             * Оговорка про имена ПЕРЕЕХАЛА ОТСЮДА ВНИЗ, за пределы этой ветки. Здесь она стояла внутри
+             * `counts.keys > 0`, то есть запись без единого нажатия, но с кликами в поля, показывала
+             * читателю только первую половину - самую успокаивающую. Условие «текст мог попасть в имена»
+             * не имеет отношения к тому, нажимали ли клавиши. */
           /* Three different sentences, because "no typing" has three different meanings and only the
            * recorder's own answer separates them. Saying the first one unconditionally was a claim this
            * file had no way to support. */
@@ -2105,14 +2146,35 @@ export function transcribe(flow) {
                 + 'any time spent typing is in here as a pause. '
               : 'No typing was captured, and whether that means none happened cannot be told from this '
                 + 'recording: it does not say whether the agent was watching the keyboard. ')
+        /* И только теперь - про имена, независимо от клавиатуры, и только когда это правда об ЭТОЙ
+         * записи. См. namesMayHoldTyping. */
+        + (namesMayHoldTyping(recorder, perStep, counts)
+          ? 'Text can still appear in the names above: this was recorded by an agent older than '
+            + CLEAN_NAMES_FROM + ', which read a control\'s accessibility value to name it - and a text '
+            + 'field\'s value is whatever was in it. Treat a quoted name as possibly something typed. '
+          : '')
         + 'No screenshots.'
       : 'Mouse only, as screen coordinates: every click, drag, scroll and pointer movement, with the '
         + 'windows this recording saw in front but not which step was in which. No element names at '
         + 'all, which means this was recorded by an agent older than 0.6.0 - a current one reads the '
-        + 'application and control under each click. Nothing typed, no screenshots.')
+        /* «Nothing typed» стояло здесь безусловно, при том что counts.keys лежит рядом. Агент, который
+         * поставил клавиатурный хук, но не читал дерево доступности, даёт ровно эту ветку с ненулевым
+         * счётом нажатий - и читателю сообщали, что не набрано ничего, рядом с числом, говорящим обратное. */
+        + 'application and control under each click. '
+        + (counts.keys > 0
+          ? counts.keys + ' keystroke' + (counts.keys === 1 ? '' : 's')
+            + ', counted and timed but never identified. '
+          : 'Nothing typed. ')
+        + 'No screenshots.')
     : 'Mouse only: every click, scroll and pointer path in the tab being watched, the page each '
-      + 'happened on, and the visible text of what was clicked. Nothing typed, no other page text, '
-      + 'no screenshots.';
+      + 'happened on, and the visible text of what was clicked. '
+      /* То же самое на веб-половине: захват текста из рекордера убрали, но запись, сделанная до этого или
+       * ввезённая файлом, шаги с текстом несёт - и counts.keys их считает. */
+      + (counts.keys > 0
+        ? counts.keys + ' typing step' + (counts.keys === 1 ? '' : 's') + ' came from an older build or '
+          + 'an imported file; this counts their characters rather than printing them. '
+        : 'Nothing typed. ')
+      + 'No other page text, no screenshots.';
 
   const gaps = gapsFor({
     source,
