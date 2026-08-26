@@ -55,7 +55,7 @@ const INFLATE_MAX_BYTES = PAYLOAD_MAX_BYTES + 64_000;
  * Отбрасывается молча и намеренно: испорченная дата у записи, которая в остальном цела, - не повод терять
  * запись, а created_at по умолчанию now(). Проблемой это становится, только если дата была единственным,
  * что человек прислал, а такого не бывает. */
-function when(said) {
+export function when(said) {
   if (said == null || said === '') return null;
   const at = Date.parse(said);
   return Number.isFinite(at) ? new Date(at).toISOString() : null;

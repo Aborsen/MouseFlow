@@ -26,7 +26,7 @@
 import { neon } from '@neondatabase/serverless';
 import { randomBytes } from 'node:crypto';
 /* Потолок на вес и распаковка сжатого payload - общие с api/mcp.js, вторым писателем этой колонки. */
-import { PAYLOAD_MAX_BYTES, RUN_MAX_BYTES, inflatePayload } from './_payload.mjs';
+import { PAYLOAD_MAX_BYTES, RUN_MAX_BYTES, inflatePayload, when } from './_payload.mjs';
 import { whoIsCalling, hashToken, DEVICE_TOKEN_PREFIX } from './_session.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
