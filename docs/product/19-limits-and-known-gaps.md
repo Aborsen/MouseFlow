@@ -16,6 +16,12 @@ These are not bugs and no amount of work inside the current design removes them.
   those pixels. Aiming by `#ctx` name corrects a *re-laid-out neighbour*, not a moved window.
 - **Display scaling.** Input injection happens in physical pixels; a recording made at one DPI scale replays
   wrong at another.
+- **A taskbar click is named but not aimed.** Since 0.9.9 the transcript says which icon was clicked; the
+  replay still clicks the recorded coordinate. Aiming by name works by hit-testing the point and looking
+  among the siblings of whatever is there, and on the taskbar the point hit-tests to `Shell_TrayWnd` - the
+  whole window - whose siblings are other top-level windows. So a taskbar rearranged between recording and
+  replay opens the wrong application, silently. It was equally true before naming worked; what is new is
+  that the transcript now shows the name, which makes the gap easy to mistake for closed.
 - **Windows integrity levels cut both ways.** A medium-integrity agent cannot inject into an elevated window
   **and cannot see input while one has focus**. A recording made over an admin app is silently incomplete —
   the events never arrive, so nothing downstream can detect the hole. The UAC secure desktop is unreachable

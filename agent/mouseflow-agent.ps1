@@ -404,7 +404,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.8";
+        public const string Version = "0.9.9";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1038,9 +1038,108 @@ namespace MouseFlow
                 catch { break; }
             }
 
+            /* Nothing named it on the way UP - so look DOWN to the point before giving up. This is where a
+             * taskbar icon gets its name; NamedUnder has the measurements. */
+            if (string.IsNullOrEmpty(name))
+            {
+                AutomationElement best = null;
+                double bestArea = double.MaxValue;
+                int examined = 0;
+                NamedUnder(el, new System.Windows.Point(job.X, job.Y), 6,
+                           ref best, ref bestArea, ref examined);
+                if (best != null)
+                {
+                    try
+                    {
+                        name = best.Current.Name;
+                        type = best.Current.LocalizedControlType;
+                    }
+                    catch { /* found and then gone; the coordinates still describe the step */ }
+                }
+            }
+
             job.Target.Control = string.IsNullOrEmpty(name) ? null : Clip(name, 120);
             job.Target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
             job.Target.Url = PageUrl(el);
+        }
+
+        /* THE SMALLEST NAMED THING CONTAINING THE POINT, searched DOWNWARDS.
+         *
+         * WHY IT EXISTS. Every click on the Windows 11 taskbar came back as an unnamed `pane`, so a
+         * transcript read "clicked on the desktop or the taskbar, at 898,1050" and never said which icon -
+         * which is the one thing the reader wanted. The name was not missing. It was in the other
+         * direction. Measured on a live desktop: AutomationElement.FromPoint over a taskbar button answers
+         * with Shell_TrayWnd, the whole 1920x48 window, and the climb above that reaches the desktop root,
+         * which is also unnamed. The button is FOUR LEVELS BELOW, inside a XAML island that the shell's
+         * HWND provider does not hit-test into:
+         *
+         *   Shell_TrayWnd -> Windows.UI.Input.InputSite.WindowClass -> Taskbar.TaskbarFrame
+         *     -> button "Google Chrome - 1 running window"   at 895,1032  44x48
+         *
+         * and the click in the complaint was at 898,1050, inside that rectangle. Start, the tray icons, the
+         * clock and Show Desktop all name themselves the same way and were all being reported as nothing.
+         *
+         * THE SMALLEST AREA WINS, NOT THE FIRST FOUND, and that is measured rather than tidy. Shell_TrayWnd
+         * lists a leftover ReBarWindow32 before the island, and it HAS a named child - "Running
+         * applications" - so a depth-first search returns the strip and stops. The most specific rectangle
+         * under the pointer is the thing a person means, and the strip merely contains it.
+         *
+         * THIS IS NOT THE TREE WALK PROTOCOL.md FORBIDS. That rule is about SEARCHING a subtree - FindFirst
+         * over a browser's descendants, measured at 0.6-4.4 seconds per window. Only children whose
+         * rectangle contains the point are opened here, so this follows a path down - a few, where windows
+         * overlap - instead of sweeping one. Measured over every taskbar button, the tray, Start and the
+         * clock: 32 elements read, 37ms warm, 153ms on the first call of a session. The caps are the
+         * guarantee rather than the average: six levels, forty siblings a level, a hundred and twenty
+         * elements in total.
+         *
+         * AND IT CANNOT MAKE AN EXISTING STEP WORSE, which is the property worth having in something people
+         * install as a binary and update by hand: it runs only where the climb found no name at all, so
+         * every step it can change is one that today says nothing. The measured 70.8% that already carry a
+         * name never reach it.
+         *
+         * The macOS agent has had the same idea since 0.9.3 - see namedUnder/childrenAt there, written for
+         * Chrome's tab strip. It differs in one respect: it takes the first name depth-first among the three
+         * smallest candidates, which is what the taskbar's leftover strip defeats. Two shapes, one on each
+         * platform, and the difference is deliberate.
+         */
+        static void NamedUnder(AutomationElement from, System.Windows.Point p, int depth,
+                               ref AutomationElement best, ref double bestArea, ref int examined)
+        {
+            if (from == null || depth <= 0 || examined >= 120) return;
+            AutomationElement kid;
+            try { kid = TreeWalker.ControlViewWalker.GetFirstChild(from); }
+            catch { return; }
+
+            int seen = 0;
+            while (kid != null && seen < 40 && examined < 120)
+            {
+                seen++;
+                examined++;
+                try
+                {
+                    /* Wider than a pixel, and finite: an offscreen element reports an infinite rectangle,
+                     * and a hairline separator with a name would otherwise win on area every time. The same
+                     * guard the macOS side uses on kAXSize. */
+                    System.Windows.Rect box = kid.Current.BoundingRectangle;
+                    if (box.Width > 1 && box.Height > 1
+                        && !double.IsInfinity(box.Width) && !double.IsInfinity(box.Height)
+                        && box.Contains(p))
+                    {
+                        double area = box.Width * box.Height;
+                        string named = kid.Current.Name;
+                        if (!string.IsNullOrEmpty(named) && area < bestArea)
+                        {
+                            best = kid;
+                            bestArea = area;
+                        }
+                        NamedUnder(kid, p, depth - 1, ref best, ref bestArea, ref examined);
+                    }
+                }
+                catch { /* this one went away mid-read; its siblings are still worth asking */ }
+
+                try { kid = TreeWalker.ControlViewWalker.GetNextSibling(kid); }
+                catch { break; }
+            }
         }
 
         /* The address of the page a click landed on, ORIGIN AND PATH ONLY.

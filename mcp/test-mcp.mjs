@@ -2277,6 +2277,103 @@ check('percentiles rather than means, or one timeout moves the number people act
     doubled.summary && doubled.summary.clicks === 2, String(doubled.summary?.clicks));
 }
 
+/* WHAT WAS WRONG. Every click on the Windows 11 taskbar was recorded as an unnamed pane, so a transcript
+ * read "clicked on the desktop or the taskbar, at 898,1050" - a step nobody can act on. The name was not
+ * missing; the resolver looked the wrong way. Measured on a live desktop: FromPoint over a taskbar button
+ * answers with Shell_TrayWnd, the whole 1920x48 window, and the button is four levels BELOW it inside a
+ * XAML island. Verified end to end by running the agent's own Describe() through reflection: it now writes
+ *   #ctx  app=explorer  control=Google Chrome - 1 running window  type=button
+ * for exactly the point in the complaint. */
+group('a click on the taskbar says which icon');
+const winAgent = read('../agent/mouseflow-agent.ps1');
+
+check('the resolver looks DOWN when the climb found no name',
+  /if \(string\.IsNullOrEmpty\(name\)\)\s*\n\s*\{[\s\S]{0,400}NamedUnder\(el, new System\.Windows\.Point\(job\.X, job\.Y\)/
+    .test(winAgent));
+/* ONLY after the climb, and that ordering is the no-regression guarantee: 70.8% of clicks are already
+ * named, and none of them reach this code. A descent that ran FIRST could change an answer that works. */
+check('and only after it, so nothing that is named today can change',
+  winAgent.indexOf('at = TreeWalker.ControlViewWalker.GetParent(at); }')
+    < winAgent.indexOf('NamedUnder(el, new System.Windows.Point'));
+/* SMALLEST RECTANGLE, NOT FIRST FOUND - measured, not tidy. Shell_TrayWnd lists a leftover ReBarWindow32
+ * before the XAML island and it HAS a named child, "Running applications", so a depth-first search returns
+ * the strip and stops one step short of the icon. */
+check('the smallest named rectangle wins, not the first one found',
+  /if \(!string\.IsNullOrEmpty\(named\) && area < bestArea\)/.test(winAgent));
+/* Bounded, because this runs while somebody is working and PROTOCOL.md forbids sweeping a subtree. Only
+ * children whose rectangle contains the point are opened - a path down, not a sweep. */
+check('it is bounded on depth, on siblings and on total elements',
+  /examined >= 120/.test(winAgent) && /seen < 40 && examined < 120/.test(winAgent)
+    && /NamedUnder\(el, new System\.Windows\.Point\(job\.X, job\.Y\), 6,/.test(winAgent));
+check('and it only opens children that contain the point',
+  /&& box\.Contains\(p\)\)/.test(winAgent));
+/* An offscreen element reports an infinite rectangle, and a named hairline separator would win on area
+ * every single time. Same guard the macOS side puts on kAXSize. */
+check('a degenerate or offscreen rectangle cannot win on area',
+  /box\.Width > 1 && box\.Height > 1\s*\n\s*&& !double\.IsInfinity\(box\.Width\) && !double\.IsInfinity\(box\.Height\)/
+    .test(winAgent));
+
+/* ---------------------------------------------------------------- and the reading side */
+const shell = (control, type = 'button', window = undefined) => transcribe({
+  source: 'desktop', kind: 'recorded', name: 'taskbar',
+  payload: {
+    events: [
+      { x: 898, y: 1050, delayMs: 0, action: 'Left Click Down',
+        context: { app: 'explorer', window, control, type } },
+      { x: 898, y: 1050, delayMs: 20, action: 'Left Click Release',
+        context: { app: 'explorer', window, control, type } },
+    ],
+  },
+});
+
+const chrome = shell('Google Chrome - 1 running window');
+check('the icon is named in the story, which is the line people read',
+  /Clicked "Google Chrome"/.test(chrome.story?.map((p) => p.text).join(' ') ?? ''),
+  chrome.story?.[1]?.text);
+/* THE RUNNING COUNT COMES OFF. Windows builds that name for a screen reader, so it carries state: the
+ * count is true at the instant of the click and false a minute later, which makes two clicks on the SAME
+ * icon read as two different targets. Same complaint plainName() exists for, one field along. */
+check('and without the running count Windows appends for screen readers',
+  chrome.segments?.[0]?.steps?.[0]?.what === 'clicked the "Google Chrome" button in explorer',
+  chrome.segments?.[0]?.steps?.[0]?.what);
+check('a count in any language comes off, because the rule is keyed on the digit',
+  shell('Проводник — 3 окна').segments?.[0]?.steps?.[0]?.what
+    === 'clicked the "Проводник" button in explorer',
+  shell('Проводник — 3 окна').segments?.[0]?.steps?.[0]?.what);
+/* SCOPED TO THE SHELL, and this is the test that keeps it there. "Documents - 3 items" inside a File
+ * Explorer WINDOW is a legitimate name, and trimming it would rename a control the replay aims by.
+ * Measured: Shell_TrayWnd carries no window title, an Explorer window always has one. */
+check('but a real Explorer window keeps its name exactly as it was',
+  shell('Documents - 3 items', 'list item', 'Documents').segments?.[0]?.steps?.[0]?.what
+    === 'clicked the "Documents - 3 items" list item in explorer',
+  shell('Documents - 3 items', 'list item', 'Documents').segments?.[0]?.steps?.[0]?.what);
+/* The stretch was headed `explorer`, which is true and says nothing. Gated on a NAMED BUTTON, not on the
+ * app: a click on the desktop BACKGROUND is also explorer with no title where the wallpaper rotates, and
+ * it never carries a control. */
+check('the stretch is headed by the taskbar rather than by a process name',
+  shell('Google Chrome - 1 running window').segments?.[0]?.where?.label === 'the taskbar',
+  shell('Google Chrome - 1 running window').segments?.[0]?.where?.label);
+check('and a real window is still headed by its title',
+  shell('Documents - 3 items', 'list item', 'Documents').segments?.[0]?.where?.label === 'Documents');
+
+/* WHAT MUST NOT GET MORE CONFIDENT. An empty stretch of taskbar still has no name, and saying so is the
+ * honest answer - but the note that explained the absence blamed Electron, a canvas or an elevated window,
+ * none of which is involved. And nothing in a payload says which build recorded it, so the older agent's
+ * behaviour has to stay in the sentence. */
+const bare = shell(undefined, 'pane');
+check('an empty stretch of taskbar is still not named, and does not pretend to be',
+  !/"/.test(bare.segments?.[0]?.steps?.[0]?.what ?? '"'),
+  bare.segments?.[0]?.steps?.[0]?.what);
+check('the story places it without inventing a control',
+  /on the desktop or the taskbar/.test(bare.story?.map((p) => p.text).join(' ') ?? ''));
+check('and the note stops blaming Electron for the Windows shell',
+  /nothing under it/.test(bare.segments?.[0]?.steps?.[0]?.note ?? '')
+    && !/Electron/.test(bare.segments?.[0]?.steps?.[0]?.note ?? ''),
+  bare.segments?.[0]?.steps?.[0]?.note);
+check('while still saying an older agent reported icons this way too',
+  /older than 0\.9\.9/.test(bare.segments?.[0]?.steps?.[0]?.note ?? ''));
+
+
 /* Pressing Return after typing is what a person does to a BOX. Nobody commits a canvas or a game that
  * way, so a run terminated by one is a field as a matter of fact - which matters most on Windows, whose
  * agent writes no accessibility role at all and therefore always took the guess path. */
@@ -3293,7 +3390,16 @@ group('имя вкладки читается без того, что брауз
    * ищет другое. */
   const transcript = read('../api/_transcript.js');
   const macro = read('../api/_macro.mjs');
-  check('его читает транскрипт', /shorten\(plainName\(src\.control\)/.test(transcript));
+  /* Проверяется НАМЕРЕНИЕ, а не соседство скобок. Прежняя версия закрепляла ровно
+   * `shorten(plainName(src.control)` и сломалась, когда имя кнопки на панели задач стало проходить ещё
+   * через plainShellName - хотя правило, за которым тест поставлен, при этом не изменилось ни на символ.
+   * Тест, который падает от появления второго правила, охраняет форму записи, а не договор. */
+  check('его читает транскрипт',
+    /plainShellName\(plainName\(src\.control\), app, window\)/.test(transcript));
+  /* plainName ВНУТРИ: он общий для обоих читателей, а plainShellName - только про оболочку Windows, и
+   * снаружи он оказаться не может, иначе приписку про память будет искать правило про счётчик окон. */
+  check('и обрезка по длине по-прежнему снаружи обоих',
+    /shorten\(plainShellName\(plainName\(src\.control\), app, window\), CTX_MAX\)/.test(transcript));
   check('и окно тоже, потому что заголовок окна несёт ту же приписку',
     /shorten\(plainName\(src\.window\)/.test(transcript));
   check('и тело повтора отдаёт агенту очищенное имя',

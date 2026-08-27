@@ -564,6 +564,41 @@ const shorten = (v, max) => {
     .replace(/[\s\-–—,:;|·]+$/, '') + '…';
 };
 
+/* THE SHELL'S OWN BUTTONS name themselves for a screen reader, and that includes their state.
+ *
+ * From agent 0.9.9 a click on the taskbar arrives named, because the resolver learned to look below the
+ * window the hit test stops at. What it finds is the accessible name, and Windows builds that for somebody
+ * who cannot see the screen: `Google Chrome - 1 running window`, `File Explorer - 3 running windows`,
+ * `MouseFlow (1) - 1 running window`. The icon is the first half; the second is true at the instant of the
+ * click and false a minute later.
+ *
+ * Which matters twice. A transcript that says `clicked "Google Chrome - 1 running window"` reads as a
+ * control nobody has ever seen, and two clicks on the SAME icon minutes apart read as two different
+ * targets - the same complaint plainName() exists for, one field along.
+ *
+ * KEYED ON THE DIGIT, NOT ON THE WORDS, for the reason spelled out at length in api/_names.mjs: "3 running
+ * windows" is "3 окна" on a Russian desktop and "3 fenêtres" on a French one, and a rule assembled from the
+ * English words is wrong on the first system that is not English. What every translation shares is that the
+ * clause begins with the number.
+ *
+ * AND SCOPED TO THE TASKBAR, which is why it is not in _names.mjs beside plainName. That file holds rules
+ * that hold for every name anywhere, and this one does not: `Documents - 3 items` inside a File Explorer
+ * WINDOW is a legitimate name, and trimming it would rename a control the replay aims by. The scope is
+ * measured rather than assumed - Shell_TrayWnd carries no window title, so explorer with no window title is
+ * the shell itself, and an Explorer window always has one. Checked on a live desktop at four points across
+ * the taskbar and in the tray: `app=explorer` with no `window=` every time.
+ */
+const SHELL_COUNT = /\s+[-\u2013\u2014]\s+\d+\s+\S[\s\S]*$/;
+
+const inShell = (app, window) => !window && !!app && /^explorer$/i.test(String(app).trim());
+
+function plainShellName(name, app, window) {
+  if (!name || !inShell(app, window)) return name;
+  const kept = String(name).replace(SHELL_COUNT, '').trim();
+  /* A name that is ENTIRELY a count is a name, and showing it beats showing nothing. */
+  return kept || name;
+}
+
 /* Control kinds that name a shape rather than a thing. UIA's LocalizedControlType is already a human
  * word - "button", "edit box", "list item" - which is why there is no mapping table here, but these
  * particular words tell a reader nothing: "clicked the \"Send\" pane" is worse than "clicked \"Send\"". */
@@ -580,7 +615,9 @@ function ctxOf(raw) {
    * длине значило бы обрезать приписку, оставив её начало. Сперва имя, потом длина. Определение одно, в
    * api/_names.mjs; здесь оно применяется к тому, что ЧИТАЮТ. */
   const window = shorten(plainName(src.window), CTX_MAX);
-  const control = shorten(plainName(src.control), CTX_MAX);
+  /* plainShellName ПОСЛЕ plainName и ПОСЛЕ window, и оба порядка существенны: правило про счётчик окон
+   * применимо только в оболочке, а «в оболочке» опознаётся по отсутствию заголовка окна. */
+  const control = shorten(plainShellName(plainName(src.control), app, window), CTX_MAX);
   const type = oneLine(src.type, 40);
   /* The four the agent has written since 0.8.0 and nothing read until now. `role` and `subrole` are the
    * UNLOCALISED kind of the thing that was actually hit, which is what lets an application that names none
@@ -612,6 +649,14 @@ function ctxOf(raw) {
 const placeKey = (ctx) => (ctx ? (ctx.app || '?') + '\u0000' + (ctx.window || '?') : null);
 
 function ctxWhere(ctx) {
+  /* The shell has no window title, so without this the stretch is headed `explorer` - which is true, and
+   * tells a reader nothing. Gated on a NAMED BUTTON rather than on the app alone: a click on the desktop
+   * BACKGROUND is also explorer with no title on a machine whose wallpaper rotates (the desktop is a
+   * WorkerW then, and GetWindowText gives nothing), and it never carries a control. Measured: a taskbar
+   * icon arrives as a named `button`, empty taskbar as an unnamed `pane`. */
+  if (ctx.control && ctx.type === 'button' && inShell(ctx.app, ctx.window)) {
+    return { kind: 'app', label: 'the taskbar', detail: ctx.app };
+  }
   return {
     kind: 'app',
     label: ctx.window || ctx.app,
@@ -710,6 +755,19 @@ function actWords(verb, ctx, where) {
 function ctxNote(ctx) {
   if (!ctx) return '';
   if (ctx.control) return '';
+  /* THE SHELL IS NOT THE GENERAL CASE, and the general sentence is wrong about it: there is no Electron
+   * application, no canvas and no elevated window involved in a click on the desktop background or on an
+   * empty stretch of taskbar. From agent 0.9.9 the icons themselves arrive named - see NamedUnder in the
+   * Windows agent - so what is left unnamed in the shell really is bare shell.
+   *
+   * With one caveat said out loud, because nothing in a payload says which build wrote it: an older agent
+   * reported the ICONS this way too, and a sentence that quietly assumed 0.9.9 would turn a click on Chrome
+   * into a click on nothing. */
+  if (inShell(ctx.app, ctx.window)) {
+    return 'the pointer was on the Windows shell with nothing under it - the desktop background, or an '
+      + 'empty stretch of the taskbar. An agent older than 0.9.9 reported taskbar and tray ICONS this way '
+      + 'as well, so on a recording made by one this may be an icon rather than empty space';
+  }
   return (ctx.app || 'the application') + ' was under the pointer, but nothing there had a name the '
     + 'agent could read - which is normal for an Electron application, a canvas, or a window running '
     + 'as administrator';
@@ -1694,6 +1752,13 @@ const PLACE_NOUNS = {
  * split three ways - an explorer pane (the Windows desktop or taskbar), a browser window with no control
  * under the pointer, and no context at all from an agent older than 0.7.0. Only the third of those is
  * genuinely unknown, and it was the only one the old sentence described.
+ *
+ * THE FIRST OF THE THREE HAS SHRUNK, and this branch is better for it. Under agent 0.9.9 a taskbar icon,
+ * a tray icon, Start and the clock all arrive NAMED, so an unnamed explorer pane no longer means "somewhere
+ * on the taskbar, and we cannot say where" - it means the pointer was on a part of the shell that has
+ * nothing on it. The sentence below was written as the best guess available and has become a fact. What it
+ * must not do is get more confident: a recording made by an older agent still lands here with exactly the
+ * old uncertainty, and nothing in the payload says which build made it.
  *
  * The place is not repeated: the segment this clause sits in is already titled by application and window, so
  * "clicked in the window" inside "Chrome - MouseFlow" says the useful half without saying it twice. */

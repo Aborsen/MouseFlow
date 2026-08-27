@@ -299,7 +299,17 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.9.6 is the build that says whether an action did anything.
+/* 0.9.9 is the build that can name what is on the taskbar.
+ *
+ * Before it, every click on the Windows 11 taskbar or in the tray was recorded as an unnamed pane, and a
+ * transcript said "clicked on the desktop or the taskbar, at 898,1050" - a step nobody can read and nothing
+ * can replay by name. The name was always there; the resolver looked up the tree and the shell keeps it four
+ * levels DOWN, inside a XAML island the hit test stops outside of. It looks both ways now. Only the Windows
+ * half changed - macOS has descended since 0.9.3 - but the number is what the app compares, so both carry
+ * it.
+ *
+ * The previous note, kept because the reason still holds. 0.9.6 is the build that says whether an action did
+ * anything.
  *
  * A watched run spent a minute renaming a spreadsheet - ten actions at six to nine seconds, none of which
  * landed, because the caret was never in the field. Nothing could tell it: `do` has no return value and the
@@ -346,7 +356,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.9.8';
+export const AGENT_WANTS = '0.9.9';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

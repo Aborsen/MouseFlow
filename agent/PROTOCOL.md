@@ -447,12 +447,29 @@ Accessibility API: `AXUIElementCopyElementAtPosition` for the hit test, `kAXTitl
 - It needs the **Accessibility** TCC permission, granted per-binary by the user in System Settings. Without
   it every call returns nothing, so the agent must detect that and say which permission is missing rather
   than emitting recordings with no context and no explanation.
-- One bounded amendment to "never walk the tree", measured on macOS: when the climb and one awaken retry
-  both come back nameless, at most **two frame-checked steps DOWN** through the hit element's children are
-  permitted (sixty children per level, hidden ones skipped, smallest containing frame wins). Chromium
-  hit-tests a tab to an unnamed group covering the whole strip, with the tab itself one level below -
-  reachable by a person's eye and by this, never by climbing up. Bounded exactly like the replay aimer's
-  sibling peek, and only after every cheaper answer came back empty.
+- One bounded amendment to "never walk the tree", and it now applies on **both** platforms: when the climb
+  comes back nameless, a **frame-checked descent to the point** is permitted. Only children whose rectangle
+  contains the point are opened, so this follows a path down rather than sweeping a subtree - which is what
+  the rule forbids and what costs seconds. It runs only after every cheaper answer came back empty, so it
+  cannot make a step that is named today any worse.
+
+  The bounds and the tie-break differ per platform, because the thing each was written for differs:
+
+  | | macOS (since 0.9.3) | Windows (since 0.9.9) |
+  |---|---|---|
+  | depth | 4 levels, plus 2 steps back OUT and down again | 6 levels |
+  | per level | 60 children scanned, 3 smallest containing kept | 40 children scanned, every containing one opened |
+  | winner | first name found, depth first | smallest named rectangle overall |
+  | written for | Chromium's tab strip | the Windows 11 taskbar |
+
+  Chromium hit-tests a tab to an unnamed group covering the whole strip, with the tab three levels below -
+  and one of that group's twins has no children at all, which is why macOS also steps back out. Windows 11
+  answers a taskbar click with `Shell_TrayWnd`, the entire 1920x48 window, and keeps the button four levels
+  down inside a XAML island the shell's HWND provider will not hit-test into. **Smallest-rectangle rather
+  than first-found is the measured part**: `Shell_TrayWnd` lists a leftover `ReBarWindow32` before the
+  island, and it has a named child - "Running applications" - so depth-first returns the strip and stops one
+  step short of the icon. Cost measured over every taskbar button, the tray, Start and the clock: 32
+  elements read, 37 ms warm, 153 ms on the first call of a session.
 - The event tap has its own timeout, so the queue-and-worker rule above applies for the same reason.
 
 Blind spots are similar on both: Electron applications expose almost nothing (on Windows, ChatGPT desktop
