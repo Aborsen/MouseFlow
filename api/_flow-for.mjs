@@ -63,6 +63,14 @@ export function flowFor(rec, health) {
       events: rec.events,
       windows: rec.windows,
       created: rec.created,
+      /* When it BEGAN. `created` above is the moment it stopped - that is when this row is built - and on a
+       * long recording the two are an hour apart. The transcript can subtract the span it measured to reach
+       * the start, and does when this is absent; carried here so it does not have to.
+       *
+       * Absent rather than invented: a recording made before this field existed has none, and an imported
+       * .mmmacro has no honest answer at all. `?? null` and not `?? rec.created`, which would be the guess
+       * this exists to avoid. */
+      startedAt: rec.startedAt ?? null,
     },
   };
 }

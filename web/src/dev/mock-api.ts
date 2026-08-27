@@ -617,6 +617,11 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       flow: {
         id: 'rec1', name: 'Send the weekly invoice', kind: 'recorded', source: 'desktop',
         created: new Date(Date.now() - 86400000).toISOString(),
+        /* STAMPED, so the panel's exact branch is reachable in the preview at all: without a `startedAt`
+           the clock is always reckoned from `created` minus the span, and the tooltip that says which of
+           the two it is could only ever say one of them. A day ago, 74s before it stopped - the span this
+           fixture's own steps add up to. */
+        startedAt: new Date(Date.now() - 86400000 - 74_000).toISOString(),
         origins: [], windows: [{ title: 'Inbox — Outlook', process: 'chrome' }],
       },
       summary: {

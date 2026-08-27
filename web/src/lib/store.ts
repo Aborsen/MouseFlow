@@ -56,6 +56,18 @@ export interface Recording {
   id: string;
   name: string;
   created: string;
+  /* When recording BEGAN, stamped at the press.
+   *
+   * `created` is stamped when it STOPS - that is the moment the row is built - and for a sixty-four minute
+   * recording the difference between the two is sixty-four minutes. The transcript can reckon the start by
+   * subtracting the span it measured, and does when this is absent, but a number that was recorded beats a
+   * number that was worked out: the subtraction also carries the gap between the last event and the press
+   * that ended it.
+   *
+   * Optional because every recording made before this field existed has none, and because an IMPORTED
+   * .mmmacro has no honest answer - the file says nothing about when the work happened. Absent stays
+   * absent rather than being filled with the import's own clock. */
+  startedAt?: string;
   events: RecordedEvent[];
   /** Which applications were in front while this was recorded, in first-touched order. */
   windows: { title: string; process: string }[];

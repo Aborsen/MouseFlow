@@ -235,6 +235,9 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
   /** The name of the recording being replayed, or null. Drives Escape and the status poll. */
   const [playing, setPlaying] = useState<string | null>(null);
   const seenWindows = useRef<{ title: string; process: string }[]>([]);
+  /* When the current recording began. A ref rather than state: nothing renders it, and a re-render between
+   * the press and the stop must not lose it. Null until something is being recorded. */
+  const startedAt = useRef<string | null>(null);
 
   /* A long session, while one is running, and the parts that have not reached the account yet.
    *
@@ -288,6 +291,9 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
        * 10ms default a half-hour chunk is several times the size the account accepts. */
       const long = everyMinutes !== null && health.canDrain === true;
       await recordStart(port, long ? LONG_MOVE_MS : undefined);
+      /* The one moment this answer exists. Read at the press rather than reckoned at the stop - see the note
+       * on `startedAt` in store.ts. */
+      startedAt.current = new Date().toISOString();
       seenWindows.current = [];
       pending.current = [];
       lastCutAt.current = 0;
@@ -550,7 +556,14 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       const name = `MouseFlow ${two(at.getDate())}/${two(at.getMonth() + 1)} ${
         two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`;
 
-      const made = { id: uid(), name, created: new Date().toISOString(), events, windows: where };
+      const made = {
+        id: uid(),
+        name,
+        created: new Date().toISOString(),
+        startedAt: startedAt.current ?? undefined,
+        events,
+        windows: where,
+      };
       update((prev) => ({ recordings: [...prev.recordings, made] }));
       setNote(`${s.count} events captured (${fmtMs(s.durationMs)})${
         where.length ? ` in ${where.length} window${where.length === 1 ? '' : 's'}` : ''

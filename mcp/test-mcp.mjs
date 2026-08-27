@@ -1132,9 +1132,13 @@ check('and signing out drops it rather than leaving it for the next person',
 check('rendering asks a different question from comparing',
   /known: boolean;/.test(provider)
     && /const \{ flows, known, readFailed, reload \} = useAccount\(\)/.test(skillsView));
+/* The BLOCK, sliced out and asked what it does - rather than a pattern with a newline in it. `provider` is
+ * the raw read from further up, so on a Windows checkout every \n in a pattern is really \r\n and the
+ * assertion fails while the code it describes is exactly right. `read` documents that trap; this walked
+ * into it, and the fix is to assert the intent instead of the indentation. */
+const keptBlock = provider.slice(provider.indexOf('if (before) {'), provider.indexOf('const teamsBefore'));
 check('and the kept copy does not make the account look answered',
-  /setKnown\(true\);\n      \}/.test(provider)
-    && !/setLoaded\(true\);\n        setKnown/.test(provider));
+  /setKnown\(true\)/.test(keptBlock) && !/setLoaded/.test(keptBlock));
 check('so the reconciliation still waits for the real answer',
   /const \{ account, flows, loaded, reload \} = useAccount\(\)/.test(read('../web/src/features/record/Reconciler.tsx'))
     && /if \(!loaded\) return;/.test(read('../web/src/features/record/Reconciler.tsx')));
@@ -1150,6 +1154,60 @@ check('and one place applies an answer, whether it came at boot or later',
   /const applySync = useCallback/.test(provider)
     && /applySync\(await pull\(\)\)/.test(provider)
     && /if \(answer\) applySync\(answer\.body\)/.test(provider));
+
+/* Every number in a transcript was measured from the first event, which answers "how far in" and not
+ * "when". On a sixty-four minute recording those are different questions, and "0:03 · 4s" printed two
+ * spans where one of them was an offset - so it read as a second duration. */
+group('a transcript says what time of day a step happened');
+/* `recordView` is already read above; this group reuses it. */
+const panel = read('../web/src/features/record/TranscriptPanel.tsx');
+const transcriptApi = read('../api/_transcript.js');
+const storeTs = read('../web/src/lib/store.ts');
+
+check('an offset says it is one',
+  /return `\+\$\{fmtClock\(at\)\}`/.test(panel));
+check('and the clock is printed beside it, not instead of it',
+  /\$\{clock\.at\(count\(chapter\.at\) \?\? 0\)\} · /.test(panel));
+check('on the stretch headings too, which is the line people read',
+  /clock\.at\(count\(segment\.startMs\) \?\? 0\)/.test(panel));
+check('and on a step, without taking a fourth column off a 286px panel',
+  /title=\{clock && typeof step\.at === 'number'/.test(panel));
+
+/* WHERE THE CLOCK COMES FROM, and the trap: `created` is stamped when recording STOPS - that is the moment
+ * the row is built - so adding offsets to it puts every step up to an hour in the future. */
+check('the start is recorded at the press now, not reckoned from the stop',
+  /startedAt\.current = new Date\(\)\.toISOString\(\)/.test(recordView)
+    && /startedAt\?: string;/.test(storeTs));
+/* RUN, not matched: flowFor is imported above, so the builder can be asked rather than read. One builder,
+ * four callers - the push on stop, the restore, the reconcile and /api/mcp - so this is the only place the
+ * field has to survive. */
+const withStart = flowFor({ id: 'r1', name: 'x', created: new Date(74_000).toISOString(),
+  startedAt: new Date(0).toISOString(), events: parsed.events, windows: [] }, null);
+check('the payload carries the recorded start through the one builder',
+  withStart.payload.startedAt === new Date(0).toISOString(), String(withStart.payload.startedAt));
+/* `?? null`, never `?? rec.created` - which would be the guess the field exists to remove, and would put a
+ * wrong clock on every step of an imported macro instead of no clock at all. */
+const noStart = flowFor({ id: 'r2', name: 'x', created: new Date(74_000).toISOString(),
+  events: parsed.events, windows: [] }, null);
+check('and absent stays absent rather than becoming the moment it stopped',
+  noStart.payload.startedAt === null, String(noStart.payload.startedAt));
+check('and the endpoint passes it on',
+  /startedAt: isoOf\(payload\.startedAt\)/.test(transcriptApi));
+
+/* Everything recorded before the field existed still gets a clock, by subtraction - and the tooltip says
+ * which of the two it was, because a reckoned time must not pass for a recorded one. */
+check('an older recording is reckoned from the stop minus the span it ran',
+  /base = finished - totalMs/.test(panel));
+check('and the two are told apart out loud',
+  /recorder stamped/.test(panel) && /worked out from when the recording stopped/.test(panel));
+/* Neither base available - an imported macro on a deployment that never stamped - prints nothing rather
+ * than a number nobody can trust. */
+check('and with no usable base it prints no clock at all',
+  /if \(!Number\.isFinite\(base\)\) return null;/.test(panel));
+
+/* The preview has to be able to reach BOTH branches or the tooltip could only ever say one of them. */
+check('the preview can reach the stamped branch',
+  /startedAt: new Date\(Date\.now\(\) - 86400000 - 74_000\)/.test(read('../web/src/dev/mock-api.ts')));
 
 /* The same treatment on the other table, because two tables of the same product sorting differently - or
  * one of them not sorting at all - is a difference somebody has to learn for no reason. */

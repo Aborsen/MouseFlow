@@ -2033,6 +2033,10 @@ export function transcribe(flow) {
     source,
     created: isoOf(row.created_at != null ? row.created_at
       : row.created != null ? row.created : payload.created),
+    /* When recording began, when the recording says so. Null for anything made before the recorder stamped
+     * it and for an imported macro - the panel then reckons it from `created` minus the span below, which is
+     * what it had to do for everything until now. */
+    startedAt: isoOf(payload.startedAt),
     origins: originsOf(row, payload),
     windows,
   };

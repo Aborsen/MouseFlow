@@ -61,6 +61,8 @@ interface TranscriptFlow {
   kind?: string;
   source?: string;
   created?: string | null;
+  /** When recording began, when the recording says so. Absent on anything made before it was stamped. */
+  startedAt?: string | null;
   origins?: string[];
   windows?: { title?: string; process?: string }[];
 }
@@ -190,10 +192,59 @@ const fmtClock = (ms: number): string => {
   return `${mins}:${String(total % 60).padStart(2, '0')}`;
 };
 
+/** +0:04, +1:23 - and the plus is the point. Without it the column read as a duration, which is the other
+ *  number on the same line; "0:03 · 4s" was two spans where one was an offset. */
 const fmtAt = (at: number | string | undefined): string => {
-  if (typeof at === 'number' && Number.isFinite(at)) return fmtClock(at);
+  if (typeof at === 'number' && Number.isFinite(at)) return `+${fmtClock(at)}`;
   return str(at) ?? '—';
 };
+
+/* THE TIME OF DAY A STEP HAPPENED, which the transcript could not say at all until now.
+ *
+ * Every offset here is measured from the first event, which answers "how far in" and not "when". On a
+ * sixty-four minute recording those are different questions, and the second one is the one that lets
+ * somebody line a step up against a meeting, a message or their own memory.
+ *
+ * TWO BASES, AND THE ORDER MATTERS.
+ *
+ *   `startedAt`   recorded at the press. Exact, and preferred whenever it is there.
+ *   `created`     the moment recording STOPPED - that is when the row is built - so the start is that
+ *                 minus the span the transcript measured. Sound for anything MouseFlow recorded, and it
+ *                 carries the seconds between the last event and the press that ended it.
+ *
+ * Null when neither works, and then nothing is printed. An IMPORTED .mmmacro is the case worth naming: its
+ * `created` is when the file was imported, so the subtraction would describe the import rather than the
+ * work. Nothing in the row can tell that apart from here, which is exactly why `startedAt` is now recorded
+ * and why an import does not get one.
+ */
+const clockFrom = (flow: TranscriptFlow | undefined, totalMs: number | null) => {
+  const stamped = Date.parse(str(flow?.startedAt) ?? '');
+  let base = Number.isFinite(stamped) ? stamped : NaN;
+  if (!Number.isFinite(base)) {
+    const finished = Date.parse(str(flow?.created) ?? '');
+    if (Number.isFinite(finished) && totalMs != null && totalMs >= 0) base = finished - totalMs;
+  }
+  if (!Number.isFinite(base)) return null;
+  const exact = Number.isFinite(stamped);
+  return {
+    /** Whether the base was recorded rather than reckoned - said in a tooltip, never in the number. */
+    exact,
+    at: (atMs: number) => {
+      const when = new Date(base + atMs);
+      const two = (v: number) => String(v).padStart(2, '0');
+      return `${two(when.getHours())}:${two(when.getMinutes())}:${two(when.getSeconds())}`;
+    },
+  };
+};
+
+type Clock = ReturnType<typeof clockFrom>;
+
+/** What the clock's own tooltip says, so a reckoned time never passes for a recorded one. */
+const clockNote = (clock: NonNullable<Clock>) => (clock.exact
+  ? 'The time of day this step happened. Recording began at a moment the recorder stamped.'
+  : 'The time of day this step happened, worked out from when the recording stopped minus how long it '
+    + 'ran — the recorder did not stamp its start. Off by however long passed between the last event and '
+    + 'the press that ended it.');
 
 const fmtWhen = (iso: string | null | undefined): string => {
   const when = str(iso);
@@ -248,7 +299,7 @@ const WhereIcon = ({ kind }: { kind: string }) => {
  * duration is coloured once it passes five seconds, because a long step in the middle of a task is the
  * thing this whole panel exists to make findable - and it is the step's own `ms`, not something worked
  * out here. */
-const StepRow = ({ step }: { step: Step }) => {
+const StepRow = ({ step, clock }: { step: Step; clock: Clock }) => {
   const ms = count(step.ms);
   /* The endpoint's number or none at all - never this row's position.
    *
@@ -277,7 +328,15 @@ const StepRow = ({ step }: { step: Step }) => {
       >
         {number ?? '—'}
       </span>
-      <span className="w-11 shrink-0 pt-px font-mono text-[0.72rem] text-ink-inactive tabular-nums">
+      {/* The offset, and the time of day behind it. Not a fourth column: this panel is 34rem beside the
+          list and 286px inside the extension, and a step row already carries a number, an offset and a
+          sentence that wraps. The clock is what the offset MEANS, so it belongs on the offset. */}
+      <span
+        className="w-11 shrink-0 pt-px font-mono text-[0.72rem] text-ink-inactive tabular-nums"
+        title={clock && typeof step.at === 'number' && Number.isFinite(step.at)
+          ? `${clock.at(step.at)} — ${clockNote(clock)}`
+          : undefined}
+      >
         {fmtAt(step.at)}
       </span>
       <span className="min-w-0 flex-1">
@@ -320,10 +379,12 @@ const SegmentBlock = ({
   segment,
   index,
   ofSeconds,
+  clock,
 }: {
   segment: Segment;
   index: number;
   ofSeconds: number;
+  clock: Clock;
 }) => {
   const steps = list(segment.steps);
   const seconds = count(segment.seconds);
@@ -352,6 +413,16 @@ const SegmentBlock = ({
             )}
           </div>
           <div className="shrink-0 text-right">
+            {/* When this stretch began, above how long it lasted. The header is the line people read, and
+                it could say how long but not when. */}
+            {clock && count(segment.startMs) != null && (
+              <span
+                className="block font-mono text-[0.72rem] text-ink-inactive tabular-nums"
+                title={clockNote(clock)}
+              >
+                {clock.at(count(segment.startMs) ?? 0)}
+              </span>
+            )}
             <span className="block font-semibold text-[0.82rem] text-ink-primary tabular-nums">
               {fmtSeconds(seconds)}
             </span>
@@ -395,7 +466,7 @@ const SegmentBlock = ({
             {/* Keyed on position, not on `n`: `n` is optional, and two steps without one gave two rows the
               * same key - React then reuses one row's DOM for the other. */}
             {steps.map((step, i) => (
-              <StepRow key={`${index}-${i}`} step={step} />
+              <StepRow key={`${index}-${i}`} step={step} clock={clock} />
             ))}
           </ol>
         </details>
@@ -492,6 +563,12 @@ export const TranscriptPanel = ({
   const flow = data?.flow;
   const segments = useMemo(() => list(data?.segments), [data]);
   const totalSeconds = count(summary?.seconds);
+  /* The time of day, built once for the whole panel - see clockFrom. Depends on the flow head and on the
+   * measured span, because the reckoned base is one minus the other. */
+  const clock = useMemo(
+    () => clockFrom(flow, totalSeconds != null ? Math.round(totalSeconds * 1000) : null),
+    [flow, totalSeconds],
+  );
   const stepCount = useMemo(
     () => segments.reduce((n, segment) => n + list(segment.steps).length, 0),
     [segments],
@@ -795,8 +872,15 @@ export const TranscriptPanel = ({
                               <span className="text-[0.75rem] text-ink-inactive">{detail}</span>
                             )}
                             {count(chapter.at) != null && (
-                              <span className="ms-auto shrink-0 font-mono text-[0.72rem] text-ink-inactive tabular-nums">
-                                {fmtClock(count(chapter.at) ?? 0)}
+                              <span
+                                className="ms-auto shrink-0 font-mono text-[0.72rem] text-ink-inactive tabular-nums"
+                                title={clock ? clockNote(clock) : undefined}
+                              >
+                                {/* Three values, and each answers a different question that was being asked
+                                    of one: when it happened, how far into the recording that was, and how
+                                    long it took. The middle one used to be alone and read as a duration. */}
+                                {clock ? `${clock.at(count(chapter.at) ?? 0)} · ` : ''}
+                                {`+${fmtClock(count(chapter.at) ?? 0)}`}
                                 {count(chapter.seconds) ? ` · ${fmtSeconds(count(chapter.seconds) ?? 0)}` : ''}
                               </span>
                             )}
@@ -856,6 +940,7 @@ export const TranscriptPanel = ({
                       segment={segment}
                       index={i}
                       ofSeconds={totalSeconds ?? 0}
+                      clock={clock}
                     />
                   ))}
                 </div>
