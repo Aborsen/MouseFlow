@@ -553,6 +553,28 @@ async function runWave(o: {
         };
       }
 
+      /* A NOTE IS NOT AN ACTION - the long version of why is in api/_step.mjs, which does exactly this.
+       * Both drivers or neither: a note that reached the record on one path and not the other would be a
+       * difference nobody could explain from the outside. */
+      if (use.name === 'note') {
+        if (cut) {
+          results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: AFTER_CUT });
+          continue;
+        }
+        const written = String(use.input?.text ?? '').trim();
+        if (!written) {
+          results.push({
+            type: 'tool_result', tool_use_id: use.id, is_error: true,
+            content: 'nothing to record - note takes the text to write down',
+          });
+          continue;
+        }
+        onEvent({ type: 'tool', name: 'note', input: { text: written } });
+        steps.push({ tool: 'note', input: { text: written } });
+        results.push({ type: 'tool_result', tool_use_id: use.id, content: 'Recorded. It is in the record of this run for the user to read; nothing waits on it.' });
+        continue;
+      }
+
       /* THE BATCH RULE, applied before anything is counted, shown or sent. A refused action did not happen,
        * so it is not a step and not an event - only an answer the model reads on its next turn. */
       if (cut || !sameTurn(ran, use.name ?? '')) {

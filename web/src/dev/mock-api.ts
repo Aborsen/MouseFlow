@@ -157,6 +157,12 @@ const RUNS = [
       { tool: 'press_key', input: { key: 'Tab' }, ms: { shot: 87, model: 2600, act: 355 } },
       { tool: 'type_text', input: { text: 'Welcome!\n\nGlad to have you with us.' }, ms: { shot: 90, model: 4800, act: 470 } },
       { tool: 'click', input: { x: 74, y: 140, label: 'Send' }, ms: { shot: 89, model: 5200, act: 365 } },
+      /* A branch nothing could reach in the preview until it was in a fixture. Both are wave-01 tools, and
+       * both render through the one describer - so a run in the history is where somebody sees whether
+       * `hover` and `note` read as sentences or as tool names. */
+      { tool: 'hover', input: { x: 640, y: 210 }, ms: { shot: 88, model: 2400, act: 120 } },
+      { tool: 'note', input: { text: 'Sent at 11:07 to margaryta@example.com — the Sent folder shows it.' },
+        ms: { model: 2100 } },
     ],
     startedAt: hoursAgo(3), finishedAt: new Date(now - 3 * 3600_000 + 7 * 60_000).toISOString(),
   },

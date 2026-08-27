@@ -400,6 +400,35 @@ export async function advance({ loop, shot, windows, results, ask }) {
       break;
     }
 
+    /* A NOTE IS NOT AN ACTION, and every line of this branch follows from that.
+     *
+     * Before the batch rule and never added to `ran`: that rule is about actions that go stale with the
+     * picture, and a note does not touch the picture. Counted the other way round it would be worse than
+     * useless - a note in the middle of a turn would cut the turn having done nothing.
+     *
+     * Refused after a cut for the same reason finish is: a note is a CLAIM about what happened, and one
+     * written on the back of actions that never ran is a false record in the place the user trusts.
+     *
+     * No `ms` on the step. The decision cost belongs to the actions this turn produced; charging it to a
+     * note as well would double-count a single model call. */
+    if (use.name === 'note') {
+      if (cut) {
+        loop.mine.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: AFTER_CUT });
+        continue;
+      }
+      const said = String((use.input && use.input.text) || '').trim();
+      if (!said) {
+        loop.mine.push({
+          type: 'tool_result', tool_use_id: use.id, is_error: true,
+          content: 'nothing to record - note takes the text to write down',
+        });
+        continue;
+      }
+      loop.steps.push({ tool: 'note', input: { text: said } });
+      loop.mine.push({ type: 'tool_result', tool_use_id: use.id, content: 'Recorded. It is in the record of this run for the user to read; nothing waits on it.' });
+      continue;
+    }
+
     /* THE BATCH RULE, applied before anything is counted or sent. An action refused here did not happen,
      * so it is not a step and not pending - only an answer the model reads next turn. */
     if (cut || !sameTurn(ran, use.name || '')) {

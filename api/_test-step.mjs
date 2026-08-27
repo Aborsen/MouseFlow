@@ -26,7 +26,7 @@
  * Run: node api/_test-step.mjs
  */
 import { MAX_STEPS, MIN_SHOT_W, advance, startLoop } from './_step.mjs';
-import { BATCH_MAX, SETTLE_MAX_MS, WAVE_TURNS } from './_brain.mjs';
+import { BATCH_MAX, SETTLE_MAX_MS, TOOLS, WAVE_TURNS } from './_brain.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -651,6 +651,116 @@ group('a run cannot go on forever');
   const out = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask: scripted([]) });
   check('the ceiling ends it without asking the model', out.done && out.done.ok === false);
   check('and says so plainly', new RegExp(`reached ${MAX_STEPS} steps`).test(out.done.error), out.done.error);
+}
+
+/* --------------------------------------------------------------------------------- wave 01 */
+
+group('a note is recorded and is not an action');
+{
+  /* The shape this exists for: record a result WHILE doing the work, in one turn. If a note were treated as
+   * an action the batch rule would cut the turn here and the click would never happen. */
+  const ask = scripted([answer([
+    use('note', { text: 'Test Case 1 result: the About dialog reports 7.2.14' }, 'n1'),
+    use('click', { x: 100, y: 200 }, 'c1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+
+  check('the note lands in the run record', out.loop.steps.some((s) => s.tool === 'note'),
+    JSON.stringify(out.loop.steps.map((s) => s.tool)));
+  check('with the words it was given',
+    out.loop.steps.find((s) => s.tool === 'note')?.input?.text === 'Test Case 1 result: the About dialog reports 7.2.14');
+  /* THE POINT: the click still ran. A note does not enter `ran`, so it cannot cut a turn. */
+  check('and the action in the same turn still happened',
+    out.actions.length === 1 && out.actions[0].kind === 'do' && out.actions[0].name === 'click',
+    JSON.stringify(out.actions));
+  check('nothing was sent to the machine for the note itself',
+    !out.actions.some((a) => a.name === 'note'));
+  /* Answered, because the API requires a result for every tool_use - and answered with something that says
+   * nobody is waiting, or a model would sit expecting a reply. */
+  /* `mine` and not `messages`: a turn's answers wait there and are folded into the conversation by the
+   * NEXT advance - reading messages.at(-1) here would read the request that went out. */
+  check('the model is told it was recorded, and that nothing waits on it',
+    JSON.stringify(out.loop.mine).includes('nothing waits on it'), JSON.stringify(out.loop.mine));
+}
+{
+  /* A note is a CLAIM about what happened. One written on the back of actions that never ran is a false
+   * record in the one place the user trusts - so it is refused after a cut, exactly as finish is. */
+  const ask = scripted([answer([
+    use('click', { x: 1, y: 2 }, 'c1'),
+    use('click', { x: 3, y: 4 }, 'c2'),
+    use('note', { text: 'both clicks done' }, 'n1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a note behind a cut turn is refused rather than written',
+    !out.loop.steps.some((s) => s.tool === 'note'),
+    JSON.stringify(out.loop.steps.map((s) => s.tool)));
+}
+{
+  const ask = scripted([answer([use('note', { text: '   ' }, 'n1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('an empty note records nothing and says why',
+    !out.loop.steps.some((s) => s.tool === 'note')
+      && JSON.stringify(out.loop.mine).includes('nothing to record'), JSON.stringify(out.loop.mine));
+}
+
+group('hover is an aimed action, and the last one in its turn');
+{
+  const ask = scripted([answer([use('hover', { x: 300, y: 100 }, 'h1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  /* `move` has been an agent action since 0.7.0 - the whole of wave 01 is showing the model what is
+   * already there, which is why it ships on a deploy with the agent untouched. */
+  check('it goes out as the agent action that already existed',
+    out.actions[0]?.body === 'action=move x=600 y=200', out.actions[0]?.body);
+}
+{
+  /* Terminal, and for a reason no other action shares: hovering is done BECAUSE the screen is about to
+   * change. Anything decided in the same turn was decided from the picture before the menu opened. */
+  const ask = scripted([answer([
+    use('hover', { x: 300, y: 100 }, 'h1'),
+    use('type_text', { text: 'too soon' }, 'k1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('nothing may follow it, not even typing', out.actions.length === 1,
+    JSON.stringify(out.actions.map((a) => a.name)));
+  check('and the refusal says why, in the hover words',
+    JSON.stringify(out.loop.mine).includes('a hover is done because the screen'),
+    JSON.stringify(out.loop.mine));
+}
+
+group('the window list carries where each window is');
+{
+  const ask = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  await advance({
+    loop: start(),
+    shot: SHOT,
+    windows: [
+      { title: 'dbForge Studio', process: 'dbforgesql', active: true, x: 0, y: 0, w: 1920, h: 1032 },
+      { title: 'Terminal', process: 'WindowsTerminal', minimized: true, x: -32000, y: -32000, w: 160, h: 28 },
+    ],
+    results: [],
+    ask,
+  });
+  const sent = JSON.stringify(ask.seen[0].messages);
+  /* `/windows` has always sent the rectangle and openList has always thrown it away. Two things a picture
+   * cannot answer: what is covering the window you need, and where one is when it is not visible at all. */
+  check('a visible window says its size and position', sent.includes('1920x1032 at 0,0'), sent.slice(-400));
+  /* Windows puts a minimised window at -32000,-32000. A coordinate that looks like one and means "nowhere"
+   * is worse than none: `minimised` is already the whole truth about where it is. */
+  check('and a minimised one says only that it is minimised',
+    sent.includes('WindowsTerminal, minimised]') && !sent.includes('-32000'));
+}
+
+group('press_key promises exactly what the agent can do');
+{
+  const key = TOOLS.find((t) => t.name === 'press_key');
+  /* The schema said "F1-F12" and the agent's table has no F7-F10. The model paid a step to discover that,
+   * twice in one watched run - on PrintScreen and on Snapshot - and then went to write itself a
+   * screenshotter in PowerShell. What is NOT there is the half worth saying. */
+  check('it names what is missing rather than leaving it to be found by trying',
+    /F7-F10/.test(key.description) && /PrintScreen/.test(key.description));
+  check('and says there is no Win modifier, which is why Win+Shift+S cannot be pressed',
+    /no Win modifier/.test(key.description));
+  check('it no longer claims F7 to F10 exist', !/F1-F12/.test(key.description), key.description);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

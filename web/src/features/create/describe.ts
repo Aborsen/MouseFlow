@@ -27,6 +27,8 @@ export function describe(did: Did): string {
   switch (did.name) {
     case 'click':
       return `${input.double ? 'double-click' : input.button === 'right' ? 'right-click' : 'click'}${at}`;
+    case 'hover':
+      return `hover${at}`;
     case 'scroll':
       return `scroll ${Number(input.amount) < 0 ? 'down' : 'up'}${at}`;
     case 'type_text': {
@@ -43,6 +45,12 @@ export function describe(did: Did): string {
       return `switch to ${input.title ?? input.process ?? 'a window'}`;
     case 'wait':
       return 'wait for the screen to settle';
+    /* Заметка - единственный шаг, ЧЬЁ СОДЕРЖИМОЕ и есть смысл шага: «note» без текста не говорит ничего,
+     * ради чего модель её вызывала. Обрезается, потому что строка живёт в одну строку фида. */
+    case 'note': {
+      const written = String(input.text ?? '').trim();
+      return written ? `noted "${written.length > 72 ? `${written.slice(0, 72)}…` : written}"` : 'noted';
+    }
     case 'reached_checkpoint':
       return `announced checkpoint ${input.n ?? '?'}`;
     case 'finish':

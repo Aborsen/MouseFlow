@@ -1274,6 +1274,48 @@ check('and it stands down while the wizard is open over it',
   /if \(!viewing \|\| wizardFor\) return;/.test(recordView)
     && /\}, \[viewing, wizardFor\]\);/.test(recordView));
 
+group('wave 01: hover and note, on both paths or neither');
+const brain = read('../api/_brain.mjs');
+const engine = read('../web/src/lib/desktop-engine.ts');
+const cloudStep = read('../api/_step.mjs');
+const describer = read('../web/src/features/create/describe.ts');
+
+/* The behaviour of both drivers is exercised for real in api/_test-step.mjs, which runs the cloud loop with
+ * a scripted model. What CANNOT be exercised there is the browser driver - it is TypeScript inside the app -
+ * so what this group protects is the thing that actually goes wrong when there are two of something: one of
+ * them getting a branch the other did not. This codebase has been bitten by exactly that ("jpeg" instead of
+ * "image/jpeg" in one of two places took every run down). */
+check('the note branch exists in the cloud driver and in the browser driver',
+  /if \(use\.name === 'note'\)/.test(cloudStep) && /if \(use\.name === 'note'\)/.test(engine));
+check('both refuse a note behind a cut turn, because a note is a claim about what happened',
+  /'note'\)[\s\S]{0,200}if \(cut\)[\s\S]{0,200}AFTER_CUT/.test(cloudStep)
+    && /'note'\)[\s\S]{0,200}if \(cut\)[\s\S]{0,200}AFTER_CUT/.test(engine));
+check('both answer in the same words, so the two paths teach one habit',
+  /nothing waits on it/.test(cloudStep) && /nothing waits on it/.test(engine));
+/* Not in `ran`, and that is the whole design: the batch rule is about actions that go stale with the
+ * picture. A note counted as one would cut a turn having done nothing at all. */
+check('and neither counts it as a machine action',
+  !/ran\.push\('note'\)/.test(cloudStep) && !/ran\.push\('note'\)/.test(engine));
+
+/* Hover needs no driver branch - it has a wire form - but it does need the batch rule, and it is the only
+ * aimed action whose reason for being terminal is that it succeeded. */
+check('hover has a wire form and it is the action the agent already had',
+  /if \(name === 'hover'\)[\s\S]{0,120}action=move/.test(brain));
+check('and nothing may follow it',
+  /const TERMINAL = new Set\(\['wait', 'activate_window', 'hover'\]\)/.test(brain));
+
+/* One describer for the live feed and for history - see the note at the top of that file. A tool missing
+ * from it does not break: it falls through to printing its own name, which is exactly how "note" would have
+ * shown up as `note` with the text nowhere. */
+check('both new tools read as sentences rather than as tool names',
+  /case 'hover':/.test(describer) && /case 'note': \{/.test(describer));
+check('and the note shows its text, since the text IS the step',
+  /noted "\$\{written\.length > 72/.test(describer));
+/* A fixture, because a branch no preview can reach is a branch nobody looks at. */
+check('a run in the preview reaches both of them',
+  /tool: 'hover'/.test(read('../web/src/dev/mock-api.ts'))
+    && /tool: 'note'/.test(read('../web/src/dev/mock-api.ts')));
+
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');
 const MD_STRUCTURE = {

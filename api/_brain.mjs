@@ -43,15 +43,18 @@ export const SYSTEM = `You are operating a real Windows computer for the user, w
 How to work:
 - Each turn you are given a fresh screenshot. Look at it before deciding.
 - Coordinates are in the pixels of the screenshot you were just given. Aim at the CENTRE of what you mean to click.
-- ONE thing aimed at the screen per turn: one click, or one scroll, or one activate_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
-- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait or an activate_window: after a wait the screen is no longer the one you were looking at, and an activate_window may have found no such window, in which case what came next would go to the wrong application.
+- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one activate_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
+- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
 - Do not put a one-way action in a batch. A message sent, a form submitted, a file deleted, a payment confirmed: look at the screen first and let that keystroke be a turn of its own, with the same care as a one-way click.
 - Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
+- Some things are only reachable by hovering: a menu that opens on the pointer, a button that appears on a row, a tooltip that spells out a label too short to read. Hover, then look at what it revealed.
+- The "Already open" list gives each window's size and position. Use them to work out what is covering what: a window in front of the one you need is why a click can land somewhere unexpected, and activate_window is how you fix it.
 - Write text the way it should appear, line breaks and all, in ONE type_text call. Do not go back afterwards to fix formatting: Find and Replace, or re-selecting text to correct it, costs steps and rarely ends well. If what you typed came out wrong, select all and type it again.
 - In an email body or a document, a line break is Enter. In a chat box or a comment field, Enter sends - pass newline: "shift-enter" there.
 - Waiting is free and looking is not. The wait tool blocks until the screen stops changing, so ONE wait of 60000 is right for something long. Never a string of short waits: each of those costs a step.
 - If two attempts at the same sub-goal get nowhere, change method. If a third fails, call finish and say precisely what you could not do.
+- When the goal asks you to RECORD something - a test result, a value you read off the screen, what a dialog said - call note with it. It writes that line into the run's own record, where the user reads it afterwards. It touches nothing, costs no action, and can ride in the same turn as real work. It is not a way to talk to the user mid-run: nobody is watching for it, and nothing waits for an answer.
 - When the goal is met, call finish with ok: true and one sentence about what you did.
 
 Boundaries that matter:
@@ -87,6 +90,25 @@ export const TOOLS = [
     },
   },
   {
+    /* Наведение - ЦЕЛЕНОЕ действие, и в этом вся его сложность для правила пачки: оно ничего не нажимает,
+     * но экран после него другой - в этом и смысл. Поэтому оно и в списке «одно прицельное за ход», и в
+     * TERMINAL: за наведением ничего идти не может, иначе следующее действие целится в картинку, которой
+     * наведение уже не соответствует. */
+    name: 'hover',
+    description: 'Move the pointer to a point and leave it there, pressing nothing. For a menu that opens '
+      + 'on hover, a button that only appears when the row is pointed at, or a tooltip that spells out a '
+      + 'label too short to read. The screen usually changes; look at the next picture before acting.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        x: { type: 'integer', description: 'Pixels from the left of the screenshot' },
+        y: { type: 'integer', description: 'Pixels from the top of the screenshot' },
+      },
+      required: ['x', 'y'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'type_text',
     description: 'Type text into whatever has focus. Click the field first if it is not focused. Newlines are typed as real line breaks, so write a message with the paragraphs you want.',
     input_schema: {
@@ -101,7 +123,14 @@ export const TOOLS = [
   },
   {
     name: 'press_key',
-    description: 'Press a key, with modifiers. Enter, Tab, Escape, Delete, arrows, F1-F12, or a single character for a shortcut such as Control+C.',
+    /* СПИСОК ДОЛЖЕН СОВПАДАТЬ С VkFor В АГЕНТЕ, и до этой правки не совпадал: схема обещала F1-F12, а в
+     * таблице нет F7-F10. Модель тратила ход на «unknown key» из-за нашего же текста - и в наблюдённом
+     * прогоне потратила два, на PrintScreen и Snapshot, после чего пошла писать себе скриншотер в
+     * PowerShell. Чего НЕТ - сказано вслух: это единственное, что мешает узнавать это перебором. */
+    description: 'Press a key, with modifiers. Enter, Tab, Escape, Backspace, Delete, Space, the arrows, '
+      + 'Home, End, PageUp, PageDown, F1-F6, F11, F12, Win, or a single character for a shortcut such as '
+      + 'Control+C. NOT available: F7-F10, PrintScreen and Snapshot, and there is no Win modifier - Win can '
+      + 'be the key itself but Win+Shift+S cannot be pressed. Do not try them; they are refused.',
     input_schema: {
       type: 'object',
       properties: {
@@ -111,6 +140,29 @@ export const TOOLS = [
         alt: { type: 'boolean' },
       },
       required: ['key'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* НЕ действие: ничего не касается экрана, ничего не ждёт ответа. Строка в журнал прогона - там, где
+     * человек читает его потом.
+     *
+     * ЗАЧЕМ ЭТО ОТДЕЛЬНЫМ ИНСТРУМЕНТОМ. Прогон, ради которого это написано, просил снять окно и положить
+     * «Test Case 1 result» в документ. Человек попросил Google Doc не потому, что ему нужен Google Doc, а
+     * потому что результату теста некуда лечь. Вот куда.
+     *
+     * И оно НЕ входит в `ran`: правило пачки говорит о действиях, устаревающих вместе с картинкой, а
+     * заметка картинку не устаревает. Иначе заметка посреди хода обрезала бы ход, ничего не сделав. */
+    name: 'note',
+    description: 'Write one line into the run\'s record - a result, a value read off the screen, what a '
+      + 'dialog said. Does nothing to the screen, costs no action, and may share a turn with real work. '
+      + 'Not a message to the user: nobody answers it, and the run does not pause.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'What to record, in one or two sentences.' },
+      },
+      required: ['text'],
       additionalProperties: false,
     },
   },
@@ -244,6 +296,11 @@ export function actionBody(name, input, frame) {
     return `action=click x=${x()} y=${y()} button=${button} double=${input.double ? '1' : '0'}`
       + (label ? ` name=${label.slice(0, 120)}` : '');
   }
+  /* `move` - действие агента с 0.7.0; новым тут только то, что модель о нём наконец знает. Ничего в
+   * агенте для этого менять не пришлось, поэтому волна едет деплоем. */
+  if (name === 'hover') {
+    return `action=move x=${x()} y=${y()}`;
+  }
   if (name === 'scroll') {
     return `action=scroll x=${x()} y=${y()} amount=${Number(input.amount) || -3}`;
   }
@@ -273,13 +330,24 @@ export function actionBody(name, input, frame) {
 
 /* --------------------------------------------------------------------------- the conversation */
 
-/** What is already open, in one line each - the mistake a picture cannot prevent. */
+/** What is already open, in one line each - the mistake a picture cannot prevent.
+ *
+ * WITH THE RECTANGLE, which `/windows` has always sent and this function has always thrown away. Two things
+ * the model could not work out from a picture and can now: which window is covering the one it needs - the
+ * reason a click lands somewhere unexpected - and where a window is when it is not visible at all.
+ *
+ * Not for a minimised window. Windows reports a minimised window at -32000,-32000, and a coordinate that
+ * looks like a coordinate but means "nowhere" is worse than no coordinate: `state` already says minimised,
+ * which is the whole truth about where it is. */
 export function openList(windows) {
   const list = Array.isArray(windows) ? windows : [];
   if (!list.length) return null;
   return list.slice(0, 24).map((w) => {
     const state = w.active ? 'in front' : w.minimized ? 'minimised' : 'open behind';
-    return `- ${w.title}  [${w.process || '?'}, ${state}]`;
+    const box = !w.minimized && Number(w.w) > 0 && Number(w.h) > 0
+      ? `, ${Math.round(Number(w.w))}x${Math.round(Number(w.h))} at ${Math.round(Number(w.x) || 0)},${Math.round(Number(w.y) || 0)}`
+      : '';
+    return `- ${w.title}  [${w.process || '?'}, ${state}${box}]`;
   }).join('\n');
 }
 
@@ -294,7 +362,10 @@ export function screenMessage(frame, open) {
       {
         type: 'text',
         text: `The screen now, ${frame.w} by ${frame.h} pixels.` +
-          (open ? `\n\nAlready open - use activate_window rather than opening any of these again:\n${open}` : ''),
+          (open
+            ? '\n\nAlready open - use activate_window rather than opening any of these again. Sizes and '
+              + `positions are in screen pixels, so they say what is covering what:\n${open}`
+            : ''),
       },
     ],
   };
@@ -423,8 +494,8 @@ export const stillStopped = (streak) =>
 /** Actions that go to whatever has focus, so they do not need a picture taken after the one before them. */
 const BATCHABLE = new Set(['type_text', 'press_key', 'wait']);
 
-/** And the two nothing may follow: one changes the screen by definition, the other can quietly not happen. */
-const TERMINAL = new Set(['wait', 'activate_window']);
+/** And the three nothing may follow: two change the screen by definition, the third can quietly not happen. */
+const TERMINAL = new Set(['wait', 'activate_window', 'hover']);
 
 /**
  * Whether one more action may run in this turn, with no fresh screenshot in between.
@@ -451,6 +522,12 @@ export function notBatched(sofar, next) {
     return 'not carried out — it came after a wait, and the point of waiting is that the screen changed. '
       + 'What follows a wait is decided from the screen the wait left, not from the one you were looking at. '
       + 'The rest of the turn was dropped with it; a fresh screenshot is coming.';
+  }
+  if (done[done.length - 1] === 'hover') {
+    return 'not carried out — it came after a hover, and a hover is done because the screen is about to '
+      + 'change: a menu opens, a button appears, a tooltip is drawn. Whatever this was aimed at, it was '
+      + 'aimed with the picture from BEFORE that. The rest of the turn was dropped with it; look at what '
+      + 'the hover revealed and act on that.';
   }
   if (done[done.length - 1] === 'activate_window') {
     return 'not carried out — it came after activate_window, which is the one aimed action that can fail '

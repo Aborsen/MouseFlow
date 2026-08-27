@@ -160,16 +160,24 @@ Every turn: take a screenshot, strip images out of every older message (a conver
 screenshots costs a fortune and says nothing the latest one does not), attach the list of open windows, ask
 for one decision, run it, wait 350 ms for the screen to react.
 
+The window list carries each window's **size and position** as well as its title, process and state —
+`/windows` has always sent the rectangle and `openList` used to throw it away. It answers two questions a
+picture cannot: what is covering the window the model needs, which is why a click lands somewhere
+unexpected, and where a window is when it is not visible at all. Not for a minimised window: Windows reports
+those at -32000,-32000, and a coordinate that looks like one but means "nowhere" is worse than none.
+
 ### Tools the model gets
 
 | Tool | Arguments | Notes |
 |---|---|---|
 | `click` | `x`, `y`, `button`, `double`, `label` | `label` is the visible text it believes it is clicking; the agent hit-tests the point and, if something else is there, looks for that name among the neighbours |
+| `hover` | `x`, `y` | Moves the pointer and presses nothing — a menu that opens on hover, a button that appears on a row, a tooltip spelling out a short label. Goes out as the agent's `move`, which has existed since 0.7.0. **Terminal:** nothing follows it, because hovering is done precisely because the screen is about to change |
 | `type_text` | `text`, `newline: enter \| shift-enter` | Sent base64 so line breaks survive |
-| `press_key` | `key`, `ctrl`, `shift`, `alt` | `ctrl` means Command on macOS |
+| `press_key` | `key`, `ctrl`, `shift`, `alt` | `ctrl` means Command on macOS. The description names what is **not** there — F7-F10, PrintScreen, Snapshot, and any Win modifier — because it used to promise "F1-F12" while `VkFor` had F1-F6, F11 and F12, and the model paid a step per discovery |
 | `activate_window` | `title`, `process` | Preferred over opening anything again |
 | `scroll` | `x`, `y`, `amount` | Negative scrolls down |
 | `wait` | `ms` (to 120 s), `reason` | **Blocks until the screen stops changing and does not cost a step** |
+| `note` | `text` | Writes one line into the run's own record — a test result, a value read off the screen. Not an action: it touches nothing, is never sent to the machine, and does not enter the batch count, so it can ride in the same turn as real work. Refused behind a cut turn, because a note is a claim about what happened |
 | `reached_checkpoint` | `n`, `said` | Only when a plan is armed |
 | `finish` | `said`, `ok` | `ok: true` is required for success |
 
@@ -188,12 +196,13 @@ Not decoration — these are the product's position on what an agent driving a r
 
 - Read the "Already open" list before opening anything; launching a second copy of a running application is
   a mess the user has to clean up.
-- **One thing aimed at the screen per turn** — one click, or one scroll, or one `activate_window`, or one
-  wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
+- **One thing aimed at the screen per turn** — one click, or one hover, or one scroll, or one
+  `activate_window`, or one wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
   moment anything happens. After it, in the same turn, the typing and key presses that follow from it: those
   go to whatever has focus, not to a place on screen. "Click the box, type the address, press Tab" is one
-  turn, not three. Up to `BATCH_MAX` actions; nothing follows a wait (the screen changed by definition) or
-  an `activate_window` (which may have found no such window, and then the typing goes to the wrong app).
+  turn, not three. Up to `BATCH_MAX` actions; nothing follows a wait (the screen changed by definition), an
+  `activate_window` (which may have found no such window, and then the typing goes to the wrong app) or a
+  `hover` (which is done *because* the screen is about to change).
   This one is not a request — `sameTurn` in `api/_brain.mjs` enforces it, and both drivers cut the turn at
   the first refusal rather than filtering it, because typing meant for a second click's target is typing in
   the wrong place. What the code *cannot* enforce is the next line, because `Enter` sends an email and

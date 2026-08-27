@@ -20,6 +20,11 @@ export interface WindowLike {
   process?: string;
   active?: boolean;
   minimized?: boolean;
+  /** Экранный прямоугольник окна. `/windows` присылает его всегда; openList печатает - кроме свёрнутых. */
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
 }
 
 export interface Tool {
