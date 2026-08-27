@@ -114,17 +114,25 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
         onClick={() => showSection(!shown)}
         aria-expanded={shown}
         className={cn(
-          'flex shrink-0 items-center gap-2 px-3.5 py-3 text-left transition-colors',
-          'hover:bg-state-hover',
+          /* Три колонки, а не строка с `ms-auto`: заголовок стоит ПО СЕРЕДИНЕ - между стрелкой слева и
+             счётчиком справа. В строке он прижимался к иконкам, и его положение зависело от того, сколько
+             цифр в «7 runs» против «38 runs»; здесь середина остаётся серединой при любом счётчике. */
+          'grid shrink-0 grid-cols-[auto_1fr_auto] items-center gap-2 px-3.5 py-3 text-left',
+          'transition-colors hover:bg-state-hover',
         )}
       >
-        {shown ? <ChevronDown className="size-3.5 shrink-0 text-ink-inactive" />
-          : <ChevronRight className="size-3.5 shrink-0 text-ink-inactive" />}
-        <History className="size-4 shrink-0 text-ink-inactive" />
-        <Typography variant="span" className="text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+        <span className="flex items-center gap-2">
+          {shown ? <ChevronDown className="size-3.5 shrink-0 text-ink-inactive" />
+            : <ChevronRight className="size-3.5 shrink-0 text-ink-inactive" />}
+          <History className="size-4 shrink-0 text-ink-inactive" />
+        </span>
+        <Typography
+          variant="span"
+          className="justify-self-center text-[0.7rem] uppercase tracking-wide text-ink-inactive"
+        >
           History
         </Typography>
-        <Typography variant="span" className="ms-auto text-[0.76rem] text-ink-inactive tabular-nums">
+        <Typography variant="span" className="text-[0.76rem] text-ink-inactive tabular-nums">
           {mine.length} run{mine.length === 1 ? '' : 's'}
         </Typography>
       </button>

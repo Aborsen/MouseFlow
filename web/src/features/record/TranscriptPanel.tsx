@@ -239,12 +239,25 @@ const clockFrom = (flow: TranscriptFlow | undefined, totalMs: number | null) => 
 
 type Clock = ReturnType<typeof clockFrom>;
 
+/* WHOSE CLOCK IT IS, and the question is fair: the stamps travel as instants - `startedAt` and `created` are
+ * ISO, which is UTC - and the browser renders them in ITS OWN zone. Reading your own recording on the
+ * machine that made it, that is exactly the clock you watched. Reading a colleague's from another zone, the
+ * instant is still right and the wall time is yours, not theirs. Named rather than left to be assumed. */
+const localZone = (() => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch (_) {
+    return null;   // an engine without the zone in resolvedOptions; the times are still right
+  }
+})();
+
 /** What the clock's own tooltip says, so a reckoned time never passes for a recorded one. */
 const clockNote = (clock: NonNullable<Clock>) => (clock.exact
   ? 'The time of day this step happened. Recording began at a moment the recorder stamped.'
   : 'The time of day this step happened, worked out from when the recording stopped minus how long it '
     + 'ran — the recorder did not stamp its start. Off by however long passed between the last event and '
-    + 'the press that ended it.');
+    + 'the press that ended it.')
+  + (localZone ? ` Shown in this browser's time zone (${localZone}).` : '');
 
 const fmtWhen = (iso: string | null | undefined): string => {
   const when = str(iso);
