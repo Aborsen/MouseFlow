@@ -26,6 +26,23 @@ These are not bugs and no amount of work inside the current design removes them.
   **and cannot see input while one has focus**. A recording made over an admin app is silently incomplete —
   the events never arrive, so nothing downstream can detect the hole. The UAC secure desktop is unreachable
   either way.
+- **`capture_window`, the clipboard and `open_url`/`open_app` are Windows only.** They landed in 0.10.0 on
+  the Windows agent; the macOS equivalents (`NSPasteboard`, `CGWindowListCreateImage`, `NSWorkspace.open`)
+  are not written. The macOS agent answers those four actions by name and says so, which is deliberately
+  different from "no such action": a model told an action does not exist looks for a way round — in the run
+  this came from, that meant opening a terminal and writing a screen-capture tool — and a model told the
+  platform lacks it stops and reports.
+- **A captured picture stays on the machine.** `capture_window` writes a PNG under
+  `%LOCALAPPDATA%\MouseFlow\captures` (pruned to 200 files and 7 days) and puts it on the clipboard. That is
+  enough to paste it into a document, which is what the failing scenario needed, but the bytes never reach
+  the run's record on the account — so a report on our side cannot show the picture, only name the path.
+  Carrying attachments up to the account needs a table, an upload path and a size cap, and is a piece of
+  work of its own rather than a corner of this one.
+- **The self-window guard protects a process, not a window.** Windows Terminal keeps every window of a
+  profile in one process, so a SECOND Terminal window is refused along with the one hosting the agent. The
+  refusal says so and names the way round (a different terminal application, or autostart, where the agent
+  has no terminal at all). Erring this way is deliberate: the alternative is failing to protect the window
+  that matters.
 - **macOS captures one display.** ScreenCaptureKit takes the display the cursor is on. Bounds checking still
   uses the union of all displays, because a click on the second monitor is a legitimate click even when the
   agent cannot see it.

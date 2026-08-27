@@ -214,8 +214,11 @@ export const windows = (port: number) =>
 export const shot = (port: number, width?: number) =>
   agentCall<Shot>(port, width ? `/shot?w=${width}` : '/shot');
 export const pulse = (port: number) => agentCall<{ ok: true; grid: string }>(port, '/pulse');
+/* `output` from agent 0.10.0, and only when the action had something to say for itself - a capture's path,
+ * what the clipboard held. Absent on every older agent and on the eight actions that report nothing, which
+ * is why it is optional rather than a new shape. */
 export const doAction = (port: number, body: string) =>
-  agentCall<{ ok: true }>(port, '/do', { method: 'POST', body, contentType: 'text/plain' });
+  agentCall<{ ok: true; output?: string }>(port, '/do', { method: 'POST', body, contentType: 'text/plain' });
 
 /* ------------------------------------------------------------------ a machine, whichever one it is
 
@@ -229,7 +232,7 @@ export interface Machine {
   windows(): Promise<{ ok: true; windows: AgentWindow[] }>;
   pulse(): Promise<{ ok: true; grid: string }>;
   shot(width?: number): Promise<Shot>;
-  do(body: string): Promise<{ ok: true }>;
+  do(body: string): Promise<{ ok: true; output?: string }>;
 }
 
 /** This computer, over loopback - exactly what every caller did before there was an interface. */
@@ -299,7 +302,24 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.9.9 is the build that can name what is on the taskbar.
+/* 0.10.0 is the build that can hand something back, and that will not touch its own terminal.
+ *
+ * Four things, and the first is why the rest were worth a release. A run asked to screenshot a dialog and
+ * paste it into a document could not: /shot exists so the MODEL can see, and nothing could keep a picture.
+ * The model discovered press_key had no PrintScreen, went to write itself a capture tool in PowerShell, and
+ * pressed Ctrl+C in the terminal the agent was running in - having worked out the hazard itself and left a
+ * note about it for its successor. So: capture_window saves a window to a file and onto the clipboard, by
+ * window rather than by screen so that whatever is in front of it does not matter; clipboard_read and
+ * clipboard_write make text go in and out without typing it; open_url reaches a web application in one
+ * action instead of four; and the agent now refuses to click or type into the terminal that hosts it, which
+ * is measured from the process tree rather than from GetConsoleWindow - under Windows Terminal there is no
+ * console window to find.
+ *
+ * Windows only. The macOS agent answers these four by name and says it has not got them, which is different
+ * from "no such action" and is the difference between a model that stops and one that improvises.
+ *
+ * The previous note, kept because the reason still holds. 0.9.9 is the build that can name what is on the
+ * taskbar.
  *
  * Before it, every click on the Windows 11 taskbar or in the tray was recorded as an unnamed pane, and a
  * transcript said "clicked on the desktop or the taskbar, at 898,1050" - a step nobody can read and nothing
@@ -356,7 +376,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.9.9';
+export const AGENT_WANTS = '0.10.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

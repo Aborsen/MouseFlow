@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.9.9"
+let VERSION = "0.10.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -2209,6 +2209,16 @@ func doAction(_ body: String) -> String? {
         )
     case "activate":
         return Windows.activate(title: fields["title"], process: fields["process"])
+    /* THE FOUR THAT ARE WINDOWS-ONLY FOR NOW, named rather than left to "no action called capture".
+     *
+     * capture, clipread, clipwrite and open landed on Windows in 0.10.0 and this side has not caught up. The
+     * distinction matters to a model: told only that an action does not exist it looks for a way round -
+     * which in the run this wave came from meant opening a terminal and writing a screen-capture tool - and
+     * told that the platform lacks it, it stops and says so. The equivalents here are NSPasteboard,
+     * CGWindowListCreateImage and NSWorkspace.open, and none of them is written yet. */
+    case "capture", "clipread", "clipwrite", "open":
+        return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.10.0. "
+            + "Say so and carry on without it; there is no workaround worth trying."
     default:
         return "no action called \(action.isEmpty ? "(none given)" : action)"
     }

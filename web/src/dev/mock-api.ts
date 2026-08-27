@@ -163,6 +163,14 @@ const RUNS = [
       { tool: 'hover', input: { x: 640, y: 210 }, ms: { shot: 88, model: 2400, act: 120 } },
       { tool: 'note', input: { text: 'Sent at 11:07 to margaryta@example.com — the Sent folder shows it.' },
         ms: { model: 2100 } },
+      /* Wave 02, in a fixture for the same reason wave 01 is: a branch no preview can reach is a branch
+       * nobody looks at. This is the shape of the run that could not be done before - capture a window,
+       * open a web application, paste. */
+      { tool: 'capture_window', input: { title: 'Inbox — Outlook' }, ms: { shot: 90, model: 2900, act: 240 } },
+      { tool: 'open_url', input: { url: 'https://docs.new' }, ms: { shot: 88, model: 3300, act: 180 } },
+      { tool: 'clipboard_write', input: { text: 'Test Case 1 result' }, ms: { model: 1900, act: 60 } },
+      { tool: 'clipboard_read', input: {}, ms: { model: 1700, act: 55 } },
+      { tool: 'open_app', input: { name: 'notepad' }, ms: { model: 2000, act: 210 } },
     ],
     startedAt: hoursAgo(3), finishedAt: new Date(now - 3 * 3600_000 + 7 * 60_000).toISOString(),
   },

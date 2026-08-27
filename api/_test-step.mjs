@@ -763,5 +763,106 @@ group('press_key promises exactly what the agent can do');
   check('it no longer claims F7 to F10 exist', !/F1-F12/.test(key.description), key.description);
 }
 
+group('an action can answer with a fact, not just with done');
+{
+  /* The scenario the whole wave exists for: capture a window, and be told where it went. The agent returns
+   * `output`; the loop must hand that to the model verbatim rather than replacing it with "done". */
+  const ask = scripted([answer([use('capture_window', { title: 'dbForge' }, 'c1')])]);
+  const first = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the capture goes out as the agent action',
+    first.actions[0]?.body === 'action=capture title=dbForge', first.actions[0]?.body);
+
+  const said = 'captured "About dbForge Studio", 320x246, to C:\\x.png and onto the clipboard';
+  const ask2 = scripted([answer([use('finish', { ok: true, said: 'done' })])]);
+  await advance({
+    loop: first.loop,
+    shot: SHOT,
+    windows: WINDOWS,
+    results: [{ id: 'c1', output: said, moved: false }],
+    ask: ask2,
+  });
+  /* Read out of the PARSED conversation, not out of JSON.stringify of it: the path in `said` contains a
+   * backslash, which stringify doubles - so a substring check against the serialised form fails on a
+   * message that is perfectly correct. The block is what the model is handed; that is what to assert on. */
+  const blocks = ask2.seen[0].messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+  const told = JSON.stringify(ask2.seen[0].messages);
+  check('and what came back reaches the model word for word',
+    blocks.some((b) => b.type === 'tool_result' && b.content === said),
+    JSON.stringify(blocks.filter((b) => b.type === 'tool_result')));
+  /* AND THE INERT SENTENCE IS DROPPED. A capture changes nothing on screen by design; appending "the screen
+   * looks exactly as it did before" to a sentence that already reported success would be the loop guessing
+   * about an action whose whole point is that it is invisible. */
+  check('without being told the screen did not change, which a capture never does',
+    !told.includes('looks exactly as it did before'));
+}
+{
+  /* `done` and absent both mean "nothing to add" - what every action before 0.10.0 sends, and what the
+   * eight older ones still send. Those must still get the stirred/inert wording. */
+  const first = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [],
+    ask: scripted([answer([use('click', { x: 1, y: 2 }, 'k1')])]),
+  });
+  const ask2 = scripted([answer([use('finish', { ok: true, said: 'x' })])]);
+  await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS,
+    results: [{ id: 'k1', output: 'done', moved: false }], ask: ask2,
+  });
+  check('an ordinary action still gets told when nothing moved',
+    JSON.stringify(ask2.seen[0].messages).includes('looks exactly as it did before'));
+}
+
+group('the clipboard pairs with the paste, and opening something ends the turn');
+{
+  /* The pairing this was made batchable for: put the text somewhere, paste it, in one turn. Neither half
+   * reads the screen, so neither can be aimed at a stale picture. */
+  const ask = scripted([answer([
+    use('clipboard_write', { text: 'Test Case 1 result' }, 'w1'),
+    use('press_key', { key: 'v', ctrl: true }, 'p1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('both halves run in one turn', out.actions.length === 2,
+    JSON.stringify(out.actions.map((a) => a.name)));
+  check('and the text travels base64, so a line break survives',
+    /^action=clipwrite enc=b64 text=/.test(out.actions[0]?.body ?? ''), out.actions[0]?.body);
+}
+{
+  /* Terminal, and for a reason activate_window only half shares: a window is about to appear AND it takes a
+   * moment to do it, so anything aimed in the same turn was aimed before it existed. */
+  const ask = scripted([answer([
+    use('open_url', { url: 'https://docs.new' }, 'o1'),
+    use('type_text', { text: 'too soon' }, 't1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('nothing follows an open', out.actions.length === 1,
+    JSON.stringify(out.actions.map((a) => a.name)));
+  check('and the refusal explains that the window is not there yet',
+    JSON.stringify(out.loop.mine).includes('before that window existed'));
+}
+{
+  /* NOT batchable, and this is the one that needed thinking about: a capture straight after a click races
+   * the window it is trying to photograph. The answer to "capture the dialog that click opened" is to wait
+   * and look. */
+  const ask = scripted([answer([
+    use('click', { x: 5, y: 5 }, 'c1'),
+    use('capture_window', { title: 'About' }, 'p1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a capture does not ride behind a click', out.actions.length === 1,
+    JSON.stringify(out.actions.map((a) => a.name)));
+}
+
+group('the window list is what capture_window and activate_window are aimed with');
+{
+  const ask = scripted([answer([use('finish', { ok: true, said: 'x' })])]);
+  await advance({
+    loop: start(), shot: SHOT,
+    windows: [{ title: 'About dbForge Studio', process: 'dbforgesql', x: 480, y: 221, w: 320, h: 246 }],
+    results: [], ask,
+  });
+  const sent = JSON.stringify(ask.seen[0].messages);
+  check('the model is told those titles are what capture takes', sent.includes('capture_window takes any of these titles'));
+  check('and the rectangle is still there for working out what covers what', sent.includes('320x246 at 480,221'));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -175,6 +175,11 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 | `type_text` | `text`, `newline: enter \| shift-enter` | Sent base64 so line breaks survive |
 | `press_key` | `key`, `ctrl`, `shift`, `alt` | `ctrl` means Command on macOS. The description names what is **not** there — F7-F10, PrintScreen, Snapshot, and any Win modifier — because it used to promise "F1-F12" while `VkFor` had F1-F6, F11 and F12, and the model paid a step per discovery |
 | `activate_window` | `title`, `process` | Preferred over opening anything again |
+| `capture_window` | `title`, `process`, or `x`/`y`/`w`/`h` | **0.10.0.** Saves a picture of one window to a file **and onto the clipboard**, so Control+V pastes it. By window rather than by screen: the agent asks the window to draw itself, so anything in front of it is not in the picture. Answers with the size and the path |
+| `clipboard_read` | — | **0.10.0.** The reliable way to get text out of an application: select, Control+C, read it here rather than making out small text in a screenshot |
+| `clipboard_write` | `text` | **0.10.0.** Faster than `type_text` for anything long, and independent of the keyboard layout. May share a turn with the Control+V that pastes it |
+| `open_url` | `url` | **0.10.0.** http and https only — a scheme is a choice of program, which is a different question. `https://docs.new` is a new Google Doc in one action instead of four |
+| `open_app` | `name` | **0.10.0.** A name, never a path or a command line; the agent refuses both. Read the "Already open" list first |
 | `scroll` | `x`, `y`, `amount` | Negative scrolls down |
 | `wait` | `ms` (to 120 s), `reason` | **Blocks until the screen stops changing and does not cost a step** |
 | `note` | `text` | Writes one line into the run's own record — a test result, a value read off the screen. Not an action: it touches nothing, is never sent to the machine, and does not enter the batch count, so it can ride in the same turn as real work. Refused behind a cut turn, because a note is a claim about what happened |
@@ -185,6 +190,21 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 grid, about 3 KB — until it has been still for two frames. A wait used to cost a screenshot and a model
 step, so waiting for a page to finish burned the whole budget. An agent too old for `/pulse` gets the same
 reduction done in the browser from a 640px screenshot.
+
+**An action can answer with a fact, not just with "done".** From agent 0.10.0 `/do` may return an `output`
+string — where a capture was saved, what the clipboard held — and both drivers pass it to the model through
+`actionSaid` in the brain. Nothing new on the wire: the cloud path had always forwarded a non-`done` output
+and the browser path had not, so the channel existed and one side ignored it. When there IS an output the
+stirred/inert sentence is dropped, because an action whose whole point is that it changes nothing visible
+should not be told it changed nothing visible.
+
+**The agent will not drive the terminal it is running in.** Measured rather than assumed: under Windows
+Terminal the visible window belongs to the *parent process*, `GetConsoleWindow()` returns zero because the
+shell is on a pseudoconsole, and two tabs are two child processes of one window — so there is no such thing
+as protecting one tab. The agent walks its own process chain, stops at the first host that owns a visible
+window, and never crosses into `explorer` (whose windows include the desktop and the taskbar). Clicks, keys,
+typing and `activate_window` are refused there with a message that says what to do instead; `capture_window`
+is allowed, because a picture changes nothing.
 
 **Coordinates are converted in exactly one place** (`actionBody`), using the `scale` and `originX`/`originY`
 the screenshot reported. On a second monitor to the left the origin is negative, and getting it wrong puts
@@ -197,12 +217,15 @@ Not decoration — these are the product's position on what an agent driving a r
 - Read the "Already open" list before opening anything; launching a second copy of a running application is
   a mess the user has to clean up.
 - **One thing aimed at the screen per turn** — one click, or one hover, or one scroll, or one
-  `activate_window`, or one wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
+  `activate_window`, or one `open_url`/`open_app`, or one `capture_window`, or one wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
   moment anything happens. After it, in the same turn, the typing and key presses that follow from it: those
   go to whatever has focus, not to a place on screen. "Click the box, type the address, press Tab" is one
   turn, not three. Up to `BATCH_MAX` actions; nothing follows a wait (the screen changed by definition), an
-  `activate_window` (which may have found no such window, and then the typing goes to the wrong app) or a
-  `hover` (which is done *because* the screen is about to change).
+  `activate_window` (which may have found no such window, and then the typing goes to the wrong app), an
+  `open_url`/`open_app` (a window is about to appear and takes a moment to do it) or a `hover` (which is done
+  *because* the screen is about to change). The two clipboard actions are batchable: they aim at nothing at
+  all, which makes `clipboard_write` then Control+V one turn. `capture_window` is deliberately not — a
+  capture taken straight after a click races the window it is trying to photograph.
   This one is not a request — `sameTurn` in `api/_brain.mjs` enforces it, and both drivers cut the turn at
   the first refusal rather than filtering it, because typing meant for a second click's target is typing in
   the wrong place. What the code *cannot* enforce is the next line, because `Enter` sends an email and

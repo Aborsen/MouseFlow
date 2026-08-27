@@ -1301,8 +1301,11 @@ check('and neither counts it as a machine action',
  * aimed action whose reason for being terminal is that it succeeded. */
 check('hover has a wire form and it is the action the agent already had',
   /if \(name === 'hover'\)[\s\S]{0,120}action=move/.test(brain));
+/* Membership, not the whole set: the exact composition is pinned once, in agent/test-contract.mjs, and
+ * pinning it twice means every new terminal action breaks two tests in two files for one decision. What
+ * matters here is that hover is in it. */
 check('and nothing may follow it',
-  /const TERMINAL = new Set\(\['wait', 'activate_window', 'hover'\]\)/.test(brain));
+  /const TERMINAL = new Set\(\[[^\]]*'hover'[^\]]*\]\)/.test(brain));
 
 /* One describer for the live feed and for history - see the note at the top of that file. A tool missing
  * from it does not break: it falls through to printing its own name, which is exactly how "note" would have
@@ -1315,6 +1318,91 @@ check('and the note shows its text, since the text IS the step',
 check('a run in the preview reaches both of them',
   /tool: 'hover'/.test(read('../web/src/dev/mock-api.ts'))
     && /tool: 'note'/.test(read('../web/src/dev/mock-api.ts')));
+
+group('wave 02: the agent can hand something back, and will not drive itself');
+const winAgent2 = read('../agent/mouseflow-agent.ps1');
+const swiftAgent = read('../agent/mouseflow-agent.swift');
+
+/* ONE RULE FOR AN ACTION'S ANSWER, in the brain, because the cloud path already forwarded a non-`done`
+ * output and the browser path did not - the channel existed and one side ignored it. */
+check('both drivers compose an answer through the same function',
+  /export const actionSaid = /.test(brain)
+    && /actionSaid\(got\.output,/.test(read('../api/_step.mjs'))
+    && /actionSaid\(output, inert \? false : true, still\)/.test(engine));
+/* The bug this condition exists to prevent: the browser driver rewrites inert answers at the END of a turn,
+ * which would have overwritten a capture's path with "nothing changed on screen". */
+check('and a reported fact is not overwritten by the end-of-turn rewrite',
+  /if \(inert && \(output == null \|\| output === 'done'\)\) inertSaid\.push\(report\)/.test(engine));
+
+/* Nothing new on the wire. `{"ok":true}` is still the whole reply for the eight actions that report
+ * nothing, so an older deployment reading a newer agent sees exactly what it saw before. */
+check('the agent adds output only when there is one',
+  /said == null\s*\n\s*\? "\{\\"ok\\":true\}"/.test(winAgent2));
+check('and the courier reports it the same way',
+  /told == null \? "done" : told/.test(winAgent2));
+
+/* CAPTURE BY WINDOW, not by screen, which is the entire point: in the run this came from, a terminal was
+ * covering the dialog and every screen capture was a picture of the terminal. */
+check('a window is asked to draw itself, so what is in front of it does not matter',
+  /Native\.PrintWindow\(target, hdc, Native\.PW_RENDERFULLCONTENT\)/.test(winAgent2));
+check('and when it will not, the photograph says it is a photograph',
+  /would not draw itself, so this is a photograph of that patch/.test(winAgent2));
+check('the picture goes to a file AND to the clipboard, because two callers want different halves',
+  /shot\.Save\(path, System\.Drawing\.Imaging\.ImageFormat\.Png\)/.test(winAgent2)
+    && /Clipboard\.SetImage\(copy\)/.test(winAgent2));
+/* A run that captures thirty windows leaves thirty files. Pruned by age AND by count, because a hundred in
+ * an hour is as much a runaway as a hundred over a month. */
+check('captures do not accumulate forever',
+  /i >= 200 \|\| files\[i\]\.LastWriteTimeUtc < cutoff/.test(winAgent2));
+
+/* THE GUARD, and what makes it more than the first draft. GetConsoleWindow returns ZERO under Windows
+ * Terminal - measured - so a guard built on it would have been inert in the one environment it was for. */
+check('the guard walks the process chain rather than trusting a console window',
+  /NtQueryInformationProcess/.test(winAgent2) && /static HashSet<int> OwnPids\(\)/.test(winAgent2));
+check('it stops at the first host that owns a window, which is the terminal a person can see',
+  /if \(ShowsAWindow\(host\)\) break;/.test(winAgent2));
+/* And never one link further. explorer owns Progman and every File Explorer window, and wave 01 had just
+ * finished teaching the model to use the desktop and the taskbar. */
+check('and never crosses into the shell, whose windows are the desktop and the taskbar',
+  /NotAHost = new string\[\] \{\s*\n\s*"explorer", "services"/.test(winAgent2));
+check('a recycled process id cannot make an unrelated process count as the host',
+  /if \(up\.StartTime > childStarted\) return 0;/.test(winAgent2));
+/* Clicks, keys and activation are refused; a picture is not. Photographing the terminal changes nothing,
+ * and is a reasonable thing to want when something has gone wrong in it. */
+check('typing, keys, pointing and activation are all guarded',
+  /if \(action == "type" \|\| action == "key"\)[\s\S]{0,200}Mine\(Native\.GetForegroundWindow\(\)\)/.test(winAgent2)
+    && /Mine\(Native\.WindowFromPoint/.test(winAgent2)
+    && /IntPtr wanted = WindowMatching\([\s\S]{0,160}Mine\(wanted\)/.test(winAgent2));
+check('but capturing it is not, because a picture changes nothing',
+  /Deliberately NOT guarded by Mine\(\)/.test(winAgent2));
+
+/* ONE WINDOW LOOKUP for three callers, rather than the copy that activating a window used to keep. */
+check('one window lookup, shared by activating, capturing and refusing',
+  /public static IntPtr WindowMatching\(string title, string process\)/.test(winAgent2)
+    && (winAgent2.match(/Native\.EnumWindows\(delegate/g) || []).length <= 4);
+
+/* http and https only, and a NAME rather than a command line. Neither is a security boundary - the model can
+ * already open a terminal by clicking one - and the comments say so rather than implying otherwise. */
+check('only the web can be opened by url',
+  /parsed\.Scheme != Uri\.UriSchemeHttp && parsed\.Scheme != Uri\.UriSchemeHttps/.test(winAgent2));
+check('and an application is opened by name, never by path or with arguments',
+  /a NAME, not a path or a command line/.test(winAgent2)
+    && /cannot pass it arguments/.test(winAgent2));
+check('which the code admits is a narrowing rather than a boundary',
+  /WHAT THIS IS NOT is a security boundary/.test(winAgent2));
+
+/* macOS has none of the four, and says which - a model told "no such action" improvises, and improvising is
+ * how a run ended up writing itself a screen-capture tool in a terminal. */
+check('macOS names the four it lacks instead of calling them unknown',
+  /case "capture", "clipread", "clipwrite", "open":/.test(swiftAgent)
+    && /not implemented on the macOS agent yet/.test(swiftAgent));
+
+check('and the preview reaches the new steps',
+  /tool: 'capture_window'/.test(read('../web/src/dev/mock-api.ts'))
+    && /tool: 'open_url'/.test(read('../web/src/dev/mock-api.ts')));
+check('which read as sentences rather than as tool names',
+  /case 'capture_window':/.test(describer) && /case 'open_url':/.test(describer)
+    && /case 'clipboard_write': \{/.test(describer));
 
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');

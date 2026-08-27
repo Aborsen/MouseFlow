@@ -113,9 +113,13 @@ const bodies = [];
  * declarations, and without it they read as undeclared receivers. */
 const TYPED = /\b(?:var|string|int|bool|long|double|float|decimal|object|char|byte|sbyte|short|ushort|uint|ulong|IntPtr|[A-Z]\w*(?:<[^>]*>)?(?:\[\])?)(?:\[\])?\s+(\w+)\b/g;
 const LAMBDA = /(?:\(\s*([\w\s,]*?)\s*\)|(\w+))\s*=>/g;
-/* A declaration naming several at once: `int x, y;`. Anchored on the semicolon so a method's parameter
- * list, which looks similar, is not mistaken for one. */
-const MULTI = /\b(?:var|string|int|bool|long|double|float|decimal|object|char|byte|short|uint|ulong|IntPtr|[A-Z]\w*)\s+(\w+(?:\s*,\s*\w+)+)\s*;/g;
+/* A declaration naming several at once: `int x, y;` - and `int x = 0, y = 0;`, which is the same statement
+ * with initialisers and which this pattern used to miss. It reported three declared names as undeclared
+ * receivers in code that compiles, and a FALSE POSITIVE in a compile proxy is worse than a gap: it is what
+ * teaches people to stop reading the output. Anchored on the semicolon so a method's parameter list, which
+ * looks similar, is not mistaken for one; an initialiser is read to the next comma or the semicolon, which
+ * covers every declaration in this file and stops well short of parsing C# expressions. */
+const MULTI = /\b(?:var|string|int|bool|long|double|float|decimal|object|char|byte|short|uint|ulong|IntPtr|[A-Z]\w*)\s+(\w+(?:\s*=\s*[^,;]+)?(?:\s*,\s*\w+(?:\s*=\s*[^,;]+)?)+)\s*;/g;
 
 /* String literals go first, and that is not a detail: this agent's strings are full of English prose -
  * "captured.", "sent.", "it." - and every full stop in them reads as a member access. The first run of this
@@ -131,7 +135,8 @@ for (const body of bodies) {
   for (const [, name] of text.matchAll(TYPED)) declared.add(name);
   /* `int x, y;` declares two, and the pattern above sees only the first. */
   for (const [, names] of text.matchAll(MULTI)) {
-    for (const part of names.split(',')) declared.add(part.trim());
+    // `rw = 0` declares `rw`; the initialiser after it is not a name.
+    for (const part of names.split(',')) declared.add(part.split('=')[0].trim());
   }
   for (const [, group, single] of text.matchAll(LAMBDA)) {
     if (single) declared.add(single);

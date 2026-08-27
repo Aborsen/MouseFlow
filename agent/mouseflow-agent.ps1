@@ -272,6 +272,40 @@ namespace MouseFlow
         public static extern bool GetCursorPos(out POINT lpPoint);
         [DllImport("user32.dll")]
         public static extern int GetSystemMetrics(int nIndex);
+
+        /* THE WINDOW THIS AGENT IS RUNNING IN. Zero when there is no console at all, which is the normal
+         * case under autostart - it launches with -WindowStyle Hidden. Zero means there is nothing to
+         * protect, not that protection failed. */
+        [DllImport("kernel32.dll")]
+        public static extern IntPtr GetConsoleWindow();
+
+        /* A window's OWN pixels, whatever is on top of it. CopyFromScreen photographs the screen, so
+         * anything overlapping the target lands in the picture - which is exactly how a capture of a dialog
+         * came back as a picture of the terminal that was covering it. PW_RENDERFULLCONTENT is Windows 8.1
+         * and later and handles DWM-composited windows, Chromium included. */
+        [DllImport("user32.dll")]
+        public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+        public const uint PW_RENDERFULLCONTENT = 0x00000002;
+
+        /* WHO STARTED US. There is no Win32 call for a parent process id - Process.Parent is PowerShell 7,
+         * and System.Management is an assembly this agent does not load. ntdll it is: the field has been in
+         * the same place since Windows 2000, and everything that reports a process tree on Windows reads it
+         * this way. Only the two members that matter are named; the reserved words are placeholders of the
+         * right size. */
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESS_BASIC_INFORMATION
+        {
+            public IntPtr Reserved1;
+            public IntPtr PebBaseAddress;
+            public IntPtr Reserved2;
+            public IntPtr Reserved3;
+            public IntPtr UniqueProcessId;
+            public IntPtr InheritedFromUniqueProcessId;
+        }
+
+        [DllImport("ntdll.dll")]
+        public static extern int NtQueryInformationProcess(IntPtr handle, int infoClass,
+            ref PROCESS_BASIC_INFORMATION info, int length, out int written);
         [DllImport("user32.dll")]
         public static extern short GetAsyncKeyState(int vKey);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -404,7 +438,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.9.9";
+        public const string Version = "0.10.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1842,11 +1876,38 @@ namespace MouseFlow
             return e;
         }
 
+        /* WHAT AN ACTION HAS TO SAY FOR ITSELF, when "done" is not the whole answer.
+         *
+         * Every action until 0.10.0 answered with nothing or with a problem, and `{"ok":true}` was the whole
+         * reply. Capturing a window and reading the clipboard both produce a FACT the caller needs - a path,
+         * a size, the text that was there - and there was nowhere to put it.
+         *
+         * Nowhere new, as it turns out. The deployment already passes an action's `output` straight to the
+         * model when it is anything other than "done" (see resultBlocks in api/_step.mjs), so this is the
+         * channel being used rather than a channel being added. A static beside _injectFailures and
+         * _lastError, cleared at the start of every action for the same reason they are: one action runs at
+         * a time on this path - /do refuses while a replay is going - and a value left over from the last
+         * one would be reported as this one's. */
+        static string _output;
+
+        static void ResetOutput() { _output = null; }
+
+        static void Say(string text) { _output = text; }
+
+        /** Read once and cleared, so it cannot be reported twice. */
+        public static string TakeOutput()
+        {
+            string said = _output;
+            _output = null;
+            return said;
+        }
+
         public static string DoAction(string body)
         {
             Dictionary<string, string> a = ParseFields(body);
             string action = Get(a, "action", "");
             ResetInjection();
+            ResetOutput();
 
             string problem = Perform(action, a);
             if (problem != null) return problem;
@@ -1855,8 +1916,196 @@ namespace MouseFlow
             return InjectionProblem();
         }
 
+        /* ---------------------------------------------------------- the one window it will not touch
+         *
+         * THIS AGENT IS A POWERSHELL SCRIPT, so the terminal it was started from is a window it can type
+         * into - and typing Ctrl+C there stops the run that is doing the typing.
+         *
+         * Not hypothetical. In a watched run the model needed a screenshot, found that press_key had no
+         * PrintScreen, and went to write itself a capture tool in PowerShell. It opened a second tab, typed
+         * a P/Invoke one-liner, pressed Ctrl+C - and wrote a note to its own successor saying "tab 1 is the
+         * agent's own session (DO NOT type/Ctrl+C there)". It worked out the hazard on its own and left a
+         * warning in prose. A warning in prose is not a guard.
+         *
+         * WHOLE WINDOW, not a tab, because Windows Terminal hosts every tab in ONE HWND: there is no such
+         * thing as protecting tab 1 and allowing tab 2. That makes the refusal broader than the danger, and
+         * the message says what to do about it - a second terminal window is a different HWND and is fine.
+         *
+         * Also this process's own windows: the tray menu is ours, and "Stop and Save Recording" is on it.
+         *
+         * Zero console means nothing to protect. Under autostart the agent runs with -WindowStyle Hidden and
+         * has no console at all, and in that state every window on the machine is somebody else's.
+         */
+        /* WHAT COUNTS AS OURS, and it is three things rather than one - which took a measurement to find
+         * out. The first version of this read GetConsoleWindow() and stopped there. On the machine this was
+         * written for that returns ZERO, and the reason is the whole point: Windows Terminal hosts its
+         * shells over a pseudoconsole, so there is no console window to find. The guard would have been
+         * inert in exactly the environment it was written for, and nothing would have said so.
+         *
+         * Measured instead. A shell inside Windows Terminal sits like this:
+         *
+         *   powershell.exe(28132) <- WindowsTerminal.exe(26852, owns CASCADIA_HOSTING_WINDOW_CLASS)
+         *                         <- explorer.exe(owns Progman and every File Explorer window)
+         *
+         * Three things follow. The visible window belongs to the PARENT process, not to us and not to a
+         * console. Two tabs are two child processes of ONE window, so there is no such thing as protecting
+         * one tab. And the next link up is explorer - so a walk one level too far would refuse the desktop
+         * and the taskbar, which is the opposite of useful.
+         *
+         * So: our own windows, plus the console window when there is a real one (the classic conhost case,
+         * where GetConsoleWindow does work), plus the windows of host processes up the chain - stopping at
+         * the first that owns a visible window, and never crossing into the shell.
+         */
+        static readonly string[] NotAHost = new string[] {
+            "explorer", "services", "svchost", "wininit", "winlogon", "csrss", "taskeng", "taskhostw",
+        };
+
+        static IntPtr _ownConsole = (IntPtr)(-1);
+        static HashSet<int> _ownPids;
+
+        static IntPtr OwnConsole()
+        {
+            if (_ownConsole != (IntPtr)(-1)) return _ownConsole;
+            IntPtr console = IntPtr.Zero;
+            try { console = Native.GetConsoleWindow(); }
+            catch { console = IntPtr.Zero; }
+            /* A pseudoconsole has no window, and a window that is not visible is not one anybody can click
+             * into - either way there is nothing here to protect and the process walk is what matters. */
+            if (console != IntPtr.Zero && !Native.IsWindowVisible(console)) console = IntPtr.Zero;
+            if (console != IntPtr.Zero)
+            {
+                IntPtr top = Native.GetAncestor(console, Native.GA_ROOT);
+                if (top != IntPtr.Zero) console = top;
+            }
+            _ownConsole = console;
+            return _ownConsole;
+        }
+
+        /* The parent process id, and a check that the parent is really the parent: process ids are reused,
+         * and a recycled id belonging to something started AFTER us is not our host. */
+        static int HostOf(int pid, DateTime childStarted)
+        {
+            try
+            {
+                using (Process child = Process.GetProcessById(pid))
+                {
+                    Native.PROCESS_BASIC_INFORMATION info = new Native.PROCESS_BASIC_INFORMATION();
+                    int written;
+                    if (Native.NtQueryInformationProcess(child.Handle, 0, ref info,
+                            Marshal.SizeOf(typeof(Native.PROCESS_BASIC_INFORMATION)), out written) != 0)
+                    {
+                        return 0;
+                    }
+                    int parent = info.InheritedFromUniqueProcessId.ToInt32();
+                    if (parent <= 0) return 0;
+                    using (Process up = Process.GetProcessById(parent))
+                    {
+                        if (up.StartTime > childStarted) return 0;
+                        foreach (string bad in NotAHost)
+                        {
+                            if (string.Equals(up.ProcessName, bad, StringComparison.OrdinalIgnoreCase)) return 0;
+                        }
+                        return parent;
+                    }
+                }
+            }
+            catch { return 0; }
+        }
+
+        static bool ShowsAWindow(int pid)
+        {
+            bool found = false;
+            try
+            {
+                Native.EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
+                {
+                    if (found) return false;
+                    if (!Native.IsWindowVisible(hWnd)) return true;
+                    if (Native.GetWindowTextLength(hWnd) < 1) return true;
+                    uint owner;
+                    Native.GetWindowThreadProcessId(hWnd, out owner);
+                    if ((int)owner == pid) found = true;
+                    return !found;
+                }, IntPtr.Zero);
+            }
+            catch { return false; }
+            return found;
+        }
+
+        static HashSet<int> OwnPids()
+        {
+            if (_ownPids != null) return _ownPids;
+            HashSet<int> pids = new HashSet<int>();
+            try
+            {
+                Process me = Process.GetCurrentProcess();
+                pids.Add(me.Id);
+                int at = me.Id;
+                DateTime started = me.StartTime;
+                /* Four levels is more than any real chain needs - shell, host, and the window owner - and
+                 * the walk stops at the first host that owns a window anyway. */
+                for (int level = 0; level < 4; level++)
+                {
+                    int host = HostOf(at, started);
+                    if (host == 0) break;
+                    pids.Add(host);
+                    if (ShowsAWindow(host)) break;   // this is the terminal a person can see and click into
+                    at = host;
+                    try { started = Process.GetProcessById(host).StartTime; }
+                    catch { break; }
+                }
+            }
+            catch { /* whatever was collected stands; an empty set simply protects nothing */ }
+            _ownPids = pids;
+            return _ownPids;
+        }
+
+        /** The refusal, or null when that window is somebody else's and may be driven. */
+        static string Mine(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return null;
+            IntPtr top = Native.GetAncestor(hwnd, Native.GA_ROOT);
+            if (top != IntPtr.Zero) hwnd = top;
+
+            IntPtr console = OwnConsole();
+            if (console != IntPtr.Zero && hwnd == console) return Refusal(true);
+
+            try
+            {
+                uint pid;
+                Native.GetWindowThreadProcessId(hwnd, out pid);
+                if (pid == 0) return null;
+                if (!OwnPids().Contains((int)pid)) return null;
+                return Refusal((int)pid != Process.GetCurrentProcess().Id);
+            }
+            catch { return null; }
+        }
+
+        static string Refusal(bool terminal)
+        {
+            if (!terminal)
+            {
+                return "that window belongs to the MouseFlow agent itself - driving it would be the run "
+                    + "operating its own controls.";
+            }
+            return "that window is the terminal this agent is running in, and a keystroke there "
+                + "can stop the run that sent it. Every tab of that terminal is the same window, so there "
+                + "is no safe tab in it. Nothing here can be typed into - say so and carry on. If a command "
+                + "line is genuinely part of the task, the agent has to be started somewhere else: from a "
+                + "different terminal application, or from autostart, where it has no terminal at all.";
+        }
+
         static string Perform(string action, Dictionary<string, string> a)
         {
+            /* THE FOCUS-AIMED ACTIONS ARE GUARDED FIRST, and by the foreground window rather than by a
+             * point: typing goes wherever focus is, which is precisely how a keystroke meant for a form
+             * ends up in the terminal running the agent. */
+            if (action == "type" || action == "key")
+            {
+                string mine = Mine(Native.GetForegroundWindow());
+                if (mine != null) return mine;
+            }
+
             if (action == "type")
             {
                 /* Base64 when the text has anything in it the line-based format cannot carry - a newline
@@ -1874,7 +2123,67 @@ namespace MouseFlow
                 }
                 return TypeText(typing, Get(a, "nl", "enter") == "shift");
             }
-            if (action == "activate") return Activate(Get(a, "title", ""), Get(a, "process", ""));
+            if (action == "activate")
+            {
+                /* Refused before it happens rather than after: bringing this agent's own terminal to the
+                 * front is how the NEXT action, aimed at whatever is in front, lands in it. */
+                IntPtr wanted = WindowMatching(Get(a, "title", ""), Get(a, "process", ""));
+                if (wanted != IntPtr.Zero)
+                {
+                    string mine = Mine(wanted);
+                    if (mine != null) return mine;
+                }
+                return Activate(Get(a, "title", ""), Get(a, "process", ""));
+            }
+
+            /* ------------------------------------------------------------------ 0.10.0: reading back */
+
+            if (action == "clipread")
+            {
+                string had = null;
+                string failed = OnSta(delegate { had = System.Windows.Forms.Clipboard.GetText(); });
+                if (failed != null) return failed;
+                if (string.IsNullOrEmpty(had)) { Say("the clipboard holds no text"); return null; }
+                /* Capped where it is READ, not where it is shown: the deployment cuts an action's output at
+                 * 2000 characters anyway, and sending a 40MB clipboard across loopback to be thrown away is
+                 * work nobody asked for. Said out loud when it happens, because a silently halved value that
+                 * the model then types somewhere is worse than no value. */
+                if (had.Length > 4000)
+                {
+                    Say("the clipboard holds " + had.Length.ToString(CultureInfo.InvariantCulture)
+                        + " characters; the first 4000 are: " + had.Substring(0, 4000));
+                    return null;
+                }
+                Say("the clipboard holds: " + had);
+                return null;
+            }
+
+            if (action == "clipwrite")
+            {
+                string put = Get(a, "text", "");
+                if (Get(a, "enc", "") == "b64")
+                {
+                    put = DecodeB64(put);
+                    if (put == null) return "the text was not valid base64";
+                }
+                if (put.Length == 0) return "nothing to put on the clipboard";
+                string failed = OnSta(delegate { System.Windows.Forms.Clipboard.SetText(put); });
+                if (failed != null) return failed;
+                Say("put " + put.Length.ToString(CultureInfo.InvariantCulture)
+                    + " characters on the clipboard");
+                return null;
+            }
+
+            if (action == "capture") return Capture(a);
+
+            if (action == "open")
+            {
+                string url = Get(a, "url", "");
+                string app = Get(a, "app", "");
+                if (url.Length > 0) return OpenUrl(url);
+                if (app.Length > 0) return OpenApp(app);
+                return "open needs a url or an app name";
+            }
             if (action == "key")
             {
                 return PressKey(Get(a, "key", ""), Get(a, "ctrl", "0") == "1",
@@ -1902,6 +2211,13 @@ namespace MouseFlow
                     vx.ToString(CultureInfo.InvariantCulture) + "," + vy.ToString(CultureInfo.InvariantCulture) +
                     " to " + (vx + vw - 1).ToString(CultureInfo.InvariantCulture) + "," +
                     (vy + vh - 1).ToString(CultureInfo.InvariantCulture);
+            }
+
+            /* AND THE POINT-AIMED ONES, once there is a point to test. Below the bounds check on purpose:
+             * "that is off the screen" is the more useful answer for a coordinate that is off the screen. */
+            {
+                string mine = Mine(Native.WindowFromPoint(new POINT { X = x, Y = y }));
+                if (mine != null) return mine;
             }
 
             if (action == "move")
@@ -1948,7 +2264,267 @@ namespace MouseFlow
                 return null;
             }
 
+            /* Named, and said in a way that distinguishes "no such action anywhere" from "not on this
+             * machine": capture, clipread, clipwrite and open landed on Windows in 0.10.0 and the macOS
+             * agent does not have them yet. A model told only "unknown action" tries a workaround; one told
+             * which platform it is on stops. */
+            if (action == "capture" || action == "clipread" || action == "clipwrite" || action == "open")
+            {
+                return "this agent is too old for " + action + " - it arrived in 0.10.0. Update the agent.";
+            }
             return "unknown action: " + action;
+        }
+
+        /* ---------------------------------------------------------------- 0.10.0: the machinery
+
+           STA, because the clipboard demands it. Clipboard.GetText and SetImage both throw on a thread that
+           is not single-threaded-apartment, and every thread in this agent is a plain background thread -
+           the HTTP handlers, the resolver, the courier. A thread per call rather than one kept alive: the
+           clipboard is touched a few times a run, and a long-lived STA thread is a message pump to own.
+
+           Joined with a limit, because the clipboard can be held open by another application - a clipboard
+           manager, a remote desktop client - and a call that never returns would hang the whole action. */
+        static string OnSta(ThreadStart work)
+        {
+            Exception failure = null;
+            Thread worker = new Thread(delegate()
+            {
+                try { work(); }
+                catch (Exception e) { failure = e; }
+            });
+            worker.SetApartmentState(ApartmentState.STA);
+            worker.IsBackground = true;
+            worker.Start();
+            if (!worker.Join(6000)) return "the clipboard did not answer in six seconds - another program may be holding it open";
+            if (failure != null) return "the clipboard refused: " + failure.Message;
+            return null;
+        }
+
+        /* Where captures go, and what stops them accumulating.
+         *
+         * Under LOCALAPPDATA rather than Pictures or Downloads: these are working files of a run, not
+         * something somebody chose to save, and putting them among a person's own pictures makes them that
+         * person's problem to sort out. A run that captures thirty windows leaves thirty files, so the
+         * folder prunes itself - by age first, and then by count, because a hundred captures in one hour is
+         * as much a runaway as a hundred over a month. */
+        static string CaptureDir()
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MouseFlow\\captures");
+            Directory.CreateDirectory(dir);
+            try
+            {
+                List<FileInfo> files = new List<FileInfo>();
+                foreach (FileInfo f in new DirectoryInfo(dir).GetFiles("*.png")) files.Add(f);
+                DateTime cutoff = DateTime.UtcNow.AddDays(-7);
+                files.Sort(delegate(FileInfo x, FileInfo y) { return y.LastWriteTimeUtc.CompareTo(x.LastWriteTimeUtc); });
+                for (int i = 0; i < files.Count; i++)
+                {
+                    if (i >= 200 || files[i].LastWriteTimeUtc < cutoff)
+                    {
+                        try { files[i].Delete(); } catch { /* in use, or gone already */ }
+                    }
+                }
+            }
+            catch { /* pruning is housekeeping; a capture must not fail because of it */ }
+            return dir;
+        }
+
+        /* One window, or a rectangle, or whatever is in front.
+         *
+         * BY WINDOW IS THE POINT. A capture of the screen is a capture of whatever is on top, and in the run
+         * this was written for that was the terminal covering the dialog the model was trying to photograph -
+         * it never once managed to confirm the dialog was even open. PrintWindow asks the window to draw
+         * ITSELF, so what is in front of it does not matter. It fails on a few windows (some older
+         * hardware-accelerated surfaces), and the fallback then photographs that patch of screen, which is
+         * better than nothing and is said out loud so nobody reads an occluded picture as a clean one. */
+        static string Capture(Dictionary<string, string> a)
+        {
+            /* Initialised, because `&&` short-circuits and the compiler cannot see that a false chain
+             * means the window branch is taken - it only sees four maybe-unassigned locals. */
+            int rx = 0, ry = 0, rw = 0, rh = 0;
+            bool haveRegion = int.TryParse(Get(a, "x", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out rx)
+                && int.TryParse(Get(a, "y", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out ry)
+                && int.TryParse(Get(a, "w", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out rw)
+                && int.TryParse(Get(a, "h", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out rh);
+
+            string title = Get(a, "title", "");
+            string process = Get(a, "process", "");
+            IntPtr target = IntPtr.Zero;
+            string what;
+
+            if (haveRegion)
+            {
+                if (rw < 2 || rh < 2) return "a region needs a width and height of at least 2 pixels";
+                what = "the region " + rw.ToString(CultureInfo.InvariantCulture) + "x"
+                    + rh.ToString(CultureInfo.InvariantCulture) + " at "
+                    + rx.ToString(CultureInfo.InvariantCulture) + "," + ry.ToString(CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                if (title.Length > 0 || process.Length > 0)
+                {
+                    target = WindowMatching(title, process);
+                    if (target == IntPtr.Zero)
+                    {
+                        return "no open window matches " + (title.Length > 0 ? "title \"" + title + "\"" : "process " + process)
+                            + " - the list of open windows under the screenshot is what is actually there";
+                    }
+                }
+                else
+                {
+                    target = Native.GetForegroundWindow();
+                    if (target == IntPtr.Zero) return "nothing is in front to capture";
+                }
+                IntPtr top = Native.GetAncestor(target, Native.GA_ROOT);
+                if (top != IntPtr.Zero) target = top;
+                if (Native.IsIconic(target))
+                {
+                    return "that window is minimised, and a minimised window has nothing to draw - "
+                        + "activate_window first, then capture it";
+                }
+                RECT box;
+                if (!Native.GetWindowRect(target, out box)) return "could not measure that window";
+                rx = box.Left;
+                ry = box.Top;
+                rw = box.Right - box.Left;
+                rh = box.Bottom - box.Top;
+                if (rw < 2 || rh < 2) return "that window has no size to capture";
+                what = TitleOf(target);
+                what = what == null ? "that window" : "\"" + what + "\"";
+            }
+
+            /* Deliberately NOT guarded by Mine(): a picture of a window changes nothing, and photographing
+             * this agent's own terminal is a reasonable thing to want when something has gone wrong in it. */
+            string path = Path.Combine(CaptureDir(),
+                "capture-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".png");
+            bool drewItself = false;
+            try
+            {
+                using (System.Drawing.Bitmap shot = new System.Drawing.Bitmap(rw, rh))
+                {
+                    using (System.Drawing.Graphics g = System.Drawing.Graphics.FromImage(shot))
+                    {
+                        if (target != IntPtr.Zero)
+                        {
+                            IntPtr hdc = g.GetHdc();
+                            try { drewItself = Native.PrintWindow(target, hdc, Native.PW_RENDERFULLCONTENT); }
+                            finally { g.ReleaseHdc(hdc); }
+                        }
+                        if (!drewItself)
+                        {
+                            g.CopyFromScreen(rx, ry, 0, 0, new System.Drawing.Size(rw, rh));
+                        }
+                    }
+                    shot.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+                    /* On the clipboard TOO, not instead: the two are wanted by different callers. Pasting
+                     * into a document wants the clipboard; attaching to a report wants the file. */
+                    System.Drawing.Bitmap copy = new System.Drawing.Bitmap(shot);
+                    string failed = OnSta(delegate
+                    {
+                        try { System.Windows.Forms.Clipboard.SetImage(copy); }
+                        finally { copy.Dispose(); }
+                    });
+
+                    /* The size once. A region already names its own dimensions, and "the region 200x120 at
+                     * 100,100, 200x120, to ..." is the sort of thing that reads as a bug in the sentence. */
+                    string said = "captured " + what
+                        + (haveRegion ? "" : ", " + rw.ToString(CultureInfo.InvariantCulture) + "x"
+                            + rh.ToString(CultureInfo.InvariantCulture))
+                        + ", to " + path;
+                    said += failed == null
+                        ? " and onto the clipboard - paste it with Control+V"
+                        : ". It is NOT on the clipboard: " + failed;
+                    if (target != IntPtr.Zero && !drewItself)
+                    {
+                        said += ". That window would not draw itself, so this is a photograph of that patch "
+                            + "of screen - anything in front of it is in the picture";
+                    }
+                    Say(said);
+                    return null;
+                }
+            }
+            catch (Exception e)
+            {
+                return "could not capture: " + e.Message;
+            }
+        }
+
+        /* http and https ONLY, and that is the whole security story of this action: it hands a URL to
+           whatever the machine has registered for the web, which is a browser. A scheme is a choice of
+           PROGRAM - file:, ms-settings:, and anything an installed application registered - so accepting
+           any scheme would make this "run something", and there is a separate action for that with its own
+           narrowing. Origin and path are kept as given; a query string is a legitimate part of a link here,
+           unlike in a recording, because nothing is being stored. */
+        static string OpenUrl(string url)
+        {
+            Uri parsed;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out parsed))
+            {
+                return "that is not a full URL - it needs the scheme, as in https://docs.new";
+            }
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+            {
+                return "only http and https can be opened this way, and that is " + parsed.Scheme
+                    + ": - a scheme chooses which program handles it, which is a different question";
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(parsed.AbsoluteUri) { UseShellExecute = true });
+                Say("opened " + parsed.AbsoluteUri + " in the default browser - it may take a moment to appear");
+                return null;
+            }
+            catch (Exception e) { return "could not open that link: " + e.Message; }
+        }
+
+        /* A NAME, NEVER A COMMAND LINE, and the distinction is the entire point of the shape.
+         *
+         * Arguments are what turn "open an application" into "run this": `powershell -EncodedCommand ...` is
+         * a name plus arguments, and refusing the arguments refuses that whole class without keeping a list
+         * of dangerous program names - a list which is wrong the moment somebody installs something not on
+         * it. Paths are refused for the same reason: a path is how you name a program that is not on PATH,
+         * including one just written to disk.
+         *
+         * WHAT THIS IS NOT is a security boundary, and pretending otherwise would be the dishonest part.
+         * The model can already open a terminal by clicking one and type into it - that is what happened in
+         * the run this wave came from. What actually holds the line is the prompt's boundaries, the user
+         * watching, and the refusal above to touch the agent's own window. This action is here so the model
+         * does not have to improvise, and it is narrow so that improvising through it is no easier than
+         * improvising without it.
+         */
+        static string OpenApp(string app)
+        {
+            string name = app.Trim();
+            if (name.Length == 0 || name.Length > 80) return "an application name, up to 80 characters";
+            if (name.IndexOfAny(new char[] { '\\', '/', ':', '"', '\'', '|', '&', '<', '>', '%', '^' }) >= 0)
+            {
+                return "a NAME, not a path or a command line - \"notepad\", \"excel\", \"Google Chrome\". "
+                    + "For a web page use open_url instead";
+            }
+            /* A space is legitimate in a name ("Google Chrome") and is also how arguments are written, so the
+             * two cannot be told apart by looking. A leading dash on any word is what an argument looks
+             * like, and that is refusable without refusing names. */
+            foreach (string word in name.Split(' '))
+            {
+                if (word.StartsWith("-") || word.StartsWith("+"))
+                {
+                    return "that looks like a command line rather than a name - this action opens an "
+                        + "application and cannot pass it arguments";
+                }
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(name) { UseShellExecute = true });
+                Say("asked Windows to open " + name + " - it may take a few seconds to appear, and a fresh "
+                    + "screenshot is how to tell whether it did");
+                return null;
+            }
+            catch (Exception e)
+            {
+                return "Windows would not open \"" + name + "\": " + e.Message
+                    + " - if it is already running, activate_window is the way to it";
+            }
         }
 
         static Dictionary<string, string> ParseFields(string body)
@@ -1959,14 +2535,14 @@ namespace MouseFlow
             if (body == null) return found;
             string line = body.Replace("\r", " ").Replace("\n", " ").Trim();
 
-            /* `text` and `title` both run to the end of the line: one is a message, the other a window
-             * title, and both contain spaces. Taken at a TOKEN boundary only - a caption containing
-             * "subtitle=" or "action=click" is then just characters in a title rather than a field that
-             * overrides the action. Whichever marker comes first wins the rest of the line, so the two
-             * can never both claim it. */
+            /* `text`, `title` and `app` all run to the end of the line: a message, a window title and an
+             * application name, and all three contain spaces - "Google Chrome" is a name, not a name plus
+             * an argument. Taken at a TOKEN boundary only - a caption containing "subtitle=" or
+             * "action=click" is then just characters in a title rather than a field that overrides the
+             * action. Whichever marker comes first wins the rest of the line, so no two can both claim it. */
             int rest = -1;
             string restKey = null;
-            foreach (string marker in new string[] { "text=", "title=" })
+            foreach (string marker in new string[] { "text=", "title=", "app=" })
             {
                 int at = FindField(line, marker);
                 if (at >= 0 && (rest < 0 || at < rest)) { rest = at; restKey = marker.Substring(0, marker.Length - 1); }
@@ -1983,7 +2559,7 @@ namespace MouseFlow
                 int eq = parts[i].IndexOf('=');
                 if (eq <= 0) continue;
                 string key = parts[i].Substring(0, eq).Trim().ToLowerInvariant();
-                if (key == "text" || key == "title") continue;   // already taken, whole and unsplit
+                if (key == "text" || key == "title" || key == "app") continue;   // already taken, whole and unsplit
                 found[key] = parts[i].Substring(eq + 1).Trim();
             }
             return found;
@@ -2278,12 +2854,17 @@ namespace MouseFlow
          * Whether it worked is reported rather than assumed, because a click on the taskbar is a fair
          * fallback and only the caller can decide to take it.
          */
-        public static string Activate(string title, string process)
+        /* THE LOOKUP, LIFTED OUT OF Activate, because three callers need it now: activating a window,
+           capturing one, and refusing to touch this agent's own. Left exactly as it was - a case-insensitive
+           substring on the title OR on the process name, first match wins - so nothing about which window
+           `activate_window` finds has changed. IntPtr.Zero for "no match" and for "nothing was asked for";
+           the caller says which of those it minds. */
+        public static IntPtr WindowMatching(string title, string process)
         {
             IntPtr found = IntPtr.Zero;
             string wanted = (title ?? "").Trim().ToLowerInvariant();
             string wantedProcess = (process ?? "").Trim().ToLowerInvariant();
-            if (wanted.Length == 0 && wantedProcess.Length == 0) return "title or process is required";
+            if (wanted.Length == 0 && wantedProcess.Length == 0) return IntPtr.Zero;
 
             Native.EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
             {
@@ -2312,6 +2893,16 @@ namespace MouseFlow
                 if (titleMatches || processMatches) found = hWnd;
                 return found == IntPtr.Zero;
             }, IntPtr.Zero);
+            return found;
+        }
+
+        public static string Activate(string title, string process)
+        {
+            string wanted = (title ?? "").Trim();
+            string wantedProcess = (process ?? "").Trim();
+            if (wanted.Length == 0 && wantedProcess.Length == 0) return "title or process is required";
+
+            IntPtr found = WindowMatching(title, process);
 
             if (found == IntPtr.Zero) return "no open window matches that";
 
@@ -3016,7 +3607,16 @@ namespace MouseFlow
                 if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
                 string problem = DoAction(body);
                 if (problem != null) { Respond(stream, 400, "application/json", "{\"ok\":false,\"error\":\"" + JsonEscape(problem) + "\"}", origin); return; }
-                Respond(stream, 200, "application/json", "{\"ok\":true}", origin);
+                /* `output` only when there is one, so `{"ok":true}` stays exactly what it was for the eight
+                   actions that have nothing to report. A capture and a clipboard read do have something,
+                   and the caller composes the sentence from it - see actionSaid in api/_brain.mjs, which
+                   both drivers use so the two cannot word it differently. */
+                string said = TakeOutput();
+                Respond(stream, 200, "application/json",
+                    said == null
+                        ? "{\"ok\":true}"
+                        : "{\"ok\":true,\"output\":\"" + JsonEscape(said) + "\"}",
+                    origin);
                 return;
             }
 
@@ -3867,7 +4467,12 @@ namespace MouseFlow
                 if (before != null && after != null) stirred = Moved(before, after) ? "true" : "false";
             }
             catch { stirred = "null"; }
-            return "{\"id\":\"" + Agent.JsonText(id) + "\",\"output\":\"done\",\"moved\":"
+            /* "done" unless the action had something to say. The deployment passes any other value
+               straight to the model (resultBlocks in api/_step.mjs), which is why this needs no new field
+               and no new shape - the channel was already there and empty. */
+            string told = Agent.TakeOutput();
+            return "{\"id\":\"" + Agent.JsonText(id) + "\",\"output\":\""
+                + Agent.JsonText(told == null ? "done" : told) + "\",\"moved\":"
                 + stirred + "}";
         }
 

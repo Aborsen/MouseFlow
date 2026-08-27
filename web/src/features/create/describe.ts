@@ -43,6 +43,21 @@ export function describe(did: Did): string {
     }
     case 'activate_window':
       return `switch to ${input.title ?? input.process ?? 'a window'}`;
+    case 'capture_window':
+      if (Number.isFinite(input.w) && Number.isFinite(input.h)) {
+        return `capture ${input.w}x${input.h}${at}`;
+      }
+      return `capture ${input.title ?? input.process ?? 'the window in front'}`;
+    case 'clipboard_read':
+      return 'read the clipboard';
+    case 'clipboard_write': {
+      const text = String(input.text ?? '').replace(/\n/g, ' ⏎ ');
+      return `copy "${text.length > 48 ? `${text.slice(0, 48)}…` : text}"`;
+    }
+    case 'open_url':
+      return `open ${input.url ?? 'a link'}`;
+    case 'open_app':
+      return `start ${input.name ?? 'an application'}`;
     case 'wait':
       return 'wait for the screen to settle';
     /* Заметка - единственный шаг, ЧЬЁ СОДЕРЖИМОЕ и есть смысл шага: «note» без текста не говорит ничего,

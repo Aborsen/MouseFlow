@@ -50,6 +50,7 @@ import {
   toolsFor,
   truncatedAt,
   actionReport,
+  actionSaid,
   AFTER_CUT,
   notBatched,
   sameTurn,
@@ -170,11 +171,12 @@ function resultBlocks(pending, said, loop) {
      * composed here from the agent's fact for the same reason the wait is. `moved` is absent on any agent
      * older than 0.9.6, and absent means "could not tell", which reads as an ordinary "done" rather than
      * as a screen that stood still. */
+    /* actionSaid rather than the three-way conditional this used to be. The rule - output when there is
+     * one, the stirred/inert sentence when there is not - now lives in the brain beside actionReport,
+     * because the browser driver has to apply exactly the same one and did not. */
     const content = p.name === 'wait' && got.quiet !== undefined
       ? waitReport(got)
-      : got.output === 'done' || got.output == null
-        ? actionReport(got.moved === false ? false : undefined, got.streak || 0)
-        : String(got.output).slice(0, 2000);
+      : actionSaid(got.output, got.moved === false ? false : undefined, got.streak || 0);
     return { type: 'tool_result', tool_use_id: p.id, content, is_error: got.isError === true };
   });
 }

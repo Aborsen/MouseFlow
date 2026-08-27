@@ -43,11 +43,15 @@ export const SYSTEM = `You are operating a real Windows computer for the user, w
 How to work:
 - Each turn you are given a fresh screenshot. Look at it before deciding.
 - Coordinates are in the pixels of the screenshot you were just given. Aim at the CENTRE of what you mean to click.
-- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one activate_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
-- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
+- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one activate_window, or one open_url/open_app, or one capture_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
+- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window, an open_url/open_app or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
 - Do not put a one-way action in a batch. A message sent, a form submitted, a file deleted, a payment confirmed: look at the screen first and let that keystroke be a turn of its own, with the same care as a one-way click.
 - Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
+- To reach a web application, call open_url with the address. "https://docs.new" is a new Google Doc; "https://sheets.new" a spreadsheet. Opening a browser and typing in the address bar is three turns for the same thing.
+- For anything long, or anything with punctuation a keyboard layout might mangle, clipboard_write then Control+V beats type_text - and both can go in one turn.
+- To read text you cannot make out in the screenshot: select it, Control+C, then clipboard_read. Guessing at small text is how a wrong address gets typed into a real message.
+- When the goal asks for a SCREENSHOT, call capture_window with the title of the window it means. That saves a file and puts the picture on the clipboard, so Control+V pastes it into a document. Never try to take a screenshot with a key: PrintScreen does not exist here, and there is no Win modifier for the snipping tool.
 - Some things are only reachable by hovering: a menu that opens on the pointer, a button that appears on a row, a tooltip that spells out a label too short to read. Hover, then look at what it revealed.
 - The "Already open" list gives each window's size and position. Use them to work out what is covering what: a window in front of the one you need is why a click can land somewhere unexpected, and activate_window is how you fix it.
 - Write text the way it should appear, line breaks and all, in ONE type_text call. Do not go back afterwards to fix formatting: Find and Replace, or re-selecting text to correct it, costs steps and rarely ends well. If what you typed came out wrong, select all and type it again.
@@ -163,6 +167,80 @@ export const TOOLS = [
         text: { type: 'string', description: 'What to record, in one or two sentences.' },
       },
       required: ['text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* WHY THIS SAVES A FILE AND SETS THE CLIPBOARD, rather than one or the other: the two are wanted by
+     * different callers. Pasting into a document wants the clipboard; keeping evidence wants a file. Doing
+     * one of them would have meant a second action to do the other.
+     *
+     * AND WHY BY WINDOW rather than by screen. A screen capture is a capture of whatever is in front, and in
+     * the run this was written for that was a terminal covering the dialog the model was trying to
+     * photograph - it never once managed to confirm the dialog was even open. The agent asks the window to
+     * draw itself, so what is on top of it does not matter. */
+    name: 'capture_window',
+    description: 'Save a picture of ONE WINDOW - to a file, and onto the clipboard so it can be pasted with '
+      + 'Control+V. Give the window title (part of it is enough) to capture that window even if something '
+      + 'is in front of it; give nothing to capture whatever is in front; or give x, y, w and h for a '
+      + 'rectangle of the screen. Answers with the size and the path.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Part of the window title, as shown in the "Already open" list' },
+        process: { type: 'string' },
+        x: { type: 'integer' },
+        y: { type: 'integer' },
+        w: { type: 'integer' },
+        h: { type: 'integer' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'clipboard_read',
+    description: 'Read the text on the clipboard and be told what it is. The reliable way to get text OUT '
+      + 'of an application: select it, press Control+C, then read it here rather than trying to make out '
+      + 'small text in a screenshot.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'clipboard_write',
+    description: 'Put text on the clipboard, to paste with Control+V. Faster and more reliable than '
+      + 'type_text for anything long, and it does not depend on the keyboard layout.',
+    input_schema: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* http and https ONLY, and the agent enforces it. A scheme is a choice of PROGRAM - file:,
+     * ms-settings:, and whatever an installed application registered - so accepting any scheme would make
+     * this "run something", which is a different question with a different answer. */
+    name: 'open_url',
+    description: 'Open a web address in the default browser - a new tab if it is already running. This is '
+      + 'the way to reach a web application: "https://docs.new" for a new Google Doc, "https://mail.google.com" '
+      + 'for Gmail. Far better than opening a browser and typing in the address bar. http and https only.',
+    input_schema: {
+      type: 'object',
+      properties: { url: { type: 'string' } },
+      required: ['url'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* A NAME, NEVER A COMMAND LINE, and the agent refuses paths and arguments. The long version of why is
+     * beside OpenApp in the agent: arguments are what turn "open an application" into "run this". */
+    name: 'open_app',
+    description: 'Start an application by name - "notepad", "excel", "Google Chrome". Read the "Already '
+      + 'open" list FIRST: if it is there, use activate_window instead, because a second copy is a mess the '
+      + 'user has to clean up. A name only - no paths, no arguments, and no way to pass either.',
+    input_schema: {
+      type: 'object',
+      properties: { name: { type: 'string' } },
+      required: ['name'],
       additionalProperties: false,
     },
   },
@@ -318,6 +396,45 @@ export function actionBody(name, input, frame) {
     const nl = input.newline === 'shift-enter' ? 'shift' : 'enter';
     return `action=type enc=b64 nl=${nl} text=${btoa(binary)}`;
   }
+  if (name === 'capture_window') {
+    const title = String(input.title ?? '').replace(/[\r\n]+/g, ' ').trim();
+    const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
+    /* A REGION IS IN SCREEN PIXELS, like every other coordinate, so it goes through the same conversion -
+     * this is the whole reason actionBody exists in one place. A window capture needs no conversion at all,
+     * which is one more reason to prefer it. */
+    const region = ['x', 'y', 'w', 'h'].every((k) => Number.isFinite(Number(input[k])));
+    if (region) {
+      const w = Math.round(Number(input.w) / (frame.scale || 1));
+      const h = Math.round(Number(input.h) / (frame.scale || 1));
+      return `action=capture x=${x()} y=${y()} w=${w} h=${h}`;
+    }
+    // process first: title runs to the end of the line and would swallow it.
+    return `action=capture${process ? ` process=${process}` : ''}${title ? ` title=${title}` : ''}`;
+  }
+  if (name === 'clipboard_read') {
+    return 'action=clipread';
+  }
+  if (name === 'clipboard_write') {
+    /* Base64 for the same reason type_text is: the wire reads text= to the end of the line, and a clipboard
+     * is exactly where a multi-line value goes. */
+    const text = String(input.text ?? '');
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return `action=clipwrite enc=b64 text=${btoa(binary)}`;
+  }
+  if (name === 'open_url') {
+    const url = String(input.url ?? '').replace(/[\r\n\s]+/g, '').trim();
+    if (!url) return null;
+    return `action=open url=${url}`;
+  }
+  if (name === 'open_app') {
+    /* `app=` takes the rest of the line, so an application name may contain spaces - "Google Chrome" is a
+     * name, not a name plus an argument. The agent refuses anything that looks like an argument. */
+    const app = String(input.name ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+    if (!app) return null;
+    return `action=open app=${app}`;
+  }
   if (name === 'activate_window') {
     const title = String(input.title ?? '').replace(/[\r\n]+/g, ' ').trim();
     const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
@@ -363,8 +480,9 @@ export function screenMessage(frame, open) {
         type: 'text',
         text: `The screen now, ${frame.w} by ${frame.h} pixels.` +
           (open
-            ? '\n\nAlready open - use activate_window rather than opening any of these again. Sizes and '
-              + `positions are in screen pixels, so they say what is covering what:\n${open}`
+            ? '\n\nAlready open - use activate_window rather than opening any of these again, and '
+              + 'capture_window takes any of these titles. Sizes and positions are in screen pixels, so '
+              + `they say what is covering what:\n${open}`
             : ''),
       },
     ],
@@ -449,6 +567,26 @@ export const actionReport = (moved, streak = 0) => {
   return STILL_NOTE;
 };
 
+/** As much of an action's own answer as is worth carrying: a path, a clipboard, a size. */
+export const OUTPUT_MAX = 2000;
+
+/* WHAT AN ACTION SAYS FOR ITSELF, in one function, because two drivers must say it identically.
+ *
+ * Most actions have nothing to report and the answer is composed from whether the screen stirred - that is
+ * actionReport, and it has not changed. From agent 0.10.0 some actions do have something to report: where a
+ * capture was saved, what the clipboard held. `done` and absent both mean "nothing to add", which is what
+ * every agent before 0.10.0 sends and what the eight older actions still send.
+ *
+ * Note what is deliberately lost when there IS output: the stirred/inert sentence. An action that answers
+ * with a fact has already told the model what happened, and appending "and nothing changed on screen" to
+ * "the clipboard holds: 42" would be the loop guessing about an action whose whole point is that it changes
+ * nothing visible. */
+export const actionSaid = (output, moved, streak = 0) => (
+  output == null || output === 'done'
+    ? actionReport(moved, streak)
+    : String(output).slice(0, OUTPUT_MAX)
+);
+
 /** Why a run that stopped moving is ended. Said in the run's own words, not as a crash. */
 export const stillStopped = (streak) =>
   `Nothing on screen has changed through ${streak} decisions in a row. Stopping rather than going on: `
@@ -491,11 +629,19 @@ export const stillStopped = (streak) =>
  * Enter и там и там. Поэтому «односторонние действия отдельным ходом» остаётся правилом промпта, и сказано
  * это честно: код держит «не целься вслепую», промпт держит «не жми вслепую то, что не отменить».
  */
-/** Actions that go to whatever has focus, so they do not need a picture taken after the one before them. */
-const BATCHABLE = new Set(['type_text', 'press_key', 'wait']);
+/** Actions that go to whatever has focus, or nowhere at all, so they do not need a fresh picture first. */
+/* The two clipboard actions are here because they aim at NOTHING: no window, no point. `clipboard_write`
+ * then `press_key` with Control+V in one turn is the pairing this makes possible, and it is safe by
+ * construction - neither half reads the screen. `capture_window` is deliberately NOT here: a capture taken
+ * after a click races the window it is trying to photograph, and the answer to "capture the dialog the last
+ * click opened" is to wait and look, not to guess. */
+const BATCHABLE = new Set(['type_text', 'press_key', 'wait', 'clipboard_read', 'clipboard_write']);
 
-/** And the three nothing may follow: two change the screen by definition, the third can quietly not happen. */
-const TERMINAL = new Set(['wait', 'activate_window', 'hover']);
+/** And the ones nothing may follow: they change the screen by definition, or can quietly not happen. */
+/* open_url and open_app join for the same reason activate_window is here, only more so: a window is about
+ * to appear, it takes a moment to do it, and anything aimed in the same turn was aimed at the screen from
+ * before it existed. */
+const TERMINAL = new Set(['wait', 'activate_window', 'hover', 'open_url', 'open_app']);
 
 /**
  * Whether one more action may run in this turn, with no fresh screenshot in between.
@@ -528,6 +674,11 @@ export function notBatched(sofar, next) {
       + 'change: a menu opens, a button appears, a tooltip is drawn. Whatever this was aimed at, it was '
       + 'aimed with the picture from BEFORE that. The rest of the turn was dropped with it; look at what '
       + 'the hover revealed and act on that.';
+  }
+  if (done[done.length - 1] === 'open_url' || done[done.length - 1] === 'open_app') {
+    return 'not carried out — it came after opening something, which takes a moment and puts a new window '
+      + 'in front. Whatever this was aimed at, it was aimed at the screen from before that window existed. '
+      + 'The rest of the turn was dropped with it; wait for the screen to settle, look, and then act.';
   }
   if (done[done.length - 1] === 'activate_window') {
     return 'not carried out — it came after activate_window, which is the one aimed action that can fail '

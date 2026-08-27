@@ -53,6 +53,7 @@ import {
   toolsFor,
   truncatedAt,
   actionReport,
+  actionSaid,
   AFTER_CUT,
   notBatched,
   sameTurn,
@@ -635,8 +636,11 @@ async function runWave(o: {
       }
       ran.push(use.name ?? '');
 
+      let output: string | undefined;
       try {
-        await machine.do(body);
+        /* The agent's own answer, when the action had one. Read here and composed through actionSaid below,
+         * so this driver and the cloud one say the same thing about the same reply. */
+        output = (await machine.do(body)).output;
         /* The pause first: a screen compared the instant after a click has not had time to react, and
          * would report every action as having changed nothing. This is the same 350ms the loop already
          * waits before its next picture, moved above the comparison rather than added to it. */
@@ -662,10 +666,13 @@ async function runWave(o: {
           tool_use_id: use.id,
           /* The words live in the brain, like waitReport's: the two drivers must tell the model the same
            * thing, or one of them teaches it a habit the other punishes. */
-          content: actionReport(inert ? false : true, still),
+          content: actionSaid(output, inert ? false : true, still),
         };
         results.push(report);
-        if (inert) inertSaid.push(report);
+        /* Only when the answer is the stirred/inert sentence. An action that reported a fact - a capture's
+         * path, the clipboard's contents - must not have that fact overwritten at the end of the turn by
+         * "nothing changed on screen", which is the bug this condition exists to prevent. */
+        if (inert && (output == null || output === 'done')) inertSaid.push(report);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'failed';
         onEvent({ type: 'error', message: `${use.name} failed: ${message}` });
