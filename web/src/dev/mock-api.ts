@@ -160,6 +160,35 @@ const RUNS = [
     ],
     startedAt: hoursAgo(3), finishedAt: new Date(now - 3 * 3600_000 + 7 * 60_000).toISOString(),
   },
+  /* FOUR MORE GOAL RUNS, and they exist for a threshold rather than for decoration: the history panel shows
+   * its search box from seven (SEARCH_FROM), and the fixture had three - so the field, and the magnifier in
+   * it, were unreachable in the preview. Short, varied goals, because the search is searched BY them. */
+  {
+    id: 'r10', kind: 'agent', goal: 'file the September invoices in Finance', model: 'claude-opus-5',
+    flowId: null, outcome: 'ok', summary: 'Nine of them, in the Finance folder.', error: null,
+    extension: null, said: [], steps: [],
+    startedAt: hoursAgo(30), finishedAt: new Date(now - 30 * 3600_000 + 4 * 60_000).toISOString(),
+  },
+  {
+    id: 'r11', kind: 'agent', goal: 'reply to Andrii that the spec is approved', model: 'claude-opus-5',
+    flowId: null, outcome: 'ok', summary: 'Replied on the existing thread.', error: null,
+    extension: null, said: [], steps: [],
+    startedAt: hoursAgo(31), finishedAt: new Date(now - 31 * 3600_000 + 90_000).toISOString(),
+  },
+  {
+    id: 'r12', kind: 'agent', goal: 'collect the open pull requests into a note', model: 'claude-opus-5',
+    flowId: null, outcome: 'stopped', summary: null, error: null, extension: null,
+    said: ['Stopped after the fourth repository - the list was longer than the goal described.'],
+    steps: [],
+    startedAt: hoursAgo(33), finishedAt: new Date(now - 33 * 3600_000 + 6 * 60_000).toISOString(),
+  },
+  {
+    id: 'r13', kind: 'agent', goal: 'book the Thursday standup room', model: 'claude-opus-5',
+    flowId: null, outcome: 'failed', summary: null,
+    error: 'the room picker never loaded, so nothing was booked',
+    extension: null, said: [], steps: [],
+    startedAt: hoursAgo(34), finishedAt: new Date(now - 34 * 3600_000 + 50_000).toISOString(),
+  },
   {
     id: 'r2', kind: 'replay', goal: null, model: null, flowId: 'dr_dev_1',
     outcome: 'ok', summary: null, error: null, extension: null, said: [], steps: [],

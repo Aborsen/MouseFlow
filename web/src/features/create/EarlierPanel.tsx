@@ -122,7 +122,7 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
           : <ChevronRight className="size-3.5 shrink-0 text-ink-inactive" />}
         <History className="size-4 shrink-0 text-ink-inactive" />
         <Typography variant="span" className="text-[0.7rem] uppercase tracking-wide text-ink-inactive">
-          Earlier
+          History
         </Typography>
         <Typography variant="span" className="ms-auto text-[0.76rem] text-ink-inactive tabular-nums">
           {mine.length} run{mine.length === 1 ? '' : 's'}
@@ -132,8 +132,18 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
       {shown && (
         <>
           {mine.length >= SEARCH_FROM && (
-            <div className="relative shrink-0 px-3.5 pb-2">
-              <Search className="absolute left-5.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-inactive" />
+            /* Две коробки, а не одна, и это исправление двух промахов сразу.
+               *
+               * `relative` стоял на внешней - у которой есть `pb-2` - поэтому `top-1/2` центрировал иконку
+               * по КОНТЕЙНЕРУ, а не по полю, и она садилась на 4px ниже середины ввода.
+               *
+               * А по горизонтали её не держало вообще ничто: `left-5.5` не существует - в шкале Tailwind нет
+               * шага 5.5, и в собранном CSS этого правила ноль. Класс, которого нет, не выравнивает - иконка
+               * вставала туда, где её оставил бы статический поток, то есть на границу поля. Теперь
+               * `relative` - это ровно коробка поля, и `left-2` отсчитывается от его края. */
+            <div className="shrink-0 px-3.5 pb-2">
+              <div className="relative">
+              <Search className="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-ink-inactive" />
               <input
                 value={needle}
                 onChange={(ev) => setNeedle(ev.target.value)}
@@ -145,6 +155,7 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
                   'focus:border-brand-primary/60',
                 )}
               />
+              </div>
             </div>
           )}
 
