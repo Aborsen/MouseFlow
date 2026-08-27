@@ -889,11 +889,13 @@ export const TranscriptPanel = ({
                                 className="ms-auto shrink-0 font-mono text-[0.72rem] text-ink-inactive tabular-nums"
                                 title={clock ? clockNote(clock) : undefined}
                               >
-                                {/* Three values, and each answers a different question that was being asked
-                                    of one: when it happened, how far into the recording that was, and how
-                                    long it took. The middle one used to be alone and read as a duration. */}
-                                {clock ? `${clock.at(count(chapter.at) ?? 0)} · ` : ''}
-                                {`+${fmtClock(count(chapter.at) ?? 0)}`}
+                                {/* When it happened, and how long it took. The offset from the start of the
+                                    recording was here too and is gone: with a clock on the left and a
+                                    duration on the right it was the one number nobody was asking for, and
+                                    "+0:00 · 3s" invited reading two spans as two durations.
+                                    It survives on the step rows below, where the column is 44px and there is
+                                    no room for a clock - those carry it in the title instead. */}
+                                {clock ? clock.at(count(chapter.at) ?? 0) : `+${fmtClock(count(chapter.at) ?? 0)}`}
                                 {count(chapter.seconds) ? ` · ${fmtSeconds(count(chapter.seconds) ?? 0)}` : ''}
                               </span>
                             )}

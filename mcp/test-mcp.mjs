@@ -1166,8 +1166,12 @@ const storeTs = read('../web/src/lib/store.ts');
 
 check('an offset says it is one',
   /return `\+\$\{fmtClock\(at\)\}`/.test(panel));
-check('and the clock is printed beside it, not instead of it',
-  /\$\{clock\.at\(count\(chapter\.at\) \?\? 0\)\} · /.test(panel));
+/* On the chapter line the clock REPLACES the offset. It printed both for a day and that was one number too
+ * many: a clock on the left and a duration on the right, and "+0:00 · 3s" invited reading the two spans as
+ * two durations. The offset stays where there is no room for a clock - the 44px column on a step row - and
+ * is the fallback there when nothing gives a usable base. */
+check('and on a chapter line the clock takes its place rather than sitting beside it',
+  /\{clock \? clock\.at\(count\(chapter\.at\) \?\? 0\) : `\+\$\{fmtClock\(count\(chapter\.at\) \?\? 0\)\}`\}/.test(panel));
 check('on the stretch headings too, which is the line people read',
   /clock\.at\(count\(segment\.startMs\) \?\? 0\)/.test(panel));
 check('and on a step, without taking a fourth column off a 286px panel',

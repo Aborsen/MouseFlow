@@ -28,7 +28,7 @@
  * из run-history.ts, общие с лентой для узкого окна. Разойтись нечему.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, History, Pencil, RotateCcw, Search, Sparkles, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Pencil, RotateCcw, Search, Sparkles, X } from 'lucide-react';
 import { Button } from '@insightis/ui/Button';
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
@@ -121,10 +121,12 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
           'transition-colors hover:bg-state-hover',
         )}
       >
-        <span className="flex items-center gap-2">
+        {/* The chevron alone. A clock beside a word that says History was the icon repeating the label, and
+            the word is doing the work. Still its own cell, so the heading in the middle column stays centred
+            between this and the count rather than being pushed by it. */}
+        <span className="flex items-center">
           {shown ? <ChevronDown className="size-3.5 shrink-0 text-ink-inactive" />
             : <ChevronRight className="size-3.5 shrink-0 text-ink-inactive" />}
-          <History className="size-4 shrink-0 text-ink-inactive" />
         </span>
         <Typography
           variant="span"
