@@ -434,6 +434,9 @@ export const RecordingsTable = ({
                         itself a control - the name field, the tick, every button - has already done its own
                         job before this handler is reached. */}
                     <div
+                      /* Read by RecordView's click-away: a row is not empty space - clicking one unfolds it,
+                       * and that press must not also dismiss the transcript panel. */
+                      data-row=""
                       onClick={(e) => {
                         if ((e.target as HTMLElement).closest('button,input,select,a,[role="checkbox"]')) return;
                         setOpenRow((open) => (open === rec.id ? null : rec.id));
@@ -457,7 +460,14 @@ export const RecordingsTable = ({
                       </span>
 
                       {/* The name is editable in place, as it was. Renaming a recording is the commonest thing
-                          anybody does to one, and a dialog for it would be three clicks. */}
+                          anybody does to one, and a dialog for it would be three clicks.
+
+                          CAPPED, because `w-full` in a 1fr column made the field as wide as the column - on a
+                          1920 screen with the transcript closed that is around 900px of editable box holding
+                          a 24-character name, and the hover border drew all of it. 22rem is comfortably more
+                          than the longest default name ("MouseFlow 27/08 17:08:57" is about 180px) and leaves
+                          room for a renamed one; `w-full` stays underneath it so a narrow window still fits
+                          rather than overflowing. */}
                       <span className="flex min-w-0 flex-col gap-0.5">
                         <input
                           value={rec.name}
@@ -468,7 +478,7 @@ export const RecordingsTable = ({
                           }))}
                           aria-label="Recording name"
                           className={cn(
-                            'w-full rounded-md border border-transparent bg-transparent px-1 py-0.5',
+                            'w-full max-w-[22rem] rounded-md border border-transparent bg-transparent px-1 py-0.5',
                             'font-semibold text-ink-primary hover:border-stroke',
                             'focus:border-input-focus focus:outline-none',
                           )}

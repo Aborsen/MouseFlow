@@ -1236,6 +1236,44 @@ check('status sorts on whether a skill exists, read the same way the cell reads 
   /Number\(!!hasSkill\?\.\(a\)\) - Number\(!!hasSkill\?\.\(b\)\)/.test(recTable)
     && /\[state\.recordings, term, sort, hasSkill\]/.test(recTable));
 
+group('the recordings list gives the page back its empty space');
+/* `recordView` and `recTable` are both read further up; this group reuses them. */
+
+/* A `w-full` field in a 1fr column was as wide as the column: measured in the browser at a 1920 viewport,
+ * 912px of editable box holding a 24-character name, with the hover border drawing all of it. Capped at
+ * 22rem it measures 352px - 2.6x narrower - and at a 1280 viewport the column is 272px and the cap does not
+ * bite at all, which is the half of this that must not regress. */
+check('the name field is capped rather than as wide as its column',
+  /'w-full max-w-\[22rem\] rounded-md border border-transparent bg-transparent px-1 py-0\.5'/.test(recTable));
+check('and still fills a narrow one, so the cap only ever takes width away from a wide screen',
+  /w-full max-w-\[/.test(recTable));
+
+/* CLICKING AWAY CLOSES THE TRANSCRIPT, and the interesting part is what it does NOT do. */
+check('a press on the page closes the transcript',
+  /document\.addEventListener\('pointerdown', away\)/.test(recordView)
+    && /if \(target\.closest\('\[data-transcript\]'\)\) return;/.test(recordView));
+/* pointerdown rather than click: a press that starts on the page and ends on the panel is still a press on
+ * the page, and the panel should be gone before the button comes up. */
+check('on pointerdown, not click',
+  !/addEventListener\('click', away\)/.test(recordView));
+/* NOT A BACKDROP - the panel is deliberately not modal, because the page scrolls behind it and switching to
+ * another recording costs one click. A transparent sheet would take both away. Asserted on the mount site:
+ * nothing full-screen was added beside the aside. */
+check('and it is not a backdrop, so the list behind it still scrolls and still switches',
+  !/inset-0/.test(/\{viewing && \(([\s\S]*?)<\/aside>/.exec(recordView)?.[1] ?? 'inset-0'));
+/* A row unfolds when it is clicked. A press that both unfolded a row and closed the panel would read as the
+ * page having a mind of its own, so a row is not empty space - and the row has to carry the mark that says
+ * so, or the exclusion silently matches nothing. */
+check('a row is not empty space, and carries the mark that says so',
+  /\[role="button"\],\[data-row\]/.test(recordView) && /\s+data-row=""/.test(recTable));
+check('nor is anything that does something on its own press',
+  /closest\('a,button,input,select,textarea,label,\[role="checkbox"\]/.test(recordView));
+/* Suspended while the wizard is open: the wizard is opened FROM the panel, and cancelling it should put you
+ * back where you were rather than on the bare list. */
+check('and it stands down while the wizard is open over it',
+  /if \(!viewing \|\| wizardFor\) return;/.test(recordView)
+    && /\}, \[viewing, wizardFor\]\);/.test(recordView));
+
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');
 const MD_STRUCTURE = {

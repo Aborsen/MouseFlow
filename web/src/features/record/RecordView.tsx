@@ -886,6 +886,36 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
    * session ledger is on the account and not in this browser. See openWizard below. */
   const [wizardFor, setWizardFor] = useState<GoalSkillSource | null>(null);
 
+  /* Clicking the page closes the transcript - and "the page" means the parts of it that do nothing.
+   *
+   * NOT A BACKDROP, which is the obvious implementation and the wrong one here. This panel is deliberately
+   * not modal: the comment where it is mounted says the page scrolls behind it, because the whole point is
+   * looking at one recording without losing the list you found it in. A transparent sheet over the page
+   * would take that away - the list would stop scrolling, and switching to another recording's transcript
+   * would cost two clicks where it costs one now.
+   *
+   * So the test is what was clicked rather than where. Anything that does something on its own press is left
+   * alone: a control, a link, and a ROW - a row unfolds when it is clicked, and a press that both unfolded a
+   * row and closed the panel would read as the page having a mind of its own. What is left is background,
+   * headings and whitespace, which is what was asked for.
+   *
+   * pointerdown, not click: a click that begins on the page and ends on the panel - a drag, a mis-aimed
+   * press - should still count as a press on the page, and the panel should be gone before the mouse comes
+   * up rather than after. Suspended while the wizard is open, because the wizard is opened FROM the panel
+   * and cancelling it should put you back where you were rather than on the bare list. */
+  useEffect(() => {
+    if (!viewing || wizardFor) return;
+    const away = (ev: PointerEvent) => {
+      const target = ev.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest('[data-transcript]')) return;
+      if (target.closest('a,button,input,select,textarea,label,[role="checkbox"],[role="button"],[data-row]')) return;
+      setViewing(null);
+    };
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [viewing, wizardFor]);
+
   /* Open the wizard for a recording named by id, wherever that recording is.
    *
    * In the store when this browser holds it, which is the ordinary case and costs nothing. Pulled from the
@@ -1202,9 +1232,15 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       {/* The transcript, beside the list rather than inside a row: it is long, and a row that expands to
         * three hundred lines stops being a row. Same shape as the dashboard's assistant panel - fixed to the
         * right, the page scrolls behind it - because they are the same gesture, looking at one thing in
-        * detail without losing the list you found it in. */}
+        * detail without losing the list you found it in.
+        *
+        * data-transcript is what the click-away effect above looks for: a press inside here is not a press
+        * on the page, and the panel is a lot of surface to get that wrong about. */}
       {viewing && (
-        <aside className="fixed inset-y-0 right-0 z-40 flex w-[34rem] max-w-full flex-col border-stroke border-l bg-surface-card2 shadow-dropdown">
+        <aside
+          data-transcript=""
+          className="fixed inset-y-0 right-0 z-40 flex w-[34rem] max-w-full flex-col border-stroke border-l bg-surface-card2 shadow-dropdown"
+        >
           <TranscriptPanel
             flowId={viewing}
             name={viewingName}
