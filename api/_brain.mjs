@@ -43,13 +43,15 @@ export const SYSTEM = `You are operating a real Windows computer for the user, w
 How to work:
 - Each turn you are given a fresh screenshot. Look at it before deciding.
 - Coordinates are in the pixels of the screenshot you were just given. Aim at the CENTRE of what you mean to click.
-- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one activate_window, or one open_url/open_app, or one capture_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
-- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window, an open_url/open_app or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
+- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one scroll_to, or one drag, or one activate_window, or one open_url/open_app, or one capture_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
+- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window, an open_url/open_app, a scroll_to, a drag or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
 - Do not put a one-way action in a batch. A message sent, a form submitted, a file deleted, a payment confirmed: look at the screen first and let that keystroke be a turn of its own, with the same care as a one-way click.
 - Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
 - To reach a web application, call open_url with the address. "https://docs.new" is a new Google Doc; "https://sheets.new" a spreadsheet. Opening a browser and typing in the address bar is three turns for the same thing.
 - For anything long, or anything with punctuation a keyboard layout might mangle, clipboard_write then Control+V beats type_text - and both can go in one turn.
+- COORDINATES FROM A PICTURE ARE A GUESS. The screenshot is scaled down, so a point read off it is approximate, and a layout that has shifted since makes it wrong. read_window lists what a window calls things and where they are, in the same pixels you click in; find_element answers where one named thing is. Both only LOOK, so either may be added after the aimed action in a turn - "click Help, then read the window" is one turn - but nothing can follow them, because their answer arrives with your next screenshot and until then there is nothing to aim with. When a click did not do what you expected, read the window rather than clicking again a few pixels over.
+- Reaching something further down a list is scroll_to, not a string of scrolls: "end", "start", or the name of the thing to stop at. One step, and it says whether it arrived.
 - To read text you cannot make out in the screenshot: select it, Control+C, then clipboard_read. Guessing at small text is how a wrong address gets typed into a real message.
 - When the goal asks for a SCREENSHOT, call capture_window with the title of the window it means. That saves a file and puts the picture on the clipboard, so Control+V pastes it into a document. Never try to take a screenshot with a key: PrintScreen does not exist here, and there is no Win modifier for the snipping tool.
 - Some things are only reachable by hovering: a menu that opens on the pointer, a button that appears on a row, a tooltip that spells out a label too short to read. Hover, then look at what it revealed.
@@ -194,6 +196,78 @@ export const TOOLS = [
         w: { type: 'integer' },
         h: { type: 'integer' },
       },
+      additionalProperties: false,
+    },
+  },
+  {
+    /* THE ANSWER TO AIMING AT A DOWNSCALED SCREENSHOT. /shot reports a `scale`, so every coordinate the
+     * model reads off a picture is already approximate; `label` on click corrects a miss AFTER it happens,
+     * and this is how to not miss. */
+    name: 'read_window',
+    description: 'List what a window calls the things on it - names, kinds, positions and whether each is '
+      + 'enabled. Use it when the screenshot is ambiguous, when a control is too small to read, or before '
+      + 'clicking anything whose position you are guessing at. Give a title to read a window that is not in '
+      + 'front. Positions come back in the same pixels as the screenshot, so they can be clicked directly.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Part of the window title, as in the "Already open" list' },
+        process: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'find_element',
+    description: 'Ask where one named thing is on the window in front, and be given its centre to click. '
+      + 'Exact name first, then a case-insensitive part of a name. Says so when nothing matches, and says '
+      + 'so when SEVERAL do rather than picking one - two controls with the same name is something you need '
+      + 'to know about before clicking.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The name to look for, as it appears on screen' },
+        process: { type: 'string', description: 'Narrow to a process instead of using the window in front' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* ONE ACTION INSTEAD OF N TURNS. Composing this out of scroll and a look costs a model turn per wheel
+     * burst - eight to fifty seconds each in a watched run - against about 25ms for a burst inside the
+     * agent. "Composable" is not the same as "cheap". */
+    name: 'scroll_to',
+    description: 'Scroll until something is true, in one step. "end" or "start" scrolls until the screen '
+      + 'stops changing; any other value is a NAME, and it stops when that name is on the window. Says how '
+      + 'far it got and whether it arrived, so a scroll that gave up is not mistaken for one that finished.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', description: '"end", "start", or the name of the thing to scroll to' },
+        x: { type: 'integer', description: 'Where to put the pointer first. Defaults to the middle of the window in front.' },
+        y: { type: 'integer' },
+      },
+      required: ['to'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* Could not be composed from what existed: click sends the press and the release together, and nothing
+     * sent one without the other. */
+    name: 'drag',
+    description: 'Press at one point, move, and let go at another - for reordering a list, moving a slider, '
+      + 'resizing something, or selecting a range of text. The pointer travels in steps, because an '
+      + 'application decides what is happening from the movement in between.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        x: { type: 'integer', description: 'Where to press' },
+        y: { type: 'integer' },
+        toX: { type: 'integer', description: 'Where to let go' },
+        toY: { type: 'integer' },
+      },
+      required: ['x', 'y', 'toX', 'toY'],
       additionalProperties: false,
     },
   },
@@ -410,6 +484,46 @@ export function actionBody(name, input, frame) {
     }
     // process first: title runs to the end of the line and would swallow it.
     return `action=capture${process ? ` process=${process}` : ''}${title ? ` title=${title}` : ''}`;
+  }
+  /* THE THREE NUMBERS THAT LET THE AGENT ANSWER IN THE MODEL'S OWN PIXELS.
+   *
+   * Everything else in this function converts INWARDS - a point from the picture into a point on the screen -
+   * and one place to do that is the rule. These three actions answer with coordinates, which travels the
+   * other way, and the agent applies the same formula in reverse. The alternative is a conversation with two
+   * coordinate systems in it: positions read off read_window in screen pixels, clicks sent in screenshot
+   * pixels, and a wrong click on any scaled screenshot. See ReadGeometry in the agent. */
+  const geometry = () => `scale=${frame.scale || 1} ox=${frame.originX || 0} oy=${frame.originY || 0}`;
+
+  if (name === 'read_window') {
+    const title = String(input.title ?? '').replace(/[\r\n]+/g, ' ').trim();
+    const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
+    // process first: title runs to the end of the line and would swallow it.
+    return `action=read ${geometry()}${process ? ` process=${process}` : ''}`
+      + (title ? ` title=${title}` : '');
+  }
+  if (name === 'find_element') {
+    /* The NAME goes in `title=`, which is the wire's one field that may contain spaces - so `find` cannot
+     * also take a window title, and looks at the window in front unless narrowed by process. The agent's
+     * WindowToRead comment has the long version. */
+    const wanted = String(input.name ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+    if (!wanted) return null;
+    const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
+    return `action=find ${geometry()}${process ? ` process=${process}` : ''} title=${wanted}`;
+  }
+  if (name === 'scroll_to') {
+    const to = String(input.to ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+    if (!to) return null;
+    const at = Number.isFinite(Number(input.x)) && Number.isFinite(Number(input.y))
+      ? ` x=${x()} y=${y()}` : '';
+    /* `to=` last only because it is a plain token; a name with spaces would need the rest of the line, and
+     * the agent reads `to` as a token - so a multi-word name is trimmed at the first space. Said in the
+     * tool description rather than silently. */
+    return `action=scrollto ${geometry()}${at} to=${to.split(' ')[0]}`;
+  }
+  if (name === 'drag') {
+    const tx = Math.round((frame.originX || 0) + Number(input.toX) / (frame.scale || 1));
+    const ty = Math.round((frame.originY || 0) + Number(input.toY) / (frame.scale || 1));
+    return `action=drag x=${x()} y=${y()} tx=${tx} ty=${ty}`;
   }
   if (name === 'clipboard_read') {
     return 'action=clipread';
@@ -635,13 +749,21 @@ export const stillStopped = (streak) =>
  * construction - neither half reads the screen. `capture_window` is deliberately NOT here: a capture taken
  * after a click races the window it is trying to photograph, and the answer to "capture the dialog the last
  * click opened" is to wait and look, not to guess. */
-const BATCHABLE = new Set(['type_text', 'press_key', 'wait', 'clipboard_read', 'clipboard_write']);
+/* read_window and find_element only LOOK. They touch nothing, so nothing they follow can have gone stale
+ * because of them - which makes "click, then find the thing that appeared" one turn rather than two. */
+const BATCHABLE = new Set([
+  'type_text', 'press_key', 'wait', 'clipboard_read', 'clipboard_write', 'read_window', 'find_element',
+]);
 
 /** And the ones nothing may follow: they change the screen by definition, or can quietly not happen. */
 /* open_url and open_app join for the same reason activate_window is here, only more so: a window is about
  * to appear, it takes a moment to do it, and anything aimed in the same turn was aimed at the screen from
  * before it existed. */
-const TERMINAL = new Set(['wait', 'activate_window', 'hover', 'open_url', 'open_app']);
+/* scroll_to and drag both move the screen under whatever comes next, and scroll_to may keep going for
+ * seconds - so nothing aimed with the old picture may follow either. */
+const TERMINAL = new Set([
+  'wait', 'activate_window', 'hover', 'open_url', 'open_app', 'scroll_to', 'drag',
+]);
 
 /**
  * Whether one more action may run in this turn, with no fresh screenshot in between.
@@ -674,6 +796,11 @@ export function notBatched(sofar, next) {
       + 'change: a menu opens, a button appears, a tooltip is drawn. Whatever this was aimed at, it was '
       + 'aimed with the picture from BEFORE that. The rest of the turn was dropped with it; look at what '
       + 'the hover revealed and act on that.';
+  }
+  if (done[done.length - 1] === 'scroll_to' || done[done.length - 1] === 'drag') {
+    return 'not carried out — it came after a ' + done[done.length - 1] + ', which moves the screen under '
+      + 'anything that follows: a scroll_to may have travelled a long way, and a drag has left something '
+      + 'somewhere new. The rest of the turn was dropped with it; look at the fresh screenshot first.';
   }
   if (done[done.length - 1] === 'open_url' || done[done.length - 1] === 'open_app') {
     return 'not carried out — it came after opening something, which takes a moment and puts a new window '

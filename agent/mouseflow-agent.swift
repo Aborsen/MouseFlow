@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.10.0"
+let VERSION = "0.11.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -2218,6 +2218,11 @@ func doAction(_ body: String) -> String? {
      * CGWindowListCreateImage and NSWorkspace.open, and none of them is written yet. */
     case "capture", "clipread", "clipwrite", "open":
         return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.10.0. "
+            + "Say so and carry on without it; there is no workaround worth trying."
+    /* And the same for 0.11.0. The equivalents here exist - AXUIElementCopyAttributeValue over kAXChildren
+     * for read and find, and a press/move/release triple for drag - and none of them is written yet. */
+    case "read", "find", "scrollto", "drag":
+        return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.11.0. "
             + "Say so and carry on without it; there is no workaround worth trying."
     default:
         return "no action called \(action.isEmpty ? "(none given)" : action)"

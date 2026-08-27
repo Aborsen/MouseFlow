@@ -302,7 +302,23 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.10.0 is the build that can hand something back, and that will not touch its own terminal.
+/* 0.11.0 is the build that can be asked what is on screen by NAME.
+ *
+ * Every coordinate a model produced came off a screenshot that /shot had scaled down, so every one of them
+ * was approximate - and `label` on a click could only correct a miss after it had happened. read_window lists
+ * what a window calls things and where they are, in the same pixels the model clicks in; find_element answers
+ * where one named thing is, and says so when SEVERAL match rather than picking one. scroll_to reaches
+ * something further down in one action instead of a model turn per wheel burst, and drag exists at all now -
+ * click had always sent the press and the release together.
+ *
+ * The rule this bends is PROTOCOL.md's "never walk the tree", and it bends on a measurement: that number is
+ * about a recursion from the agent's own process, one cross-process call per element, which is still slow.
+ * A single FindAll with the condition and a cache request on the provider's side reads a real window in
+ * 570-850ms. What the deployment must also know is that an application can stop answering ENTIRELY -
+ * measured, dbForge did - so a window that times out is muted for a minute rather than asked again, and
+ * other windows keep working.
+ *
+ * The previous note, kept because the reason still holds. 0.10.0 is the build that can hand something back, and that will not touch its own terminal.
  *
  * Four things, and the first is why the rest were worth a release. A run asked to screenshot a dialog and
  * paste it into a document could not: /shot exists so the MODEL can see, and nothing could keep a picture.
@@ -376,7 +392,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.10.0';
+export const AGENT_WANTS = '0.11.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

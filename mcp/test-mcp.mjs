@@ -1404,6 +1404,80 @@ check('which read as sentences rather than as tool names',
   /case 'capture_window':/.test(describer) && /case 'open_url':/.test(describer)
     && /case 'clipboard_write': \{/.test(describer));
 
+group('wave 03: the agent can be asked what is on screen, by name');
+const winAgent3 = read('../agent/mouseflow-agent.ps1');
+
+/* THE RULE THIS BENDS, and the measurement that permits it. PROTOCOL.md forbids walking a window's tree at
+ * 0.6-4.4s per window, and that number is about a RECURSION from the agent's own process - one cross-process
+ * call per element - which is still slow. A single FindAll with the condition on the provider's side is a
+ * different call, and the numbers are in the code rather than in somebody's memory. */
+check('the search is one call with the condition on the provider side, not a recursion',
+  /root\.FindAll\(TreeScope\.Descendants, what\)/.test(winAgent3)
+    && /IsControlElementProperty, true/.test(winAgent3));
+/* Reading the four wanted properties afterwards is a cross-process call per property per element: measured
+ * at 2.0-2.7s against 570-850ms with them asked for up front. */
+check('and the properties it needs are asked for up front rather than read one by one',
+  /CacheRequest wanted = new CacheRequest\(\)/.test(winAgent3)
+    && /GetCachedPropertyValue\(\s*AutomationElement\.BoundingRectangleProperty\)/.test(winAgent3));
+
+/* AN APPLICATION CAN STOP ANSWERING ENTIRELY - dbForge did, mid-session, from any thread. So there is a
+ * deadline; and because an abandoned thread stays blocked, the window that missed it is muted rather than
+ * asked again. */
+check('a search has a deadline',
+  /if \(!worker\.Join\(budgetMs\)\)/.test(winAgent3));
+check('the window that missed it is muted by handle rather than asked again',
+  /_mute\[hwnd\] = DateTime\.UtcNow\.AddSeconds\(60\)/.test(winAgent3));
+/* THE FIRST FIX WAS WORSE THAN THE LEAK: a single global lock meant one hung application refused reads of
+ * every other window for the rest of the session. Measured on this machine, and written down so nobody
+ * reintroduces it. */
+check('and NOT by a global lock, which poisoned every other window',
+  /WORSE\s*\n\s*\* THAN THE LEAK/.test(winAgent3) && /_stuck\) >= 3/.test(winAgent3));
+check('the mute list is pruned, so a long session cannot grow it',
+  /if \(entry\.Value <= DateTime\.UtcNow\) over\.Add\(entry\.Key\)/.test(winAgent3));
+
+/* COORDINATES OUT, and this is the one place the agent converts them - because these actions answer with
+ * positions, which has never had a home, and the alternative is two coordinate systems in one conversation. */
+check('the agent answers in screenshot pixels, from the geometry the deployment sends',
+  /static void ReadGeometry\(Dictionary<string, string> a\)/.test(winAgent3)
+    && /const geometry = \(\) => `scale=\$\{frame\.scale \|\| 1\}/.test(brain));
+check('and says so where somebody would look for the rule',
+  /SCREEN PIXELS OUT, SCREENSHOT PIXELS IN/.test(winAgent3));
+
+/* AMBIGUITY IS REPORTED, NOT RESOLVED. Two controls with the same name is a fact the model needs before it
+ * clicks; picking one silently is how a click lands on the wrong row. */
+check('several matches are listed rather than one being chosen',
+  /so the name alone does not say which/.test(winAgent3));
+check('and nothing matching says what to do next',
+  /Read the window to see \"?\n?\s*\+? ?\"?what it does call things/.test(winAgent3)
+    || /what it does call things/.test(winAgent3));
+
+/* scroll_to reuses find rather than reimplementing the same exact-then-contains rule, so "scroll to it" and
+ * "is it there" cannot disagree about whether it is there. */
+check('scroll_to asks find whether it has arrived, rather than deciding for itself',
+  /Reusing find, not reimplementing it/.test(winAgent3));
+/* A scroll that gave up must not read as one that arrived. */
+check('and a scroll that ran out of bursts says so',
+  /which is as far as one scrollto goes/.test(winAgent3));
+
+/* A drag could not be composed: click always sent the press and the release together. Interpolated because
+ * an application reads the movement in between to decide what is happening. */
+check('a drag presses, moves in steps, and releases',
+  /static string Drag\(int x1, int y1, int x2, int y2\)/.test(winAgent3)
+    && /Emit\(At\(x1, y1, "Left Click Down"\)\)/.test(winAgent3)
+    && /Emit\(At\(x2, y2, "Left Click Release"\)\)/.test(winAgent3));
+check('and the guard covers both of its ends',
+  /string minedTarget = Mine\(Native\.WindowFromPoint\(new POINT \{ X = tx, Y = ty \}\)\)/.test(winAgent3));
+
+/* One threshold for "has this stopped changing", now that the courier and scroll_to both ask it. */
+check('one movement threshold, shared rather than copied',
+  /public static bool GridMoved\(byte\[\] a, byte\[\] b\)/.test(winAgent3)
+    && /static bool Moved\(byte\[\] a, byte\[\] b\) \{ return Agent\.GridMoved\(a, b\); \}/.test(winAgent3));
+
+check('the preview reaches the new steps, and they read as sentences',
+  /tool: 'read_window'/.test(read('../web/src/dev/mock-api.ts'))
+    && /tool: 'drag'/.test(read('../web/src/dev/mock-api.ts'))
+    && /case 'find_element':/.test(describer) && /case 'scroll_to':/.test(describer));
+
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');
 const MD_STRUCTURE = {

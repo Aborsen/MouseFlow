@@ -32,6 +32,14 @@ These are not bugs and no amount of work inside the current design removes them.
   different from "no such action": a model told an action does not exist looks for a way round — in the run
   this came from, that meant opening a terminal and writing a screen-capture tool — and a model told the
   platform lacks it stops and reports.
+- **An application can stop answering its accessibility interface, and then naming does not work at all.**
+  Measured: dbForge Studio described itself in 187ms one hour and did not reply at all the next, from any
+  thread. `read_window` and `find_element` give it four seconds, then mute that window for a minute and say
+  so — the screenshot is the fallback, and the model is told to use it. At most three such searches may be
+  outstanding, because a search that never returns keeps its thread.
+- **`scroll_to` takes a single-word name.** The wire gives an action one field that may contain spaces and
+  `find_element` spends it on the name it is looking for, so a multi-word target is cut at the first space.
+  Said in the tool description rather than silently.
 - **A captured picture stays on the machine.** `capture_window` writes a PNG under
   `%LOCALAPPDATA%\MouseFlow\captures` (pruned to 200 files and 7 days) and puts it on the clipboard. That is
   enough to paste it into a document, which is what the failing scenario needed, but the bytes never reach

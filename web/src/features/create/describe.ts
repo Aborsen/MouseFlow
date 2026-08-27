@@ -48,6 +48,14 @@ export function describe(did: Did): string {
         return `capture ${input.w}x${input.h}${at}`;
       }
       return `capture ${input.title ?? input.process ?? 'the window in front'}`;
+    case 'read_window':
+      return `read ${input.title ?? input.process ?? 'the window in front'}`;
+    case 'find_element':
+      return `find "${input.name ?? '?'}"`;
+    case 'scroll_to':
+      return `scroll to ${input.to ?? '?'}`;
+    case 'drag':
+      return `drag ${at.trim() || 'from somewhere'} to ${input.toX},${input.toY}`;
     case 'clipboard_read':
       return 'read the clipboard';
     case 'clipboard_write': {

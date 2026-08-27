@@ -171,6 +171,11 @@ const RUNS = [
       { tool: 'clipboard_write', input: { text: 'Test Case 1 result' }, ms: { model: 1900, act: 60 } },
       { tool: 'clipboard_read', input: {}, ms: { model: 1700, act: 55 } },
       { tool: 'open_app', input: { name: 'notepad' }, ms: { model: 2000, act: 210 } },
+      /* Wave 03, for the same reason the other two are here. */
+      { tool: 'read_window', input: { title: 'Inbox — Outlook' }, ms: { shot: 89, model: 2700, act: 620 } },
+      { tool: 'find_element', input: { name: 'Send' }, ms: { model: 2200, act: 340 } },
+      { tool: 'scroll_to', input: { to: 'end', x: 640, y: 400 }, ms: { model: 2500, act: 720 } },
+      { tool: 'drag', input: { x: 200, y: 300, toX: 200, toY: 480 }, ms: { model: 2600, act: 610 } },
     ],
     startedAt: hoursAgo(3), finishedAt: new Date(now - 3 * 3600_000 + 7 * 60_000).toISOString(),
   },

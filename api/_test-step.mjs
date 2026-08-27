@@ -864,5 +864,80 @@ group('the window list is what capture_window and activate_window are aimed with
   check('and the rectangle is still there for working out what covers what', sent.includes('320x246 at 480,221'));
 }
 
+group('aiming by name, and the geometry that makes it clickable');
+{
+  /* THE TRAP THIS AVOIDS: /shot scales the picture down, so a position the agent reports in SCREEN pixels
+   * would be a position the model then clicks in SCREENSHOT pixels. The three numbers go out with the action
+   * and the agent answers in the model's own system - see ReadGeometry there, and the note in actionBody. */
+  const ask = scripted([answer([use('read_window', { title: 'dbForge' }, 'r1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the geometry the screenshot reported travels with the read',
+    out.actions[0]?.body === 'action=read scale=0.5 ox=0 oy=0 title=dbForge', out.actions[0]?.body);
+}
+{
+  /* The name goes in the wire's one spaces-allowed field, which is why find cannot ALSO take a window title.
+   * A find for "Help" used to go looking for a WINDOW called Help. */
+  const ask = scripted([answer([use('find_element', { name: 'About...', process: 'dbforge' }, 'f1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a find carries the process first and the name last',
+    out.actions[0]?.body === 'action=find scale=0.5 ox=0 oy=0 process=dbforge title=About...',
+    out.actions[0]?.body);
+}
+{
+  const ask = scripted([answer([use('drag', { x: 100, y: 200, toX: 100, toY: 400 }, 'd1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  /* Both ends through the same conversion. A drag with one end converted and one not is a drag across half
+   * the screen on any scaled screenshot. */
+  check('both ends of a drag are converted the same way',
+    out.actions[0]?.body === 'action=drag x=200 y=400 tx=200 ty=800', out.actions[0]?.body);
+}
+{
+  /* Looking is free of the batch rule in one direction and not the other, and both halves matter. */
+  const ask = scripted([answer([
+    use('click', { x: 5, y: 5 }, 'c1'),
+    use('read_window', {}, 'r1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a look may be added after the aimed action', out.actions.length === 2,
+    JSON.stringify(out.actions.map((a) => a.name)));
+}
+{
+  const ask = scripted([answer([
+    use('find_element', { name: 'Send' }, 'f1'),
+    use('click', { x: 5, y: 5 }, 'c1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('but nothing may follow one, because its answer has not arrived yet', out.actions.length === 1,
+    JSON.stringify(out.actions.map((a) => a.name)));
+}
+{
+  const ask = scripted([answer([
+    use('scroll_to', { to: 'end' }, 's1'),
+    use('click', { x: 5, y: 5 }, 'c1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('and nothing may follow a scroll_to or a drag', out.actions.length === 1);
+  check('with a refusal that says the screen has moved',
+    JSON.stringify(out.loop.mine).includes('moves the screen under anything that follows'));
+}
+{
+  /* What the model is told when a window will not describe itself. The agent composes this one, because it
+   * is the only side that knows which window went quiet - and the loop must pass it through untouched. */
+  const first = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [],
+    ask: scripted([answer([use('read_window', { title: 'dbForge' }, 'r1')])]),
+  });
+  const quiet = 'that window did not answer within 4 seconds - it is busy, or showing something its '
+    + 'accessibility interface is stuck behind. Work from the screenshot instead';
+  const ask2 = scripted([answer([use('finish', { ok: false, said: 'x' })])]);
+  await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS,
+    results: [{ id: 'r1', output: quiet, isError: true }], ask: ask2,
+  });
+  const blocks = ask2.seen[0].messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+  check('a window that will not talk is reported in its own words',
+    blocks.some((b) => b.type === 'tool_result' && b.content === quiet && b.is_error === true));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

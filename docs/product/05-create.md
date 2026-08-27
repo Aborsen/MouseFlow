@@ -176,6 +176,10 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 | `press_key` | `key`, `ctrl`, `shift`, `alt` | `ctrl` means Command on macOS. The description names what is **not** there — F7-F10, PrintScreen, Snapshot, and any Win modifier — because it used to promise "F1-F12" while `VkFor` had F1-F6, F11 and F12, and the model paid a step per discovery |
 | `activate_window` | `title`, `process` | Preferred over opening anything again |
 | `capture_window` | `title`, `process`, or `x`/`y`/`w`/`h` | **0.10.0.** Saves a picture of one window to a file **and onto the clipboard**, so Control+V pastes it. By window rather than by screen: the agent asks the window to draw itself, so anything in front of it is not in the picture. Answers with the size and the path |
+| `read_window` | `title`, `process` | **0.11.0.** What a window calls the things on it — name, kind, position, enabled — in **the same pixels as the screenshot**, so they can be clicked directly. Capped at 40 entries and 1500 characters, and says how many were left out |
+| `find_element` | `name`, `process` | **0.11.0.** Where one named thing is, with its centre. Exact name, then a case-insensitive part of one. Reports ambiguity instead of resolving it: several matches is something the model needs to know before clicking |
+| `scroll_to` | `to`, `x`, `y` | **0.11.0.** `end`/`start` scrolls until the screen stops changing; anything else is a name to stop at. Says how far it got and whether it arrived |
+| `drag` | `x`, `y`, `toX`, `toY` | **0.11.0.** Press, move in steps, release. Could not be composed: `click` always sent the press and the release together |
 | `clipboard_read` | — | **0.10.0.** The reliable way to get text out of an application: select, Control+C, read it here rather than making out small text in a screenshot |
 | `clipboard_write` | `text` | **0.10.0.** Faster than `type_text` for anything long, and independent of the keyboard layout. May share a turn with the Control+V that pastes it |
 | `open_url` | `url` | **0.10.0.** http and https only — a scheme is a choice of program, which is a different question. `https://docs.new` is a new Google Doc in one action instead of four |
@@ -190,6 +194,14 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 grid, about 3 KB — until it has been still for two frames. A wait used to cost a screenshot and a model
 step, so waiting for a page to finish burned the whole budget. An agent too old for `/pulse` gets the same
 reduction done in the browser from a 640px screenshot.
+
+**Aiming by name rather than by pixel** (0.11.0). `/shot` scales the screenshot down and reports the
+`scale`, so every coordinate the model produces from a picture is approximate — and `label` on a click could
+only correct a miss after it had happened. `read_window` and `find_element` read the accessibility tree and
+answer in **screenshot pixels**, which is the one place the agent converts coordinates rather than the
+deployment: these actions send positions OUTWARDS, and the alternative is a conversation carrying two
+coordinate systems. The rule they bend, the measurements that permit it, and the two failure modes
+(applications that stop answering; why a global lock was the wrong fix) are in `agent/PROTOCOL.md`.
 
 **An action can answer with a fact, not just with "done".** From agent 0.10.0 `/do` may return an `output`
 string — where a capture was saved, what the clipboard held — and both drivers pass it to the model through
@@ -216,8 +228,9 @@ Not decoration — these are the product's position on what an agent driving a r
 
 - Read the "Already open" list before opening anything; launching a second copy of a running application is
   a mess the user has to clean up.
-- **One thing aimed at the screen per turn** — one click, or one hover, or one scroll, or one
-  `activate_window`, or one `open_url`/`open_app`, or one `capture_window`, or one wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
+- **One thing aimed at the screen per turn** — one click, or one hover, or one scroll, or one `scroll_to`,
+  or one `drag`, or one `activate_window`, or one `open_url`/`open_app`, or one `capture_window`, or one
+  wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
   moment anything happens. After it, in the same turn, the typing and key presses that follow from it: those
   go to whatever has focus, not to a place on screen. "Click the box, type the address, press Tab" is one
   turn, not three. Up to `BATCH_MAX` actions; nothing follows a wait (the screen changed by definition), an
@@ -225,7 +238,10 @@ Not decoration — these are the product's position on what an agent driving a r
   `open_url`/`open_app` (a window is about to appear and takes a moment to do it) or a `hover` (which is done
   *because* the screen is about to change). The two clipboard actions are batchable: they aim at nothing at
   all, which makes `clipboard_write` then Control+V one turn. `capture_window` is deliberately not — a
-  capture taken straight after a click races the window it is trying to photograph.
+  capture taken straight after a click races the window it is trying to photograph. `read_window` and
+  `find_element` are batchable because they only LOOK — "click Help, then read the window" is one turn — but
+  nothing may follow them, since their answer arrives with the next screenshot and there is nothing to aim
+  with until it does. `scroll_to` and `drag` are terminal: both move the screen under whatever comes next.
   This one is not a request — `sameTurn` in `api/_brain.mjs` enforces it, and both drivers cut the turn at
   the first refusal rather than filtering it, because typing meant for a second click's target is typing in
   the wrong place. What the code *cannot* enforce is the next line, because `Enter` sends an email and

@@ -455,6 +455,24 @@ Accessibility API: `AXUIElementCopyElementAtPosition` for the hit test, `kAXTitl
 
   The bounds and the tie-break differ per platform, because the thing each was written for differs:
 
+  **And a second amendment, on the same rule, measured in 0.11.0.** The 0.6-4.4s figure is about a
+  RECURSION FROM THE AGENT'S PROCESS - GetFirstChild, GetNextSibling, one cross-process call per element -
+  and it is still true: an uncapped ControlViewWalker recursion over a 241-element window measured 347ms
+  here and grows with the tree. A single `FindAll(TreeScope.Descendants, ...)` with the condition on the
+  PROVIDER's side is a different call: it walks its own tree in its own process and answers once. Measured
+  across eighteen real top-level windows - dbForge, Outlook, Teams, Chrome, File Explorer, an Electron app -
+  it ran 0-319ms, and a full `read_window` including the property reads is 570-850ms once the four wanted
+  properties are asked for with a `CacheRequest` (2.0-2.7s without one: reading them afterwards is a
+  cross-process call per property per element). So a model-requested lookup is permitted; a per-click one is
+  still not.
+
+  Two things that only a measurement would have told you, and both are in the code:
+  - **An application can stop answering entirely.** dbForge answered this call in 187ms one hour and not at
+    all the next, from any thread. So every search has a deadline, the window that missed it is muted for a
+    minute rather than asked again, and at most three may be outstanding.
+  - **A global lock is the wrong fix for the leaked thread.** The first attempt used one, and a single hung
+    application then refused reads of every OTHER window for the rest of the session. Mute by handle.
+
   | | macOS (since 0.9.3) | Windows (since 0.9.9) |
   |---|---|---|
   | depth | 4 levels, plus 2 steps back OUT and down again | 6 levels |

@@ -438,7 +438,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.10.0";
+        public const string Version = "0.11.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -2176,6 +2176,12 @@ namespace MouseFlow
 
             if (action == "capture") return Capture(a);
 
+            /* ------------------------------------------------------------------ 0.11.0: aiming by name */
+
+            if (action == "read") return ReadWindow(a);
+            if (action == "find") return FindElement(a);
+            if (action == "scrollto") return ScrollTo(a);
+
             if (action == "open")
             {
                 string url = Get(a, "url", "");
@@ -2240,6 +2246,19 @@ namespace MouseFlow
                 return null;
             }
 
+            if (action == "drag")
+            {
+                int tx, ty;
+                if (!int.TryParse(Get(a, "tx", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out tx) ||
+                    !int.TryParse(Get(a, "ty", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out ty))
+                {
+                    return "drag needs tx and ty - where to let go";
+                }
+                string minedTarget = Mine(Native.WindowFromPoint(new POINT { X = tx, Y = ty }));
+                if (minedTarget != null) return minedTarget;
+                return Drag(x, y, tx, ty);
+            }
+
             if (action == "click")
             {
                 string button = Get(a, "button", "left");
@@ -2271,6 +2290,10 @@ namespace MouseFlow
             if (action == "capture" || action == "clipread" || action == "clipwrite" || action == "open")
             {
                 return "this agent is too old for " + action + " - it arrived in 0.10.0. Update the agent.";
+            }
+            if (action == "read" || action == "find" || action == "scrollto" || action == "drag")
+            {
+                return "this agent is too old for " + action + " - it arrived in 0.11.0. Update the agent.";
             }
             return "unknown action: " + action;
         }
@@ -2449,6 +2472,505 @@ namespace MouseFlow
             {
                 return "could not capture: " + e.Message;
             }
+        }
+
+        /* ---------------------------------------------------------------- 0.11.0: seeing by name
+
+           THE RULE THIS BENDS, AND THE MEASUREMENT THAT SAYS IT MAY. PROTOCOL.md forbids walking a window's
+           tree on the input path, at 0.6-4.4 seconds per window. That number is about a RECURSION FROM THIS
+           PROCESS - GetFirstChild, GetNextSibling, one cross-process call per element - and it is still
+           true: measured here, an uncapped ControlViewWalker recursion over a 241-element window took 347ms
+           and grows with the tree.
+
+           A single FindAll with the condition on the SERVER side is a different call: the provider walks its
+           own tree in its own process and answers once. Measured across eighteen real top-level windows -
+           dbForge Studio, Outlook, Teams, Chrome, File Explorer, an Electron app - it ran from 0 to 319ms,
+           with dbForge at 187ms for 28 named elements. Against a model turn of eight to fifty seconds that
+           is nothing, and it is spent because the model ASKED rather than on every click.
+
+           Bounded anyway, on a worker thread with a deadline: a provider that hangs must not take the action
+           with it. An application that will not answer is a fact worth reporting, not a reason to wait.
+        */
+        static Condition NamedAndVisible()
+        {
+            return new AndCondition(
+                new NotCondition(new PropertyCondition(AutomationElement.NameProperty, "")),
+                new PropertyCondition(AutomationElement.IsOffscreenProperty, false),
+                new PropertyCondition(AutomationElement.IsControlElementProperty, true));
+        }
+
+        /* A search with a deadline - and a counter, because a deadline alone leaks.
+         *
+         * MEASURED, NOT IMAGINED: dbForge Studio answered this same call in 187ms one hour and stopped
+         * answering entirely the next - not slowly, and not only from a worker thread but from the main one
+         * too. An application that has gone busy, or is showing something its provider is stuck behind,
+         * simply does not reply. That is what the deadline is for.
+         *
+         * But abandoning the thread is not free: it stays blocked inside the call, and a model that tries
+         * again would spawn another. The first attempt at that was a single global lock, and it was WORSE
+         * THAN THE LEAK - measured, on this machine: one hung dbForge poisoned every later read, so a window
+         * that answers in 400ms was refused for the rest of the session because an unrelated application
+         * had stopped talking an hour earlier. A cure that disables the feature is not a cure.
+         *
+         * So: the window that timed out is muted BY HANDLE for a minute - a retry on it costs nothing
+         * instead of another whole deadline - and up to three searches may be outstanding before anything is
+         * refused outright. Other windows are unaffected, which is the property the global lock destroyed.
+         * The counter is cleared by each worker whenever it eventually returns, so nothing needs a restart.
+         */
+        static int _stuck;
+        static readonly Dictionary<IntPtr, DateTime> _mute = new Dictionary<IntPtr, DateTime>();
+
+        static AutomationElementCollection Search(AutomationElement root, IntPtr hwnd, Condition what,
+                                                 int budgetMs, out string problem)
+        {
+            lock (_mute)
+            {
+                /* Pruned on the way past, so a long session cannot grow this without bound. */
+                List<IntPtr> over = new List<IntPtr>();
+                foreach (KeyValuePair<IntPtr, DateTime> entry in _mute)
+                {
+                    if (entry.Value <= DateTime.UtcNow) over.Add(entry.Key);
+                }
+                foreach (IntPtr key in over) _mute.Remove(key);
+
+                if (hwnd != IntPtr.Zero && _mute.ContainsKey(hwnd))
+                {
+                    problem = "that window did not answer a moment ago and has not been asked again - it is "
+                        + "busy, or showing something its accessibility interface is stuck behind. Work from "
+                        + "the screenshot for this one; other windows still read normally";
+                    return null;
+                }
+            }
+
+            if (Thread.VolatileRead(ref _stuck) >= 3)
+            {
+                problem = "three windows are not answering their accessibility interface, so nothing more "
+                    + "will be asked for now. Work from the screenshot instead";
+                return null;
+            }
+
+            AutomationElementCollection found = null;
+            Exception failure = null;
+            Interlocked.Increment(ref _stuck);
+            Thread worker = new Thread(delegate()
+            {
+                try
+                {
+                    /* CACHED, and the difference is not a detail: reading Name, type, rectangle and enabled
+                     * off each element AFTERWARDS is one cross-process call per property per element. Asked
+                     * for up front instead - one call, the provider fills them in as it walks - and measured
+                     * on the same two windows either way: File Explorer 2039ms to 852ms, an Electron app
+                     * 2656ms to 570ms. Two to four times faster rather than the order of magnitude the
+                     * FindAll-only measurement suggested, because the walk itself is now the cost. Same
+                     * information; the only thing to remember is that callers read the CACHE.
+                     *
+                     * Activated on THIS thread, because a CacheRequest is thread-local and the FindAll it
+                     * has to cover runs here. */
+                    CacheRequest wanted = new CacheRequest();
+                    wanted.Add(AutomationElement.NameProperty);
+                    wanted.Add(AutomationElement.LocalizedControlTypeProperty);
+                    wanted.Add(AutomationElement.BoundingRectangleProperty);
+                    wanted.Add(AutomationElement.IsEnabledProperty);
+                    wanted.TreeScope = TreeScope.Element;
+                    using (wanted.Activate())
+                    {
+                        found = root.FindAll(TreeScope.Descendants, what);
+                    }
+                }
+                catch (Exception e) { failure = e; }
+                finally { Interlocked.Decrement(ref _stuck); }
+            });
+            worker.IsBackground = true;
+            worker.Start();
+            if (!worker.Join(budgetMs))
+            {
+                if (hwnd != IntPtr.Zero)
+                {
+                    lock (_mute) { _mute[hwnd] = DateTime.UtcNow.AddSeconds(60); }
+                }
+                problem = "that window did not answer within "
+                    + (budgetMs / 1000).ToString(CultureInfo.InvariantCulture)
+                    + " seconds - it is busy, or showing something its accessibility interface is stuck "
+                    + "behind. Work from the screenshot instead";
+                return null;
+            }
+            problem = failure == null ? null : "that window would not describe itself: " + failure.Message;
+            return found;
+        }
+
+        /* Which window to look at: the one asked for, or whatever is in front.
+         *
+         * THE TITLE IS A PARAMETER, not a field read from `a`, and that is a bug fixed rather than a style
+         * choice. `find` needs two free-text values - which window, and what to look for inside it - and the
+         * wire format gives an action exactly ONE field that may contain spaces. So `find` spends its one
+         * such field on the NAME it is looking for and selects the window by process or by what is in front;
+         * reading `title` from `a` here meant a find for "Help" went looking for a WINDOW called Help. */
+        static AutomationElement WindowToRead(string title, string process, out IntPtr found,
+                                              out string problem)
+        {
+            problem = null;
+            found = IntPtr.Zero;
+            title = title ?? "";
+            process = process ?? "";
+            IntPtr hwnd;
+            if (title.Length > 0 || process.Length > 0)
+            {
+                hwnd = WindowMatching(title, process);
+                if (hwnd == IntPtr.Zero)
+                {
+                    problem = "no open window matches "
+                        + (title.Length > 0 ? "title \"" + title + "\"" : "process " + process)
+                        + " - the list of open windows under the screenshot is what is actually there";
+                    return null;
+                }
+            }
+            else
+            {
+                hwnd = Native.GetForegroundWindow();
+                if (hwnd == IntPtr.Zero) { problem = "nothing is in front to read"; return null; }
+            }
+            IntPtr top = Native.GetAncestor(hwnd, Native.GA_ROOT);
+            if (top != IntPtr.Zero) hwnd = top;
+            found = hwnd;
+            try
+            {
+                AutomationElement el = AutomationElement.FromHandle(hwnd);
+                if (el == null) problem = "that window has no accessibility tree at all";
+                return el;
+            }
+            catch (Exception e)
+            {
+                problem = "could not reach that window: " + e.Message;
+                return null;
+            }
+        }
+
+        /* SCREEN PIXELS OUT, SCREENSHOT PIXELS IN - and this is the one place the agent converts.
+         *
+         * Everywhere else the deployment converts, in actionBody, because everywhere else coordinates travel
+         * INWARDS and one place to do it is the rule. These actions send coordinates OUTWARDS, which has
+         * never had a home, and the alternative is worse than a second site: a model reading positions in
+         * screen pixels off one action and clicking in screenshot pixels with the next would be two
+         * coordinate systems in one conversation, which is a class of wrong nobody would spot until a click
+         * landed somewhere strange on a scaled screenshot.
+         *
+         * The deployment sends the same three numbers the screenshot reported. Absent - an older deployment,
+         * or a caller with no picture - means one to one, which is what those numbers were before /shot
+         * started scaling. */
+        static double _shotScale = 1.0;
+        static int _shotOx;
+        static int _shotOy;
+
+        static void ReadGeometry(Dictionary<string, string> a)
+        {
+            double scale;
+            if (!double.TryParse(Get(a, "scale", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out scale)
+                || scale <= 0) scale = 1.0;
+            int ox, oy;
+            if (!int.TryParse(Get(a, "ox", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out ox)) ox = 0;
+            if (!int.TryParse(Get(a, "oy", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out oy)) oy = 0;
+            _shotScale = scale;
+            _shotOx = ox;
+            _shotOy = oy;
+        }
+
+        static int ToShotX(double screenX) { return (int)Math.Round((screenX - _shotOx) * _shotScale); }
+        static int ToShotY(double screenY) { return (int)Math.Round((screenY - _shotOy) * _shotScale); }
+        static int ToShotSize(double px) { return (int)Math.Round(px * _shotScale); }
+
+        /* One element, described the way the model will read it back. */
+        static string Line(string kind, string name, System.Windows.Rect box, bool enabled)
+        {
+            return (string.IsNullOrEmpty(kind) ? "element" : kind)
+                + " \"" + Clip(name, 60) + "\""
+                + " at " + ToShotX(box.X).ToString(CultureInfo.InvariantCulture) + ","
+                + ToShotY(box.Y).ToString(CultureInfo.InvariantCulture)
+                + " " + ToShotSize(box.Width).ToString(CultureInfo.InvariantCulture) + "x"
+                + ToShotSize(box.Height).ToString(CultureInfo.InvariantCulture)
+                + (enabled ? "" : " (disabled)");
+        }
+
+        static bool Usable(System.Windows.Rect box)
+        {
+            return box.Width > 1 && box.Height > 1
+                && !double.IsInfinity(box.Width) && !double.IsInfinity(box.Height);
+        }
+
+        /* WHAT IS ON THIS WINDOW, by name.
+         *
+         * The answer to a model aiming at a coordinate read off a downscaled screenshot: it can read the
+         * names instead. Capped twice - by count and by characters - because the deployment cuts an action's
+         * output at 2000 characters and a list silently halved there would be a list the model trusts and
+         * should not. What was left out is said out loud. */
+        static string ReadWindow(Dictionary<string, string> a)
+        {
+            ReadGeometry(a);
+            string problem;
+            IntPtr hwnd;
+            AutomationElement root = WindowToRead(Get(a, "title", ""), Get(a, "process", ""),
+                out hwnd, out problem);
+            if (root != null)
+            {
+                AutomationElementCollection all = Search(root, hwnd, NamedAndVisible(), 4000, out problem);
+                if (all != null)
+                {
+                    List<string> lines = new List<string>();
+                    HashSet<string> seen = new HashSet<string>();
+                    int skipped = 0;
+                    int budget = 1500;
+                    foreach (AutomationElement el in all)
+                    {
+                        try
+                        {
+                            System.Windows.Rect box = (System.Windows.Rect)el.GetCachedPropertyValue(
+                                AutomationElement.BoundingRectangleProperty);
+                            if (!Usable(box)) { continue; }
+                            string line = Line(
+                                (string)el.GetCachedPropertyValue(AutomationElement.LocalizedControlTypeProperty),
+                                (string)el.GetCachedPropertyValue(AutomationElement.NameProperty),
+                                box,
+                                (bool)el.GetCachedPropertyValue(AutomationElement.IsEnabledProperty));
+                            /* The same control reported twice - a wrapper and its label with one name and
+                             * one rectangle - is one thing to a reader. */
+                            if (!seen.Add(line)) continue;
+                            if (lines.Count >= 40 || budget - line.Length < 0) { skipped++; continue; }
+                            budget -= line.Length + 1;
+                            lines.Add(line);
+                        }
+                        catch { skipped++; }
+                    }
+                    if (lines.Count == 0)
+                    {
+                        Say("that window names nothing readable - normal for an Electron application, a "
+                            + "canvas, or a window running as administrator. The screenshot is what there is");
+                        return null;
+                    }
+                    /* The window's own name out of the tree rather than a second GetWindowText round trip:
+                     * the element is already here and has already answered once. */
+                    string where = null;
+                    try { where = root.Current.Name; } catch { where = null; }
+                    string said = lines.Count.ToString(CultureInfo.InvariantCulture) + " named things on \""
+                        + Clip(string.IsNullOrEmpty(where) ? "that window" : where, 60)
+                        + "\", positions in screenshot pixels: " + string.Join("; ", lines.ToArray());
+                    if (skipped > 0)
+                    {
+                        said += ". " + skipped.ToString(CultureInfo.InvariantCulture)
+                            + " more were left out for room - ask for a narrower window, or use find with a "
+                            + "name if you know what you are looking for";
+                    }
+                    Say(said);
+                    return null;
+                }
+            }
+            return problem == null ? "could not read that window" : problem;
+        }
+
+        /* WHERE ONE NAMED THING IS - the answer to "is it there, and where".
+         *
+         * Exact name first, because it is one server-side call and it is what a model that has just read the
+         * window will pass back. Then a case-insensitive contains over the same filtered list, because a
+         * person types "About" for a menu item called "About...". Ambiguity is REPORTED rather than resolved:
+         * two controls with the same name is a fact the model needs, and picking one silently is how a click
+         * lands on the wrong row. */
+        static string FindElement(Dictionary<string, string> a)
+        {
+            ReadGeometry(a);
+            string wanted = Get(a, "title", "").Trim();
+            if (wanted.Length == 0) return "find needs a name to look for";
+
+            /* No window title here on purpose - see WindowToRead. `find` looks at whatever is in front, or
+             * in the process it was given, and spends its one free-text field on the name. */
+            string problem;
+            IntPtr hwnd;
+            AutomationElement root = WindowToRead("", Get(a, "process", ""), out hwnd, out problem);
+            if (root == null) return problem == null ? "could not read that window" : problem;
+
+            AutomationElementCollection exact = Search(root, hwnd,
+                new AndCondition(new PropertyCondition(AutomationElement.NameProperty, wanted),
+                    new PropertyCondition(AutomationElement.IsOffscreenProperty, false)),
+                4000, out problem);
+            List<AutomationElement> hits = new List<AutomationElement>();
+            if (exact != null)
+            {
+                foreach (AutomationElement el in exact) hits.Add(el);
+            }
+
+            if (hits.Count == 0)
+            {
+                AutomationElementCollection all = Search(root, hwnd, NamedAndVisible(), 4000, out problem);
+                if (all == null) return problem == null ? "could not read that window" : problem;
+                string low = wanted.ToLowerInvariant();
+                foreach (AutomationElement el in all)
+                {
+                    try
+                    {
+                        string name = (string)el.GetCachedPropertyValue(AutomationElement.NameProperty);
+                        if (name != null && name.ToLowerInvariant().IndexOf(low, StringComparison.Ordinal) >= 0)
+                        {
+                            hits.Add(el);
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            List<string> said = new List<string>();
+            foreach (AutomationElement el in hits)
+            {
+                try
+                {
+                    System.Windows.Rect box = (System.Windows.Rect)el.GetCachedPropertyValue(
+                        AutomationElement.BoundingRectangleProperty);
+                    if (!Usable(box)) continue;
+                    int cx = ToShotX(box.X + box.Width / 2);
+                    int cy = ToShotY(box.Y + box.Height / 2);
+                    said.Add(Line(
+                            (string)el.GetCachedPropertyValue(AutomationElement.LocalizedControlTypeProperty),
+                            (string)el.GetCachedPropertyValue(AutomationElement.NameProperty),
+                            box,
+                            (bool)el.GetCachedPropertyValue(AutomationElement.IsEnabledProperty))
+                        + ", centre " + cx.ToString(CultureInfo.InvariantCulture) + ","
+                        + cy.ToString(CultureInfo.InvariantCulture));
+                    if (said.Count >= 6) break;
+                }
+                catch { }
+            }
+
+            if (said.Count == 0)
+            {
+                Say("nothing on that window is called \"" + Clip(wanted, 60) + "\". Read the window to see "
+                    + "what it does call things, or look at the screenshot - it may not be there at all");
+                return null;
+            }
+            if (said.Count == 1)
+            {
+                Say("found " + said[0] + " - click the centre");
+                return null;
+            }
+            Say(said.Count.ToString(CultureInfo.InvariantCulture) + " things match \"" + Clip(wanted, 60)
+                + "\", so the name alone does not say which: " + string.Join("; ", said.ToArray())
+                + ". Pick by position, or use a longer name");
+            return null;
+        }
+
+        /* SCROLLING UNTIL SOMETHING IS TRUE, in one action instead of one model turn per wheel burst.
+         *
+         * `to=end` and `to=start` stop when the screen stops changing - which is what reaching the end of a
+         * list looks like from outside. Any other value is a NAME, and the loop stops when that name is
+         * there. Both are capped, and the cap is reported: a scroll that gave up after forty bursts is a
+         * different fact from a scroll that arrived, and a model told only "done" would believe it arrived.
+         *
+         * Why this is an action and not composition: composing it costs a model turn per burst, measured at
+         * eight to fifty seconds each in a watched run, against about 25ms for a burst here. */
+        static string ScrollTo(Dictionary<string, string> a)
+        {
+            ReadGeometry(a);
+            string to = Get(a, "to", "").Trim();
+            if (to.Length == 0) return "scrollto needs to=end, to=start, or a name to scroll to";
+            bool up = string.Equals(to, "start", StringComparison.OrdinalIgnoreCase);
+            bool toEdge = up || string.Equals(to, "end", StringComparison.OrdinalIgnoreCase);
+
+            /* Initialised for the same reason the capture region is: `&&` short-circuits, so the compiler
+             * cannot see that a false chain means the window centre is used instead. */
+            int x = 0, y = 0;
+            bool havePoint =
+                int.TryParse(Get(a, "x", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out x)
+                && int.TryParse(Get(a, "y", ""), NumberStyles.Integer, CultureInfo.InvariantCulture, out y);
+            if (!havePoint)
+            {
+                IntPtr front = Native.GetForegroundWindow();
+                RECT box;
+                if (front == IntPtr.Zero || !Native.GetWindowRect(front, out box))
+                {
+                    return "scrollto needs x and y - where to put the pointer before scrolling";
+                }
+                x = (box.Left + box.Right) / 2;
+                y = (box.Top + box.Bottom) / 2;
+            }
+            string mine = Mine(Native.WindowFromPoint(new POINT { X = x, Y = y }));
+            if (mine != null) return mine;
+
+            const int Bursts = 40;
+            int did = 0;
+            int still = 0;
+            for (int burst = 0; burst < Bursts; burst++)
+            {
+                if (!toEdge)
+                {
+                    Dictionary<string, string> look = new Dictionary<string, string>(a);
+                    look["title"] = to;
+                    /* Reusing find, not reimplementing it: the same exact-then-contains rule, so "scroll to
+                     * it" and "is it there" can never disagree about whether it is there. */
+                    string missing = FindElement(look);
+                    string answer = TakeOutput();
+                    if (missing == null && answer != null && !answer.StartsWith("nothing on that window"))
+                    {
+                        Say("scrolled " + did.ToString(CultureInfo.InvariantCulture) + " times and "
+                            + answer);
+                        return null;
+                    }
+                }
+
+                byte[] before = null;
+                try { before = Grid(); } catch { before = null; }
+
+                Emit(At(x, y, "Mouse Movement"));
+                for (int notch = 0; notch < 3; notch++)
+                {
+                    Emit(At(x, y, up ? "Scroll Up" : "Scroll Down"));
+                    Thread.Sleep(25);
+                }
+                did++;
+
+                byte[] after = null;
+                try { after = Grid(); } catch { after = null; }
+                if (before != null && after != null && !GridMoved(before, after))
+                {
+                    still++;
+                    /* Twice, not once: a list that redraws a moment late looks still for one comparison. */
+                    if (still >= 2) break;
+                }
+                else still = 0;
+            }
+
+            if (toEdge)
+            {
+                Say("scrolled " + (up ? "up" : "down") + " " + did.ToString(CultureInfo.InvariantCulture)
+                    + " times" + (still >= 2
+                        ? " and the screen stopped changing, which is what the " + (up ? "start" : "end")
+                            + " looks like"
+                        : ", which is as far as one scrollto goes - call it again if there is more"));
+                return null;
+            }
+            Say("scrolled " + did.ToString(CultureInfo.InvariantCulture) + " times and \"" + Clip(to, 60)
+                + "\" still is not there. It may be somewhere else, or named something else - read the window");
+            return null;
+        }
+
+        /* PRESS, MOVE, RELEASE - which could not be composed from what existed, because click sends the
+           press and the release together and nothing sent one without the other.
+         *
+         * Interpolated rather than jumped: an application that reads the drag decides what is happening from
+         * the moves in between, and a press followed by a release somewhere else is not a drag to a list
+         * that wants to see the row travel. Twelve steps is enough for that and short enough not to be a
+         * performance. */
+        static string Drag(int x1, int y1, int x2, int y2)
+        {
+            Emit(At(x1, y1, "Mouse Movement"));
+            Thread.Sleep(40);
+            Emit(At(x1, y1, "Left Click Down"));
+            Thread.Sleep(80);
+            const int Steps = 12;
+            for (int i = 1; i <= Steps; i++)
+            {
+                int ix = x1 + (int)Math.Round((x2 - x1) * (double)i / Steps);
+                int iy = y1 + (int)Math.Round((y2 - y1) * (double)i / Steps);
+                Emit(At(ix, iy, "Mouse Movement"));
+                Thread.Sleep(16);
+            }
+            Thread.Sleep(80);
+            Emit(At(x2, y2, "Left Click Release"));
+            return null;
         }
 
         /* http and https ONLY, and that is the whole security story of this action: it hands a URL to
@@ -2756,6 +3278,18 @@ namespace MouseFlow
                     return grey;
                 }
             }
+        }
+
+        /* Whether two screen fingerprints differ enough to call it movement. ONE definition, because the
+           courier asks it about an action and scroll_to asks it about a wheel burst, and a threshold that
+           existed twice would answer those two questions differently the first time somebody tuned one. */
+        public static bool GridMoved(byte[] a, byte[] b)
+        {
+            if (a == null || b == null) return true;
+            if (a.Length != b.Length) return true;
+            long sum = 0;
+            for (int i = 0; i < a.Length; i++) sum += Math.Abs((int)a[i] - (int)b[i]);
+            return (double)sum / a.Length > 3;
         }
 
         public static string Pulse()
@@ -4554,13 +5088,10 @@ namespace MouseFlow
             catch { return false; }   // no answer is not an answer; the next step will find out
         }
 
-        static bool Moved(byte[] a, byte[] b)
-        {
-            if (a.Length != b.Length) return true;
-            long sum = 0;
-            for (int i = 0; i < a.Length; i++) sum += Math.Abs((int)a[i] - (int)b[i]);
-            return (double)sum / a.Length > 3;
-        }
+        /* Moved to Agent.GridMoved in 0.11.0, because scroll_to needs the same question answered - "has
+           this stopped changing" - and a second copy of a threshold is a second copy that drifts. Kept as a
+           forwarder rather than replaced at the call sites: the name reads better here. */
+        static bool Moved(byte[] a, byte[] b) { return Agent.GridMoved(a, b); }
 
         /* ------------------------------------------------------------------ doing it */
 
