@@ -367,7 +367,7 @@ than saying plainly that it is not ours. Signing out afterwards is the client's 
 POST   /api/mcp                    JSON-RPC 2.0: initialize, ping, tools/list, tools/call
 GET    /api/mcp                    a short document about the server — no credential needed
 GET    /api/mcp?pending=1          "is anything waiting for a machine?"  (any credential)
-POST   /api/mcp?worker=claim       a machine takes the next job          (long-polls, ≤25 s)
+POST   /api/mcp?worker=claim       a machine takes the next job          (answers at once; ≤ 6 s if a wait is asked for)
 POST   /api/mcp?worker=report      …and says how it went
 GET    /api/mcp?worker=state&id=   …and asks whether it was cancelled meanwhile
 POST   /api/mcp?worker=step        a machine carries out one turn of a goal   (holds while the model decides)

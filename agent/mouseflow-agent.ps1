@@ -3455,15 +3455,37 @@ namespace MouseFlow
 
     /* The one outward-facing loop: ask for work, do it, say how it went.
 
-       Long-polling rather than a fast poll - the endpoint holds the request open for up to half a minute
-       with nothing to say - so an idle machine costs one request a minute rather than twenty, and an idle
-       wait costs no CPU at either end. Backs off to a minute on failure, because an agent that hammers a
-       deployment which is down makes the outage worse.
+       Long-polling rather than a fast poll - the endpoint holds the request open with nothing to say - so
+       an idle machine costs a handful of requests a minute rather than twenty, and an idle wait costs no CPU
+       at either end. Backs off to a minute on failure, because an agent that hammers a deployment which is
+       down makes the outage worse.
+
+       IT WAS A LONG POLL AND IT IS NOT ANY MORE. Asking the endpoint to hold the connection 25 seconds is
+       asking for longer than a serverless function is allowed to live, so every idle poll was cut in flight -
+       and this loop called each one a failure to reach the account.
+
+       WHY IT IS NOT A LONG POLL ANY MORE, with the arithmetic, because the obvious fix is the wrong one.
+       A held request is billed for its whole length, so what matters is function time over wall time:
+
+         wait 25, cut at ~10, then 2s of backoff   10s per 12s   83%   50 function-seconds a minute
+         wait 6, ask again at once                  6s per 6s   100%   60   - worse, and this was the plan
+         no wait at all, 3s between asks          0.4s per 3.4s  12%    7   - what this does
+
+       Shortening the wait alone makes an idle machine MORE expensive, because the only rest in the old loop
+       came from the failure path's sleep. A claim with no wait answers in about four tenths of a second, and
+       the sleep between asks is the part that costs nothing at either end. The price is latency: a job
+       queued while this machine is asleep waits up to three seconds instead of being picked up mid-poll.
+       Once per run, against a seventh of the compute.
 
        One job at a time, and no queue of its own. There is one mouse. */
     public static class Courier
     {
-        const int ClaimWaitSeconds = 25;
+        /* Nothing held open: the endpoint answers whether it has work and this end sleeps instead. See the
+           arithmetic above for why a shorter hold was the wrong fix. */
+        const int ClaimWaitSeconds = 0;
+        /* Between asks while there is nothing to do. The only latency this adds is to a job queued during
+           the gap, and it is what makes an idle machine nearly free. */
+        const int IdleSleepSeconds = 3;
         static int _backoff = 2;
 
         public static void Begin()
@@ -3513,10 +3535,30 @@ namespace MouseFlow
                     continue;
                 }
 
+                /* A LONG POLL THAT WAS CUT IS NOT A REFUSAL, and telling them apart is the whole of this
+                   branch. `Post` returns the body or null, and null with a status of 200 means the headers
+                   arrived and the body did not - the answer was on its way when whatever serves it stopped.
+                   That is a hosting limit, not an account that cannot be reached, and it used to print
+                   "could not ask for work (HTTP 200)" - a sentence that sent people to reinstall the agent.
+
+                   It also must not escalate: backing off to a minute over this makes an idle machine slower
+                   to pick up work for a reason that has nothing to do with the account, and at the top of the
+                   backoff it filed a crash report about it. */
+                if (status == 200 && answer == null)
+                {
+                    Console.WriteLine("[mouseflow] the account's answer was cut off mid-reply - asking again");
+                    Thread.Sleep(1000);
+                    continue;
+                }
+
                 if (answer == null || status != 200)
                 {
-                    Console.WriteLine("[mouseflow] could not ask for work (HTTP " + status.ToString(CultureInfo.InvariantCulture)
-                        + ") - waiting " + _backoff.ToString(CultureInfo.InvariantCulture) + "s");
+                    /* Nothing completed at all (status 0) reads differently from an answer that says no. */
+                    Console.WriteLine(status == 0
+                        ? "[mouseflow] no answer from the account - waiting " + _backoff.ToString(CultureInfo.InvariantCulture) + "s"
+                        : "[mouseflow] the account refused to hand out work (HTTP "
+                          + status.ToString(CultureInfo.InvariantCulture) + ") - waiting "
+                          + _backoff.ToString(CultureInfo.InvariantCulture) + "s");
                     /* Only at the top of the backoff: by then this PC has been unable to reach its account
                        for minutes. If the cause is the network rather than the account, this will not get
                        out either, which is honest. */
@@ -3533,7 +3575,12 @@ namespace MouseFlow
                 _backoff = 2;
                 object job = Json.Child(Json.Parse(answer), "job");
                 string id = Json.Text(job, "id");
-                if (string.IsNullOrEmpty(id)) continue;   // nothing to do; the long poll simply timed out
+                if (string.IsNullOrEmpty(id))
+                {
+                    // Nothing to do. The sleep is the whole saving - see the arithmetic at the top.
+                    Thread.Sleep(IdleSleepSeconds * 1000);
+                    continue;
+                }
 
                 /* A goal is not carried, it is driven: the deployment decides one action at a time and
                    this end does them. It also closes the job itself, at the step that finishes - so there

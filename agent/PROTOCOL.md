@@ -114,8 +114,16 @@ switched on). Absent on any agent that cannot do it, and absent means *cannot*, 
 
 The reason it exists is a direction. The agent listens on loopback and nothing on the internet can reach it —
 deliberately, and that does not change. So an instruction from somewhere else has to be **asked for**: the
-agent long-polls the account for a job, does it, and reports. There is no inbound path to the machine at any
+agent asks the account for a job, does it, and reports. There is no inbound path to the machine at any
 point, and an agent that is not taking work makes no outbound call at all — not a poll, not a heartbeat.
+
+It **asks and sleeps** rather than holding the connection open, and that is a hosting fact rather than a
+preference: a held request is billed for its whole length, and a serverless function is not allowed to live
+as long as a useful hold. Holding 25 seconds against a ten-second ceiling meant every idle poll was cut in
+flight - about 50 function-seconds a wall minute, and a log line calling each cut a failure to reach the
+account. A claim with no wait answers in about four tenths of a second; with three seconds between asks that
+is nearer 7. The endpoint still honours a requested wait, capped at 6 seconds, so an agent built before this
+gets a clean answer instead of a cut one.
 
 Three rules that are part of the contract rather than of one implementation:
 

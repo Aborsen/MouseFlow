@@ -124,8 +124,10 @@ per-user profile: another standard user on the same PC cannot read it. That is t
 on). The app shows **Let Claude drive this computer** only when `linked` is present — absent means *this
 build cannot*, not *off* — so an older agent hides the button rather than offering one that 404s.
 
-Once taking is on, the agent long-polls `POST /api/mcp?worker=claim` for a job, does it, and reports to
-`?worker=report`. **There is no inbound path to the PC at any point**, and an agent that is not taking work
+Once taking is on, the agent asks `POST /api/mcp?worker=claim` for a job every three seconds, does it, and
+reports to `?worker=report`. It does not hold the connection open — see the note in
+[10 — Agent protocol](10-agent-protocol.md) for why a hold cost seven times as much and reported every idle
+poll as a failure. **There is no inbound path to the PC at any point**, and an agent that is not taking work
 makes no outbound call at all — not a poll, not a heartbeat. A refused token (401 or 403) switches taking
 off rather than retrying for ever.
 

@@ -79,7 +79,26 @@ const CALL_WAIT_MS = 25_000;
 const CALL_POLL_MS = 1_500;
 /* And how long a worker's claim request may hold open with nothing to do. One request every half minute
  * beats one every three seconds, and an idle loop is not billed as CPU. */
-const CLAIM_WAIT_MAX_MS = 25_000;
+/* HOW LONG THIS WILL HOLD A CLAIM OPEN, and it is a ceiling set by the function rather than by taste.
+ *
+ * It was 25 seconds, and both couriers asked for exactly that. A serverless function here has no declared
+ * maxDuration - not in vercel.json, not in an export - so it gets the plan default, which is ten seconds on
+ * Hobby and fifteen on Pro. Every idle poll was therefore GUARANTEED to be killed in flight, and the agent
+ * logged the two ways that shows up, over and over: `HTTP 0` when the connection died before the headers,
+ * and `HTTP 200` when it died after them with the body half sent - a reply that says `{ ok: true, job: null }`
+ * read as a failure to reach the account.
+ *
+ * Six leaves room for the work either side of the wait: the stale-claim sweep, the claim attempt itself and
+ * the flow read all happen inside the same invocation, and the whole of it has to finish under ten.
+ *
+ * CAPPED HERE, and that is the point of putting it here rather than only in the agents. An agent is a
+ * compiled binary somebody has to reinstall - the note by `claimerIsWorker` makes the same argument - so a
+ * number changed only there arrives when every machine has been rebuilt. This clamps whatever is asked for,
+ * so an agent already installed and asking for 25 gets a clean answer at 6 on the next deploy.
+ *
+ * The other way out is declaring a maxDuration above 25, which is a Pro feature and would leave every Hobby
+ * deployment of this repository broken in the same way. This works on both. */
+const CLAIM_WAIT_MAX_MS = 6_000;
 const CLAIM_POLL_MS = 1_000;
 /* A job a worker took and never reported. Not returned to the pool - a run that may be half-done must not
  * be repeated blind - so it is failed with a reason. */

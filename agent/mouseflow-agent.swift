@@ -2916,12 +2916,26 @@ enum Account {
  * One job at a time, and no queue of its own. There is one mouse.
  */
 enum Courier {
-    private static let claimWaitSeconds = 25
+    /* Nothing held open: the endpoint answers whether it has work and this end sleeps instead.
+     *
+     * A held request is billed for its whole length, so what counts is function time over wall time. Holding
+     * 25 seconds against a ten-second function ceiling meant every idle poll was cut in flight - about 50
+     * function-seconds a wall minute, and a log line calling each cut a failure to reach the account.
+     * Shortening the hold to 6 would have made it 60, because the only rest in that loop came from the
+     * failure path's sleep. A claim with no wait answers in about four tenths of a second; with three
+     * seconds between asks that is nearer 7. The cost is up to three seconds before a queued job is picked
+     * up, once per run. */
+    private static let claimWaitSeconds = 0
+    private static let idleSleepSeconds: UInt32 = 3
     private static var backoff: UInt32 = 2
 
     enum Claimed {
         case job(Job)
         case idle
+        /* The answer started and stopped: headers, then nothing. A hosting limit cutting a long poll, not an
+         * account that cannot be reached - and worth its own case, because the two want opposite responses.
+         * A refusal should back off; this should simply ask again. */
+        case cut
         case failed(String)
     }
 
@@ -2960,8 +2974,15 @@ enum Courier {
                 if backoff >= 60 { Crash.say("cannot ask the account for work: \(why)", at: "courier.claim") }
                 sleep(backoff)
                 backoff = min(60, backoff * 2)
+            case .cut:
+                /* Asked again, promptly, and NOT backed off: an idle machine should not become slower to pick
+                 * up work because the thing serving the poll has a time limit. Nor is it a crash report. */
+                log("the account's answer was cut off mid-reply - asking again")
+                sleep(1)
             case .idle:
                 backoff = 2
+                // Nothing to do. The sleep is the whole saving - see the note on claimWaitSeconds.
+                sleep(idleSleepSeconds)
             case .job(let job):
                 backoff = 2
                 /* A goal is not carried, it is driven: the deployment decides one action at a time and this
@@ -3028,8 +3049,12 @@ enum Courier {
             log("the account refused this Mac's token - taking work is now off. Pair again from the app.")
             return .idle
         }
-        guard status == 200,
-              let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        /* Parsed ONCE, and a 200 whose body will not parse is an answer that started and stopped - the reply
+         * was on its way. It used to come back as `.failed("HTTP 200")`, which reads as the account refusing
+         * to answer and sent people to reinstall the agent. */
+        let parsed = try? JSONSerialization.jsonObject(with: data)
+        if status == 200 && parsed == nil { return .cut }
+        guard status == 200, let raw = parsed as? [String: Any] else {
             return .failed("HTTP \(status)")
         }
         guard let job = raw["job"] as? [String: Any], let id = job["id"] as? String else { return .idle }
