@@ -46,6 +46,14 @@ Two things that have gone wrong before and will again:
   Vercel's `NOT_FOUND` while the site root served fine. That reads like a routing problem and is actually a
   missing build step. **Push a commit** — the Git integration builds the same commit correctly.
 
+- **`SENTRY_AUTH_TOKEN` is deliberately not in Production**, and putting it back costs four minutes a
+  deploy. With it, three builds in a row took 3m, 3m and 5m; without it, the next one took **23s** — same
+  commit, nothing else changed. Build CPU Minutes are 87% of this project's bill, so that one variable is
+  worth about eight times everything else on it. `VITE_SENTRY_DSN` stays, so the browser still reports
+  errors; what is lost is readable stack traces. The cost is not the upload (0.368s in the log) and not the
+  maps (no measurable cost, even with the heap held to 640MB) — it is the Vite plugin's own pass over the
+  output. See the long note in `web/vite.config.ts` before changing this.
+
 Adding or rotating an environment variable also needs a new build: a function reads `process.env` from its own
 deployment's captured environment, so a variable added afterwards does not reach the deployment already
 serving. `GET /api/claude` reports `configured: false` until then.

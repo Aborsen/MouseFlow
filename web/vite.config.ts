@@ -22,6 +22,21 @@ const mockPlugin = (): Plugin => ({
  * is readable stack traces. A build that FAILED for want of a token would make every contributor without
  * one unable to build the app at all.
  *
+ * IT IS DELIBERATELY ABSENT FROM PRODUCTION, and if you are here to put it back, read this first. With the
+ * token set, a deployment built in three to five minutes. Without it, twenty-three seconds. Measured on the
+ * same commit, and Build CPU Minutes are 87% of what this project costs - so the token is worth roughly
+ * eight times the whole rest of the bill.
+ *
+ * The cost is NOT the upload and NOT the maps. The upload took 0.368s in the build log; generating the maps
+ * costs nothing measurable (12.1s against 12.7s locally over four runs, and still 13s with the heap held to
+ * 640MB). Nor was it a cold dependency cache, which the log says was restored, nor the public directory,
+ * which is 504KB in eight files. What is left is sentryVitePlugin's own work over the output during the
+ * bundle phase - it reported its step 4m06s after vite started and 29s before vite finished.
+ *
+ * So: readable stack traces are available, at four minutes a deploy. If they are wanted back, the thing to
+ * try first is narrowing what the plugin looks at (`sourcemaps.assets` pointed at dist/assets/*.js rather
+ * than the default sweep) and timing one deployment the same way - an empty commit is enough.
+ *
  * SENTRY_ORG and SENTRY_PROJECT come from the same place, for the same reason they are not constants: they
  * name one organisation's project, and this file should not.
  */
