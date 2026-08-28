@@ -1361,7 +1361,15 @@ group('синтетический ввод несёт ровно те модиф
 
   /* 2. Аккорд отпускает модификатор КЛАВИШЕЙ - чистых флагов мало, состояние залипает глобально. */
   check('аккорд идёт шагами из одного правила',
-    /for step in chordSteps\(flags, key: code\)/.test(swift));
+    /let plan = chordSteps\(flags, key: code\)/.test(swift));
+  /* Аккорд уходит целиком или не уходит вовсе: send\(\) молча роняет nil, и уроненное ОТПУСКАНИЕ - это
+   * Command, оставшийся зажатым для всей машины, о котором отчитались «ок». */
+  check('и события создаются все до того, как отправлено хоть одно',
+    /for step in plan \{[\s\S]{0,400}events\.append\(\(event, step\.flags\)\)[\s\S]{0,120}for \(event, stepFlags\) in events \{ send/.test(swift));
+  /* Модификатор, залипший НЕ от нас, не снимается chordSteps и при этом добавляется к тому, о чём просили:
+   * `key=w` под чужим Command закрывает окно, и key\(\) отвечала на это «сделано». */
+  check('и чужое зажатое снимается ДО того, как строится аккорд',
+    /releaseModifiers\(\)\s*\n\s*\n?\s*\/\* ВСЕ СОБЫТИЯ СОЗДАЮТСЯ/.test(swift));
   check('и правило это - отдельная чистая функция, чтобы её можно было выполнить',
     /^func chordSteps\(_ flags: CGEventFlags, key: CGKeyCode\)/m.test(swift));
 
@@ -1389,6 +1397,34 @@ group('синтетический ввод несёт ровно те модиф
    * и PressKey шлёт его отпускание сам. Проверяется, потому что «у них этого нет» - тоже утверждение. */
   check('на Windows отпускание модификатора идёт тем же вызовом, что и нажатие',
     /KEYEVENTF_KEYUP/.test(ps) && /static string PressKey\(/.test(ps));
+  /* Половина этой аварии на Windows невозможна: у клавиатурного SendInput нет поля флагов вовсе. А ВТОРОЙ
+   * половины там не было совсем - ничего не снимало модификатор, залипший чужим приложением или зависшей
+   * клавишей, - и последствие то же самое, включая то, что про обещание: рекордер строит `Ctrl+` по
+   * GetAsyncKeyState, и при залипшем Ctrl буква человека НАЗЫВАЕТСЯ. */
+  check('и у Windows теперь есть то же отпускание чужого',
+    /public static void ReleaseModifiers\(\)/.test(ps)
+      && /GetAsyncKeyState\(vk\) & 0x8000\) != 0\) SendVk\(\(ushort\)vk, true\)/.test(ps));
+  check('и обе стороны каждой клавиши, потому что общий код их не различает',
+    /0xA0, 0xA1/.test(ps) && /0xA2, 0xA3/.test(ps) && /0xA4, 0xA5/.test(ps));
+  check('и оба агента чистят состояние в одних и тех же трёх местах',
+    /Input\.releaseModifiers\(\)/.test(swift.slice(swift.indexOf('func start(moveMs: Int)'), swift.indexOf('func start(moveMs: Int)') + 1600))
+      && /ReleaseModifiers\(\);/.test(ps.slice(ps.indexOf('public static string RecordStart'), ps.indexOf('public static string RecordStart') + 800))
+      && /ReleaseModifiers\(\);/.test(ps.slice(ps.indexOf('static string TypeText'), ps.indexOf('static string TypeText') + 900)));
+  /* Между нажатием и отпусканием стоит Thread.Sleep(25): брошенное в это окно прерывание оставило бы
+   * модификатор зажатым для всей машины. */
+  check('и аккорд на Windows отпускается через finally',
+    /try\s*\n\s*\{\s*\n\s*if \(win\) SendVk\(0x5B, false\)[\s\S]{0,400}finally\s*\n\s*\{\s*\n\s*if \(alt\) SendVk\(0x12, true\)/.test(ps));
+
+  /* ПОВТОР ЧИСТИТ ЗА СОБОЙ С ОБЕИХ СТОРОН, и вторая половина - та, которую легче всего написать мёртвой.
+   *
+   * Залипший модификатор превращает первый клик повтора в Cmd-клик, а «Key Enter» - в Cmd+Enter, и повтор
+   * при этом отчитается о безупречном прогоне: он делал ровно то, что записано, а система прочла другое. */
+  check('повтор начинается с отпущенных модификаторов',
+    /func start\(body: String\) -> String\? \{[\s\S]{0,700}Input\.releaseModifiers\(\)/.test(swift));
+  /* И ВЫШЕ проверки на зажатые кнопки мыши: повтор, кончившийся аккордом, кнопок не держит, так что всё,
+   * что стоит ниже guard, в этом случае мёртвый код - в том самом случае, ради которого пишется. */
+  check('и убирает их за собой ВЫШЕ проверки на зажатые кнопки',
+    /private func releaseEverything\(\) \{[\s\S]{0,900}Input\.releaseModifiers\(\)[\s\S]{0,200}guard !holding\.isEmpty else \{ return \}/.test(swift));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

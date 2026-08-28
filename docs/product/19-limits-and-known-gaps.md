@@ -118,6 +118,23 @@ These are not bugs and no amount of work inside the current design removes them.
   named when it arrives under Command or Control, so with Command latched every keystroke a person made
   would have arrived as a chord and **the letter would have been named**. The rule is held by an executable
   test that runs the chord order without posting anything.
+- **A modifier held by anything else still changes what an action does, and `releaseModifiers` is a blunt
+  answer to it.** From 0.20.0 both agents release whatever is held before a chord, before typing, at
+  recording start, and at both ends of a replay — because a modifier latched by another application, a stuck
+  physical key, or an agent that died mid-chord is *added* to whatever was asked for: `key=w` becomes close
+  window, `key=q` quits, `key=delete` in Finder means move to Trash, and `key=r ctrl=1` under a latched
+  Shift becomes the hard-reload `refresh` uses. All of those returned "done". The cost of the cure is that
+  it cannot tell a stale latch from a finger on a key, so a person physically holding Shift while a run
+  types loses it, and there is no field to opt out. During a run that is the right trade — the run must do
+  what it was asked, not what somebody's finger made of it — but it is a real behaviour, not a detail.
+- **Modified pointer gestures cannot be performed OR recorded, on either platform.** Shift-click to extend a
+  selection, Command-click to open a link in a background tab, Option-drag to copy, Command+scroll to zoom:
+  `click` reads only `button`, `double` and `name`; `drag` and `scroll` have no modifier field; and the bare
+  modifier keys are not in the key table, so the chord cannot be composed by hand either. Recording is the
+  half that surprises: a recording of a person doing any of them replays as the **unmodified** gesture and
+  reports a clean run — not because the replay strips the modifier, but because the recording never saw it.
+  The tap does not subscribe to `flagsChanged`, `Recorder.capture` takes no flags, and the transcript's
+  five-column format has no modifier column. Fixing the replay alone would change nothing.
 - **The "already open" list was in screen pixels while everything else was in the picture's.** Fixed in
   0.18.0. `/windows` reports rectangles in screen pixels and `openList` printed them as such, one paragraph
   below a screenshot the model clicks in — and on a 1680x1050 Mac the shot goes out 1280 wide, so the two

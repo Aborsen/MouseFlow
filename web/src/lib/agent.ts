@@ -304,7 +304,30 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.19.0 is the build where typing is typing again, and it is the most consequential fix in this list.
+/* 0.20.0 finishes what 0.19.0 started, on both platforms, and most of it came from auditing the fix rather
+ * than from the bug.
+ *
+ * 0.19.0 stopped the agent latching a modifier of its own. It did NOT handle a modifier latched by anything
+ * ELSE - another application, a stuck physical key, an agent that died mid-chord - and that one is not
+ * cosmetic: the system reads a chord from its own state, not from our intentions, so `key=w` becomes close
+ * window, `key=q` quits, `key=delete` in Finder means move to Trash, and `key=r ctrl=1` under a latched
+ * Shift becomes the hard reload. Every one of those answered "done". Both agents now release what is held
+ * before a chord, before typing, at recording start, and at BOTH ends of a replay.
+ *
+ * Three more from the same audit. A chord is now all-or-nothing: its events are all built before any is
+ * posted, because a dropped modifier RELEASE left Command down for the whole machine and was reported as
+ * success. Modifiers are released on both sides of the keyboard, since one flag covers two keys and letting
+ * go of the left one neither clears a held right Shift nor leaves the state honest. And Windows - which
+ * cannot have the per-event half of this at all, having no flags field on keyboard SendInput - never had
+ * the OTHER half either: it now has the same release, and its chord is wrapped in try/finally, because it
+ * sleeps 25ms between the press and the release and anything thrown into that window left the key down.
+ *
+ * That last one matters on Windows for the same reason it did on macOS, and it is about a promise: the
+ * recorder builds its `Ctrl+` prefix from GetAsyncKeyState, and a letter is only ever named under a command
+ * chord. With Ctrl latched, every keystroke a person made would have been read as a chord and the letter
+ * named - in a recording that gets exported and shared.
+ *
+ * The previous note, kept because the reason still holds. 0.19.0 is the build where typing is typing again, and it is the most consequential fix in this list.
  *
  * MEASURED on a real Mac, with a listen-only tap printing the modifier flags of events carrying the
  * agent's own mark. After ONE `press_key` with a modifier:
@@ -577,7 +600,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.19.0';
+export const AGENT_WANTS = '0.20.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

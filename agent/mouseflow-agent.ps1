@@ -448,7 +448,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.19.0";
+        public const string Version = "0.20.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1424,6 +1424,13 @@ namespace MouseFlow
          * anybody can want - so the harmless value is the one that means "unspecified". */
         public static string RecordStart(int moveMs)
         {
+            /* НИ ОДИН МОДИФИКАТОР НЕ ЗАЖАТ, КОГДА ЗАПИСЬ НАЧИНАЕТСЯ - и это про обещание, а не про удобство.
+               Буква называется только под командным аккордом (см. commanded в хуке, где он строится по
+               GetAsyncKeyState). При залипшем Ctrl каждое нажатие человека читается как аккорд, и буква
+               НАЗЫВАЕТСЯ - в записи, которую экспортируют и пересылают. Залипнуть он мог от чужого
+               приложения, от зависшей клавиши или от прошлого запуска агента, умершего посреди аккорда. */
+            ReleaseModifiers();
+
             lock (Gate)
             {
                 if (_heldText != null || _ending)
@@ -3473,6 +3480,12 @@ namespace MouseFlow
             if (text == null || text.Length == 0) return "nothing to type";
             if (text.Length > 8000) return "that is more text than this will type in one go";
 
+            /* Набор обязан быть набором. Юникодный ввод ниже модификаторов и не читает - в отличие от macOS,
+               где залипший Command превращал каждую букву в аккорд, - но зажатый Ctrl всё равно меняет то,
+               как приложение поймёт то, что придёт следом, и это единственное место, где его дёшево снять
+               перед длинным вводом. */
+            ReleaseModifiers();
+
             /* Sent as Unicode rather than as virtual keys: a keycode depends on the keyboard layout,
                and text typed through them comes out wrong on any layout but the author's. */
             for (int i = 0; i < text.Length; i++)
@@ -3544,26 +3557,74 @@ namespace MouseFlow
          *
          * Worth having even though capture_window is the better route to a screenshot: Win+D, Win+E, Win+L
          * and Win+arrow are how people actually drive the shell, and none of them was reachable. */
+        /* ОТПУСТИТЬ ВСЁ, ЧТО ЗАЖАТО НЕ НАМИ, и это половина, которой на этой стороне не было.
+         *
+         * Половина аварии, найденной на macOS, здесь невозможна по устройству: у клавиатурного SendInput нет
+         * поля флагов вовсе - модификатор на Windows и ЕСТЬ глобальное состояние клавиш, - так что событию
+         * нечего наследовать и нечего штамповать. А PressKey и так жмёт и отпускает каждый модификатор
+         * настоящей виртуальной клавишей.
+         *
+         * Но ВТОРОЙ половины не было совсем: ничего не снимало модификатор, залипший ЧУЖИМ приложением,
+         * зависшей физической клавишей или прошлым запуском агента, умершим посреди аккорда. А последствия
+         * те же самые, и одно из них - про обещание, а не про точность: рекордер строит префикс `Ctrl+`
+         * по GetAsyncKeyState, и буква называется только под командным аккордом. При залипшем Ctrl КАЖДОЕ
+         * нажатие человека читается как аккорд, и буква НАЗЫВАЕТСЯ - ровно то, что произошло бы на маке.
+         *
+         * Обе стороны у каждого модификатора: 0xA0-0xA5 - это левые и правые Shift, Ctrl и Alt, и общий
+         * 0x10/0x11/0x12 их не различает. Отпускается то, что действительно зажато, и ничего больше. */
+        static readonly int[] ModifierKeys = new int[] {
+            0x10, 0xA0, 0xA1,     // Shift, левый, правый
+            0x11, 0xA2, 0xA3,     // Ctrl,  левый, правый
+            0x12, 0xA4, 0xA5,     // Alt,   левый, правый
+            0x5B, 0x5C,           // Win,   левый, правый
+        };
+
+        public static void ReleaseModifiers()
+        {
+            foreach (int vk in ModifierKeys)
+            {
+                try
+                {
+                    if ((Native.GetAsyncKeyState(vk) & 0x8000) != 0) SendVk((ushort)vk, true);
+                }
+                catch { /* уборка не должна ронять то, ради чего её позвали */ }
+            }
+        }
+
         static string PressKey(string key, bool ctrl, bool shift, bool alt, bool win)
         {
             ushort vk = VkFor(key);
             if (vk == 0) return "unknown key: " + key;
             ModifiersFor(key, ref ctrl, ref shift, ref alt);
 
+            /* Чужое - до того, как строить своё: модификатор, залипший не нами, не снимается ниже и при этом
+               ДОБАВЛЯЕТСЯ к тому, о чём просили. Ctrl+R под залипшим Shift - это Ctrl+Shift+R, другая
+               команда, и PressKey отчиталась бы об успехе. */
+            ReleaseModifiers();
+
             /* Win outermost, released last, and that order is not arbitrary: the shell watches for the Win
              * key going down and up with nothing between it, and a release order that lets go of Win first
              * can leave the Start menu open on top of whatever the chord was meant to do. */
-            if (win) SendVk(0x5B, false);
-            if (ctrl) SendVk(0x11, false);
-            if (shift) SendVk(0x10, false);
-            if (alt) SendVk(0x12, false);
-            SendVk(vk, false);
-            Thread.Sleep(25);
-            SendVk(vk, true);
-            if (alt) SendVk(0x12, true);
-            if (shift) SendVk(0x10, true);
-            if (ctrl) SendVk(0x11, true);
-            if (win) SendVk(0x5B, true);
+            /* try/finally, потому что между нажатием и отпусканием стоит Thread.Sleep(25): прерывание,
+               брошенное в это окно, оставило бы модификатор зажатым - на Windows это ГЛОБАЛЬНОЕ состояние
+               клавиши, а не флаг на событии, так что зажатым он остался бы для всей машины. */
+            try
+            {
+                if (win) SendVk(0x5B, false);
+                if (ctrl) SendVk(0x11, false);
+                if (shift) SendVk(0x10, false);
+                if (alt) SendVk(0x12, false);
+                SendVk(vk, false);
+                Thread.Sleep(25);
+                SendVk(vk, true);
+            }
+            finally
+            {
+                if (alt) SendVk(0x12, true);
+                if (shift) SendVk(0x10, true);
+                if (ctrl) SendVk(0x11, true);
+                if (win) SendVk(0x5B, true);
+            }
             return null;
         }
 

@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.19.0"
+let VERSION = "0.20.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -327,8 +327,12 @@ let NAMED_KEYS: [Int64: String] = [
  * Порядок фиксирован (Command, Shift, Option, Control) и снимается в обратном, по одному флагу за раз -
  * так это выглядит с настоящей клавиатуры, и приложение, которое смотрит на flagsChanged, видит связную
  * последовательность. */
-let MODIFIER_KEYS: [(flag: CGEventFlags, code: CGKeyCode)] = [
-    (.maskCommand, 55), (.maskShift, 56), (.maskAlternate, 58), (.maskControl, 59),
+/* ФЛАГ ОДИН, А КЛАВИШ ДВЕ. У Command, Shift, Option и Control есть левая и правая, и флаг у них общий -
+ * различить по состоянию нельзя. Отпуская только левую, мы отпускаем клавишу, которую человек не нажимал,
+ * и НЕ отпускаем ту, которую он держит: у правого Shift флаг остаётся, а система получает лишний up.
+ * Нажимаем левую (синтетическому аккорду сторона безразлична), отпускаем обе. */
+let MODIFIER_KEYS: [(flag: CGEventFlags, left: CGKeyCode, right: CGKeyCode)] = [
+    (.maskCommand, 55, 54), (.maskShift, 56, 60), (.maskAlternate, 58, 61), (.maskControl, 59, 62),
 ]
 
 /// Что послать за один аккорд: нажать модификаторы, нажать клавишу, отпустить клавишу, отпустить
@@ -338,14 +342,16 @@ func chordSteps(_ flags: CGEventFlags, key: CGKeyCode)
     -> [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] {
     var out: [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] = []
     for one in MODIFIER_KEYS where flags.contains(one.flag) {
-        out.append((one.code, true, flags))
+        out.append((one.left, true, flags))
     }
     out.append((key, true, flags))
     out.append((key, false, flags))
-    var left = flags
+    var still = flags
     for one in MODIFIER_KEYS.reversed() where flags.contains(one.flag) {
-        left.remove(one.flag)
-        out.append((one.code, false, left))
+        still.remove(one.flag)
+        /* Правая тоже, и до левой: отпускаем то, что нажимали, последним, а флаг снимаем один раз. */
+        out.append((one.right, false, still))
+        out.append((one.left, false, still))
     }
     return out
 }
@@ -353,10 +359,11 @@ func chordSteps(_ flags: CGEventFlags, key: CGKeyCode)
 /// Отпускание того, что уже зажато, без нажатия чего-либо.
 func releaseSteps(_ held: CGEventFlags) -> [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] {
     var out: [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] = []
-    var left = held
+    var still = held
     for one in MODIFIER_KEYS.reversed() where held.contains(one.flag) {
-        left.remove(one.flag)
-        out.append((one.code, false, left))
+        still.remove(one.flag)
+        out.append((one.right, false, still))
+        out.append((one.left, false, still))
     }
     return out
 }
@@ -2885,22 +2892,35 @@ enum Input {
         if rawCtrl { flags.insert(.maskControl) }
         if ctrl || cmd { flags.insert(.maskCommand) }
 
-        guard let down = CGEvent(keyboardEventSource: source(), virtualKey: code, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source(), virtualKey: code, keyDown: false) else {
-            return "macOS refused to make that key event"
+        /* СНАЧАЛА ОТПУСТИТЬ ЧУЖОЕ, и это не осторожность, а условие правильности.
+         *
+         * chordSteps снимает только те модификаторы, о которых её попросили. Модификатор, залипший НЕ от нас
+         * - другим приложением, зависшей физической клавишей, прошлой сборкой этого агента, - не снимается и
+         * при этом ДОБАВЛЯЕТСЯ к тому, что просили: система читает аккорд из своего состояния, а не из наших
+         * намерений. `key=tab` под залипшим Command становится переключателем приложений, `key=w` закрывает
+         * окно, `key=delete` в Finder отправляет в корзину, а `key=r ctrl=1` под залипшим Shift становится
+         * Cmd+Shift+R. И key() возвращала nil - то есть «сделано» - в каждом из этих случаев.
+         *
+         * Ценой этого человек, ФИЗИЧЕСКИ держащий модификатор, его теряет. Во время прогона это верный
+         * размен: прогон обязан сделать то, о чём его попросили, а не то, что получилось из чужого пальца. */
+        releaseModifiers()
+
+        /* ВСЕ СОБЫТИЯ СОЗДАЮТСЯ ДО ТОГО, КАК ОТПРАВЛЕНО ХОТЬ ОДНО.
+         *
+         * send() молча роняет nil, а события модификаторов создавались прямо в цикле и не проверялись - в
+         * отличие от двух событий самой клавиши. Уроненное НАЖАТИЕ - это несработавший аккорд, и это видно.
+         * Уроненное ОТПУСКАНИЕ - это Command, оставшийся зажатым для всей машины, и key() отвечала на это
+         * «ок». Аккорд либо уходит целиком, либо не уходит вовсе и говорит об этом. */
+        let plan = chordSteps(flags, key: code)
+        var events: [(CGEvent, CGEventFlags)] = []
+        for step in plan {
+            guard let event = CGEvent(keyboardEventSource: source(), virtualKey: step.code,
+                                      keyDown: step.down) else {
+                return "macOS refused to make that key event"
+            }
+            events.append((event, step.flags))
         }
-        /* Нажать модификаторы, нажать клавишу, отпустить клавишу, отпустить модификаторы - и отпустить их
-         * КЛАВИШАМИ, снимая по одному флагу за раз, чтобы аккорд из двух модификаторов разбирался так же,
-         * как с настоящей клавиатуры. См. MODIFIER_KEYS: без последнего шага Command остаётся зажатым для
-         * всей машины. */
-        for step in chordSteps(flags, key: code) {
-            /* Событие клавиши уже создано выше (down/up), и переиспользовать его здесь нельзя: у аккорда
-             * с двумя модификаторами шагов больше двух, а CGEvent одноразов на отправку. Клавиша-цель
-             * узнаётся по коду. */
-            let event = step.code == code && step.down ? down : (step.code == code ? up
-                : CGEvent(keyboardEventSource: source(), virtualKey: step.code, keyDown: step.down))
-            send(event, flags: step.flags)
-        }
+        for (event, stepFlags) in events { send(event, flags: stepFlags) }
         return nil
     }
 }
@@ -3745,6 +3765,11 @@ final class Replayer {
         if let refusal = Input.refusal() { gate.unlock(); return refusal }
         gate.unlock()
 
+        /* Повтор начинается с чистого состояния - по той же причине, что и запись. Залипший модификатор
+         * превращает первый же клик повтора в Cmd-клик, а «Key Enter» - в Cmd+Enter, и повтор при этом
+         * отчитается о безупречном прогоне: он делал ровно то, что записано, а система прочла другое. */
+        Input.releaseModifiers()
+
         var startDelay = 0
         var flowRepeat = 1
         var steps: [ReplayStep] = []
@@ -3992,6 +4017,14 @@ final class Replayer {
     private func release(_ name: String) { gate.lock(); down.remove(name); gate.unlock() }
 
     private func releaseEverything() {
+        /* И МОДИФИКАТОРЫ ТОЖЕ - ВЫШЕ проверки на зажатые кнопки мыши, а не после неё.
+         *
+         * Повтор, последним действием которого был аккорд («Key Cmd+S» - обычный конец записи), кнопок мыши
+         * не держит: `holding` пуст, и всё, что стоит ниже guard, в этом случае мёртвый код - то есть ровно
+         * в том случае, ради которого это и пишется. Ошибка, которую легко сделать и невозможно заметить:
+         * повтор выглядел бы убирающим за собой и не убирал бы. */
+        Input.releaseModifiers()
+
         gate.lock()
         let holding = down
         down = []
