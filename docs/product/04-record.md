@@ -22,7 +22,31 @@ started or stopped, and what moved was the whole list underneath it.
 **Record stays enabled with no agent.** Pressing it navigates to Connections and says so. A disabled
 button is a dead end: it says no and not why.
 
-### What the footer warns about, and when
+### What a recording deliberately does not contain
+
+Three things, and each of them was a leak that had to be found in a real transcript rather than reasoned
+about beforehand.
+
+**Typed text.** The keystroke is recorded, never the character. See `Key Down` in `agent/PROTOCOL.md`.
+
+**A control name longer than 60 characters**, from agent 0.13.0. The accessibility name of a chat message IS
+the message, and no type distinguishes content from a label — in Outlook an `option` runs 275–376 characters
+and a `radio button` 174, the same types that carry three-character labels. Length does: over three
+applications' live trees the longest name on anything a person *presses* was 43 characters, and File Explorer
+had nothing over 60 at all. Above 60 the name is dropped and its LENGTH is written in its place, so a
+transcript still says `clicked a group holding 147 characters of text (not recorded)` — enough to place the
+step, nothing to leak. The rule is applied when reading too, because recordings made before 0.13.0 already
+contain the text.
+
+**The query string of a window title that is an address.** A page with no `<title>` is titled by its URL, and
+a sign-in redirect is exactly such a page: `auth.doubleword.ai/u/login?state=hKFo2SAw…` — a one-time sign-in
+token. `PageUrl` had always cut the query off the `url` field for that reason; the title walked around it.
+Only when the whole title parses as an address: a title that merely contains a question mark is a sentence.
+
+What is **not** redacted is written down in
+[19 — Limits and known gaps](19-limits-and-known-gaps.md): short content, and titles themselves.
+
+## What the footer warns about, and when
 
 In priority order:
 

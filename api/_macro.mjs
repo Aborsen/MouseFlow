@@ -60,6 +60,9 @@ export function parseMacro(text) {
           app: found.app,
           window: found.window,
           control: found.control,
+          /* HOW LONG A NAME WAS THAT WAS NOT RECORDED, from agent 0.13.0. Never present beside `control` -
+           * the agent writes one or the other - and absent on every recording made before it. */
+          nameLength: found.namelen,
           type: found.type,
           role: found.role,
           subrole: found.subrole,

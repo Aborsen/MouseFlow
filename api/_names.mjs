@@ -52,6 +52,47 @@ const isMemoryClause = (part) => MEMORY_WORD.test(part) || hasSize(part);
  * @param {unknown} said
  * @returns {string} очищенное имя, или исходное, если чистить нечего
  */
+/* Адрес в заголовке окна - без query string.
+ *
+ * ОТКУДА ЭТО. У страницы без <title> заголовком становится её адрес, и страница-редирект входа - ровно
+ * такая. В настоящей записи с живой машины:
+ *
+ *   auth.doubleword.ai/u/login?state=hKFo2SAwNTh5Q2dOX2cOWVBSZkxfVy15VkFla3FQdXhTbjdaeaFur3V…
+ *
+ * `state` здесь - одноразовый токен входа. Агент режет query у поля `url` (см. PageUrl и Bare) именно
+ * потому, что в query живут «сессионный токен, одноразовая ссылка входа и то, что человек набрал в поиске».
+ * Правило было верное, а заголовок обходил его целиком.
+ *
+ * АГЕНТ 0.13.0 РЕЖЕТ ЭТО ПРИ ЗАПИСИ. Здесь - то же правило для записей, сделанных до него, и для того же
+ * читателя: транскрипт, скилл, мастер.
+ *
+ * ТОЛЬКО КОГДА ЗАГОЛОВОК ЦЕЛИКОМ - АДРЕС. «What is a good name? - Google Search» содержит вопросительный
+ * знак и пробелы; это предложение, и резать предложения по пунктуации значило бы искалечить каждое обычное
+ * окно. Отсюда два условия: есть `?` и нет пробелов.
+ *
+ * @param {unknown} said
+ * @returns {string} заголовок без query, или исходный, если резать нечего
+ */
+export function plainTitle(said) {
+  const title = typeof said === 'string' ? said.trim() : '';
+  if (!title || !title.includes('?') || /\s/.test(title)) return title;
+
+  const hadScheme = /^https?:\/\//i.test(title);
+  let parsed;
+  try {
+    parsed = new URL(hadScheme ? title : 'https://' + title);
+  } catch {
+    return title;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return title;
+  /* Хост без точки - это не хост: «a?b» разбирается, и превращать его в адрес было бы хуже, чем оставить. */
+  if (!parsed.hostname.includes('.')) return title;
+
+  const path = parsed.pathname === '/' ? '' : parsed.pathname;
+  const origin = hadScheme ? parsed.origin : parsed.host;
+  return origin + path;
+}
+
 export function plainName(said) {
   const name = typeof said === 'string' ? said.trim() : '';
   if (!name || !SIZE.test(name)) return name;

@@ -423,6 +423,9 @@ namespace MouseFlow
         public string Window;
         public string Control;
         public string ControlType;
+        /* HOW LONG THE NAME WAS, when it was too long to be a label and therefore not recorded. Written
+         * instead of the name, never beside it - see RecordName. Zero means there was nothing to drop. */
+        public int NameLength;
         /* The page it landed on, when it landed on one. Origin and path - the cut happens in PageUrl(),
          * before the value ever reaches this object. Null on everything that is not a browser. */
         public string Url;
@@ -445,7 +448,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.12.0";
+        public const string Version = "0.13.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1021,11 +1024,49 @@ namespace MouseFlow
                 catch { break; }
             }
 
-            job.Target.Control = string.IsNullOrEmpty(name) ? null : Clip(name, 120);
-            job.Target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
+            RecordName(job.Target, name, type);
             /* The typing job too: a typing run is where a portable skill's inputs go, and a step saying
              * which page it went into is the difference between an instruction and a guess. */
             job.Target.Url = PageUrl(el);
+        }
+
+        /* A NAME LONG ENOUGH TO BE CONTENT IS NOT RECORDED, and the number is measured rather than picked.
+         *
+         * WHAT WENT WRONG. A click on a message in Teams was recorded as
+         * `clicked "Привет, та такие конторы обычно данные потом у себя сторят… Дима не захочет"` - somebody
+         * else's conversation, in a recording, on an account, in every export. The accessibility name of a
+         * chat message IS the message. Nothing was read wrongly; the control is genuinely called that.
+         *
+         * AND THE TYPE CANNOT TELL THEM APART. Measured over three applications' live trees: in Outlook an
+         * `option` runs 275-376 characters and a `radio button` 174; a `menu item` 130; in Teams a `group`
+         * reaches 523 and a `tree item` 123. Those are the same types that carry three-character labels.
+         *
+         * THE LENGTH CAN, and cleanly. The longest name on anything a person PRESSES was 43 characters
+         * (a combo box) and 41 (a button), across all three. File Explorer had nothing over 60 at all.
+         * Everything above 60 in the sample was content: a message, an email in a list, a chat summary.
+         *
+         * So over 60 characters the name is dropped and its LENGTH is written instead. What is left is
+         * enough for a reader - "clicked a 147-character piece of text" places the step - and there is
+         * nothing in the recording to leak, redact later, or think about before sharing it.
+         *
+         * WHAT THIS DOES NOT CATCH, said plainly rather than left to be discovered: a SHORT name that
+         * happens to be content. A spell-check menu named "Spelling, сторят" carries one typed word in
+         * sixteen characters, and no length rule can tell that from a label. See
+         * docs/product/19-limits-and-known-gaps.md. */
+        const int NameMax = 60;
+
+        static void RecordName(Ev target, string name, string type)
+        {
+            if (target == null) return;
+            target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
+            if (string.IsNullOrEmpty(name)) { target.Control = null; return; }
+            if (name.Length > NameMax)
+            {
+                target.Control = null;
+                target.NameLength = name.Length;
+                return;
+            }
+            target.Control = Clip(name, 120);
         }
 
         /* The title and the process, from the window manager rather than from an accessibility provider -
@@ -1106,8 +1147,7 @@ namespace MouseFlow
                 }
             }
 
-            job.Target.Control = string.IsNullOrEmpty(name) ? null : Clip(name, 120);
-            job.Target.ControlType = string.IsNullOrEmpty(type) ? null : Clip(type, 40);
+            RecordName(job.Target, name, type);
             job.Target.Url = PageUrl(el);
         }
 
@@ -1250,12 +1290,53 @@ namespace MouseFlow
             return text.Length <= max ? text : text.Substring(0, max - 1) + "\u2026";
         }
 
+        /* A WINDOW TITLE THAT IS A URL LOSES ITS QUERY STRING, for exactly the reason PageUrl does.
+         *
+         * A page with no <title> is titled by its address, and a sign-in redirect is precisely such a page.
+         * Seen in a real recording on this machine:
+         *
+         *   auth.doubleword.ai/u/login?state=hKFo2SAwNTh5Q2dOX2cOWVBSZkxfVy15VkFla3FQdXhTbjdaeaFur3V…
+         *
+         * That `state` is a one-time sign-in token, and it was going into the recording, onto the account,
+         * into every export and past every reader - while three feet away in this same file PageUrl cuts the
+         * query off the `url` field on the argument that a query string is where "a session token, a
+         * one-time sign-in link and whatever somebody typed into a search box" live. The rule was right and
+         * the title walked straight around it.
+         *
+         * Only when the whole title parses as an http or https URL. A title that merely CONTAINS a question
+         * mark is a sentence, and cutting sentences at punctuation would mangle every ordinary window. */
         static string TitleOf(IntPtr hwnd)
         {
             StringBuilder sb = new StringBuilder(300);
             Native.GetWindowText(hwnd, sb, sb.Capacity);
             string title = sb.ToString();
-            return string.IsNullOrEmpty(title) ? null : Clip(title, 160);
+            if (string.IsNullOrEmpty(title)) return null;
+            string bare = BareTitle(title);
+            return Clip(bare == null ? title : bare, 160);
+        }
+
+        /* Origin and path, or null when this is not a URL at all. Separate from Bare only because Bare takes
+           what a browser reported and this takes what a window manager reported - same cut, same reason. */
+        static string BareTitle(string title)
+        {
+            string said = title.Trim();
+            if (said.IndexOf('?') < 0) return null;          // nothing to cut; the common case, and cheap
+            if (said.IndexOf(' ') >= 0) return null;          // a sentence, not an address
+            string probe = said;
+            /* Chrome shows the address without a scheme, and Uri needs one to parse. Trying https first is a
+             * guess about the scheme and it does not matter: only the authority and the path are kept. */
+            if (probe.IndexOf("://", StringComparison.Ordinal) < 0) probe = "https://" + probe;
+            Uri parsed;
+            if (!Uri.TryCreate(probe, UriKind.Absolute, out parsed)) return null;
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps) return null;
+            if (string.IsNullOrEmpty(parsed.Host) || parsed.Host.IndexOf('.') < 0) return null;
+            string path = parsed.AbsolutePath == "/" ? "" : parsed.AbsolutePath;
+            /* The scheme is dropped again if it was not there to begin with: putting one in would change
+               what the transcript shows for every ordinary page. */
+            string origin = said.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                ? parsed.GetLeftPart(UriPartial.Authority)
+                : parsed.Host + (parsed.IsDefaultPort ? "" : ":" + parsed.Port.ToString(CultureInfo.InvariantCulture));
+            return origin + path;
         }
 
         /* The tray's "Stop and Save Recording". Capture stops NOW; the events are HELD, because the agent
@@ -1506,6 +1587,14 @@ namespace MouseFlow
             if (e.Process != null) { sb.Append("\tapp="); sb.Append(e.Process); }
             if (e.Window != null) { sb.Append("\twindow="); sb.Append(e.Window); }
             if (e.Control != null) { sb.Append("\tcontrol="); sb.Append(e.Control); }
+            /* Never both: a redacted name has no `control=`, so an older reader sees a step with a type and
+             * no name - which is what it would have shown for an unnamed control, and is safe. A newer one
+             * reads this and can say how much text was there. PROTOCOL.md: unknown keys are skipped. */
+            else if (e.NameLength > 0)
+            {
+                sb.Append("\tnamelen=");
+                sb.Append(e.NameLength.ToString(CultureInfo.InvariantCulture));
+            }
             if (e.ControlType != null) { sb.Append("\ttype="); sb.Append(e.ControlType); }
             /* Added after the four that were always here. PROTOCOL.md: unknown keys are skipped rather than
              * being an error, so an older reader loads this exactly as it did before. */

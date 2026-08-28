@@ -49,7 +49,7 @@
 
 /* Имя элемента без приписки приложения - см. api/_names.mjs. Определение одно: его же читает мастер,
  * скилл и всё, что смотрит на записанный контекст. */
-import { plainName } from './_names.mjs';
+import { plainName, plainTitle } from './_names.mjs';
 
 /* A pause longer than this is somebody away from the machine, not work. The part past it is dropped
  * from every number here and reported in `gaps`, exactly as api/insights.js does - the constant is
@@ -542,6 +542,47 @@ function pageLabel(url) {
  * than 0.6.0 resolved none of it. So every sentence below has a coordinates-only form and the transcript
  * says which one it is using.
  */
+/* A NAME LONGER THAN THIS IS NOT A LABEL, and the number is measured rather than chosen. Over three
+ * applications' live accessibility trees the longest name on anything a person PRESSES was 43 characters
+ * (a combo box) and 41 (a button); File Explorer had nothing over 60 at all; and everything above 60 in the
+ * sample was content - a chat message, an email in a list, a chat summary. */
+const NAME_MAX = 60;
+
+/** `a button`, `an option`. Said in one place because it is said in two, and "a element" reads as a typo. */
+const an = (word) => (/^[aeiou]/i.test(String(word)) ? 'an ' : 'a ') + word;
+
+/* WHAT KIND OF THING HELD THE TEXT, and this branch deliberately ignores CTX_VAGUE.
+ *
+ * That list exists so a NAMED control is not called `the "Send" pane` - the word adds nothing beside a name.
+ * Here there is no name and never will be, so the type is the whole description: `a group holding 147
+ * characters` places the step and `an element holding 147 characters` does not. Only the two that describe
+ * nothing at all are dropped. */
+const heldBy = (ctx) => {
+  const kind = ctx && ctx.type ? String(ctx.type).toLowerCase().trim() : '';
+  return !kind || kind === 'unknown' || kind === 'separator' ? 'element' : kind;
+};
+
+/* Имя, которое слишком длинное, чтобы быть подписью, - и то, что вместо него.
+ *
+ * ЧТО БЫЛО. Клик по сообщению в Teams записывался как `clicked "Привет, та такие конторы обычно данные потом
+ * у себя сторят… Дима не захочет"`. Ничего не прочитано неправильно: имя элемента-сообщения В ДЕРЕВЕ
+ * ДОСТУПНОСТИ И ЕСТЬ это сообщение. Тип отличить не помогает - в Outlook `option` бывает 275-376 символов, а
+ * `radio button` 174, и это те же типы, что несут трёхсимвольные подписи. Длина помогает.
+ *
+ * ЧТО ВМЕСТО. Длина, и она несёт ровно столько, сколько читателю нужно: «клик по 147 символам текста»
+ * помещает шаг в интерфейс, ничего не разглашая. Ноль означает «нечего было отбрасывать».
+ *
+ * АГЕНТ 0.13.0 ЭТОГО УЖЕ НЕ ПИШЕТ, а здесь то же правило применяется к записям, СДЕЛАННЫМ ДО НЕГО - в них
+ * текст лежит, и показывать его нельзя независимо от того, какой агент их сделал. Ровно то разделение,
+ * которое описано у plainName: агент чинит будущее, читатель - прошлое. */
+function nameOrLength(name, said) {
+  const written = typeof name === 'string' ? name.trim() : '';
+  const declared = Math.round(num(said));
+  if (!written) return { control: null, length: declared > 0 ? declared : 0 };
+  if (written.length > NAME_MAX) return { control: null, length: written.length };
+  return { control: written, length: 0 };
+}
+
 const CTX_MAX = 90;
 
 /* Shortened on a WORD, and marked as shortened.
@@ -614,10 +655,17 @@ function ctxOf(raw) {
    * расходом памяти внутри - «Вкладка "Home - Google Drive" использует 448 МБ памяти», - и обрезать это по
    * длине значило бы обрезать приписку, оставив её начало. Сперва имя, потом длина. Определение одно, в
    * api/_names.mjs; здесь оно применяется к тому, что ЧИТАЮТ. */
-  const window = shorten(plainName(src.window), CTX_MAX);
+  /* plainTitle ПОСЛЕ plainName: сначала снимается приписка приложения, потом query из адреса - иначе
+   * приписка «использует 448 МБ памяти» помешала бы узнать в заголовке адрес (в нём есть пробелы). */
+  const window = shorten(plainTitle(plainName(src.window)), CTX_MAX);
   /* plainShellName ПОСЛЕ plainName и ПОСЛЕ window, и оба порядка существенны: правило про счётчик окон
    * применимо только в оболочке, а «в оболочке» опознаётся по отсутствию заголовка окна. */
-  const control = shorten(plainShellName(plainName(src.control), app, window), CTX_MAX);
+  /* nameOrLength ПОСЛЕ plainName и ПЕРЕД shorten: приписка про память сначала снимается, иначе длина
+   * считается по строке с ней, а обрезка по длине после - иначе она бы прятала содержимое, а не отбрасывала
+   * его, и в записи бы всё равно осталось. */
+  const named = nameOrLength(plainShellName(plainName(src.control), app, window), src.nameLength);
+  const control = shorten(named.control, CTX_MAX);
+  const nameLength = named.length;
   const type = oneLine(src.type, 40);
   /* The four the agent has written since 0.8.0 and nothing read until now. `role` and `subrole` are the
    * UNLOCALISED kind of the thing that was actually hit, which is what lets an application that names none
@@ -636,6 +684,8 @@ function ctxOf(raw) {
     app: app || null,
     window: window || null,
     control: control || null,
+    /* Ноль, а не null: это счёт, и «нечего было отбрасывать» - это ноль. */
+    nameLength: nameLength || 0,
     type: type || null,
     role: role || null,
     subrole: subrole || null,
@@ -741,6 +791,11 @@ function inContainer(ctx) {
  * The coordinates stay in `target` on every branch, so nothing that replays or edits a step loses them. */
 function actWords(verb, ctx, where) {
   if (!ctx || !ctx.control) {
+    /* The name was dropped rather than missing - say which, and say how much there was. */
+    if (ctx && num(ctx.nameLength) > 0) {
+      return verb + ' ' + an(heldBy(ctx)) + ' holding ' + Math.round(num(ctx.nameLength))
+        + ' characters of text (not recorded) at ' + where + inApp(ctx);
+    }
     /* Nothing named it - but the tree still said what KIND of thing it was, and "clicked a button at
      * 725,104" is a step somebody can place. This used to be the coordinates alone. */
     const kind = roleWords(ctx);
@@ -755,6 +810,13 @@ function actWords(verb, ctx, where) {
 function ctxNote(ctx) {
   if (!ctx) return '';
   if (ctx.control) return '';
+  /* And the note says it was a choice, because a reader who thinks the agent failed here will go looking for
+   * a fault that is not there. */
+  if (num(ctx.nameLength) > 0) {
+    return 'what was under the pointer names itself with its own contents - a message, a row, a list entry - '
+      + 'and MouseFlow does not record that. The kind of thing and how much text it held are kept; the text '
+      + 'is not, in the recording or anywhere downstream of it';
+  }
   /* THE SHELL IS NOT THE GENERAL CASE, and the general sentence is wrong about it: there is no Electron
    * application, no canvas and no elevated window involved in a click on the desktop background or on an
    * empty stretch of taskbar. From agent 0.9.9 the icons themselves arrive named - see NamedUnder in the
@@ -1769,6 +1831,15 @@ const PLACE_NOUNS = {
  * recording could not name at 1030,1053": the phrase already said where, so the coordinate said it twice. */
 function unnamedWhat(ctx) {
   const type = ctx && ctx.type ? ctx.type.toLowerCase().trim() : '';
+
+  /* NOT RECORDED IS NOT UNKNOWN, and the difference is worth a branch. A control whose name was dropped for
+   * being content is a control we know a great deal about - what kind it was, and how much text was in it -
+   * and saying "something Teams did not name" about it would be false twice over: it did name it, and the
+   * reason there is no name here is a decision rather than a gap. */
+  if (ctx && num(ctx.nameLength) > 0) {
+    return 'on ' + an(heldBy(ctx)) + ' holding ' + Math.round(num(ctx.nameLength))
+      + ' characters of text, which is not recorded';
+  }
 
   /* An explorer pane with no name is the desktop or the taskbar - nothing else in that shell hit-tests to an
    * unnamed pane - and saying so is the difference between a step a reader can place and one they cannot. */

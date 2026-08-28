@@ -302,7 +302,28 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.12.0 is the build that can scroll SIDEWAYS, and that stops under-reporting what it did.
+/* 0.13.0 is the build that stops recording other people's words.
+ *
+ * TWO LEAKS OF ONE CLASS, both found by looking at a real transcript rather than at the code.
+ *
+ * A click on a message in Teams was recorded as `clicked "Привет, та такие конторы обычно данные потом у
+ * себя сторят… Дима не захочет"` - somebody else's conversation, in a recording, on an account, in every
+ * export. Nothing was read wrongly: the accessibility NAME of a chat message IS the message. And the type
+ * cannot tell content from a label - measured over three live trees, an Outlook `option` runs 275-376
+ * characters and a `radio button` 174, the same types that carry three-character labels. The LENGTH can:
+ * the longest name on anything a person presses was 43. Over 60 characters the name is dropped and its
+ * length is written instead, which still places the step and discloses nothing.
+ *
+ * And a window title that IS a url carried a sign-in token: `auth.doubleword.ai/u/login?state=hKFo2SAw…`.
+ * A page with no <title> is titled by its address, and three feet away in the same file PageUrl already cut
+ * the query off the `url` field on the argument that a query string is where "a session token, a one-time
+ * sign-in link and whatever somebody typed into a search box" live. The rule was right; the title walked
+ * around it. Titles that are addresses now lose their query too.
+ *
+ * Both are also applied when READING, because recordings made before this already contain the text and a
+ * new agent cannot fix those - the same split plainName describes.
+ *
+ * The previous note, kept because the reason still holds. 0.12.0 is the build that can scroll SIDEWAYS, and that stops under-reporting what it did.
  *
  * Horizontal scrolling was a hole in three directions at once, which is the sort of thing only a sweep
  * finds: a person's sideways scroll was not RECORDED (WM_MOUSEHWHEEL never reached the hook's switch), a
@@ -409,7 +430,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.12.0';
+export const AGENT_WANTS = '0.13.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

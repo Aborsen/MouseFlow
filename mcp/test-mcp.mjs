@@ -1543,6 +1543,100 @@ check('the preview reaches the new steps, and they read as sentences',
     && /tool: 'wait_for_window'/.test(read('../web/src/dev/mock-api.ts'))
     && /case 'refresh_page':/.test(describer) && /input\.win && 'Win'/.test(describer));
 
+group('a recording does not collect other people\'s words');
+/* `names` is taken at the top of this file for the tool list; this module needs its own handle. */
+const nameRules = await import('../api/_names.mjs');
+/* `transcribe` is imported further down this file, and a const is not hoisted - so this group takes its
+ * own handle rather than reaching forward to one that does not exist yet. */
+const { transcribe: readBack } = await import(new URL('../api/_transcript.js', import.meta.url).href);
+const privacyTranscript = read('../api/_transcript.js');
+const privacyAgent = read('../agent/mouseflow-agent.ps1');
+
+/* A WINDOW TITLE THAT IS AN ADDRESS LOSES ITS QUERY, which is where a sign-in token lives. Seen in a real
+ * recording: auth.doubleword.ai/u/login?state=hKFo2SAw… - and PageUrl had been cutting exactly this off the
+ * `url` field all along, on exactly this argument. */
+check('a sign-in url in a title keeps its origin and path and loses the token',
+  nameRules.plainTitle('auth.doubleword.ai/u/login?state=hKFo2SAwNTh5Q2dOX2cOWVBSZkxfVy15Vk')
+    === 'auth.doubleword.ai/u/login');
+check('with the scheme kept when the title had one',
+  nameRules.plainTitle('https://accounts.google.com/o/oauth2/auth?client_id=1&scope=email')
+    === 'https://accounts.google.com/o/oauth2/auth');
+/* ONLY when the whole title is an address. A question mark in a sentence is punctuation, and cutting at it
+ * would mangle every ordinary window. */
+check('but a sentence with a question mark in it is left exactly alone',
+  nameRules.plainTitle('What is a good name? - Google Search') === 'What is a good name? - Google Search');
+check('and so is every title that is not an address',
+  ['Chat | Devart BU Leaders | Microsoft Teams', 'Inbox - Outlook', 'report.xlsx - Excel']
+    .every((t) => nameRules.plainTitle(t) === t));
+check('the agent cuts it at RECORDING time as well, so it never reaches the account',
+  /static string BareTitle\(string title\)/.test(privacyAgent)
+    && /string bare = BareTitle\(title\);/.test(privacyAgent));
+
+/* A NAME TOO LONG TO BE A LABEL IS CONTENT. Measured, and the measurement is in both files rather than in
+ * somebody's memory: 43 characters was the longest name on anything a person presses. */
+check('the agent stops recording a name over sixty characters, and writes its length',
+  /const int NameMax = 60;/.test(privacyAgent)
+    && /target\.NameLength = name\.Length;/.test(privacyAgent));
+/* Never both: an older reader sees a step with a type and no name, which is what it would have shown for an
+ * unnamed control and is safe. */
+/* An `else`, not a second `if`: otherwise an older reader would see a step carrying BOTH a name and a
+ * length, and the whole point is that the name is gone. */
+check('and never both the name and the length',
+  /sb\.Append\(e\.Control\); \}[\s\S]{0,380}else if \(e\.NameLength > 0\)/.test(privacyAgent));
+check('the reader applies the same rule, because older recordings already hold the text',
+  /const NAME_MAX = 60;/.test(privacyTranscript)
+    && /function nameOrLength\(name, said\)/.test(privacyTranscript));
+
+/* And through the real transcript, both ways round. */
+{
+  const message = 'Привет, та такие конторы обычно данные потом у себя сторят, а потом их сливают куда '
+    + 'попало — Дима не захочет с этим связываться, я почти уверен';
+  const clicks = (context) => ([
+    { action: 'Left Click Down', x: 500, y: 400, delayMs: 0, context },
+    { action: 'Left Click Release', x: 500, y: 400, delayMs: 20, context },
+  ]);
+  const run = (context) => readBack({
+    source: 'desktop', kind: 'recorded', name: 'x',
+    payload: { recorder: { version: '0.13.0' }, windows: [], events: clicks(context) },
+  });
+
+  const old = run({ app: 'ms-teams', window: 'Chat', control: message, type: 'group' });
+  check('a recording made BEFORE the agent stopped collecting it does not show the message',
+    !JSON.stringify(old).includes('сторят'));
+  check('and says what it was instead',
+    /clicked a group holding \d+ characters of text \(not recorded\)/
+      .test(old.segments?.[0]?.steps?.[0]?.what ?? ''),
+    old.segments?.[0]?.steps?.[0]?.what);
+
+  const fresh = run({ app: 'OUTLOOK', window: 'Inbox', nameLength: '283', type: 'option' });
+  check('and a recording made after it reads the length the agent sent',
+    /clicked an option holding 283 characters of text/.test(fresh.segments?.[0]?.steps?.[0]?.what ?? ''),
+    fresh.segments?.[0]?.steps?.[0]?.what);
+  /* NOT RECORDED IS NOT UNKNOWN. Saying "nothing there had a name" would be false twice: it did have one,
+   * and the reason it is absent is a decision. A reader told the wrong thing goes hunting for a fault. */
+  check('the note says it was a decision rather than a failure to read',
+    /does not record that/.test(fresh.segments?.[0]?.steps?.[0]?.note ?? ''),
+    fresh.segments?.[0]?.steps?.[0]?.note);
+  check('and it does NOT claim the application named nothing',
+    !/nothing there had a name/.test(fresh.segments?.[0]?.steps?.[0]?.note ?? ''));
+
+  /* The 60 is a threshold, not a ban on names: a label still reads as a label. */
+  check('a real label of any ordinary length is untouched',
+    run({ app: 'ms-teams', window: 'Chat', control: 'Send', type: 'button' })
+      .segments?.[0]?.steps?.[0]?.what === 'clicked the "Send" button in ms-teams');
+
+  const auth = run({
+    app: 'chrome',
+    window: 'auth.doubleword.ai/u/login?state=hKFo2SAwNTh5Q2dOX2cOWVBSZkxfVy15Vk',
+    control: 'Sign up',
+    type: 'button',
+  });
+  check('and a sign-in token in a title does not survive the transcript either',
+    !JSON.stringify(auth).includes('hKFo2SAw')
+      && auth.segments?.[0]?.where?.label === 'auth.doubleword.ai/u/login',
+    auth.segments?.[0]?.where?.label);
+}
+
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');
 const MD_STRUCTURE = {
@@ -3704,11 +3798,20 @@ group('имя вкладки читается без того, что брауз
   check('его читает транскрипт',
     /plainShellName\(plainName\(src\.control\), app, window\)/.test(transcript));
   /* plainName ВНУТРИ: он общий для обоих читателей, а plainShellName - только про оболочку Windows, и
-   * снаружи он оказаться не может, иначе приписку про память будет искать правило про счётчик окон. */
-  check('и обрезка по длине по-прежнему снаружи обоих',
-    /shorten\(plainShellName\(plainName\(src\.control\), app, window\), CTX_MAX\)/.test(transcript));
+   * снаружи он оказаться не может, иначе приписку про память будет искать правило про счётчик окон.
+   *
+   * Порядок стал длиннее на одно правило - nameOrLength, отбрасывающее содержимое, - и оно стоит МЕЖДУ
+   * ними и обрезкой по длине. Это существенно: обрезка снаружи прячет длинное имя, а не отбрасывает его, и
+   * поставь её раньше - в записи осталось бы содержимое, просто короче. */
+  check('и обрезка по длине по-прежнему самая внешняя',
+    /const named = nameOrLength\(plainShellName\(plainName\(src\.control\), app, window\), src\.nameLength\);/
+      .test(transcript)
+    && /const control = shorten\(named\.control, CTX_MAX\);/.test(transcript));
+  /* И окно тоже, потому что заголовок несёт ту же приписку - плюс plainTitle снаружи от него: сначала
+   * снимается приписка приложения, потом query из адреса, иначе «использует 448 МБ памяти» помешает узнать
+   * в заголовке адрес, потому что в нём появятся пробелы. */
   check('и окно тоже, потому что заголовок окна несёт ту же приписку',
-    /shorten\(plainName\(src\.window\)/.test(transcript));
+    /shorten\(plainTitle\(plainName\(src\.window\)\), CTX_MAX\)/.test(transcript));
   check('и тело повтора отдаёт агенту очищенное имя',
     /control=\$\{plainName\(e\.context\.control\)\}/.test(macro));
   check('оба берут его из одного файла, а не пишут своё',

@@ -32,6 +32,15 @@ These are not bugs and no amount of work inside the current design removes them.
   different from "no such action": a model told an action does not exist looks for a way round — in the run
   this came from, that meant opening a terminal and writing a screen-capture tool — and a model told the
   platform lacks it stops and reports.
+- **A short name that is content cannot be told from a label.** From 0.13.0 a control name longer than 60
+  characters is not recorded — measured: the longest name on anything a person presses was 43, and everything
+  above 60 in a three-application sample was content. What the rule cannot catch is content that is SHORT: a
+  spell-check menu named `Spelling, сторят` carries one typed word in sixteen characters, and nothing in the
+  string says whether that is a label or somebody's spelling. Recorded as a name, like any label.
+- **Window and page titles are still recorded in full**, minus the query string. A chat title carries the
+  other person's name, an email window carries the subject. That is deliberate — the transcript segments the
+  work by window, and redacting titles would leave a recording with no structure at all — but it is worth
+  knowing before a recording is shared.
 - **An application can stop answering its accessibility interface, and then naming does not work at all.**
   Measured: dbForge Studio described itself in 187ms one hour and did not reply at all the next, from any
   thread. `read_window` and `find_element` give it four seconds, then mute that window for a minute and say
