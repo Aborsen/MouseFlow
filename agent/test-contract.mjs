@@ -1466,6 +1466,16 @@ group('одна остановка - одна загрузка');
   /* By CODE, not by file: reconcile.ts uses the word "sending" in a paragraph about something else, and a
    * file-level test would be catching prose. What matters is exactly one thing - the rules import nothing
    * from the registry. */
+  /* И НЕ ЗАБЫВАЕТСЯ ТОЖЕ - это уже не про трафик, а про потерю данных.
+   *
+   * На пути остановки штамп `syncedAt` ставится ДО `await reload()`. В этом промежутке подпись эффекта уже
+   * изменилась, а `flows` ещё старые - строки там нет. reconcile видит запись со штампом, которой нет на
+   * аккаунте, и по правилу «была и исчезла» кладёт её в `forget`: только что сделанная запись стирается из
+   * браузера. Правило верное, неверно лишь то, что «нет на аккаунте» здесь значит «мы его ещё не
+   * перечитали». Заявка снимается только после reload, то есть стоит ровно на этом промежутке. */
+  check('и то, что в полёте, не забывается из браузера',
+    /plan\.forget = plan\.forget\.filter\(\(id\) => !isSending\(id\)\)/.test(reconciler));
+
   check('а правила остаются чистыми',
     !/from '\.\/sending'/.test(rules)
       && !/isSending/.test(rules.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')));
