@@ -387,12 +387,13 @@ things it does not do yet, stated here rather than left to be discovered:
   `web/src/lib/desktop-engine.ts`; the courier path already burns steadily because it has real edges. The
   deliberate choice was a lease short enough that "out" is true over one long enough to bridge a model
   turn, because an indicator that lies *after* the end is worse than one that blinks.
-- **On Windows older than 10 2004 the border appears in the agent's own screenshots.**
-  `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` is what keeps it out, and it does not exist there. The
-  border never animates, so the stillness guard still works; the model simply sees a border in the picture.
-  macOS has two locks for this (the window is unshareable *and* the agent excludes its own windows from the
-  capture filter), and Windows only has the one, because `CopyFromScreen` photographs the screen and cannot
-  be asked to leave a window out.
+- **On Windows older than 10 2004 a single action does not light the border.**
+  `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` is what keeps it out of the agent's own screenshots and
+  does not exist there, and the six-second lease is the one driver that would then animate across the
+  driver's own before/after comparison — every turn, on the comparison that decides whether an action did
+  anything. So on those machines the border is shown for goal runs and replays, which hold steady for a
+  whole run and cannot animate, and not for single actions. The agent says which of the two it is in its
+  startup banner. macOS has two locks and needs no such rule.
 
 Neither is a reason to hold the feature: a person who cannot tell that their mouse is about to be driven is
 a worse problem than a border in a screenshot.

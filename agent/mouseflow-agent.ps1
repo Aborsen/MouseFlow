@@ -2036,6 +2036,27 @@ namespace MouseFlow
 
         public static string DoAction(string body)
         {
+            /* THE BORDER LIGHTS HERE, NOT IN THE /do ROUTE, and that is not a tidy-up.
+             *
+             * It started in the route, and that was one caller short. DoAction has three: a step of a goal
+             * run (already held by "goal"), the /do route, and Carry(), which performs the action in a
+             * claimed job's `activate` field BEFORE starting the replay. The third held nothing - a window
+             * was brought to the front, with the real jump a SetForegroundWindow makes, while no border was
+             * up and /health answered that nobody was driving. The mistake was not in the route; it was in
+             * what counts as the start of an action. That is DoAction, the one place all three pass
+             * through, so the rule moved to where it is single. The macOS agent had the same hole in the
+             * same shape and got the same move.
+             *
+             * A LEASE rather than a hold: an action has no end anybody reports. The browser driver runs the
+             * loop and never tells the agent where a run begins or ends - what arrives is /shot, /windows,
+             * up to 75 seconds of silence while the model thinks, then /do. A lease long enough to bridge a
+             * turn would make "lit" accurate and "out" a lie for a minute and a quarter after the end, and
+             * an indicator that lies AFTER the end is worse than one that blinks.
+             *
+             * BEFORE the parse and before the work: the point is to be lit WHILE the machine is being
+             * touched, and an action refused a moment later was still an attempt to touch it. */
+            Acting.Touch();
+
             Dictionary<string, string> a = ParseFields(body);
             string action = Get(a, "action", "");
             ResetInjection();
@@ -4664,13 +4685,6 @@ namespace MouseFlow
             if (path == "/do" && method == "POST")
             {
                 if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
-                /* A LEASE, NOT A HOLD, because a single action has no end anybody reports. The browser
-                   driver runs the loop and never tells the agent where a run begins or ends - what arrives
-                   here is /shot, /windows, up to 75 seconds of silence while the model thinks, then /do. So
-                   the border lights per action and goes out a few seconds after the last one. Taken BEFORE
-                   the action, not after: the point is to be lit WHILE the machine is being touched, and an
-                   action refused a moment later has still been attempted. See PROTOCOL.md. */
-                Acting.Touch();
                 string problem = DoAction(body);
                 if (problem != null) { Respond(stream, 400, "application/json", "{\"ok\":false,\"error\":\"" + JsonEscape(problem) + "\"}", origin); return; }
                 /* `output` only when there is one, so `{"ok":true}` stays exactly what it was for the eight
@@ -5839,7 +5853,7 @@ namespace MouseFlow
             lock (Gate)
             {
                 foreach (string d in _drivers) names.Add("\"" + d + "\"");
-                if (DateTime.UtcNow < _leaseUntil && !_drivers.Contains("hand")) names.Add("\"hand\"");
+                if (DateTime.UtcNow < _leaseUntil && !_drivers.Contains("action")) names.Add("\"action\"");
             }
             names.Sort();
             return string.Join(",", names.ToArray());
@@ -5860,6 +5874,23 @@ namespace MouseFlow
         /// Extend the lease. For an action nobody will report the end of.
         public static void Touch()
         {
+            /* NOT ON A MACHINE WHERE THE BORDER CANNOT BE HIDDEN FROM CAPTURE, and this is the one place
+             * the two platforms genuinely differ.
+             *
+             * "Survivable because it never animates" is true of goal and replay, which hold across a whole
+             * run, and FALSE of this one. The lease is six seconds and a model turn is eight to fifty, so
+             * on the browser-driven path the border is out when the driver takes its `before` fingerprint
+             * and up when it takes `after` - it animates across the one comparison that decides whether an
+             * action did anything, on every single turn. Worse, a wait watches consecutive frames for
+             * stillness, and a lease expiring in the middle of one means the wait never goes quiet and
+             * sits out its whole limit.
+             *
+             * Windows older than 10 2004 has no WDA_EXCLUDEFROMCAPTURE, so there the border is in the
+             * agent's own pictures. There it is not shown for this driver at all: a border that breaks the
+             * run it is warning about is worse than no border, and goal and replay - which hold steady and
+             * cannot animate - still show one. /health then reports no `action` driver, which is the
+             * truth, because none is lit. */
+            if (!Frame.HiddenFromCapture) return;
             lock (Gate) { _leaseUntil = DateTime.UtcNow.AddSeconds(LeaseSeconds); }
             Frame.Sync();
         }
@@ -5921,10 +5952,13 @@ namespace MouseFlow
             protected override void OnHandleCreated(EventArgs e)
             {
                 base.OnHandleCreated(e);
-                /* False on Windows older than 10 2004. Then the border is simply visible in the agent's
-                   own screenshots - stated in PROTOCOL.md, and survivable because it never animates. */
-                try { Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE); }
-                catch (Exception) { }
+                /* False on Windows older than 10 2004 - the call does not exist there. The ANSWER is kept,
+                   not discarded: Acting.Touch consults it, because the six-second lease is the one driver
+                   that would animate the border across the driver's own before/after comparison. */
+                bool hidden = false;
+                try { hidden = Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE); }
+                catch (Exception) { hidden = false; }
+                NoteAffinity(hidden);
             }
 
             protected override void OnPaint(System.Windows.Forms.PaintEventArgs e)
@@ -5939,19 +5973,114 @@ namespace MouseFlow
             }
         }
 
-        /* Called once from the tray thread, before Application.Run. The pump is an invisible window whose
-           only job is to own a handle on that thread, so Sync can marshal onto it from the HTTP worker,
-           the courier and the replay thread alike. Everything that touches a Form must happen there. */
-        public static void Attach()
+        /* ITS OWN THREAD, AND THAT IS THE WHOLE POINT OF THIS BLOCK.
+         *
+         * The border used to be attached from inside Tray.Pump, ninety lines into a try whose catch exists
+         * precisely to swallow a tray that cannot be drawn - and `_icon.Visible = true` really does throw
+         * when the notification area is unavailable (no Explorer shell, a locked-down or RDP session). It
+         * was also skipped entirely by -NoTray, whose own documentation promises "the HTTP half is
+         * identical either way". Both meant the same thing: the machine fully drivable - /do served, the
+         * courier claiming goals - with nothing on any screen saying so, while /health cheerfully answered
+         * acting:["goal"]. An indicator that can be silently absent is worse than none, because /health is
+         * how the absence would have been noticed.
+         *
+         * So the border no longer depends on a decoration. It gets what the tray gets: an STA thread with
+         * its own Application.Run, started unconditionally. macOS never had this hole - there the border
+         * lives on NSApplication, which always runs. */
+        public static string LastError;
+        static Thread _thread;
+        static bool _hidden;
+
+        /// Whether this Windows can keep the border out of the agent's own pictures. See Acting.Touch.
+        public static bool HiddenFromCapture { get { return _hidden; } }
+
+        internal static void NoteAffinity(bool hidden) { _hidden = hidden; }
+
+        public static void Start()
         {
-            _pump = new System.Windows.Forms.Form();
-            _pump.Text = "";
-            _pump.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
-            _pump.ShowInTaskbar = false;
-            _pump.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
-            _pump.Bounds = new System.Drawing.Rectangle(-32000, -32000, 1, 1);
-            IntPtr forced = _pump.Handle;   // creating the handle is the point of the line
-            GC.KeepAlive(forced);
+            _thread = new Thread(new ThreadStart(Pump));
+            _thread.IsBackground = true;
+            _thread.SetApartmentState(ApartmentState.STA);
+            _thread.Start();
+        }
+
+        static void Pump()
+        {
+            try
+            {
+                /* The pump is an invisible window whose only job is to own a handle on this thread, so
+                   Sync can marshal onto it from the HTTP worker, the courier and the replay thread alike.
+                   Everything that touches a Form must happen here. */
+                _pump = new System.Windows.Forms.Form();
+                _pump.Text = "";
+                _pump.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
+                _pump.ShowInTaskbar = false;
+                _pump.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
+                _pump.Bounds = new System.Drawing.Rectangle(-32000, -32000, 1, 1);
+                IntPtr forced = _pump.Handle;   // creating the handle is the point of the line
+                GC.KeepAlive(forced);
+
+                Probe();
+
+                /* A MONITOR PLUGGED IN MID-RUN. Raise() reads Screen.AllScreens once and Apply() returns
+                   early while the border is already up, so without this the set of borders is frozen for
+                   the length of a run - and a courier goal run is minutes. The screen that just joined
+                   would be driven with no border at all, and a disconnected one's window would be moved by
+                   Windows onto the primary as a rectangle of the wrong size. macOS answers the same event
+                   with didChangeScreenParametersNotification; this is that, and the two agents were
+                   shipping different behaviour under one version number until they both did. */
+                Microsoft.Win32.SystemEvents.DisplaySettingsChanged += delegate { ScreensChanged(); };
+
+                /* Putting the border out when the lease runs out. Lighting it is an event and calls Sync
+                   itself; a lease EXPIRING is not an event, and only something watching the clock notices
+                   it. This used to be the tray's timer, which is exactly how the border came to depend on
+                   the tray. */
+                System.Windows.Forms.Timer clock = new System.Windows.Forms.Timer();
+                clock.Interval = 1000;
+                clock.Tick += delegate { Apply(); };
+                clock.Start();
+
+                System.Windows.Forms.Application.Run();
+            }
+            catch (Exception ex)
+            {
+                /* Said in the banner rather than swallowed: an agent that cannot show the border can still
+                   drive the machine, and the person is entitled to know which of those is true. */
+                LastError = ex.Message;
+            }
+        }
+
+        /* One throwaway border, off-screen, to learn whether this Windows honours the capture exclusion -
+           asked ONCE at startup because Acting.Touch needs the answer before the first action, not after
+           the first border. A real Border rather than a plain Form, so what is measured is what will be
+           used. */
+        static void Probe()
+        {
+            try
+            {
+                using (Border probe = new Border(new System.Drawing.Rectangle(-32000, -32000, 1, 1)))
+                {
+                    IntPtr forced = probe.Handle;
+                    GC.KeepAlive(forced);
+                }
+            }
+            catch (Exception) { NoteAffinity(false); }
+        }
+
+        /// A monitor was added, removed or re-resolutioned. Rebuild, but only if the border is up.
+        static void ScreensChanged()
+        {
+            System.Windows.Forms.Form pump = _pump;
+            if (pump == null || !pump.IsHandleCreated) return;
+            try
+            {
+                pump.BeginInvoke((System.Windows.Forms.MethodInvoker)delegate
+                {
+                    if (!_up) return;
+                    Raise();
+                });
+            }
+            catch (Exception) { }
         }
 
         /// Bring the border into line with Acting. Safe to call from any thread, any number of times.
@@ -6122,19 +6251,8 @@ namespace MouseFlow
                         _icon.Icon = live ? _liveIcon : _idleIcon;
                         _icon.Text = live ? "MouseFlow agent - recording" : "MouseFlow agent";
                     }
-                    /* Putting the border out when the lease runs out. Lighting it is an event and calls
-                       Sync itself; a lease EXPIRING is not an event, and only something watching the
-                       clock can notice it. A second is fine: the border goes out six seconds after the
-                       last action, and the seventh changes nothing. The tray's timer rather than a second
-                       one - two timers for one status area is two. */
-                    Frame.Apply();
                 };
                 light.Start();
-
-                /* The border lives on this thread too - it is the only one in the agent with a message
-                   pump that may block for a repaint. Attached before Application.Run so a run starting a
-                   second later has something to marshal onto. */
-                Frame.Attach();
 
                 Refresh();
                 System.Windows.Forms.Application.Run();
@@ -6236,6 +6354,11 @@ if ($err) { throw "Could not install the mouse hook: $err" }
 # an agent that is not taking work makes no outbound call.
 [MouseFlow.Courier]::Begin()
 
+# The border that says this machine is being driven. Unconditionally, and BEFORE the tray: it is a safety
+# indicator, not a decoration, and it must not be able to go missing because a notification icon would not
+# draw or because -NoTray was passed.
+[MouseFlow.Frame]::Start()
+
 if (-not $NoTray) { [MouseFlow.Tray]::Start() }
 
 Write-Host ""
@@ -6273,6 +6396,19 @@ if ($NoTray) {
         Write-Host "  tray        in the notification area - start and stop a recording there"
     }
 }
+# The border is a safety indicator, so whether it works is a banner line and not something to find out by
+# watching the mouse move without one. Three states, and the third is why it is said at all.
+$frameErr = [MouseFlow.Frame]::LastError
+if ($frameErr) {
+    Write-Host "  border      NOT shown: $frameErr" -ForegroundColor Yellow
+    Write-Host "              this PC can still be driven, and nothing on screen will say so"
+} elseif (-not [MouseFlow.Frame]::HiddenFromCapture) {
+    Write-Host "  border      shown for runs, but this Windows cannot hide it from screenshots" -ForegroundColor Yellow
+    Write-Host "              (needs Windows 10 2004+), so single actions do not light it"
+} else {
+    Write-Host "  border      lime, round every screen, while something is driving this PC"
+}
+
 $heldAtStart = [MouseFlow.Agent]::HeldEvents
 if ($heldAtStart -gt 0) {
     Write-Host "  waiting     a recording of $heldAtStart events is held for the app to collect" -ForegroundColor Cyan

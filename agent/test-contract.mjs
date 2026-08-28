@@ -745,9 +745,9 @@ const version = (text, re) => (text.match(re) || [])[1];
  * мигает, - это два разных обещания под одним номером версии, и человек, пересевший с Mac на PC, читает
  * второе как поломку. Поэтому в шаге держатся все три ведущих, длина аренды и момент её взятия. */
 check('обе зажигают рамку тремя одними и теми же ведущими',
-  /case goal/.test(swift) && /case replay/.test(swift) && /case hand/.test(swift)
+  /case goal/.test(swift) && /case replay/.test(swift) && /case action/.test(swift)
     && /Acting\.Begin\("goal"\)/.test(ps) && /Acting\.Begin\("replay"\)/.test(ps)
-    && /_drivers\.Contains\("hand"\)/.test(ps));
+    && /_drivers\.Contains\("action"\)/.test(ps));
 /* Прогон по цели - единственный путь с точными границами, и конец обязан быть на ВСЕХ выходах: drive()
  * возвращается из десятка мест, и парный вызов в конце тела покрыл бы один из них. */
 check('обе снимают рамку прогона на всех выходах, а не в конце тела',
@@ -758,11 +758,38 @@ check('обе снимают рамку прогона на всех выход�
 check('и рамку повтора - там же, где отпускают кнопки мыши',
   /releaseEverything\(\)\s*\n\s*Acting\.end\(\.replay\)/.test(swift)
     && /ReleaseAllButtons\(\);\s*\n\s*Acting\.End\("replay"\);/.test(ps));
-/* ДО действия, а не после: смысл рамки - гореть, ПОКА машину трогают. Взятая после, она зажигается,
- * когда всё уже нажато. */
-check('обе берут аренду до действия, а не после',
-  /Acting\.touch\(\)\s*\n\s*if let bad = doAction\(body\)/.test(swift)
-    && /Acting\.Touch\(\);\s*\n\s*string problem = DoAction\(body\);/.test(ps));
+/* В САМОМ doAction, А НЕ В МАРШРУТЕ /do - и это не вкусовщина, а закрытая дыра.
+ *
+ * Аренда стояла в маршруте, и этого было ровно на один вызов мало: у doAction три вызывающих, и третий -
+ * carry(), которая выполняет действие из поля `activate` полученной работы, - не держал ничего. Окно
+ * поднималось на передний план без рамки, и /health в эту секунду отвечал, что машину не ведёт никто.
+ * Проверяется ПЕРВАЯ строка тела: аренда, взятая где-нибудь ниже разбора, снова пропустит часть путей. */
+const firstLine = (text, opener) => {
+  const at = text.indexOf(opener);
+  if (at < 0) return '';
+  const brace = text.indexOf('{', at);
+  return text.slice(brace + 1).split('\n').find((l) => l.trim() && !l.trim().startsWith('/*')
+    && !l.trim().startsWith('*') && !l.trim().startsWith('//')) || '';
+};
+check('обе берут аренду в первой строке doAction, а не в маршруте /do',
+  /Acting\.touch\(\)/.test(firstLine(swift, 'func doAction(_ body: String) -> String? {'))
+    && /Acting\.Touch\(\);/.test(firstLine(ps, 'public static string DoAction(string body)')));
+check('и ни одна не берёт её в маршруте, где её видели бы только два пути из трёх',
+  !/Acting\.touch\(\)[\s\S]{0,200}case "\/account"/.test(swift)
+    && !/Acting\.Touch\(\);[\s\S]{0,200}string problem = DoAction\(body\)/.test(ps));
+/* Монитор, воткнутый посреди прогона. Раньше рамка на маке это замечала, а на винде нет - то есть два
+ * разных поведения под одним номером версии, и на только что подключённом экране человек не получал
+ * предупреждения вовсе. */
+check('обе перестраивают рамку, когда меняется набор экранов',
+  /didChangeScreenParametersNotification/.test(swift) && /screensChanged\(\)/.test(swift)
+    && /SystemEvents\.DisplaySettingsChanged/.test(ps) && /ScreensChanged\(\)/.test(ps));
+/* И рамка не зависит от УКРАШЕНИЯ. На маке она живёт на NSApplication, который работает всегда; на винде
+ * она жила внутри try трея - в девяноста строках после того, что реально бросает, - и пропадала целиком
+ * от -NoTray, пока /health продолжал отвечать acting:["goal"]. */
+check('и ни на одной рамка не зависит от иконки в трее',
+  /\[MouseFlow\.Frame\]::Start\(\)/.test(ps)
+    && !/Frame\.Attach\(\)/.test(ps)
+    && ps.indexOf('[MouseFlow.Frame]::Start()') < ps.indexOf('if (-not $NoTray)'));
 check('и аренда у обеих одной длины',
   version(swift, /leaseSeconds: TimeInterval = ([\d.]+)/)
     === version(ps, /LeaseSeconds = ([\d.]+)/),
@@ -797,14 +824,26 @@ const body = (text, opener) => {
   }
   return '';
 };
-const noMotion = /animat|CABasic|alphaValue|Opacity|Interval|Timer|Blink|pulse/i;
-const swiftFrame = body(swift, 'final class ScreenFrame {');
-const psFrame = body(ps, 'public static class Frame');
-check('оба класса рамки найдены целиком', swiftFrame.length > 400 && psFrame.length > 400,
-  `${swiftFrame.length} / ${psFrame.length}`);
-check('и ни одна её не анимирует',
-  !noMotion.test(swiftFrame.replace(/\/\*[\s\S]*?\*\//g, '')) && !noMotion.test(psFrame.replace(/\/\*[\s\S]*?\*\//g, '')),
-  (noMotion.exec(swiftFrame.replace(/\/\*[\s\S]*?\*\//g, '')) || noMotion.exec(psFrame.replace(/\/\*[\s\S]*?\*\//g, '')) || [''])[0]);
+/* Запрет - на АНИМАЦИЮ РИСУНКА, а не на наличие часов. Первая формулировка искала Timer во всём классе
+ * рамки и позеленела ровно до того дня, когда часы, гасящие рамку по истечении аренды, переехали в него
+ * из трея, - и тогда покраснела на совершенно законной строке. Проверяется то, что рисует: у вида
+ * границы не должно быть ничего, зависящего от времени. Часам отдельно предъявляется, что они только
+ * зовут Apply, а не перекрашивают. */
+const noMotion = /animat|CABasic|alphaValue|Opacity|Blink|pulse|Timer/i;
+const swiftPaint = body(swift, 'private final class Border: NSView {');
+const psPaint = body(ps, 'class Border : System.Windows.Forms.Form');
+const bare = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+check('оба вида границы найдены целиком', swiftPaint.length > 200 && psPaint.length > 200,
+  `${swiftPaint.length} / ${psPaint.length}`);
+check('и ни один из них не анимирован',
+  !noMotion.test(bare(swiftPaint)) && !noMotion.test(bare(psPaint)),
+  (noMotion.exec(bare(swiftPaint)) || noMotion.exec(bare(psPaint)) || [''])[0]);
+/* И единственные часы у рамки только гасят её, ничего не перерисовывая. */
+check('а часы рамки только зовут Apply',
+  /clock\.Tick \+= delegate \{ Apply\(\); \};/.test(ps)
+    && (ps.match(/new System\.Windows\.Forms\.Timer\(\)/g) || []).length
+      === (ps.match(/(light|clock)\.Interval = 1000;/g) || []).length);
+
 /* Оба говорят, кто ведёт, - чтобы поведение рамки можно было проверить, не глядя на экран. */
 check('и обе отвечают в /health, кто ведёт машину',
   /"acting":/.test(swift.replace(/\\/g, '')) && /\\"acting\\":/.test(ps));

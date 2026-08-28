@@ -607,9 +607,16 @@ the agent moving my mouse, or is something broken".
 |---|---|---|
 | `goal` | the courier claims a goal job | `drive()` returns, on every exit path |
 | `replay` | a replay begins | the same `defer` that releases held buttons |
-| `hand` | a single `/do` arrives | a short lease, refreshed by each `/do` |
+| `action` | any action begins — **inside `doAction`**, not in the `/do` route | a short lease, refreshed by each action |
 
-`hand` is a lease and not a hold because **the browser driver never tells the agent that a run is
+**The lease belongs in `doAction`, not in the `/do` route**, and that is a correction rather than a
+preference. `doAction` has three callers: a step of a goal run (already held by `goal`), the `/do` route,
+and the courier's `carry`, which performs the action in a claimed job's `activate` field *before* starting
+the replay. Put in the route, the third one held nothing: a window was brought to the front — the real jump
+`SetForegroundWindow` makes — with no border on any screen, while `/health` answered that nobody was
+driving. The start of an action is `doAction`, the one place all three pass through.
+
+`action` is a lease and not a hold because **the browser driver never tells the agent that a run is
 happening.** What the agent sees is `/shot`, `/windows`, then up to 75 seconds of silence while the model
 thinks, then `/do`. So on that path the border lights per action and goes out a few seconds after the last
 one — it pulses through a run rather than burning steadily. This is an honest limit, not an oversight: a
@@ -618,8 +625,9 @@ quarter after the run had finished, and an indicator that lies *after* the end i
 blinks. It becomes steady when the driver says where a run starts and stops, which is an addition to this
 document and a change to the client, not something an agent can infer.
 
-**A second implementation must clear the same four traps, and each was measured rather than reasoned
-about.** These are the ways an agent's own window breaks the agent:
+**A second implementation must clear the same six traps.** The first four were measured rather than
+reasoned about; the last two were found by auditing the first implementation of the second agent, and both
+were real. These are the ways an agent's own window breaks the agent:
 
 - **The window list must not contain it.** `/windows` and the click resolver both drop anything whose layer
   is not a normal application window; on macOS a window at `CGShieldingWindowLevel()` reports layer
@@ -633,13 +641,35 @@ about.** These are the ways an agent's own window breaks the agent:
   unshareable (`NSWindowSharingType.none`; `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`), *and* the
   agent excludes its own windows from the capture filter. Measured on macOS with a second, independently
   permissioned agent as the camera and a positive control built with sharing left on: the control moved the
-  outer ring of the 64×36 fingerprint by +11.89/255, the shipping build by +0.02.
+  outer ring of the 64×36 fingerprint by +11.89/255, the shipping build by +0.02. Where the platform cannot
+  do this at all, the `action` driver must not light the border — see the note on stillness below.
+- **It must follow the screens.** The set of borders is built when the border goes up, and a goal run lasts
+  minutes: a monitor docked, unplugged or re-resolutioned mid-run leaves the new screen unmarked and the old
+  one carrying a window sized to bounds that no longer exist. Subscribe to the platform's screen-change
+  event (`NSApplication.didChangeScreenParametersNotification`; `SystemEvents.DisplaySettingsChanged`) and
+  rebuild while lit.
+- **It must not depend on a decoration.** The Windows border first lived on the tray's thread, ninety lines
+  into a `try` whose `catch` exists precisely to swallow a tray that will not draw — and was skipped
+  entirely by `-NoTray`, whose own documentation promises the HTTP half is identical either way. Both meant
+  the machine fully drivable with nothing on screen saying so, while `/health` still answered
+  `acting:["goal"]`. A safety indicator that can be silently absent is worse than none, because `/health` is
+  how the absence would have been noticed. Give it its own thread and start it unconditionally.
 
 **And it must not move.** No pulsing, no breathing, no animation. The 64×36 fingerprint that both sides use
 to decide "the screen moved" and "it has settled" compares two consecutive frames: a still border subtracts
 from itself and means nothing, while a pulsing one would mean the screen is always moving — every wait
 would sit out its full limit and every action would report that it had worked. This is not a decoration
 that was declined; it is a decoration that would break the run.
+
+**"Still" is a property of the driver, not only of the drawing**, and this is the subtlety that has to be
+said out loud. `goal` and `replay` hold across a whole run, so the border is constant through every
+comparison inside it. `action` does not: its lease is six seconds and a model turn is eight to fifty, so on
+the browser-driven path the border is *out* when the driver takes its `before` fingerprint and *up* when it
+takes `after` — it animates across the one comparison that decides whether an action did anything, on every
+turn. That is harmless only because the border is excluded from capture. Where it cannot be — Windows older
+than 10 2004 has no `WDA_EXCLUDEFROMCAPTURE` — the `action` driver must not light it at all: a border that
+breaks the run it is warning about is worse than no border, and `goal` and `replay`, which cannot animate,
+still show one.
 
 The colour is the product's own accent (`#bdff7a`), not red: this is not a failure and not a system alert.
 

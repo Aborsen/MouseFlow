@@ -153,5 +153,66 @@ for (const body of bodies) {
   }
 }
 
-console.log(bad ? `\n${bad} problem(s)` : '\nclean: no duplicate member, every Class.Member resolves, and every receiver is declared');
+
+/* 4. THE POWERSHELL AROUND THE C#, which nothing here looked at until it bit.
+ *
+ * This file is a compiler proxy for the 3,000 lines of C# inside the here-string. The 700 lines of
+ * PowerShell OUTSIDE it had no check at all, and there is no pwsh on the machines this is written on
+ * either. A banner block added in the middle of an `if ($NoTray) { } else { }` landed INSIDE the first
+ * branch: still valid PowerShell, still balanced, and it meant a line about the safety border printed only
+ * when the tray was switched off. Caught by reading, which is the thing this file exists to stop relying
+ * on.
+ *
+ * Brace balance is what can be checked without a parser, and it catches the edit that loses or gains a
+ * `}` - the failure that stops the agent starting at all rather than merely misprinting. Strings and
+ * comments are removed first, or every `}` inside a Write-Host counts. */
+{
+  /* Тот же забор, что и у `cs` выше, и по той же причине - иначе C# посчитался бы как PowerShell. */
+  const at = src.indexOf("@'");
+  const close = src.indexOf("'@", at);
+  const shell = at < 0 ? src : src.slice(0, at) + '\n' + src.slice(close + 2);
+
+  /* ОДИН АВТОМАТ, А НЕ ЦЕПОЧКА if. Первая версия проверяла `#` раньше кавычек, и `#` внутри строки
+   * съедал остаток строки вместе с закрывающей кавычкой; дальше кавычки разъезжались и глотали целые
+   * блоки - из 12196 символов оставалось 2892, а баланс сходился по чистой случайности. Мутация с
+   * потерянной скобкой прошла насквозь, и это поймал не глаз, а то, что мутацию прогнали. Здесь
+   * состояние явное, и `<# #>` - тоже состояние: шапка файла это блочный комментарий с апострофами. */
+  let clean = '';
+  let mode = 'code';
+  for (let i = 0; i < shell.length; i++) {
+    const c = shell[i];
+    const next = shell[i + 1];
+    if (mode === 'code') {
+      if (c === '<' && next === '#') { mode = 'block'; i++; continue; }
+      if (c === '#') { mode = 'line'; continue; }
+      if (c === "'") { mode = 'single'; continue; }
+      if (c === '"') { mode = 'double'; continue; }
+      clean += c;
+    } else if (mode === 'block') {
+      if (c === '#' && next === '>') { mode = 'code'; i++; }
+    } else if (mode === 'line') {
+      if (c === '\n') { mode = 'code'; clean += '\n'; }
+    } else if (mode === 'single') {
+      /* '' - это экранированный апостроф внутри строки, а не её конец. */
+      if (c === "'" && next === "'") i++;
+      else if (c === "'") mode = 'code';
+    } else if (mode === 'double') {
+      if (c === '`') i++;
+      else if (c === '"' && next === '"') i++;
+      else if (c === '"') mode = 'code';
+    }
+  }
+  let depth = 0;
+  let line = 1;
+  let negativeAt = 0;
+  for (const ch of clean) {
+    if (ch === '\n') line++;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth < 0 && !negativeAt) negativeAt = line;
+  }
+  if (negativeAt) fail(`the PowerShell has a } with no { before it, around line ${negativeAt}`);
+  else if (depth !== 0) fail(`the PowerShell has ${depth} unclosed {`);
+}
+
+console.log(bad ? `\n${bad} problem(s)` : '\nclean: no duplicate member, every Class.Member resolves, every receiver is declared, and the PowerShell balances');
 process.exit(bad ? 1 : 0);
