@@ -1045,5 +1045,90 @@ group('two waits that name what they are waiting for');
     out.actions[0]?.body === 'action=key key=d ctrl=0 shift=0 alt=0 win=1', out.actions[0]?.body);
 }
 
+/* ------------------------------------------------------- взгляд, которого никто не просил, ИСПОЛНЕНИЕМ
+ *
+ * Регулярка над исходником сказала бы «условие похоже на правильное». Здесь прогоняются три хода подряд и
+ * проверяется то, что важно на самом деле: приложилось ли чтение, не выдаётся ли оно за ответ на вызов
+ * инструмента (API отвергает результат без вызова - прогон упал бы целиком) и доехало ли прочитанное до
+ * модели вместе с той картинкой, которую оно описывает. */
+group('на застрявшем ходу окно читается само, и прочитанное доезжает до модели');
+{
+  const ask = scripted([
+    answer([use('click', { x: 10, y: 10, label: 'Save' }, 'c1')]),
+    answer([use('click', { x: 20, y: 20, label: 'Save' }, 'c2')]),
+    answer([use('finish', { ok: true, said: 'Done.' })]),
+  ]);
+
+  // Ход 1: обычный клик. Ничего ещё не застряло - прикладывать нечего.
+  const one = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('пока ничего не застревало, лишнего действия нет',
+    one.actions.length === 1, JSON.stringify(one.actions));
+
+  /* Ход 2: агент сказал, что экран не дрогнул. Значит СЛЕДУЮЩИЙ ход везёт с собой чтение окна. */
+  const two = await advance({
+    loop: one.loop, shot: SHOT, windows: WINDOWS, ask,
+    results: [{ id: 'c1', output: 'done', moved: false }],
+  });
+  check('после неподвижного хода счёт вырос', two.loop.still === 1, String(two.loop.still));
+  check('и к действиям приложено чтение окна',
+    two.actions.length === 2 && two.actions[1].id === '#peek', JSON.stringify(two.actions));
+  /* Последним: окно надо прочитать таким, каким его оставили действия этого хода, а не таким, каким оно
+   * было до них. */
+  /* Через ?. а не напрямую: провалившаяся проверка выше не должна ронять остаток набора - упавший файл
+   * прячет всё, что за ним, и «сколько на самом деле сломалось» приходится выяснять по одной правке. */
+  check('и приложено ПОСЛЕДНИМ, после действий самой модели',
+    two.actions[0]?.id === 'c2' && two.actions[1]?.id === '#peek');
+  /* Координаты - в системе той картинки, которая поедет вместе с ответом. SHOT: scale 0.5. */
+  check('и спрашивает координаты той же картинки',
+    two.actions[1]?.body === 'action=read scale=0.5 ox=0 oy=0', String(two.actions[1]?.body));
+  /* САМОЕ ВАЖНОЕ: под него нет tool_use, и объявить его pending значило бы отправить в API tool_result без
+   * вызова - а это отказ на весь запрос, то есть прогон, упавший от собственной помощи. */
+  check('и оно НЕ числится ответом на вызов инструмента',
+    two.loop.pending.length === 1 && two.loop.pending[0]?.id === 'c2',
+    JSON.stringify(two.loop.pending));
+  /* И не строкой в журнале: человек читает там свои намерения, а этого он не заказывал. */
+  check('и не попало в журнал прогона',
+    two.loop.steps.every((s) => s.tool !== 'read_window'), JSON.stringify(two.loop.steps));
+
+  // Ход 3: прочитанное приезжает и обязано оказаться в сообщении рядом с картинкой.
+  const three = await advance({
+    loop: two.loop, shot: SHOT, windows: WINDOWS, ask,
+    results: [
+      { id: 'c2', output: 'done', moved: true },
+      { id: '#peek', output: 'text field "Name" at 10,20 100x24 = "mouse test"' },
+    ],
+  });
+  const asked = JSON.stringify(ask.seen[ask.seen.length - 1].messages);
+  check('прочитанное доехало до модели', asked.includes('mouse test'), 'нет в разговоре');
+  check('и объяснено словами, а не выложено голым списком',
+    asked.includes('Nothing on screen moved when the last actions ran'));
+  check('и прогон при этом дошёл до конца', three.done && three.done.ok === true);
+
+  /* Агент старее 0.16.0 отвечает на read отказом. Показать его модели значило бы научить её, что смотреть
+   * бесполезно, - обратное тому, ради чего это написано. */
+  const ask2 = scripted([
+    answer([use('click', { x: 10, y: 10 }, 'd1')]),
+    answer([use('click', { x: 10, y: 10 }, 'd2')]),
+    answer([use('finish', { ok: true, said: 'Done.' })]),
+  ]);
+  const a = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask: ask2 });
+  const b = await advance({
+    loop: a.loop, shot: SHOT, windows: WINDOWS, ask: ask2,
+    results: [{ id: 'd1', output: 'done', moved: false }],
+  });
+  await advance({
+    loop: b.loop, shot: SHOT, windows: WINDOWS, ask: ask2,
+    results: [
+      { id: 'd2', output: 'done', moved: true },
+      { id: '#peek', isError: true, output: 'read is not implemented on the macOS agent yet' },
+    ],
+  });
+  const afterRefusal = JSON.stringify(ask2.seen[ask2.seen.length - 1].messages);
+  check('а отказ старого агента модели не показывается',
+    !afterRefusal.includes('not implemented'), 'отказ уехал в разговор');
+  check('и объяснения тогда тоже нет',
+    !afterRefusal.includes('the window in front was read for you'));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

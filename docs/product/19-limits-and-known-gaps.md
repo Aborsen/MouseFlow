@@ -95,6 +95,17 @@ These are not bugs and no amount of work inside the current design removes them.
 - **macOS `/shot` and `/pulse` need macOS 14+.** `CGWindowListCreateImage` is *unavailable* on macOS 15, not
   merely deprecated, and cannot be kept behind an `#available`. `capture_window` is on the same floor and
   says so rather than failing obscurely.
+- **The model does not call `read_window` on its own, so the driver calls it.** Measured across two runs
+  after the tool was written, its description rewritten, and two prompt rules added telling the model to use
+  it: `read_window` and `find_element` were called **zero times in both**, and both runs stalled on exactly
+  what those tools answer. From 0.17.0 the rule is code rather than advice — when a turn reports that
+  nothing on screen moved, the driver appends a read of the front window to the next turn's actions and puts
+  the answer beside the next screenshot. Both drivers do it at the same moment, from the same
+  `shouldPeek(still)` in the brain. **It is not a tool_result** — no `tool_use` block matches it, and the
+  API refuses a result with no call — and it is not written into the run log, because the user reads their
+  own intentions there. Cost: one accessibility read (0.3–2.5s) on a turn that already went to waste,
+  against ~6s for the model turn it saves. **Whether it changes the model's behaviour is not yet measured** —
+  it is written and tested, and the next run on a real machine is the observation.
 - **`read_window` reports what is in a field; a recording still never does.** From 0.17.0 the two paths are
   separate rules rather than one. A RECORDING takes no typed text on either platform — it is stored,
   exported into a SKILL.md, downloaded and forwarded, and the promise printed on the record screen is about

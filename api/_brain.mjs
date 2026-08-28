@@ -684,7 +684,36 @@ export function openList(windows) {
 /* The turn's one picture, and the only thing under it worth as many tokens: what is already running.
  *
  * `media_type` goes through mediaType() rather than carrying the agent's own word - see the note there. */
-export function screenMessage(frame, open) {
+/* ------------------------------------------------------------------ the look nobody has to ask for */
+
+/* КОГДА НИЧЕГО НЕ СДВИНУЛОСЬ, ОКНО ЧИТАЕТСЯ САМО - и это правило в коде, а не просьба в промпте.
+ *
+ * ПОЧЕМУ НЕ ПРОМПТ. Просьбу «когда клик сделал не то, прочитай окно, а не кликай на пару пикселей левее»
+ * промпт несёт с 0.11.0; описание read_window переписано; в промпт добавлено «не набирай одно и то же
+ * дважды, прочитай поле обратно». После всего этого в ДВУХ измеренных прогонах подряд read_window и
+ * find_element вызваны НОЛЬ раз - при том, что в обоих модель залипала ровно на том, что эти инструменты и
+ * отвечают. Третья формулировка того же совета - это ставка на то же самое в третий раз.
+ *
+ * Та же развилка, что была у BATCHABLE, и тем же концом: промпт говорит модели, что делать, а этот файл
+ * решает, что произойдёт. Модели больше не предлагают посмотреть - ей уже показали.
+ *
+ * ЧТО ЭТО СТОИТ. Одно чтение дерева на застрявшем ходу: 0.3-2.5 с у агента, против ~6 с за ход модели,
+ * потраченный на слепой повтор (замерено: 4.2-8.9 с на решение против 0.5-1.0 с на само действие). И
+ * платится оно только там, где ход уже пропал даром.
+ *
+ * И ТОЛЬКО ТАМ. `still` растёт лишь на ходу, про который агент СКАЗАЛ, что экран не дрогнул, и обнуляется
+ * от любого движения - так что на идущем как надо прогоне этого не происходит ни разу. */
+export const PEEK_ID = '#peek';
+
+/** Стоит ли подложить чтение окна к следующему ходу. */
+export const shouldPeek = (still) => Number(still) >= 1;
+
+/** Провод для него: переднее окно, в координатах той же картинки, что поедет с ним. */
+export const peekBody = (frame) =>
+  `action=read scale=${(frame && frame.scale) || 1} ox=${(frame && frame.originX) || 0} `
+  + `oy=${(frame && frame.originY) || 0}`;
+
+export function screenMessage(frame, open, saw) {
   return {
     role: 'user',
     content: [
@@ -696,6 +725,15 @@ export function screenMessage(frame, open) {
             ? '\n\nAlready open - use activate_window rather than opening any of these again, and '
               + 'capture_window takes any of these titles. Sizes and positions are in screen pixels, so '
               + `they say what is covering what:\n${open}`
+            : '')
+          /* Слова здесь, а не в драйвере: два драйвера, сказавшие это по-разному, научат модель двум
+           * разным привычкам - ровно та причина, по которой здесь же живут waitReport и actionSaid. */
+          + (saw
+            ? '\n\nNothing on screen moved when the last actions ran, so the window in front was read for '
+              + 'you - names, positions in these same screenshot pixels, and what is in any field somebody '
+              + 'can type into. Aim by THIS rather than by the picture, and if a field already holds what '
+              + 'you meant to type, it landed:\n'
+              + saw
             : ''),
       },
     ],

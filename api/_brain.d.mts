@@ -68,7 +68,11 @@ export function actionBody(
   frame: ShotFrame,
 ): string | null;
 export function openList(windows: WindowLike[] | null | undefined): string | null;
-export function screenMessage(frame: ShotLike, open: string | null): Message;
+/** Чтение переднего окна, подложенное к ходу после застрявшего. Правило и слова - в _brain.mjs. */
+export const PEEK_ID: string;
+export function shouldPeek(still: number): boolean;
+export function peekBody(frame: ShotFrame): string;
+export function screenMessage(frame: ShotLike, open: string | null, saw?: string | null): Message;
 export function forgetOldPictures<T extends { content?: unknown }>(messages: T[]): T[];
 /** What one action did, in the words both drivers use. `moved === false` means the screen stood still. */
 export function actionReport(moved: boolean | undefined, streak?: number): string;

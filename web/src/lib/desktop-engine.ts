@@ -49,7 +49,9 @@ import {
   openingMessage,
   outOfWaves,
   refusedAt,
+  peekBody,
   screenMessage,
+  shouldPeek,
   toolsFor,
   truncatedAt,
   actionReport,
@@ -325,6 +327,9 @@ async function runWave(o: {
   /* Сколько действий подряд не сдвинули экран. Живёт через ходы: три неподвижных в одном ходе и три в
    * следующем - это шесть подряд, и человек, глядя на это, считал бы именно так. */
   let still = 0;
+  /* Что прочиталось у окна на застрявшем ходу, до следующей картинки. См. shouldPeek в мозге: правило одно
+   * на два драйвера, и момент, в который оно срабатывает, тоже обязан быть одним. */
+  let saw: string | null = null;
 
   for (let turn = 0; turn < WAVE_TURNS; turn++) {
     if (isAborted()) return { stepNo };
@@ -368,10 +373,16 @@ async function runWave(o: {
     }
 
     forgetOldPictures(messages as { content?: unknown }[]);
-    messages.push(screenMessage(frame, await openWindows(machine)));
+    messages.push(screenMessage(frame, await openWindows(machine), saw));
+    saw = null;
 
     stepNo++;
     onEvent({ type: 'turn', n: stepNo, wave, inWave: turn + 1, of: WAVE_TURNS });
+
+    /* Снято ЗДЕСЬ, до того как ход что-либо сделает и до того как `still` обновится: на облачном пути это
+     * решает предыдущий ход, отдавая действия, и решать это в двух драйверах в разные моменты значит иметь
+     * два разных правила под одним именем. */
+    const peekNow = shouldPeek(still);
 
     const cutoff = new AbortController();
     const shotMs = Date.now() - shotAt;
@@ -707,6 +718,18 @@ async function runWave(o: {
     if (judged) {
       still = stirred ? 0 : still + 1;
       if (!stirred) for (const r of inertSaid) r.content = actionReport(false, still);
+    }
+
+    /* И ВЗГЛЯД, КОТОРОГО НИКТО НЕ ПРОСИЛ - после действий хода, как на облачном пути, и решённый тем же
+     * числом: `peekNow` снят ДО того, как `still` обновился, потому что там это решает предыдущий ход,
+     * возвращая действия. Два драйвера, одно правило и один момент - иначе один научит модель привычке,
+     * которую второй не поддержит. Ошибка проглатывается: агент старее 0.16.0 ответит отказом, и показать
+     * его модели значило бы научить её, что смотреть бесполезно. */
+    if (peekNow && results.length) {
+      try {
+        const looked = (await machine.do(peekBody(frame))).output;
+        saw = looked ? String(looked) : null;
+      } catch (_) { saw = null; }
     }
 
     messages.push({ role: 'user', content: results });

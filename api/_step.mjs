@@ -34,6 +34,7 @@ import {
   HANDOFF_ASK,
   HANDOFF_SYSTEM,
   MAX_TOKENS,
+  PEEK_ID,
   MAX_WAVES,
   SETTLE_MAX_MS,
   SYSTEM,
@@ -45,8 +46,10 @@ import {
   openList,
   openingMessage,
   outOfWaves,
+  peekBody,
   refusedAt,
   screenMessage,
+  shouldPeek,
   toolsFor,
   truncatedAt,
   actionReport,
@@ -232,6 +235,20 @@ export async function advance({ loop, shot, windows, results, ask }) {
 
   // 1. What the agent did with what it was last told to do.
   if (typeof loop.still !== 'number') loop.still = 0;      // a loop stored before this counter existed
+
+  /* The reading that was asked for on the model's behalf, if the last turn carried one. It is NOT a
+   * tool_result: no tool_use block matches it, and the API refuses a result with no call. It goes into the
+   * next screen message instead, beside the picture it describes.
+   *
+   * An error is dropped rather than shown. An agent older than 0.16.0 answers `read` with "not implemented
+   * on the macOS agent yet", and pasting that into the conversation would teach the model that looking does
+   * not work - the opposite of the point. */
+  const peeked = (Array.isArray(results) ? results : []).find((r) => r && String(r.id) === PEEK_ID);
+  /* A local, not a field on the loop: it is read here and spent below, in this same call. On the cloud path
+   * the loop is written back to a database row between turns, and a value that never needs to survive that
+   * has no business being in it. */
+  const saw = (peeked && peeked.isError !== true && peeked.output) ? String(peeked.output) : null;
+
   const answered = (loop.mine || []).concat(resultBlocks(loop.pending || [], results, loop));
   if (answered.length) loop.messages.push({ role: 'user', content: answered });
   loop.mine = [];
@@ -308,7 +325,7 @@ export async function advance({ loop, shot, windows, results, ask }) {
   }
 
   forgetOldPictures(loop.messages);
-  loop.messages.push(screenMessage(shot, openList(windows)));
+  loop.messages.push(screenMessage(shot, openList(windows), saw));
   loop.stepNo += 1;
   loop.turn += 1;
 
@@ -477,6 +494,14 @@ export async function advance({ loop, shot, windows, results, ask }) {
     actions.push({ id: use.id, kind: 'do', name: use.name, body: line });
     loop.pending.push({ id: use.id, name: use.name });
     ran.push(String(use.name || ''));
+  }
+
+  /* AND THE LOOK NOBODY ASKED FOR - appended last, so it reads the window as the model's own actions left
+   * it rather than as it was before them. Not in `pending` (it answers no tool_use) and not in `steps` (the
+   * model did not decide it, and charging it as a step would put a line in the user's run log for something
+   * they cannot read as an intention). See shouldPeek. */
+  if (actions.length && shouldPeek(loop.still)) {
+    actions.push({ id: PEEK_ID, kind: 'do', name: 'read_window', body: peekBody(shot) });
   }
 
   return { loop: pack(loop), actions, step: loop.stepNo, shotWidth: loop.shotWidth };

@@ -1244,5 +1244,66 @@ group('набранный текст: запись слепа, чтение ок
     /SAVE DIALOG OPENS WITH ITS NAME FIELD ALREADY FOCUSED/.test(brain));
 }
 
+/* ВЗГЛЯД, КОТОРОГО НИКТО НЕ ПРОСИЛ.
+ *
+ * Правило «когда клик сделал не то, прочитай окно» промпт несёт с 0.11.0; описание read_window переписано;
+ * добавлено «не набирай одно и то же дважды, прочитай поле обратно». После всего этого в ДВУХ измеренных
+ * прогонах подряд read_window и find_element вызваны НОЛЬ раз - и оба раза модель залипала ровно на том,
+ * что эти инструменты и отвечают. Третья формулировка того же совета была бы ставкой на то же в третий раз.
+ *
+ * Поэтому правило переехало в код - как BATCHABLE, и по той же причине: промпт говорит модели, что делать,
+ * а драйвер решает, что произойдёт. */
+group('на застрявшем ходу окно читается само, обоими драйверами');
+{
+  const brain = read('api/_brain.mjs');
+  const cloud = read('api/_step.mjs');
+  const local = read('web/src/lib/desktop-engine.ts');
+
+  /* Правило - в мозге, а не по копии в каждом драйвере: два условия под одним именем разъедутся молча. */
+  check('условие живёт в мозге и одно на двоих',
+    /export const shouldPeek = \(still\) => Number\(still\) >= 1;/.test(brain)
+      && /shouldPeek\(loop\.still\)/.test(cloud) && /shouldPeek\(still\)/.test(local));
+  check('и провод для него строит тоже мозг',
+    /export const peekBody = \(frame\) =>/.test(brain)
+      && /peekBody\(shot\)/.test(cloud) && /peekBody\(frame\)/.test(local));
+  /* Координаты чтения - в системе той картинки, которая поедет вместе с ним, иначе модель получит позиции
+   * из другой системы координат и промахнётся на любом масштабированном экране. */
+  check('и он спрашивает те же scale/ox/oy, что у снимка',
+    /action=read scale=\$\{\(frame && frame\.scale\) \|\| 1\} ox=/.test(brain));
+
+  /* Момент срабатывания тоже один: решает ПРЕДЫДУЩИЙ ход, чтение идёт ПОСЛЕ действий текущего. На облачном
+   * пути иначе и нельзя - деплой до агента не дотягивается и может только приложить действие, - а локальный
+   * приведён к тому же нарочно. */
+  check('решает предыдущий ход, а не текущий',
+    /const peekNow = shouldPeek\(still\);/.test(local)
+      && local.indexOf('const peekNow = shouldPeek(still);') < local.indexOf('still = stirred ? 0 : still + 1;'));
+  check('а читается после действий хода',
+    /if \(peekNow && results\.length\) \{/.test(local)
+      && local.indexOf('if (peekNow && results.length)') > local.indexOf('still = stirred ? 0 : still + 1;'));
+  check('на облачном пути чтение приложено последним к действиям хода',
+    /if \(actions\.length && shouldPeek\(loop\.still\)\) \{\s*\n\s*actions\.push\(\{ id: PEEK_ID/.test(cloud));
+
+  /* Это НЕ ответ на вызов инструмента: под него нет tool_use, а API отвергает результат без вызова. */
+  check('и оно не выдаётся за ответ на вызов инструмента',
+    !/loop\.pending\.push\(\{ id: PEEK_ID/.test(cloud) && /screenMessage\(shot, openList\(windows\), saw\)/.test(cloud));
+  /* И не становится шагом: человек читает в журнале СВОИ намерения, а этого он не заказывал. */
+  check('и не попадает в журнал прогона отдельной строкой',
+    !/loop\.steps\.push\(\{ tool: 'read_window'/.test(cloud));
+
+  /* Агент старее 0.16.0 ответит на read отказом. Показать его модели значило бы научить её, что смотреть
+   * бесполезно, - то есть добиться обратного тому, ради чего всё это. */
+  check('отказ старого агента проглатывается, а не показывается модели',
+    /peeked\.isError !== true/.test(cloud) && /catch \(_\) \{ saw = null; \}/.test(local));
+
+  /* Слова - в мозге, как у waitReport и actionSaid: два драйвера, сказавшие это по-разному, научат модель
+   * двум разным привычкам. */
+  check('слова про прочитанное складывает мозг',
+    /Nothing on screen moved when the last actions ran/.test(brain)
+      && /export function screenMessage\(frame, open, saw\)/.test(brain));
+  /* И тип для TS-половины - иначе локальный драйвер просто не соберётся. */
+  check('и TypeScript-половина объявлена',
+    /export function shouldPeek\(still: number\): boolean;/.test(read('api/_brain.d.mts')));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
