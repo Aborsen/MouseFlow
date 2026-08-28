@@ -1394,11 +1394,15 @@ check('and an application is opened by name, never by path or with arguments',
 check('which the code admits is a narrowing rather than a boundary',
   /WHAT THIS IS NOT is a security boundary/.test(winAgent2));
 
-/* macOS has none of the four, and says which - a model told "no such action" improvises, and improvising is
- * how a run ended up writing itself a screen-capture tool in a terminal. */
-check('macOS names the four it lacks instead of calling them unknown',
-  /case "capture", "clipread", "clipwrite", "open":/.test(swiftAgent)
-    && /not implemented on the macOS agent yet/.test(swiftAgent));
+/* macOS HAD none of the four and named them rather than calling them unknown - a model told "no such action"
+ * improvises, and improvising is how a run ended up writing itself a screen-capture tool in a terminal. Now
+ * it has them, and the refusal is gone WITH the implementation rather than in a later pass: a refusal left
+ * standing beside a live action rejects a working action, which is the worse of the two failures. */
+check('macOS implements the four rather than naming them',
+  /case "capture":/.test(swiftAgent) && /case "clipread":/.test(swiftAgent)
+    && /case "clipwrite":/.test(swiftAgent) && /case "open":/.test(swiftAgent));
+check('and no refusal is left standing beside a live implementation',
+  !/not implemented on the macOS agent yet/.test(swiftAgent));
 
 check('and the preview reaches the new steps',
   /tool: 'capture_window'/.test(read('../web/src/dev/mock-api.ts'))

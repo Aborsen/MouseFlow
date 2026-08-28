@@ -26,19 +26,27 @@ These are not bugs and no amount of work inside the current design removes them.
   **and cannot see input while one has focus**. A recording made over an admin app is silently incomplete —
   the events never arrive, so nothing downstream can detect the hole. The UAC secure desktop is unreachable
   either way.
-- **macOS has ten of the twenty-one tools.** Everything added from 0.10.0 onward is Windows only:
-  `capture_window`, `clipboard_read`, `clipboard_write`, `open_url`, `open_app`, `read_window`,
-  `find_element`, `scroll_to`, `drag`, `refresh_page`, `wait_for_window`. The macOS agent answers each of
-  them by name and says which version it arrived in, so a model stops rather than improvising — that part
-  works, and a watched macOS run shows it working. But a run that needs a screenshot, a clipboard or a
-  browser cannot be done there at all. Closing it is a piece of work of its own: `NSPasteboard`,
-  `CGWindowListCreateImage`, `NSWorkspace.open`, and the AX equivalents of the naming tools.
-- **`capture_window`, the clipboard and `open_url`/`open_app` are Windows only.** They landed in 0.10.0 on
-  the Windows agent; the macOS equivalents (`NSPasteboard`, `CGWindowListCreateImage`, `NSWorkspace.open`)
-  are not written. The macOS agent answers those four actions by name and says so, which is deliberately
-  different from "no such action": a model told an action does not exist looks for a way round — in the run
-  this came from, that meant opening a terminal and writing a screen-capture tool — and a model told the
-  platform lacks it stops and reports.
+- **macOS has all twenty-one tools as of 0.16.0 — written, and mostly not yet watched.** Everything added
+  from 0.10.0 to 0.12.0 was Windows only for six releases; `capture_window`, `clipboard_read`,
+  `clipboard_write`, `open_url`, `open_app`, `read_window`, `find_element`, `scroll_to`, `drag`,
+  `refresh_page` and `wait_for_window` all exist on the Swift agent now, and the by-name refusals are gone
+  with them. **What that sentence does not say is that they have been run.** They typecheck, the contract
+  suite holds them against the Windows implementation, and that compares text and shapes rather than
+  behaviour. The three most likely to be wrong on a real Mac, and why:
+  - **`read_window` and `find_element`** walk the AX tree breadth-first under three bounds at once (1500
+    nodes, depth 12, 2.5s, plus a 4s messaging timeout on the application). Those numbers were chosen from
+    the Windows measurements, not measured here. An application that answers slowly will return a short
+    list rather than a wrong one, which is the safe direction, but the list may be shorter than it should be.
+  - **`capture_window`** uses `SCContentFilter(desktopIndependentWindow:)`, which is better than the Windows
+    answer — it photographs the window whatever is in front of it, and unlike `PrintWindow` it does not fail
+    on hardware-accelerated surfaces. It needs Screen Recording, and a region capture is at point
+    resolution (1 image pixel = 1 screen point), not backing-store resolution.
+  - **The sign of the horizontal wheel is a reasoned guess.** On Windows the convention is documented:
+    positive `WM_MOUSEHWHEEL` is right. `CGEventTypes.h` does not state one, so the agent follows
+    `NSEvent.scrollingDeltaX`, where positive is left, and both halves — the recorder tap and the injector —
+    ask one function (`Sideways`) so they cannot disagree with each other. If it is mirrored, it is mirrored
+    consistently and one line flips both. **Check:** scroll sideways during a recording in anything with a
+    horizontal list, and read whether the transcript says "Scroll Left" or "Scroll Right".
 - **A single character typed is invisible to the change detector.** The screen fingerprint is 64x36 grey
   cells, so each one is a 30x30 average: fifteen characters move four cells and one character moves none.
   An action that types one character can therefore be reported as having changed nothing. Nothing on this
@@ -71,11 +79,27 @@ These are not bugs and no amount of work inside the current design removes them.
   refusal says so and names the way round (a different terminal application, or autostart, where the agent
   has no terminal at all). Erring this way is deliberate: the alternative is failing to protect the window
   that matters.
+- **An Electron window still names nothing on macOS, and Chrome now does.** Measured on this Mac with the
+  0.16.0 `read` action: a Google Chrome window answers with 27 named things — toolbar, bookmarks bar, Back,
+  Forward (correctly reported disabled), Reload, the profile button — while the Claude desktop app answers
+  with exactly two, both the size of the window: a group and an `AXWebArea` with no children. `awaken()`
+  sets `AXManualAccessibility` and falls back to `AXEnhancedUserInterface` **only when the first is not
+  understood**, and an Electron app appears to accept the first and ignore it, so the fallback never fires.
+  Setting both unconditionally is the obvious fix and is deliberately not done: `AXEnhancedUserInterface` is
+  VoiceOver's own signal and AppKit changes window-geometry behaviour under it, which is why window managers
+  toggle it off around every move they make. This is the same shape as the Chrome tab-strip gap below, and
+  it affects `#ctx` naming during a recording as well as `read_window`.
 - **macOS captures one display.** ScreenCaptureKit takes the display the cursor is on. Bounds checking still
   uses the union of all displays, because a click on the second monitor is a legitimate click even when the
   agent cannot see it.
 - **macOS `/shot` and `/pulse` need macOS 14+.** `CGWindowListCreateImage` is *unavailable* on macOS 15, not
-  merely deprecated, and cannot be kept behind an `#available`.
+  merely deprecated, and cannot be kept behind an `#available`. `capture_window` is on the same floor and
+  says so rather than failing obscurely.
+- **A short name that is content still gets recorded, on both platforms.** From 0.16.0 the macOS agent drops
+  any element name over 60 characters and writes `namelen=` instead, which is what Windows has done since
+  0.11.0 — the accessibility name of a message element *is* the message. The rule is a length, so it cannot
+  catch a spell-check item called "Spelling, сторят", which carries one typed word in sixteen characters.
+  Nothing measured separates that from a label.
 
 ### Element recording (the extension)
 
@@ -119,6 +143,9 @@ These are not bugs and no amount of work inside the current design removes them.
 | Windows: the tray's failure paths | **Untested rather than disproved** — a tray that fails to appear, a held recording surviving a restart of the agent, the 409 that refuses to record over one. |
 | macOS: recording, `#ctx` naming, `/shot`, `/pulse`, `/windows`, both permissions, the permission self-recovery, the menu bar, the held-recording handover, a Developer ID rebuild keeping the grants | **Verified** on a real Mac (macOS 26.5, arm64), 2026-08-20 and 2026-08-21. |
 | macOS: **replay, and aiming by name** | **Never observed working.** |
+| macOS: **the eleven actions added in 0.16.0** | **Written, typechecked, never run.** `swiftc -typecheck` passes and the contract suite holds each against the Windows implementation — which compares text and shapes, not behaviour. Nothing here has photographed a window, read an AX tree under a deadline, or scrolled sideways on a real Mac. |
+| macOS: **the horizontal wheel's sign** | **Reasoned, not measured.** `CGEventTypes.h` does not state one; the agent follows `NSEvent.scrollingDeltaX` (positive is left). Recorder and injector share one constant, so an error is mirrored consistently and costs one line. |
+| macOS: **the two recording leaks closed in 0.16.0** | Names over 60 characters and query strings in address-shaped window titles no longer reach a recording. **The rule is checked by the suite; the effect on a real recording is not re-measured.** |
 | macOS: Chrome's tab strip | Measured and **still nameless**: the hit test returns an unnamed group, climbing finds nothing, and the bounded child descent reached no tabs either (8 tab clicks, 0 named). The tabs must live in another branch, likely an `AXTabGroup` under the window. Finding it needs an AX-tree inspection of a real Chrome, not another guess. |
 | The OpenAI provider path | **Written, never run from here.** No `OPENAI_API_KEY` on the deployment. Structured so a wrong assumption fails loudly with the upstream's own message rather than silently degrading. |
 | Antivirus / EDR behaviour | **Untested.** A global mouse hook plus `SendInput` looks exactly like a RAT. |

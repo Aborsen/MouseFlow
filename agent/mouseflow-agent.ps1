@@ -448,7 +448,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.15.0";
+        public const string Version = "0.16.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it

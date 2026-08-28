@@ -271,9 +271,45 @@ action=activate title=Outlook
 action=activate process=outlook
 ```
 
+Ten more arrived between 0.10.0 and 0.12.0, and both agents carry all of them from 0.16.0:
+
+```
+action=capture scale=1 ox=0 oy=0 [process=chrome] [title=Inbox]
+action=capture x=100 y=100 w=400 h=300
+action=clipread
+action=clipwrite enc=b64 text=<base64 UTF-8>
+action=open url=https://docs.new
+action=open app=Google Chrome
+action=read scale=1 ox=0 oy=0 [process=finder] [title=Documents]
+action=find scale=1 ox=0 oy=0 [process=finder] title=<the name to look for>
+action=scrollto scale=1 ox=0 oy=0 [x=400 y=300] to=end | to=start | to=<name>
+action=drag x=100 y=100 tx=400 ty=300
+action=refresh [process=chrome] [title=Inbox]
+action=waitwindow ms=20000 until=appears|disappears [process=chrome] [title=Save]
+```
+
+`scale`, `ox` and `oy` are **the model's coordinate system, sent inward so answers can come back out in
+it**. Every other coordinate on this wire has already been converted from screenshot pixels to screen
+pixels by the caller, in one place, so nobody can forget the origin — which on a second monitor to the left
+is negative. The four actions that answer WITH coordinates travel the other way, and they apply the same
+formula in reverse: `shot = (screen - o) * scale`. The alternative is a conversation with two coordinate
+systems in it, and a wrong click on any scaled screenshot.
+
+Note the fields each one spends its free text on. `find` takes the **name** in `title=`, not a window
+title — the wire has exactly one field that may contain spaces, and `find` spends it on what it is looking
+for; narrow the window with `process=` instead. `scrollto` reads `to=` as a plain token, so a multi-word
+name is trimmed at the first space.
+
 Parsing rules that matter, both of them learned the hard way:
 
-- `text=`, `title=` and `name=` take **the rest of the line**, unsplit — they contain spaces.
+- `text=`, `title=` and `app=` take **the rest of the line**, unsplit — they contain spaces. The macOS
+  agent adds `name=` to that list, because it is the half that reads the click label; the Windows agent
+  ignores the field, so there is nothing there for it to split. Whichever marker comes first wins the rest
+  of the line, so no two can both claim it.
+- A missing entry in that list is not cosmetic. `app=` was absent on the macOS side until 0.16.0, so `open
+  app=Google Chrome` arrived as "Google" — an application nobody has — and `open app=Terminal -e whoami`
+  arrived as a bare "Terminal" and **opened it**, walking straight past the refusal in the same file that
+  exists to stop exactly that. Found by running it, not by reading it.
 - `name=` is what the caller believes it is clicking, in the words on screen, and it is a HINT rather than a
   target: hit-test the point, and only if something else is under it, look for that name nearby. A coordinate
   read off a downscaled screenshot is a point; a name is the thing. They part company the moment anything

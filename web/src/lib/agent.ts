@@ -304,7 +304,30 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.15.0 is the build where Ctrl+V is Ctrl+V.
+/* 0.16.0 is the build where a Mac can do what a PC could.
+ *
+ * Six releases of Windows work had gone by and the macOS agent had been answering ten of them by name -
+ * "not implemented on the macOS agent yet". That refusal is the right shape and it is not a feature: a run
+ * on a Mac could not photograph a window, could not read a window by name, could not put anything on the
+ * clipboard, could not scroll sideways, and could not drag. All ten exist there now - capture_window,
+ * clipboard_read, clipboard_write, open_url, open_app, read_window, find_element, scroll_to, drag,
+ * refresh_page and wait_for_window - and the refusals are gone with them, because a refusal left standing
+ * beside a live action rejects a working action.
+ *
+ * TWO OF THE CHANGES ARE NOT FEATURES AT ALL, and they came first for that reason. The macOS recorder was
+ * writing other people's words into recordings: the accessibility name of a message element IS the message,
+ * and Windows had stopped keeping any name over 60 characters four releases ago. And a window title that is
+ * an ADDRESS carried its query string - out of a real recording, a one-time sign-in token - while the same
+ * file cut the query off the `url` field on exactly that argument. Both are fixed on the writing end, where
+ * a value that never entered a recording cannot leak from anything downstream.
+ *
+ * Also on the Mac now: the agent refuses to click or type into the terminal that is hosting it, worked out
+ * from the process tree - the visible window belongs to the PARENT, and Windows learned the same lesson the
+ * hard way when its first guard read GetConsoleWindow and got zero.
+ *
+ * Windows itself is unchanged in this release; it carries the number because the app compares one number.
+ *
+ * The previous note, kept because the reason still holds. 0.15.0 is the build where Ctrl+V is Ctrl+V.
  *
  * A shortcut is a KEYCODE, and the agent was asking the KEYBOARD LAYOUT for one. Measured on a machine with
  * Russian active - one of three layouts installed - VkKeyScan refuses every Latin letter: 'a', 'A', 'c',
@@ -480,7 +503,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.15.0';
+export const AGENT_WANTS = '0.16.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

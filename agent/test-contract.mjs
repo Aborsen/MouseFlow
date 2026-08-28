@@ -985,5 +985,162 @@ group('сказанное об исходе показывается на гла
     said.indexOf('useEffect(') < said.indexOf('if (!note) return null;'));
 }
 
+/* ------------------------------------------------------------------ macOS catches up with Windows
+ *
+ * За шесть релизов Windows-агент ушёл с 0.9.9 на 0.15.0, а macOS шёл следом отказами по имени. Волна,
+ * которую проверяют эти группы, закрывает разрыв - и проверяются именно ОБЕ половины, потому что расходятся
+ * они всегда одинаково: одна сторона умеет, вторая молчит, и видно это только у пользователя. */
+
+/* ДВЕ УТЕЧКИ, и они первыми не потому, что сложнее, а потому, что это не функции, а то, что агент СОБИРАЕТ
+ * и не должен. Всё ниже по течению копирует payload куда угодно - на аккаунт, в модель, в SKILL.md, который
+ * скачивают и пересылают, - и значение, не попавшее в запись, не утечёт ни оттуда, ни оттуда. */
+group('подпись отличается от содержимого длиной, и это делают оба агента');
+{
+  /* Тип не различает: в Outlook `option` бывает 275-376 символов, а `radio button` 174 - те же типы, что
+   * несут трёхсимвольные подписи. Самое длинное имя на НАЖИМАЕМОМ - 43 символа по трём приложениям. */
+  check('порог один и тот же, и он назван числом',
+    /static let NAME_MAX = 60\b/.test(swift) && /const int NameMax = 60;/.test(ps));
+  check('выше порога пишется длина, а имя выбрасывается',
+    /target\.control = nil\s*\n\s*target\.nameLength = name\.count/.test(swift)
+      && /target\.Control = null;\s*\n\s*target\.NameLength = name\.Length;/.test(ps));
+  /* Никогда оба: у вырезанного имени нет `control=`, так что старый читатель видит шаг с типом и без
+   * имени - то есть ровно то, что он показал бы для безымянного элемента. */
+  check('и на провод уходит либо имя, либо длина, никогда оба',
+    /if let v = e\.control \{ out \+= "\\tcontrol=" \+ v \}\s*\n(?:\s*\/\*[\s\S]*?\*\/\s*\n)?\s*else if e\.nameLength > 0/.test(swift)
+      && /else if \(e\.NameLength > 0\)/.test(ps));
+  /* САМОЕ ЛЁГКОЕ МЕСТО ЭТО ПОТЕРЯТЬ. Имя МЕРЯЮТ, и обрезанное до 120 имя длиной 376 сообщает о себе «120» -
+   * то есть ровно то число, по которому нельзя понять, сколько текста там было. */
+  check('macOS меряет имя ДО того, как его укоротит',
+    /private static func nameAttr\([\s\S]{0,240}return flatten\(raw\)/.test(swift)
+      && /if let name = nameAttr\(current, kAXTitleAttribute\)/.test(swift));
+  /* И читающая сторона применяет то же правило к записям, сделанным до этой сборки. */
+  check('читающая сторона знает то же правило',
+    /function nameOrLength\(name, said\)/.test(read('api/_transcript.js'))
+      && /namelen/.test(read('api/_macro.mjs')));
+}
+
+group('заголовок окна, который является адресом, теряет строку запроса');
+{
+  /* Из настоящей записи: `auth.doubleword.ai/u/login?state=hKFo2SAw…` - одноразовый токен входа. У
+   * страницы без <title> заголовком становится её адрес, и страница-редирект входа - ровно такая. */
+  check('обрезка есть у обоих и живёт отдельной функцией',
+    /static func bareTitle\(_ title: String\) -> String\?/.test(swift)
+      && /static string BareTitle\(string title\)/.test(ps));
+  /* Только когда заголовок ЦЕЛИКОМ адрес: иначе «What is a good name? - Google Search» превратится в мусор. */
+  check('и срабатывает только на том, что целиком адрес',
+    /if said\.contains\(" "\) \{ return nil \}/.test(swift)
+      && /if \(said\.IndexOf\(' '\) >= 0\) return null;/.test(ps));
+  check('оба берут только http и https и требуют точку в хосте',
+    /scheme == "http" \|\| scheme == "https"[\s\S]{0,200}host\.contains\("\."\)/.test(swift)
+      && /parsed\.Scheme != Uri\.UriSchemeHttp[\s\S]{0,300}Host\.IndexOf\('\.'\) < 0/.test(ps));
+  /* Резать надо ДО укорачивания: заголовок, обрезанный посреди query, разобрался бы как путь. */
+  check('macOS режет раньше, чем укорачивает',
+    /clip\(bareTitle\(flat\) \?\? flat, 120\)/.test(swift));
+  /* И это тот же путь, которым `window=` попадает в запись, а не соседний. */
+  check('и это тот путь, которым заголовок попадает в запись',
+    /static func frontWindowTitle\(pid: pid_t\) -> String\? \{[\s\S]{0,400}titleOf\(window\)/.test(swift));
+}
+
+/* ДЕЙСТВИЕ, КОТОРОМУ ЕСТЬ ЧТО СКАЗАТЬ. Без него capture и clipread нечем ответить: снимок сделан, а куда он
+ * лёг, никто не узнает. Нового в протоколе при этом нет - деплой уже передаёт модели любой output, отличный
+ * от "done". */
+group('действие умеет ответить словами, и слова складывает агент');
+{
+  check('у обоих есть один канал, читаемый один раз',
+    /static func take\(\) -> String\? \{/.test(swift) && /public static string TakeOutput\(\)/.test(ps));
+  check('и он сбрасывается в начале каждого действия',
+    /Output\.reset\(\)/.test(swift) && /ResetOutput\(\);/.test(ps));
+  /* `{"ok":true}` обязано остаться ровно тем же для действий, которым сказать нечего. */
+  check('/do добавляет output только когда он есть',
+    /if let said = Output\.take\(\) \{[\s\S]{0,200}\\"output\\":/.test(swift)
+      && /said == null\s*\n\s*\? "\{\\"ok\\":true\}"/.test(ps));
+  check('и курьер говорит "done", когда сказать нечего',
+    /jsonString\(told \?\? "done"\)/.test(swift) && /told == null \? "done" : told/.test(ps));
+  /* Предложение из этого складывает деплой одной функцией на оба драйвера - иначе две реализации научат
+   * модель двум разным привычкам. */
+  check('а сентенцию для модели строит одно место на оба драйвера',
+    /export const actionSaid = \(output, moved, streak = 0\)/.test(read('api/_brain.mjs')));
+}
+
+group('наружу отвечают в пикселях скриншота, а не в экранных');
+{
+  /* Всё остальное в actionBody переводит ВНУТРЬ, и одно место для этого - правило. Действия, отвечающие
+   * координатами, едут в обратную сторону, и формула здесь та же наизнанку. */
+  check('формула одна и та же у обоих',
+    /Int\(\(\(screenX - ox\) \* scale\)\.rounded\(\)\)/.test(swift)
+      && /\(int\)Math\.Round\(\(screenX - _shotOx\) \* _shotScale\)/.test(ps));
+  check('и её читают все четыре действия, которые отвечают координатами',
+    (swift.match(/Geometry\.read\(fields\)/g) || []).length >= 4
+      && (ps.match(/ReadGeometry\(a\);/g) || []).length >= 4);
+  check('и деплой шлёт эти три числа',
+    /const geometry = \(\) => `scale=\$\{frame\.scale \|\| 1\} ox=/.test(read('api/_brain.mjs')));
+}
+
+/* ОКНО, КОТОРОЕ АГЕНТ НЕ ТРОГАЕТ. На Windows модель однажды сама вывела опасность и оставила записку прозой
+ * следующей за собой: «вкладка 1 - сессия агента (НЕ Ctrl+C)». Записка прозой - не охрана. */
+group('ни один агент не водит окно, в котором запущен сам');
+{
+  check('охрана есть у обоих',
+    /static func refusal\(pid: pid_t\) -> String\?/.test(swift) && /static string Mine\(IntPtr hwnd\)/.test(ps));
+  /* Построено на дереве процессов, а не на «своей консоли»: под Windows Terminal GetConsoleWindow()
+   * возвращает ноль, и первая версия охраны была мертва ровно в той среде, для которой писалась. На macOS
+   * та же форма: видимое окно принадлежит РОДИТЕЛЮ. */
+  check('и оба строят её на дереве процессов, а не на своём окне',
+    /private static func parent\(of pid: pid_t\) -> pid_t/.test(swift)
+      && /hasVisibleWindow\(walker\)/.test(swift)
+      && /static int HostOf\(int pid, DateTime childStarted\)/.test(ps));
+  /* Ещё уровень вверх - и запрещённым окажется рабочий стол: на Windows это explorer, на macOS Finder и Dock. */
+  check('и оба не заходят в оболочку системы',
+    /"launchd", "loginwindow", "Finder", "Dock"/.test(swift) && /"explorer", "services"/.test(ps));
+  check('набор спрашивается по переднему окну, а клик - по точке',
+    /if action == "type" \|\| action == "key" \{[\s\S]{0,300}frontmostApplication/.test(swift)
+      && /if \(action == "type" \|\| action == "key"\)[\s\S]{0,200}GetForegroundWindow\(\)/.test(ps));
+  /* Снимок - нет: картинка ничего не меняет, а сфотографировать собственный терминал, когда в нём что-то
+   * пошло не так, - разумное желание. */
+  check('а снимок намеренно не охраняется ни там, ни там',
+    /НЕ охраняется Own\.refusal намеренно/.test(swift)
+      && /Deliberately NOT guarded by Mine\(\)/.test(ps));
+}
+
+group('боковая прокрутка: записать, повторить и скомандовать');
+{
+  /* Дыра была тройная, и закрывать надо все три: без записи не с чего повторять, без повтора запись
+   * бесполезна, без команды модель не может прокрутить вбок вовсе. */
+  check('оба ЗАПИСЫВАЮТ горизонтальную ось',
+    /scrollWheelEventDeltaAxis2/.test(swift) && /case Native\.WM_MOUSEHWHEEL:/.test(ps));
+  check('оба ПОВТОРЯЮТ её',
+    /case "Scroll Left":/.test(swift) && /case "Scroll Left": flags \|= Native\.MOUSEEVENTF_HWHEEL/.test(ps));
+  check('и оба принимают dir= в команде',
+    /case "left": sideways = true/.test(swift) && /if \(dir == "left"\) which = "Scroll Left";/.test(ps));
+  /* Знак у двух платформ РАЗНЫЙ - на Windows положительное вправо, у CGEvent наоборот, - и потому у macOS
+   * он живёт в одном месте, которое спрашивают и запись, и впрыск: перепутать значит записывать каждую
+   * боковую прокрутку зеркально. */
+  check('и знак у macOS назван один раз на обе половины',
+    /static let rightIsPositive = false/.test(swift)
+      && /Sideways\.wheel2\(right: positive\)/.test(swift)
+      && /Sideways\.name\(delta: side\)/.test(swift));
+  /* `min(30, …)` и ответ «ок» - это недопоставка, поданная как факт: запрос на пятьдесят щелчков доставлял
+   * тридцать, и модель дальше рассуждала о положении, до которого не доехала. */
+  check('и оба отдают ЧЕСТНЫЙ счёт, а не молча урезают',
+    /min\(120, wanted\)/.test(swift) && /Math\.Min\(120, wanted\)/.test(ps)
+      && /notches, not/.test(swift) && /notches, not/.test(ps));
+}
+
+group('десять действий есть у обеих платформ');
+for (const wire of ['capture', 'clipread', 'clipwrite', 'open', 'read', 'find', 'scrollto', 'drag',
+  'refresh', 'waitwindow']) {
+  check(`"${wire}" - в обоих`,
+    new RegExp(`case "${wire}"`).test(swift) && new RegExp(`action == "${wire}"`).test(ps));
+}
+/* Отказ, оставленный при живой реализации, отвергает работающее действие - и это худшая из двух ошибок,
+ * потому что выглядит как «платформа не умеет». Убирается ВМЕСТЕ с реализацией, а не следующим заходом. */
+check('и ни одного отказа "пока не сделано" рядом с живой реализацией',
+  !/not implemented on the macOS agent yet/.test(swift));
+/* Читает их одна таблица на оба драйвера: инструмент, которого нет в actionBody, до агента не доедет. */
+check('и деплой умеет построить провод для каждого',
+  ['capture_window', 'clipboard_read', 'clipboard_write', 'open_url', 'open_app', 'read_window',
+    'find_element', 'scroll_to', 'drag', 'refresh_page', 'wait_for_window']
+    .every((tool) => new RegExp(`name === '${tool}'`).test(read('api/_brain.mjs'))));
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

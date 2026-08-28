@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.15.0"
+let VERSION = "0.16.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -278,6 +278,9 @@ final class Ev {
     var window: String?
     var control: String?
     var controlType: String?
+    /* Как ДЛИННО было то, что не записали. Едет ВМЕСТО имени, никогда рядом с ним - см. recordName. Ноль
+     * значит, что отбрасывать было нечего. */
+    var nameLength = 0
     var url: String?
 }
 
@@ -925,11 +928,16 @@ final class Recorder {
         out.reserveCapacity(list.count * 48)
         var index = 1
         for e in list {
-            if e.app != nil || e.window != nil || e.control != nil || e.controlType != nil {
+            if e.app != nil || e.window != nil || e.control != nil || e.controlType != nil
+                || e.nameLength > 0 {
                 out += "#ctx"
                 if let v = e.app { out += "\tapp=" + v }
                 if let v = e.window { out += "\twindow=" + v }
                 if let v = e.control { out += "\tcontrol=" + v }
+                /* Никогда оба - см. recordName. Старый читатель видит шаг с типом и без имени, то есть то
+                 * же, что он показал бы для безымянного элемента; новый читает это и может сказать,
+                 * сколько текста там было. PROTOCOL.md: незнакомые ключи пропускаются. */
+                else if e.nameLength > 0 { out += "\tnamelen=\(e.nameLength)" }
                 if let v = e.controlType { out += "\ttype=" + v }
                 /* Added after the four that were always here, and ignorable: the format says unknown keys
                  * are skipped rather than being an error, so an older reader loads this exactly as before. */
@@ -1060,19 +1068,68 @@ enum Accessibility {
      * pipe-separated, so an interior tab, newline or pipe in a value would shear the record. Tooltips
      * (kAXHelp) are the first source where multi-line text is COMMON, but a window title always could have
      * carried one. Same substitutions as the Windows agent's Clip. */
-    static func ctxClean(_ raw: String, _ max: Int = 120) -> String? {
+    /* Разложено надвое, и вторая половина - не украшение. Имя МЕРЯЮТ, прежде чем решить, оставлять ли его
+     * (см. recordName), а обрезанное до 120 имя длиной 376 символов сообщает о себе «120» - то есть ровно
+     * то число, по которому нельзя понять, сколько текста там было. */
+    static func flatten(_ raw: String) -> String? {
         let flat = raw.map { ch -> Character in
             if ch == "\t" || ch == "\n" || ch == "\r" { return " " }
             if ch == "|" { return "/" }
             return ch
         }
         let trimmed = String(flat).trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : clip(trimmed, max)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func ctxClean(_ raw: String, _ max: Int = 120) -> String? {
+        guard let text = flatten(raw) else { return nil }
+        return clip(text, max)
+    }
+
+    /* ПОДПИСЬ ИЛИ СОДЕРЖИМОЕ, И ОТЛИЧАЕТ ИХ ДЛИНА.
+     *
+     * Имя элемента-сообщения в дереве доступности И ЕСТЬ это сообщение, а тип их не различает: в Outlook
+     * `option` бывает 275-376 символов, а `radio button` 174 - те же типы, что несут трёхсимвольные
+     * подписи. Длина различает чисто: самое длинное имя на том, что человек НАЖИМАЕТ, - 43 символа
+     * (combo box) и 41 (button) по трём приложениям; в Проводнике нет ничего выше 60. Всё, что длиннее,
+     * в замере оказывалось содержимым - письмом, сообщением, строкой чата.
+     *
+     * Поэтому выше 60 имя не пишется, а пишется его ДЛИНА. Читателю этого хватает - «нажал на кусок текста
+     * в 147 символов» ставит шаг на место, - а в записи не остаётся ничего, что нужно вычищать перед тем,
+     * как ею поделиться.
+     *
+     * ЧЕГО ЭТО НЕ ЛОВИТ, сказано прямо, а не оставлено на обнаружение: КОРОТКОЕ имя, оказавшееся
+     * содержимым. Пункт проверки орфографии «Spelling, сторят» несёт набранное слово в шестнадцати
+     * символах, и никакое правило длины не отличит его от подписи. См. docs/product/19-limits-and-known-gaps.md.
+     *
+     * Ровно то же число и ровно тот же выбор, что у RecordName в Windows-агенте; читающая сторона
+     * (nameOrLength в api/_transcript.js) применяет то же правило и к старым записям. */
+    static let NAME_MAX = 60
+
+    static func recordName(_ target: Ev, name: String?, type: String?) {
+        target.controlType = (type?.isEmpty ?? true) ? nil : clip(type!, 40)
+        guard let name, !name.isEmpty else { target.control = nil; return }
+        if name.count > NAME_MAX {
+            /* Никогда оба: у вырезанного имени нет `control=`, так что старый читатель видит шаг с типом и
+             * без имени - то есть ровно то, что он показал бы для безымянного элемента, и это безопасно. */
+            target.control = nil
+            target.nameLength = name.count
+            return
+        }
+        target.control = clip(name, 120)
     }
 
     private static func stringAttr(_ element: AXUIElement, _ attribute: String) -> String? {
         guard let raw = copyAttr(element, attribute) as? String else { return nil }
         return ctxClean(raw)
+    }
+
+    /// The same read, at FULL LENGTH, for the attributes a name may come out of. recordName is what decides
+    /// whether such a value is kept at all, and it decides by measuring - so the measurement has to happen
+    /// before anything shortens it.
+    private static func nameAttr(_ element: AXUIElement, _ attribute: String) -> String? {
+        guard let raw = copyAttr(element, attribute) as? String else { return nil }
+        return flatten(raw)
     }
 
     /* The address of the page a click landed on, ORIGIN AND PATH ONLY.
@@ -1192,7 +1249,7 @@ enum Accessibility {
         while let current = element, depth < 5 {
             let type = stringAttr(current, kAXRoleDescriptionAttribute)
             if depth == 0 { hitType = type }
-            if let name = stringAttr(current, kAXTitleAttribute) { out.control = name; out.type = type; return out }
+            if let name = nameAttr(current, kAXTitleAttribute) { out.control = name; out.type = type; return out }
             /* The label is its own element for a form field: AXTitleUIElement points at the static text
              * that names it, the way <label for> names an input, and the text of a static text lives in its
              * value.
@@ -1200,21 +1257,21 @@ enum Accessibility {
              * ЭТО ЧУЖОЕ значение, и потому остаётся: читается подпись «Кому», а не то, что набрали в поле
              * под ней. Именно этот путь и делает запрет ниже терпимым - поля с подписью имя сохраняют. */
             if let label = elementAttr(current, kAXTitleUIElementAttribute),
-               let name = stringAttr(label, kAXValueAttribute) ?? stringAttr(label, kAXTitleAttribute) {
+               let name = nameAttr(label, kAXValueAttribute) ?? nameAttr(label, kAXTitleAttribute) {
                 out.control = name; out.type = type; return out
             }
             /* Description and value, in that order, because a great many controls carry no title: an icon
              * button has kAXDescription - and in Chromium every aria-label lands there - a text field has
              * kAXValue and nothing else. Value only on the element itself, never a parent's: a parent's
              * value is the document. */
-            if let name = stringAttr(current, kAXDescriptionAttribute) { out.control = name; out.type = type; return out }
+            if let name = nameAttr(current, kAXDescriptionAttribute) { out.control = name; out.type = type; return out }
             if depth == 0, valueMayName, !holdsTypedText(current),
-               let name = stringAttr(current, kAXValueAttribute) {
+               let name = nameAttr(current, kAXValueAttribute) {
                 out.control = name; out.type = type; return out
             }
             /* Help is the tooltip. Last, because it describes rather than names - but a toolbar button that
              * names itself nowhere else usually says exactly the right thing here. */
-            if let name = stringAttr(current, kAXHelpAttribute) { out.control = name; out.type = type; return out }
+            if let name = nameAttr(current, kAXHelpAttribute) { out.control = name; out.type = type; return out }
             element = elementAttr(current, kAXParentAttribute)
             depth += 1
         }
@@ -1224,16 +1281,55 @@ enum Accessibility {
         return out
     }
 
+    /* ЗАГОЛОВОК, КОТОРЫЙ ЯВЛЯЕТСЯ АДРЕСОМ, ТЕРЯЕТ СТРОКУ ЗАПРОСА - и это та же самая обрезка, что у
+     * webURL двумя экранами выше, только источник другой.
+     *
+     * У страницы без <title> заголовком окна становится её адрес, и страница-редирект входа - ровно такая.
+     * Из настоящей записи: `auth.doubleword.ai/u/login?state=hKFo2SAw…`, где `state` - одноразовый токен
+     * входа. Он уходил в запись, на аккаунт, в каждый экспорт и мимо каждого читателя - в то время как в
+     * этом же файле webURL режет query у поля `url` ровно на том основании, что «строка запроса - это
+     * место, где живут сессионный токен, одноразовая ссылка и то, что человек набрал в поиске». Правило
+     * было верным, а заголовок обходил его стороной.
+     *
+     * ТОЛЬКО когда заголовок ЦЕЛИКОМ разбирается как http- или https-адрес. Заголовок, который просто
+     * СОДЕРЖИТ вопросительный знак, - это предложение, и резать предложения по пунктуации значило бы
+     * испортить «What is a good name? - Google Search» и все остальные обычные окна. */
+    static func bareTitle(_ title: String) -> String? {
+        let said = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !said.contains("?") { return nil }        // резать нечего; обычный случай, и он дешёвый
+        if said.contains(" ") { return nil }         // предложение, а не адрес
+        /* Chrome показывает адрес без схемы, а разбор её требует. Подстановка https - это догадка о схеме,
+         * и она ни на что не влияет: наружу идут только authority и путь. */
+        let probe = said.contains("://") ? said : "https://" + said
+        guard let parts = URLComponents(string: probe) else { return nil }
+        guard let scheme = parts.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
+        guard let host = parts.host, host.contains(".") else { return nil }
+        let path = parts.path == "/" ? "" : parts.path
+        let port = parts.port.map { ":\($0)" } ?? ""
+        /* Схема возвращается только если она была: дописать её значило бы изменить то, что транскрипт
+         * показывает для каждой обычной страницы. */
+        let hadScheme = said.lowercased().hasPrefix("http")
+        return (hadScheme ? "\(scheme)://\(host)\(port)" : "\(host)\(port)") + path
+    }
+
+    /// A window's title, cut and only then shortened - the cut has to see the whole address, or a title
+    /// clipped mid-query would be measured and trimmed as if the tail were part of the path.
+    private static func titleOf(_ window: AXUIElement) -> String? {
+        guard let raw = copyAttr(window, kAXTitleAttribute as String) as? String,
+              let flat = flatten(raw) else { return nil }
+        return clip(bareTitle(flat) ?? flat, 120)
+    }
+
     /// The window title of the frontmost window of a process.
     static func frontWindowTitle(pid: pid_t) -> String? {
         guard Permission.accessibility, pid > 0 else { return nil }
         let app = AXUIElementCreateApplication(pid)
         if let window = elementAttr(app, kAXFocusedWindowAttribute),
-           let title = stringAttr(window, kAXTitleAttribute) {
+           let title = titleOf(window) {
             return title
         }
         if let window = elementAttr(app, kAXMainWindowAttribute) {
-            return stringAttr(window, kAXTitleAttribute)
+            return titleOf(window)
         }
         return nil
     }
@@ -1472,11 +1568,143 @@ enum Accessibility {
                   let ww = bounds["Width"], let wh = bounds["Height"],
                   x >= wx, x <= wx + ww, y >= wy, y <= wy + wh else { continue }
             let app = (info[kCGWindowOwnerName as String] as? String).flatMap { ctxClean($0, 80) }
-            let title = (info[kCGWindowName as String] as? String).flatMap { ctxClean($0, 120) }
+            /* Через ту же обрезку: этот путь наполняет `window=` в записи ровно так же, как frontWindowTitle,
+             * и адрес с токеном не должен зависеть от того, ответило ли дерево доступности. */
+            let title = (info[kCGWindowName as String] as? String)
+                .flatMap { flatten($0) }
+                .map { clip(bareTitle($0) ?? $0, 120) }
             if app == nil && title == nil { return nil }
             return (app, title)
         }
         return nil
+    }
+
+    // ---------------------------------------------------------------- reading a window by name
+
+    /* ПРАВИЛО, КОТОРОЕ ЭТО ГНЁТ, И ПОЧЕМУ ЗДЕСЬ МОЖНО.
+     *
+     * PROTOCOL.md запрещает обходить дерево окна: на пути ВВОДА это стоит секунды, и потому запись
+     * прицеливается хит-тестом и подъёмом за именем. Здесь путь другой: `read` и `find` зовёт МОДЕЛЬ,
+     * между ходами, вместо того чтобы читать координаты с уменьшенного скриншота, - и ход модели стоит
+     * восемь-пятьдесят секунд. Обход в две с половиной секунды на этом фоне не стоит ничего, а промах
+     * мимо кнопки стоит целого хода.
+     *
+     * Ограничен тремя способами сразу, и каждый закрывает свою форму провала: узлы - на неизвестную
+     * ветвистость (пять уровней по шестьдесят детей - это миллионы), глубина - на дерево-цепочку,
+     * секунды - на приложение, которое отвечает медленно. Плюс AXUIElementSetMessagingTimeout: приложение
+     * может замолчать совсем, и на Windows это стоило отдельной механики с глушением по хэндлу.
+     */
+    struct Seen {
+        var name: String
+        var kind: String
+        var frame: CGRect
+        var enabled: Bool
+    }
+
+    /// Какое окно читать - и предложение, объясняющее, почему никакое.
+    enum Target {
+        case found(AXUIElement, String)
+        case none(String)
+    }
+
+    static func windowToRead(title: String, process: String) -> Target {
+        guard Permission.accessibility else {
+            return .none("macOS has not granted Accessibility to MouseFlow Agent, so it cannot read a "
+                + "window - switch it on in System Settings, Privacy & Security, Accessibility")
+        }
+        let asked = !title.isEmpty || !process.isEmpty
+        let info = asked ? Windows.matching(title: title, process: process) : Windows.front()
+        guard let info else {
+            return .none(asked
+                ? "no open window matches " + (title.isEmpty ? "process \(process)" : "title \"\(title)\"")
+                    + " - the list of open windows under the screenshot is what is actually there"
+                : "nothing is in front to read")
+        }
+
+        /* Chromium builds its accessibility tree LAZILY and only once it detects an assistive technology, so
+         * the FIRST read of such an application returns the window and nothing inside it. Measured here on a
+         * real Mac: `read` of a Chrome window came back with two entries, both the size of the window.
+         * describe() has always handled this with a look-back; this path had no such thing and would have
+         * reported "that window names nothing readable" for every browser, once, convincingly.
+         *
+         * Only on the first ask for a given application in the life of this process, so it costs nothing
+         * afterwards - and the wait is here rather than in each caller, so `read` and `find` cannot disagree
+         * about whether the tree was ready. */
+        if awaken(pid: info.pid) { Thread.sleep(forTimeInterval: 0.4) }
+        let app = AXUIElementCreateApplication(info.pid)
+        /* Приложение может замолчать - на Windows это измерено: dbForge описал себя за 187 мс в один час и
+         * не ответил вовсе в следующий, с любого потока. Здесь на это есть системный предел, и он ставится
+         * на элемент приложения, а не на общесистемный. */
+        AXUIElementSetMessagingTimeout(app, 4.0)
+
+        var chosen: AXUIElement?
+        let windows = copyAttr(app, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+        if !title.isEmpty {
+            let want = title.lowercased()
+            chosen = windows.first { (stringAttr($0, kAXTitleAttribute) ?? "").lowercased().contains(want) }
+        }
+        if chosen == nil {
+            chosen = elementAttr(app, kAXFocusedWindowAttribute)
+                ?? elementAttr(app, kAXMainWindowAttribute)
+                ?? windows.first
+        }
+        guard let window = chosen else {
+            return .none("\"\(info.title)\" is open but does not expose a window to read - normal for a "
+                + "window running under another user, or one drawn entirely on a canvas. The screenshot is "
+                + "what there is")
+        }
+        return .found(window, info.title)
+    }
+
+    /* Имя ДЛЯ ЧТЕНИЯ. Тот же порядок источников, что у записи, и с тем же запретом: у поля ввода значение -
+     * это набранное, и читать его здесь значило бы обойти обещание, которое агент печатает на экране записи.
+     * Содержимое поля модель видит на снимке; сюда оно не едет. */
+    private static func readableName(_ element: AXUIElement) -> String? {
+        if let name = nameAttr(element, kAXTitleAttribute) { return name }
+        if let label = elementAttr(element, kAXTitleUIElementAttribute),
+           let name = nameAttr(label, kAXValueAttribute) ?? nameAttr(label, kAXTitleAttribute) {
+            return name
+        }
+        if let name = nameAttr(element, kAXDescriptionAttribute) { return name }
+        if !holdsTypedText(element), let name = nameAttr(element, kAXValueAttribute) { return name }
+        return nameAttr(element, kAXHelpAttribute)
+    }
+
+    private static func describeOne(_ element: AXUIElement) -> Seen? {
+        guard let name = readableName(element), !name.isEmpty else { return nil }
+        guard let origin = pointAttr(element, kAXPositionAttribute),
+              let size = sizeAttr(element, kAXSizeAttribute),
+              size.width > 1, size.height > 1,
+              size.width.isFinite, size.height.isFinite else { return nil }
+        let kind = stringAttr(element, kAXRoleDescriptionAttribute)
+            ?? stringAttr(element, kAXRoleAttribute) ?? "element"
+        var enabled = true
+        if let flag = copyAttr(element, kAXEnabledAttribute as String) as? Bool { enabled = flag }
+        return Seen(name: name, kind: kind, frame: CGRect(origin: origin, size: size), enabled: enabled)
+    }
+
+    /// Breadth first, so the things a person sees first are the things that fit in the answer.
+    static func namedThings(in root: AXUIElement, nodes: Int = 1500, seconds: Double = 2.5) -> [Seen] {
+        var out: [Seen] = []
+        var queue: [(element: AXUIElement, depth: Int)] = [(root, 0)]
+        var head = 0
+        var left = nodes
+        let stop = Date().addingTimeInterval(seconds)
+
+        while head < queue.count, left > 0 {
+            if Date() >= stop { break }
+            let here = queue[head]
+            head += 1
+            left -= 1
+            if here.depth > 0, let seen = describeOne(here.element) { out.append(seen) }
+            if here.depth >= 12 { continue }
+            for child in childrenOf(here.element).prefix(80) {
+                if let hidden = copyAttr(child, kAXHiddenAttribute) as? Bool, hidden { continue }
+                queue.append((child, here.depth + 1))
+            }
+            if queue.count > 6000 { break }
+        }
+        return out
     }
 
     /* What is under a point. Runs on the resolver thread, never on the tap. */
@@ -1532,8 +1760,7 @@ enum Accessibility {
         }
 
         job.target.app = appName(of: hit)
-        job.target.control = named.control
-        job.target.controlType = named.type
+        recordName(job.target, name: named.control, type: named.type)
         job.target.role = named.role
         job.target.subrole = named.subrole
         job.target.container = named.container
@@ -1561,8 +1788,7 @@ enum Accessibility {
         /* valueMayName: false - и это не осторожность, а определение. Сфокусированный элемент это тот, в
          * который сейчас печатают; его значение не может быть ничем, кроме набранного. */
         let named = nameByClimbing(focused, valueMayName: false)
-        job.target.control = named.control
-        job.target.controlType = named.type
+        recordName(job.target, name: named.control, type: named.type)
         job.target.role = named.role
         job.target.subrole = named.subrole
         job.target.container = named.container
@@ -1664,6 +1890,43 @@ enum Windows {
             if out.count >= 60 { break }
         }
         return out
+    }
+
+    /* The window under a point, front to back, on-screen only - the owner of what a click would land on.
+     * Used by the guard above and by nothing else: naming a click's target is the accessibility path's job
+     * and it answers a different question. */
+    static func at(x: Double, y: Double) -> WindowInfo? {
+        for window in list() where !window.minimized {
+            if x >= Double(window.x), x <= Double(window.x + window.w),
+               y >= Double(window.y), y <= Double(window.y + window.h) {
+                return window
+            }
+        }
+        return nil
+    }
+
+    /// Whatever is in front, when an action was given no window to aim at.
+    static func front() -> WindowInfo? {
+        let all = list()
+        return all.first(where: { $0.active }) ?? all.first(where: { !$0.minimized })
+    }
+
+    /* ONE OPEN WINDOW, by title or by process - the thing `capture`, `refresh` and `waitwindow` all need to
+     * agree about. `list()` is ordered front to back, so an equally good match that is nearer the front
+     * wins, and an ACTIVE one wins outright: "the Save dialog" means the one in front of you. */
+    static func matching(title: String, process: String) -> WindowInfo? {
+        let wantTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let wantProcess = squashed(process)
+        if wantTitle.isEmpty && wantProcess.isEmpty { return nil }
+
+        var best: WindowInfo?
+        for window in list() {
+            if !wantProcess.isEmpty && !squashed(window.process).contains(wantProcess) { continue }
+            if !wantTitle.isEmpty && !window.title.lowercased().contains(wantTitle) { continue }
+            if window.active { return window }
+            if best == nil { best = window }
+        }
+        return best
     }
 
     /* Compared without its spaces, on both sides.
@@ -1788,7 +2051,7 @@ enum Screen {
      * Synchronous on purpose: every route here answers on its own thread and the client has a deadline. The
      * semaphore blocks that worker thread, never the accept loop. */
     @available(macOS 14.0, *)
-    private static func grab(width: Int, height: Int) -> (image: CGImage, frame: CGRect)? {
+    private static func grab(width: Int, height: Int, near: CGPoint? = nil) -> (image: CGImage, frame: CGRect)? {
         guard Permission.screenRecording else { return nil }
 
         let waiter = DispatchSemaphore(value: 0)
@@ -1808,7 +2071,7 @@ enum Screen {
                 /* The display the pointer is on, falling back to the first. A person driving one window has
                  * that window under their cursor, and capturing the other monitor would be a picture of
                  * something nobody asked about. */
-                let cursor = CGEvent(source: nil)?.location ?? .zero
+                let cursor = near ?? (CGEvent(source: nil)?.location ?? .zero)
                 let display = content.displays.first(where: {
                     CGDisplayBounds($0.displayID).contains(cursor)
                 }) ?? content.displays.first
@@ -1952,6 +2215,131 @@ enum Screen {
         }
         return "{\"ok\":true,\"grid\":\"\(Data(grey).base64EncodedString())\"}"
     }
+
+    /* ОДНО ОКНО, А НЕ ЭКРАН, и в этом весь смысл действия.
+     *
+     * Снимок экрана - это снимок того, что сверху, и в прогоне, ради которого это писалось на Windows,
+     * сверху был терминал, закрывавший диалог, который модель пыталась сфотографировать: подтвердить, что
+     * диалог вообще открыт, ей так и не удалось ни разу. Там ответом был PrintWindow - просьба к окну
+     * нарисовать СЕБЯ. Здесь ответ лучше: SCContentFilter(desktopIndependentWindow:) снимает именно это
+     * окно, что бы перед ним ни стояло, - и в отличие от PrintWindow не отказывает на аппаратно
+     * ускоренных поверхностях. Оговорки про «окно не нарисовало себя» здесь поэтому нет. */
+    @available(macOS 14.0, *)
+    static func window(pid: pid_t, titled: String) -> (image: CGImage, frame: CGRect)? {
+        guard Permission.screenRecording else { return nil }
+        let waiter = DispatchSemaphore(value: 0)
+        let slot = Captured()
+
+        Task {
+            defer { waiter.signal() }
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    false, onScreenWindowsOnly: true
+                )
+                let want = titled.lowercased()
+                let mine = content.windows.filter { $0.owningApplication?.processID == pid }
+                let picked = mine.first(where: { ($0.title ?? "").lowercased() == want })
+                    ?? mine.first(where: { ($0.title ?? "").lowercased().contains(want) })
+                    ?? mine.max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height })
+                guard let picked else { return }
+
+                let filter = SCContentFilter(desktopIndependentWindow: picked)
+                let config = SCStreamConfiguration()
+                let scale = CGFloat(filter.pointPixelScale)
+                config.width = max(1, Int((filter.contentRect.width * scale).rounded()))
+                config.height = max(1, Int((filter.contentRect.height * scale).rounded()))
+                config.captureResolution = .best
+                config.showsCursor = false
+                let image = try await SCScreenshotManager.captureImage(
+                    contentFilter: filter, configuration: config
+                )
+                slot.value = (image, picked.frame)
+            } catch {
+                // Reported by the caller as a window that could not be photographed.
+            }
+        }
+        if waiter.wait(timeout: .now() + 8) == .timedOut { return nil }
+        return slot.value
+    }
+
+    /* Кусок экрана, в ТОЧКАХ: одна точка картинки - одна точка экрана. Съёмка идёт с того дисплея, на
+     * котором лежит сам прямоугольник, а не с того, где курсор, - иначе область со второго монитора
+     * возвращала бы кусок первого. */
+    @available(macOS 14.0, *)
+    static func region(_ rect: CGRect) -> CGImage? {
+        let here = Desktop.displayContaining(rect.origin)
+        guard here.width > 1, here.height > 1 else { return nil }
+        guard let got = grab(width: Int(here.width), height: Int(here.height),
+                             near: CGPoint(x: rect.midX, y: rect.midY)) else { return nil }
+        let scale = Double(got.image.width) / Double(got.frame.width)
+        let cut = CGRect(
+            x: (rect.origin.x - got.frame.origin.x) * scale,
+            y: (rect.origin.y - got.frame.origin.y) * scale,
+            width: rect.width * scale,
+            height: rect.height * scale
+        ).intersection(CGRect(x: 0, y: 0, width: got.image.width, height: got.image.height))
+        guard cut.width >= 2, cut.height >= 2 else { return nil }
+        return got.image.cropping(to: cut)
+    }
+}
+
+/* Куда ложатся снимки, и что не даёт им копиться.
+ *
+ * Под ~/Library/Caches, а не в «Изображения» и не в «Загрузки»: это рабочие файлы прогона, а не то, что
+ * человек решил сохранить, и класть их среди своих картинок значит делать их проблемой этого человека.
+ * Прогон, снявший тридцать окон, оставляет тридцать файлов - поэтому папка чистит себя сама: сначала по
+ * возрасту, потом по количеству, потому что сотня снимков за час - такой же разгон, как сотня за месяц. */
+enum Captures {
+    static func directory() -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = base.appendingPathComponent("MouseFlow/captures", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        prune(dir)
+        return dir
+    }
+
+    private static func prune(_ dir: URL) {
+        let keys: [URLResourceKey] = [.contentModificationDateKey]
+        guard let all = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
+        ) else { return }
+        let pngs = all.filter { $0.pathExtension.lowercased() == "png" }
+        let dated = pngs.map { url -> (URL, Date) in
+            let when = (try? url.resourceValues(forKeys: Set(keys)))?.contentModificationDate ?? Date.distantPast
+            return (url, when)
+        }.sorted { $0.1 > $1.1 }
+        let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
+        for (index, one) in dated.enumerated() where index >= 200 || one.1 < cutoff {
+            /* Уборка - это уборка: снимок не должен падать из-за файла, который кто-то держит открытым. */
+            try? FileManager.default.removeItem(at: one.0)
+        }
+    }
+
+    /// PNG on disk. Returns the path, or the sentence saying why not.
+    static func write(_ image: CGImage) -> (path: String?, problem: String?) {
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let url = directory().appendingPathComponent("capture-\(stamp.string(from: Date())).png")
+        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
+            return (nil, "no PNG encoder on this Mac")
+        }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { return (nil, "the picture could not be written") }
+        return (url.path, nil)
+    }
+
+    /// И на буфер ТОЖЕ, а не вместо: вставить в документ хочет один вызывающий, приложить к отчёту - другой.
+    static func toClipboard(_ image: CGImage) -> String? {
+        let rep = NSBitmapImageRep(cgImage: image)
+        guard let png = rep.representation(using: .png, properties: [:]) else {
+            return "the picture could not be encoded for the clipboard"
+        }
+        let board = NSPasteboard.general
+        board.clearContents()
+        return board.setData(png, forType: .png) ? nil : "macOS refused the clipboard"
+    }
 }
 
 // ================================================================ acting
@@ -1996,6 +2384,145 @@ let NO_SUCH_KEY_HERE: [String: String] = [
     "win": "there is no Windows key on macOS. In this grammar `ctrl` already means Command, which is the "
         + "modifier that key stands in for",
 ]
+
+/* ---------------------------------------------------------------- the one window it will not touch
+ *
+ * ЭТОТ АГЕНТ - ПРОГРАММА В ТЕРМИНАЛЕ, когда его запустили из терминала, и тогда окно этого терминала -
+ * окно, в которое он умеет печатать; а Ctrl+C, напечатанный туда, останавливает прогон, который это и
+ * печатает.
+ *
+ * Не гипотеза. В наблюдаемом прогоне на Windows модели понадобился снимок, у press_key не оказалось
+ * PrintScreen, и она пошла писать себе утилиту захвата: открыла вторую вкладку, набрала однострочник,
+ * нажала Ctrl+C - и оставила записку следующему за собой: «вкладка 1 - сессия самого агента (НЕ печатать,
+ * НЕ Ctrl+C)». Она вывела опасность сама и оставила предупреждение прозой. Предупреждение прозой - не
+ * охрана.
+ *
+ * ОХРАНА СТРОИТСЯ НА ДЕРЕВЕ ПРОЦЕССОВ, а не на «своём окне», и это урок, привезённый с Windows: там первая
+ * версия читала GetConsoleWindow(), а под Windows Terminal он возвращает ноль - охрана была мертва ровно в
+ * той среде, для которой писалась. На macOS та же форма: агент - это `main` в оболочке, оболочка - дочерний
+ * процесс Terminal.app или iTerm2, и ВИДИМОЕ ОКНО ПРИНАДЛЕЖИТ РОДИТЕЛЮ. Поэтому: getppid() вверх по цепочке
+ * до первого предка, у которого есть видимое окно, - это и есть терминал, который видит человек.
+ *
+ * И НЕ ДАЛЬШЕ. Ещё один уровень вверх - это Finder, Dock и launchd, и запретить их значило бы запретить
+ * рабочий стол: на Windows тот же лишний шаг упёрся бы в explorer.
+ *
+ * Плюс собственные окна: строка меню наша, и «Stop and Save Recording» на ней.
+ *
+ * Под автозапуском родитель - launchd, окон у него нет, и цепочка обрывается на первом же шаге: в этом
+ * состоянии каждое окно на машине - чужое, и это правильно.
+ *
+ * Запрет ШИРЕ опасности - защищено всё окно терминала, а не одна вкладка, - потому что вкладки одного окна
+ * это один процесс-хозяин и разделить их нечем. Сообщение говорит, что с этим делать. */
+enum Own {
+    /* Программы, которые никогда не считаются «терминалом, в котором мы запущены»: у них есть окна, но эти
+     * окна - рабочий стол и панель, то есть весь экран. */
+    private static let notAHost: Set<String> = [
+        "launchd", "loginwindow", "Finder", "Dock", "WindowServer", "SystemUIServer", "logind",
+    ]
+
+    private static var cached: Set<pid_t>?
+    private static let gate = NSLock()
+
+    /// The parent of a process, asked of the kernel - Foundation has no such thing.
+    private static func parent(of pid: pid_t) -> pid_t {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return 0 }
+        return info.kp_eproc.e_ppid
+    }
+
+    /// Does this process own a window a person could click into?
+    private static func hasVisibleWindow(_ pid: pid_t) -> Bool {
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return false
+        }
+        for info in list {
+            guard (info[kCGWindowLayer as String] as? Int) == 0 else { continue }
+            guard pid_t(info[kCGWindowOwnerPID as String] as? Int ?? 0) == pid else { continue }
+            guard let bounds = info[kCGWindowBounds as String] as? [String: Double],
+                  (bounds["Width"] ?? 0) > 40, (bounds["Height"] ?? 0) > 40 else { continue }
+            return true
+        }
+        return false
+    }
+
+    /// Имя процесса, а не приложения: у оболочки нет NSRunningApplication, и спросить её имя можно только
+    /// у ядра. Пустая строка значит «не удалось узнать» - и это не повод остановить подъём.
+    private static func name(of pid: pid_t) -> String {
+        if let app = NSRunningApplication(processIdentifier: pid)?.localizedName, !app.isEmpty { return app }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return "" }
+        return withUnsafePointer(to: &info.kp_proc.p_comm) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN) + 1) { String(cString: $0) }
+        }
+    }
+
+    /// This process, plus the terminal showing it - worked out once, because a process tree does not move.
+    static func pids() -> Set<pid_t> {
+        gate.lock()
+        defer { gate.unlock() }
+        if let cached { return cached }
+
+        var out: Set<pid_t> = [getpid()]
+        var walker = parent(of: getpid())
+        var up = 0
+        while walker > 1, up < 6 {
+            if notAHost.contains(name(of: walker)) { break }
+            out.insert(walker)
+            if hasVisibleWindow(walker) { break }   // это и есть терминал, который видит человек
+            walker = parent(of: walker)
+            up += 1
+        }
+        cached = out
+        return out
+    }
+
+    /// The sentence, or nil when this window is somebody else's and may be used.
+    static func refusal(pid: pid_t) -> String? {
+        guard pid > 0, pids().contains(pid) else { return nil }
+        if pid == getpid() {
+            return "that is this agent's own window, and driving it would be driving the thing doing the "
+                + "driving. Aim somewhere else"
+        }
+        return "that window belongs to the terminal this agent is running in - typing or clicking there can "
+            + "stop the run that is doing the typing. Open a SECOND terminal window if you need one; it is "
+            + "a different window and is fine"
+    }
+}
+
+/* ГОРИЗОНТАЛЬНАЯ ОСЬ, И ЕЁ ЗНАК - В ОДНОМ МЕСТЕ.
+ *
+ * Дыра была тройная: боковую прокрутку человека нельзя было записать (тап читал только ось 1), нельзя было
+ * повторить ("Scroll Left"/"Scroll Right" уходили в default и считались непроигрываемыми) и нельзя было
+ * скомандовать (`dir=` не читался вовсе). Все три чинятся здесь, и все три обязаны согласиться о знаке -
+ * поэтому и запись, и впрыск спрашивают ОДНУ функцию, а не пишут по знаку каждая.
+ *
+ * ЧИСЛО, КОТОРОЕ НЕ ИЗМЕРЕНО НА ЭТОЙ ПЛАТФОРМЕ, и сказать об этом честнее, чем промолчать. На Windows
+ * соглашение задокументировано: у MOUSEEVENTF_HWHEEL положительное - вправо. У CGEvent оси 2 заголовок
+ * системы знака не называет вовсе (CGEventTypes.h говорит только «изменение горизонтальной позиции»), а
+ * весь сторонний код, который делает это годами, отрицает X при впрыске - то есть ПОЛОЖИТЕЛЬНОЕ ЗНАЧИТ
+ * ВЛЕВО, как у NSEvent.scrollingDeltaX. Так и написано ниже.
+ *
+ * Если это окажется зеркально - меняется одна строка, и меняется сразу у обеих половин. Проверяется за
+ * минуту: записать боковую прокрутку в любом приложении с горизонтальным списком и посмотреть в
+ * транскрипте, что записалось, "Scroll Left" или "Scroll Right". */
+enum Sideways {
+    /// false: положительная ось 2 - это ВЛЕВО.
+    static let rightIsPositive = false
+
+    /// Сколько положить в wheel2 на один щелчок в названную сторону.
+    static func wheel2(right: Bool) -> Int32 { (right == rightIsPositive) ? 1 : -1 }
+
+    /// Как назвать то, что пришло с тапа.
+    static func name(delta: Int64) -> String {
+        let right = rightIsPositive ? delta > 0 : delta < 0
+        return right ? "Scroll Right" : "Scroll Left"
+    }
+}
 
 enum Input {
     private static func source() -> CGEventSource? {
@@ -2055,18 +2582,63 @@ enum Input {
         }
     }
 
-    static func scroll(x: Double, y: Double, amount: Int) {
+    /* Половинки щелчка, порознь - для перетаскивания, которое click составить не может: он посылает
+     * нажатие и отпускание вместе. */
+    static func press(x: Double, y: Double, down: Bool) {
+        if down { move(x: x, y: y); usleep(40_000) }
+        send(CGEvent(mouseEventSource: source(), mouseType: down ? .leftMouseDown : .leftMouseUp,
+                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left))
+    }
+
+    /// Движение С ЗАЖАТОЙ КНОПКОЙ - на macOS это отдельный тип события, и приложение, слушающее
+    /// перетаскивание, .mouseMoved не увидит вовсе.
+    static func dragTo(x: Double, y: Double) {
+        send(CGEvent(mouseEventSource: source(), mouseType: .leftMouseDragged,
+                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left))
+    }
+
+    /* `dir` - up, down, left or right. Пусто значит по-старому: сторону выбирает знак `amount`, так что
+     * вызывающий, написанный до этой сборки, ведёт себя ровно как раньше.
+     *
+     * СЧЁТ ОТДАЁТСЯ, И ЭТО ПОЧИНКА, А НЕ ПОТОЛОК. Было `min(30, abs(amount))` и ответ `{"ok":true}` - то
+     * есть запрос на пятьдесят щелчков доставлял тридцать и отчитывался успехом, а модель дальше
+     * рассуждала о положении, до которого не доехала. Тот же грех, что у `summary.applications`,
+     * показавшего 24 для записи, тронувшей тридцать окон: недопоставка, поданная как факт.
+     *
+     * Потолок остался, потому что `amount=100000` - это не то, что кто-то имел в виду, а сорок минут
+     * колеса не лучший ответ, чем предложение. Он вчетверо выше прежнего, ровно как на Windows, и когда
+     * он срабатывает - об этом говорят вслух. */
+    static func scroll(x: Double, y: Double, amount: Int, dir: String = "") -> String? {
+        let way = dir.trimmingCharacters(in: .whitespaces).lowercased()
+        var sideways = false
+        var positive = false
+        switch way {
+        case "left": sideways = true; positive = false
+        case "right": sideways = true; positive = true
+        case "up": positive = true
+        case "down": positive = false
+        case "": positive = amount >= 0
+        default: return "dir is up, down, left or right - not \"\(way)\""
+        }
+
         move(x: x, y: y)
         usleep(20_000)
         /* One event per notch, because a single event with a large delta is treated as a fling by some
          * applications and scrolls further than asked. */
-        let steps = min(30, abs(amount))
-        let direction: Int32 = amount >= 0 ? 1 : -1
-        for _ in 0..<max(1, steps) {
+        let wanted = abs(amount)
+        let steps = max(1, min(120, wanted))
+        let wheel1: Int32 = sideways ? 0 : (positive ? 1 : -1)
+        let wheel2: Int32 = sideways ? Sideways.wheel2(right: positive) : 0
+        for _ in 0..<steps {
             send(CGEvent(scrollWheelEvent2Source: source(), units: .line,
-                         wheelCount: 1, wheel1: direction, wheel2: 0, wheel3: 0))
+                         wheelCount: sideways ? 2 : 1, wheel1: wheel1, wheel2: wheel2, wheel3: 0))
             usleep(12_000)
         }
+        if steps != wanted && wanted > 0 {
+            Output.say("scrolled \(steps) notches, not \(wanted) - 120 is as much as one scroll does. "
+                + "Call it again, or use scroll_to")
+        }
+        return nil
     }
 
     /* Any text, on any layout, without a keymap: a synthetic key event carrying a unicode string. */
@@ -2140,6 +2712,488 @@ extension Array {
  *   - a marker only counts at the START of a token, or `subtitle=` matches `title=` and the parse begins
  *     four characters into the wrong word.
  */
+/* НАРУЖУ - В ПИКСЕЛЯХ СКРИНШОТА.
+ *
+ * Всё остальное в actionBody (api/_brain.mjs) переводит ВНУТРЬ: точку с картинки в точку на экране, и одно
+ * место для этого - правило. Часть действий отвечает КООРДИНАТАМИ, а это движение в обратную сторону, и его
+ * делает агент - той же формулой, наизнанку. Альтернатива хуже: разговор, в котором позиции прочитаны с
+ * read_window в экранных пикселях, а клики посылаются в пиксели скриншота, и промах на любом
+ * масштабированном экране.
+ *
+ *   screen -> shot:  (v - ox) * scale
+ *
+ * Читается в начале каждого действия, которое умеет отвечать координатами; отсутствие полей значит
+ * scale=1, ox=0, oy=0 - то есть «экранные пиксели», как было до 0.14.0. */
+enum Geometry {
+    private static var scale = 1.0
+    private static var ox = 0.0
+    private static var oy = 0.0
+    private static let gate = NSLock()
+
+    static func read(_ fields: [String: String]) {
+        let asked = Double(fields["scale"] ?? "") ?? 1.0
+        gate.lock()
+        scale = asked > 0 ? asked : 1.0
+        ox = Double(fields["ox"] ?? "") ?? 0
+        oy = Double(fields["oy"] ?? "") ?? 0
+        gate.unlock()
+    }
+
+    static func shotX(_ screenX: Double) -> Int {
+        gate.lock(); defer { gate.unlock() }
+        return Int(((screenX - ox) * scale).rounded())
+    }
+
+    static func shotY(_ screenY: Double) -> Int {
+        gate.lock(); defer { gate.unlock() }
+        return Int(((screenY - oy) * scale).rounded())
+    }
+
+    static func shotSize(_ px: Double) -> Int {
+        gate.lock(); defer { gate.unlock() }
+        return Int((px * scale).rounded())
+    }
+}
+
+/// One element, described the way the model will read it back.
+func elementLine(_ seen: Accessibility.Seen) -> String {
+    (seen.kind.isEmpty ? "element" : seen.kind)
+        + " \"\(clip(seen.name, 60))\""
+        + " at \(Geometry.shotX(seen.frame.origin.x)),\(Geometry.shotY(seen.frame.origin.y))"
+        + " \(Geometry.shotSize(seen.frame.width))x\(Geometry.shotSize(seen.frame.height))"
+        + (seen.enabled ? "" : " (disabled)")
+}
+
+/* ЧТО НА ЭТОМ ОКНЕ, ПО ИМЕНАМ.
+ *
+ * Ответ модели, целящейся в координату, прочитанную с уменьшенного скриншота: она может прочитать имена.
+ * Ограничено дважды - по числу и по символам, - потому что деплой режет вывод действия на 2000 символах, а
+ * молча укороченный там список - это список, которому модель верит и не должна. Что не влезло, названо
+ * вслух. */
+func doRead(_ fields: [String: String]) -> String? {
+    Geometry.read(fields)
+    let target = Accessibility.windowToRead(title: fields["title"] ?? "", process: fields["process"] ?? "")
+    guard case let .found(window, where_) = target else {
+        if case let .none(problem) = target { return problem }
+        return "could not read that window"
+    }
+
+    var lines: [String] = []
+    var seenLines = Set<String>()
+    var skipped = 0
+    var budget = 1500
+    for one in Accessibility.namedThings(in: window) {
+        let line = elementLine(one)
+        /* Один и тот же элемент, названный дважды - обёртка и её подпись с одним именем и одним
+         * прямоугольником, - для читателя одна вещь. */
+        if !seenLines.insert(line).inserted { continue }
+        if lines.count >= 40 || budget - line.count < 0 { skipped += 1; continue }
+        budget -= line.count + 1
+        lines.append(line)
+    }
+
+    if lines.isEmpty {
+        Output.say("that window names nothing readable - normal for a canvas, a game, or an application "
+            + "that has not been asked for its accessibility tree. The screenshot is what there is")
+        return nil
+    }
+    var said = "\(lines.count) named things on \"\(clip(where_, 60))\", positions in screenshot pixels: "
+        + lines.joined(separator: "; ")
+    if skipped > 0 {
+        said += ". \(skipped) more were left out for room - ask for a narrower window, or use find with a "
+            + "name if you know what you are looking for"
+    }
+    Output.say(said)
+    return nil
+}
+
+/* ГДЕ ОДНА НАЗВАННАЯ ВЕЩЬ - ответ на «есть ли она, и где».
+ *
+ * Сначала точное имя, потом вхождение без учёта регистра, потому что человек пишет «About» для пункта
+ * «About…». Неоднозначность СООБЩАЕТСЯ, а не решается: два элемента с одним именем - это факт, который
+ * модели нужен, и молча выбрать один значит кликнуть не по той строке. */
+/// Найденное, либо предложение о том, почему искать было негде. Не Result: Swift требует, чтобы ошибка
+/// была Error, а здесь она - фраза для модели, и заводить ради неё тип значило бы усложнить то, что читают.
+func findThings(_ fields: [String: String], wanted: String) -> (hits: [Accessibility.Seen], problem: String?) {
+    /* Заголовка окна здесь нет намеренно: `find` смотрит на то, что впереди, или на названный процесс, а
+     * своё единственное свободнотекстовое поле тратит на ИМЯ. */
+    let target = Accessibility.windowToRead(title: "", process: fields["process"] ?? "")
+    guard case let .found(window, _) = target else {
+        if case let .none(problem) = target { return ([], problem) }
+        return ([], "could not read that window")
+    }
+    let all = Accessibility.namedThings(in: window)
+    let exact = all.filter { $0.name == wanted }
+    if !exact.isEmpty { return (exact, nil) }
+    let low = wanted.lowercased()
+    return (all.filter { $0.name.lowercased().contains(low) }, nil)
+}
+
+func doFind(_ fields: [String: String]) -> String? {
+    Geometry.read(fields)
+    let wanted = (fields["title"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if wanted.isEmpty { return "find needs a name to look for" }
+
+    let looked = findThings(fields, wanted: wanted)
+    if let problem = looked.problem { return problem }
+    let hits = looked.hits
+
+    var said: [String] = []
+    for one in hits.prefix(6) {
+        let cx = Geometry.shotX(one.frame.midX)
+        let cy = Geometry.shotY(one.frame.midY)
+        said.append(elementLine(one) + ", centre \(cx),\(cy)")
+    }
+
+    if said.isEmpty {
+        Output.say("nothing on that window is called \"\(clip(wanted, 60))\". Read the window to see what "
+            + "it does call things, or look at the screenshot - it may not be there at all")
+        return nil
+    }
+    if said.count == 1 {
+        Output.say("found " + said[0] + " - click the centre")
+        return nil
+    }
+    Output.say("\(said.count) things match \"\(clip(wanted, 60))\", so the name alone does not say which: "
+        + said.joined(separator: "; ") + ". Pick by position, or use a longer name")
+    return nil
+}
+
+/* ТИХИЙ ЭКРАН, измеренный здесь, а не спрошенный у модели ещё раз. Тот же отпечаток и тот же порог, что у
+ * ожидания в курьере (Courier.quiet), потому что два ответа на «оно устоялось» устоялись бы по-разному.
+ * Возвращает, сколько ждали, - чтобы вызывающий мог сказать, дождался он или вышло время. */
+func settleHere(_ limitMs: Int) -> (quiet: Bool, waitedMs: Int) {
+    let started = Date()
+    var last: [UInt8]?
+    var still = 0
+    while true {
+        let waited = Int(Date().timeIntervalSince(started) * 1000)
+        if waited >= limitMs { return (false, waited) }
+        let now = Screen.grid()
+        if let was = last, let now, Courier.quiet(was, now) {
+            still += 1
+            /* Дважды, а не один раз: список, перерисовавшийся мгновением позже, выглядит неподвижным на
+             * одном сравнении. */
+            if still >= 2 { return (true, waited) }
+        } else {
+            still = 0
+        }
+        last = now
+        Thread.sleep(forTimeInterval: 0.35)
+    }
+}
+
+/* ПРОКРУТКА, ПОКА ЧТО-ТО НЕ СТАНЕТ ПРАВДОЙ - одним действием вместо хода модели на каждую порцию колеса.
+ *
+ * `to=end` и `to=start` останавливаются, когда экран перестал меняться: снаружи именно так и выглядит
+ * достигнутый край списка. Любое другое значение - ИМЯ, и цикл останавливается, когда это имя нашлось. Оба
+ * ограничены, и ограничение сообщается: прокрутка, сдавшаяся после сорока порций, - другой факт, чем
+ * прокрутка, доехавшая, и модель, которой сказали только «done», поверила бы, что доехала.
+ *
+ * Почему это действие, а не композиция: композиция стоит хода модели на порцию - восемь-пятьдесят секунд в
+ * наблюдаемом прогоне против примерно 25 мс здесь. */
+func doScrollTo(_ fields: [String: String]) -> String? {
+    Geometry.read(fields)
+    let to = (fields["to"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if to.isEmpty { return "scrollto needs to=end, to=start, or a name to scroll to" }
+    let up = to.lowercased() == "start"
+    let toEdge = up || to.lowercased() == "end"
+
+    var x = Double(fields["x"] ?? "") ?? .nan
+    var y = Double(fields["y"] ?? "") ?? .nan
+    if !x.isFinite || !y.isFinite {
+        guard let front = Windows.front() else {
+            return "scrollto needs x and y - where to put the pointer before scrolling"
+        }
+        x = Double(front.x) + Double(front.w) / 2
+        y = Double(front.y) + Double(front.h) / 2
+    }
+    if let mine = Own.refusal(pid: Windows.at(x: x, y: y)?.pid ?? 0) { return mine }
+
+    let bursts = 40
+    var did = 0
+    var still = 0
+
+    for _ in 0..<bursts {
+        if !toEdge {
+            var look = fields
+            look["title"] = to
+            /* Переиспользуется find, а не переписывается: то же правило «точное, потом вхождение», чтобы
+             * «прокрути до неё» и «она там?» не могли разойтись в ответе. */
+            let looked = findThings(look, wanted: to)
+            if let problem = looked.problem { return problem }
+            if let first = looked.hits.first {
+                let cx = Geometry.shotX(first.frame.midX)
+                let cy = Geometry.shotY(first.frame.midY)
+                Output.say("scrolled \(did) times and found " + elementLine(first)
+                    + ", centre \(cx),\(cy) - click the centre")
+                return nil
+            }
+        }
+
+        let before = Screen.grid()
+        _ = Input.scroll(x: x, y: y, amount: 3, dir: up ? "up" : "down")
+        did += 1
+
+        let after = Screen.grid()
+        if let a = before, let b = after, Courier.quiet(a, b) {
+            still += 1
+            if still >= 2 { break }
+        } else {
+            still = 0
+        }
+    }
+
+    if toEdge {
+        Output.say("scrolled \(up ? "up" : "down") \(did) times" + (still >= 2
+            ? " and the screen stopped changing, which is what the \(up ? "start" : "end") looks like"
+            : ", which is as far as one scrollto goes - call it again if there is more"))
+        return nil
+    }
+    Output.say("scrolled \(did) times and \"\(clip(to, 60))\" still is not there. It may be somewhere else, "
+        + "or named something else - read the window")
+    return nil
+}
+
+/* ОДНО ОКНО, ИЛИ ПРЯМОУГОЛЬНИК, ИЛИ ТО, ЧТО ВПЕРЕДИ.
+ *
+ * Область сообщается В ТЕХ КООРДИНАТАХ, В КОТОРЫХ ЕЁ ПРИСЛАЛИ: read_window отвечает в пикселях скриншота, и
+ * снимок, отвечающий в экранных, заставил бы модель разговаривать двумя системами координат сразу.
+ *
+ * НЕ охраняется Own.refusal намеренно: снимок ничего не меняет, а сфотографировать терминал, в котором
+ * что-то пошло не так, - разумное желание. */
+func doCapture(_ fields: [String: String]) -> String? {
+    guard #available(macOS 14.0, *) else {
+        return "capturing a window needs macOS 14 or newer - the API this used before was removed"
+    }
+    Geometry.read(fields)
+
+    let rx = Double(fields["x"] ?? "") ?? .nan
+    let ry = Double(fields["y"] ?? "") ?? .nan
+    let rw = Double(fields["w"] ?? "") ?? .nan
+    let rh = Double(fields["h"] ?? "") ?? .nan
+    let haveRegion = [rx, ry, rw, rh].allSatisfy { $0.isFinite }
+
+    var image: CGImage?
+    var what: String
+    var size: String
+
+    if haveRegion {
+        if rw < 2 || rh < 2 { return "a region needs a width and height of at least 2 pixels" }
+        what = "the region \(Geometry.shotSize(rw))x\(Geometry.shotSize(rh)) at "
+            + "\(Geometry.shotX(rx)),\(Geometry.shotY(ry))"
+        /* Размер один раз: область уже назвала свои размеры, и «the region 200x120 at 100,100, 200x120, to
+         * …» читается как ошибка в предложении. */
+        size = ""
+        image = Screen.region(CGRect(x: rx, y: ry, width: rw, height: rh))
+        if image == nil {
+            return "could not photograph that region - macOS may not have granted Screen Recording, or the "
+                + "rectangle is off every display"
+        }
+    } else {
+        let title = fields["title"] ?? ""
+        let process = fields["process"] ?? ""
+        let info = (title.isEmpty && process.isEmpty)
+            ? Windows.front()
+            : Windows.matching(title: title, process: process)
+        guard let info else {
+            return (title.isEmpty && process.isEmpty)
+                ? "nothing is in front to capture"
+                : "no open window matches "
+                    + (title.isEmpty ? "process \(process)" : "title \"\(title)\"")
+                    + " - the list of open windows under the screenshot is what is actually there"
+        }
+        if info.minimized {
+            return "\"\(info.title)\" is minimised or on another Space, and a window nobody can see has "
+                + "nothing to draw - activate_window first, then capture it"
+        }
+        guard let got = Screen.window(pid: info.pid, titled: info.title) else {
+            return "could not photograph \"\(info.title)\" - macOS has not granted Screen Recording to this "
+                + "agent, or that window closed while it was being taken"
+        }
+        image = got.image
+        what = "\"\(info.title)\""
+        size = ", \(Geometry.shotSize(got.frame.width))x\(Geometry.shotSize(got.frame.height))"
+    }
+
+    guard let picture = image else { return "could not capture" }
+    let written = Captures.write(picture)
+    guard let path = written.path else { return "could not capture: \(written.problem ?? "unknown")" }
+    let failed = Captures.toClipboard(picture)
+
+    var said = "captured \(what)\(size), to \(path)"
+    said += failed == nil
+        ? " and onto the clipboard - paste it with Command+V"
+        : ". It is NOT on the clipboard: \(failed!)"
+    Output.say(said)
+    return nil
+}
+
+/* АКТИВИРОВАТЬ, ПЕРЕЗАГРУЗИТЬ, ДОЖДАТЬСЯ. Смысл в ожидании: три хода модели в один.
+ *
+ * Cmd+R, а не F5: на macOS перезагрузка страницы - это Command+R, и F5 в браузере здесь не делает ничего. */
+func doRefresh(_ fields: [String: String]) -> String? {
+    let title = fields["title"] ?? ""
+    let process = fields["process"] ?? ""
+    if !title.isEmpty || !process.isEmpty {
+        guard let wanted = Windows.matching(title: title, process: process) else {
+            return "no open window matches "
+                + (title.isEmpty ? "process \(process)" : "title \"\(title)\"")
+        }
+        if let mine = Own.refusal(pid: wanted.pid) { return mine }
+        if let failed = Windows.activate(title: title, process: process) { return failed }
+        Thread.sleep(forTimeInterval: 0.25)
+    } else if let mine = Own.refusal(pid: Windows.front()?.pid ?? 0) {
+        return mine
+    }
+
+    if let refused = Input.key("r", ctrl: true, shift: false, alt: false, cmd: false, rawCtrl: false,
+                               win: false) {
+        return refused
+    }
+    let outcome = settleHere(20000)
+    Output.say("pressed Command+R and waited "
+        + String(format: "%.1f", Double(outcome.waitedMs) / 1000) + "s"
+        + (outcome.quiet
+            ? " - the screen has stopped changing"
+            : ", and it is still changing. Look, and wait again if it is not ready"))
+    return nil
+}
+
+/* ЖДАТЬ ОКНА, а не экрана - это другой вопрос, и именно его и задают: «появился ли диалог сохранения»,
+ * «ушёл ли сплэш».
+ *
+ * Альтернативой была хореография, которую пришлось изобретать провалившемуся прогону, - поспать двадцать
+ * секунд и надеяться, - а фиксированный сон и слишком долог, когда работает, и слишком короток, когда нет. */
+func doWaitWindow(_ fields: [String: String]) -> String? {
+    let title = fields["title"] ?? ""
+    let process = fields["process"] ?? ""
+    if title.isEmpty && process.isEmpty { return "waitwindow needs a title or a process" }
+    let wantGone = (fields["until"] ?? "appears").trimmingCharacters(in: .whitespaces).lowercased()
+        == "disappears"
+    var limitMs = Int(fields["ms"] ?? "") ?? 20000
+    limitMs = max(500, min(120_000, limitMs))
+
+    let started = Date()
+    while true {
+        let there = Windows.matching(title: title, process: process) != nil
+        let waited = Int(Date().timeIntervalSince(started) * 1000)
+        if there != wantGone {
+            Output.say((wantGone ? "it was gone" : "it appeared") + " after "
+                + String(format: "%.1f", Double(waited) / 1000) + "s")
+            return nil
+        }
+        if waited >= limitMs {
+            /* НЕ ошибка: «оно не появилось» - это ответ про мир, и модель, которой сказали, что действие
+             * не удалось, стала бы искать неисправность в ожидании, а не в ожидаемом. */
+            Output.say("waited " + String(format: "%.1f", Double(waited) / 1000) + "s and it "
+                + (wantGone ? "is still there" : "has not appeared")
+                + ". The window list under the screenshot is what is actually open")
+            return nil
+        }
+        Thread.sleep(forTimeInterval: 0.25)
+    }
+}
+
+/* НАЖАТЬ, ПРОВЕСТИ, ОТПУСТИТЬ - то, чего нельзя было составить из имеющегося: click посылает нажатие и
+ * отпускание вместе, и ничто не посылало одно без другого.
+ *
+ * С промежуточными точками, а не прыжком: приложение, читающее перетаскивание, решает по движениям МЕЖДУ, и
+ * нажатие с отпусканием в другом месте - не перетаскивание для списка, который хочет увидеть, как строка
+ * едет. Двенадцать шагов - этого хватает и это не представление.
+ *
+ * .leftMouseDragged, а не .mouseMoved: на macOS движение с зажатой кнопкой - отдельный тип события, и
+ * приложение, слушающее перетаскивание, движения другого типа не увидит вовсе. */
+func doDrag(x: Double, y: Double, tx: Double, ty: Double) -> String? {
+    Input.press(x: x, y: y, down: true)
+    Thread.sleep(forTimeInterval: 0.08)
+    let steps = 12
+    for i in 1...steps {
+        let ix = x + (tx - x) * Double(i) / Double(steps)
+        let iy = y + (ty - y) * Double(i) / Double(steps)
+        Input.dragTo(x: ix, y: iy)
+        Thread.sleep(forTimeInterval: 0.016)
+    }
+    Thread.sleep(forTimeInterval: 0.08)
+    Input.press(x: tx, y: ty, down: false)
+    return nil
+}
+
+/* http и https ТОЛЬКО, и в этом вся история безопасности этого действия: оно отдаёт адрес тому, что машина
+ * зарегистрировала для вебa, то есть браузеру. Схема - это ВЫБОР ПРОГРАММЫ (file:, x-apple-, и всё, что
+ * зарегистрировало установленное приложение), так что принимать любую схему значило бы сделать это
+ * действие «запусти что-нибудь», а для этого есть отдельное действие со своим сужением. Строка запроса
+ * здесь остаётся: в ссылке она законная часть, в отличие от записи, потому что ничего не сохраняется. */
+func doOpenUrl(_ url: String) -> String? {
+    guard let parsed = URL(string: url), let scheme = parsed.scheme?.lowercased() else {
+        return "that is not a full URL - it needs the scheme, as in https://docs.new"
+    }
+    if scheme != "http" && scheme != "https" {
+        return "only http and https can be opened this way, and that is \(scheme): - a scheme chooses "
+            + "which program handles it, which is a different question"
+    }
+    guard NSWorkspace.shared.open(parsed) else { return "macOS refused to open that link" }
+    Output.say("opened \(parsed.absoluteString) in the default browser - it may take a moment to appear")
+    return nil
+}
+
+/* ИМЯ, НИКОГДА НЕ КОМАНДНАЯ СТРОКА, и это различие - весь смысл формы.
+ *
+ * Аргументы - это то, что превращает «открой приложение» в «выполни это»: `osascript -e …` - это имя плюс
+ * аргументы, и отказ от аргументов отказывает всему этому классу, не заводя списка опасных имён - списка,
+ * который неверен в тот момент, когда кто-нибудь что-нибудь установит. Пути отказываются по той же причине:
+ * путь - это способ назвать программу, которой нет в обычных местах, включая только что записанную на диск.
+ *
+ * ЧЕМ ЭТО НЕ ЯВЛЯЕТСЯ - границей безопасности, и делать вид, что является, было бы нечестной частью. Модель
+ * и так может открыть терминал, щёлкнув по нему, и напечатать туда - именно это и произошло в прогоне, из
+ * которого выросла эта волна. Линию держат границы промпта, смотрящий человек и отказ выше трогать
+ * собственное окно агента. Это действие здесь для того, чтобы модель не импровизировала, и оно узкое,
+ * чтобы импровизировать ЧЕРЕЗ него было не легче, чем мимо. */
+func doOpenApp(_ app: String) -> String? {
+    let name = app.trimmingCharacters(in: .whitespacesAndNewlines)
+    if name.isEmpty || name.count > 80 { return "an application name, up to 80 characters" }
+    if name.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\:\"'|&<>%^;$`")) != nil {
+        return "a NAME, not a path or a command line - \"Safari\", \"Terminal\", \"Google Chrome\". "
+            + "For a web page use open_url instead"
+    }
+    /* Пробел законен в имени («Google Chrome») и он же - способ писать аргументы, так что по виду их не
+     * различить. Ведущий дефис у любого слова - это то, как выглядит аргумент, и отказать ему можно, не
+     * отказывая именам. */
+    for word in name.split(separator: " ") where word.hasPrefix("-") || word.hasPrefix("+") {
+        return "that looks like a command line rather than a name - this action opens an application and "
+            + "cannot pass it arguments"
+    }
+
+    /* Найдено, а не запущено по имени: NSWorkspace.launchApplication(_:) снят с производства, а `open -a`
+     * - это подпроцесс, то есть ровно та дверь, которую отказ от аргументов и закрывает. */
+    var found: URL?
+    if name.contains(".") {
+        found = NSWorkspace.shared.urlForApplication(withBundleIdentifier: name)
+    }
+    if found == nil {
+        let places = ["/Applications", "/System/Applications", "/System/Applications/Utilities",
+                      "/Applications/Utilities",
+                      NSHomeDirectory() + "/Applications"]
+        let want = name.lowercased()
+        outer: for place in places {
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: place) else { continue }
+            for entry in entries where entry.lowercased() == want + ".app" {
+                found = URL(fileURLWithPath: place + "/" + entry)
+                break outer
+            }
+        }
+    }
+    guard let target = found else {
+        return "no application called \"\(name)\" is installed where applications live. If it is already "
+            + "running, activate_window reaches it by name"
+    }
+
+    NSWorkspace.shared.openApplication(at: target, configuration: NSWorkspace.OpenConfiguration())
+    Output.say("asked macOS to open \(name) - it may take a few seconds to appear, and a fresh screenshot "
+        + "is how to tell whether it did")
+    return nil
+}
+
 func parseAction(_ body: String) -> [String: String] {
     let line = body.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
     var out: [String: String] = [:]
@@ -2152,8 +3206,14 @@ func parseAction(_ body: String) -> [String: String] {
         let value = String(token[token.index(after: eq)...])
 
         /* Takes the rest of the line, like text and title: a label contains spaces, and splitting it on the
-         * first one would aim at "New" when the button says "New message". */
-        if name == "text" || name == "title" || name == "name" {
+         * first one would aim at "New" when the button says "New message".
+         *
+         * `app` is here for the same reason and was MISSING, which is not a cosmetic divergence: the Windows
+         * parser has run `text`, `title` and `app` to the end of the line since 0.10.0, so `open app=Google
+         * Chrome` arrived here as "Google" - an application nobody has - while `open app=Terminal -e
+         * whoami` arrived as a bare "Terminal" and OPENED IT, walking straight past the refusal in
+         * doOpenApp that exists to stop exactly that. Caught by running it. */
+        if name == "text" || name == "title" || name == "name" || name == "app" {
             let rest = ([value] + tokens[(i + 1)...]).joined(separator: " ")
             out[name] = rest
             break
@@ -2164,14 +3224,56 @@ func parseAction(_ body: String) -> [String: String] {
     return out
 }
 
+/* КАНАЛ ОТВЕТА: действие, которому есть что сказать, говорит это словами.
+ *
+ * До сих пор действие умело ответить только «ок» или ошибкой, и потому capture с clipread нечем было
+ * ответить - снимок сделан, а куда он лёг, никто не узнает. Нового в протоколе при этом нет: деплой уже
+ * передаёт модели любой `output`, отличный от "done" (resultBlocks в api/_step.mjs), - то есть это
+ * используемый канал, а не добавляемый.
+ *
+ * СЛОВА СОБИРАЮТСЯ ЗДЕСЬ, А НЕ НА ДЕПЛОЕ, и это ровно та причина, по которой у Windows-агента то же самое
+ * лежит в Say/TakeOutput: обе реализации обязаны говорить модели одно и то же, а сказать одно и то же
+ * можно только одинаковыми предложениями.
+ *
+ * Сбрасывается в начале каждого действия: на этом пути в каждый момент идёт ровно одно действие (/do
+ * отказывает, пока идёт повтор), и значение, оставшееся от прошлого, было бы отчётом об этом. Читается
+ * один раз и очищается, чтобы не отчитаться дважды. */
+enum Output {
+    private static var text: String?
+    private static let gate = NSLock()
+
+    static func reset() { gate.lock(); text = nil; gate.unlock() }
+
+    static func say(_ words: String) { gate.lock(); text = words; gate.unlock() }
+
+    /// Read once and cleared, so it cannot be reported twice.
+    static func take() -> String? {
+        gate.lock()
+        defer { gate.unlock() }
+        let said = text
+        text = nil
+        return said
+    }
+}
+
 func doAction(_ body: String) -> String? {
     let fields = parseAction(body)
     let action = (fields["action"] ?? "").lowercased()
+    Output.reset()
     if let refusal = Input.refusal(), action != "activate" { return refusal }
+
+    /* ДЕЙСТВИЯ, ЦЕЛЯЩИЕСЯ В ФОКУС, ОХРАНЯЮТСЯ ПЕРВЫМИ, и по переднему окну, а не по точке: набор уходит
+     * туда, где фокус, - ровно так нажатие, предназначенное форме, и попадает в терминал, где запущен
+     * агент. */
+    if action == "type" || action == "key" {
+        if let mine = Own.refusal(pid: NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0) {
+            return mine
+        }
+    }
 
     let x = Double(fields["x"] ?? "") ?? 0
     let y = Double(fields["y"] ?? "") ?? 0
-    let needsPoint = ["click", "move", "scroll"].contains(action)
+    let needsPoint = ["click", "move", "scroll", "drag"].contains(action)
     if needsPoint && !Desktop.contains(x: x, y: y) {
         /* Refused rather than clamped: macOS would place the click at the nearest real coordinate, so an
          * out-of-bounds instruction would land on something and be reported as success. */
@@ -2179,6 +3281,9 @@ func doAction(_ body: String) -> String? {
         return "\(Int(x)),\(Int(y)) is off the desktop "
             + "(\(Int(r.minX)),\(Int(r.minY)) to \(Int(r.maxX)),\(Int(r.maxY)))"
     }
+    /* И ЦЕЛЯЩИЕСЯ В ТОЧКУ - когда точка уже проверена: «это за пределами экрана» - более полезный ответ
+     * для координаты, которая за пределами экрана. */
+    if needsPoint, let mine = Own.refusal(pid: Windows.at(x: x, y: y)?.pid ?? 0) { return mine }
 
     switch action {
     case "click":
@@ -2199,8 +3304,8 @@ func doAction(_ body: String) -> String? {
         Input.move(x: x, y: y)
         return nil
     case "scroll":
-        Input.scroll(x: x, y: y, amount: Int(fields["amount"] ?? "") ?? -3)
-        return nil
+        return Input.scroll(x: x, y: y, amount: Int(fields["amount"] ?? "") ?? -3,
+                            dir: fields["dir"] ?? "")
     case "type":
         var text = fields["text"] ?? ""
         if (fields["enc"] ?? "") == "b64" {
@@ -2244,25 +3349,88 @@ func doAction(_ body: String) -> String? {
             win: (fields["win"] ?? "0") == "1"
         )
     case "activate":
+        /* Отказано ДО того, как случится, а не после: вывести собственный терминал агента вперёд - это то,
+         * как СЛЕДУЮЩЕЕ действие, целящееся в переднее окно, попадает в него. */
+        if let wanted = Windows.matching(title: fields["title"] ?? "", process: fields["process"] ?? ""),
+           let mine = Own.refusal(pid: wanted.pid) {
+            return mine
+        }
         return Windows.activate(title: fields["title"], process: fields["process"])
-    /* THE FOUR THAT ARE WINDOWS-ONLY FOR NOW, named rather than left to "no action called capture".
-     *
-     * capture, clipread, clipwrite and open landed on Windows in 0.10.0 and this side has not caught up. The
-     * distinction matters to a model: told only that an action does not exist it looks for a way round -
-     * which in the run this wave came from meant opening a terminal and writing a screen-capture tool - and
-     * told that the platform lacks it, it stops and says so. The equivalents here are NSPasteboard,
-     * CGWindowListCreateImage and NSWorkspace.open, and none of them is written yet. */
-    case "capture", "clipread", "clipwrite", "open":
-        return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.10.0. "
-            + "Say so and carry on without it; there is no workaround worth trying."
-    /* And the same for 0.11.0. The equivalents here exist - AXUIElementCopyAttributeValue over kAXChildren
-     * for read and find, and a press/move/release triple for drag - and none of them is written yet. */
-    case "read", "find", "scrollto", "drag":
-        return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.11.0. "
-            + "Say so and carry on without it; there is no workaround worth trying."
-    case "refresh", "waitwindow":
-        return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.12.0. "
-            + "Say so and carry on without it; there is no workaround worth trying."
+
+    // ---------------------------------------------------------------- 0.10.0: reading back
+
+    case "clipread":
+        guard let had = NSPasteboard.general.string(forType: .string), !had.isEmpty else {
+            Output.say("the clipboard holds no text")
+            return nil
+        }
+        /* Обрезано там, где ЧИТАЕТСЯ, а не там, где показывается: деплой всё равно режет вывод действия на
+         * 2000 символах, и гонять 40МБ буфера через loopback, чтобы их выбросить, - работа, которой никто
+         * не просил. Сказано вслух, потому что молча ополовиненное значение, которое модель потом куда-то
+         * впечатает, хуже, чем никакого. */
+        if had.count > 4000 {
+            Output.say("the clipboard holds \(had.count) characters; the first 4000 are: "
+                + String(had.prefix(4000)))
+            return nil
+        }
+        Output.say("the clipboard holds: " + had)
+        return nil
+
+    case "clipwrite":
+        var put = fields["text"] ?? ""
+        if (fields["enc"] ?? "") == "b64" {
+            guard let data = Data(base64Encoded: put), let decoded = String(data: data, encoding: .utf8) else {
+                return "that text is not base64 UTF-8"
+            }
+            put = decoded
+        }
+        if put.isEmpty { return "nothing to put on the clipboard" }
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(put, forType: .string) else {
+            return "macOS refused the clipboard"
+        }
+        Output.say("put \(put.count) characters on the clipboard")
+        return nil
+
+    case "capture":
+        return doCapture(fields)
+
+    case "open":
+        let url = fields["url"] ?? ""
+        let app = fields["app"] ?? ""
+        if !url.isEmpty { return doOpenUrl(url) }
+        if !app.isEmpty { return doOpenApp(app) }
+        return "open needs a url or an app name"
+
+    // ---------------------------------------------------------------- 0.11.0: aiming by name
+
+    case "read":
+        return doRead(fields)
+    case "find":
+        return doFind(fields)
+    case "scrollto":
+        return doScrollTo(fields)
+    case "drag":
+        let tx = Double(fields["tx"] ?? "") ?? .nan
+        let ty = Double(fields["ty"] ?? "") ?? .nan
+        guard tx.isFinite, ty.isFinite else { return "drag needs tx and ty - where to let go" }
+        if !Desktop.contains(x: tx, y: ty) {
+            let r = Desktop.rect
+            return "\(Int(tx)),\(Int(ty)) is off the desktop "
+                + "(\(Int(r.minX)),\(Int(r.minY)) to \(Int(r.maxX)),\(Int(r.maxY)))"
+        }
+        if let mine = Own.refusal(pid: Windows.at(x: tx, y: ty)?.pid ?? 0) { return mine }
+        return doDrag(x: x, y: y, tx: tx, ty: ty)
+
+    // ---------------------------------------------------------------- 0.12.0
+
+    case "refresh":
+        return doRefresh(fields)
+    case "waitwindow":
+        return doWaitWindow(fields)
+    /* Отказов по имени здесь больше нет, и это то, ради чего волна писалась: десять действий, которые
+     * назывались «пока не сделано на macOS», сделаны. Отказ, оставленный при живой реализации, отвергал бы
+     * рабочее действие - поэтому убирается вместе с ней, а не отдельным заходом. */
     default:
         return "no action called \(action.isEmpty ? "(none given)" : action)"
     }
@@ -2546,9 +3714,15 @@ final class Replayer {
         case "Middle Click Release":
             release("middle"); post(.otherMouseUp, x, y, .center)
         case "Scroll Up":
-            Input.scroll(x: x, y: y, amount: 3)
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "up")
         case "Scroll Down":
-            Input.scroll(x: x, y: y, amount: -3)
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "down")
+        /* Названы здесь, иначе боковая прокрутка человека уходит в default и считается непроигрываемой.
+         * Транскрипт разбирает эти два слова с самого начала - читающая сторона давно готова. */
+        case "Scroll Left":
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "left")
+        case "Scroll Right":
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "right")
 
         /* Named here rather than dropped through the default, exactly as on Windows.
          *
@@ -2667,8 +3841,16 @@ private func tapCallback(
     case .otherMouseUp:
         Recorder.shared.capture(action: "Middle Click Release", x: x, y: y)
     case .scrollWheel:
-        let delta = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
-        Recorder.shared.capture(action: delta >= 0 ? "Scroll Up" : "Scroll Down", x: x, y: y)
+        /* ОБЕ ОСИ. Ось 1 - вертикаль, ось 2 - горизонталь, и до сих пор читалась только первая: боковая
+         * прокрутка записывалась как "Scroll Up" с нулевой дельтой, то есть как движение не в ту сторону.
+         * Ось выбирается по тому, где больше движения, потому что трекпад даёт обе сразу. */
+        let up = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        let side = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+        if side != 0 && abs(side) >= abs(up) {
+            Recorder.shared.capture(action: Sideways.name(delta: side), x: x, y: y)
+        } else {
+            Recorder.shared.capture(action: up >= 0 ? "Scroll Up" : "Scroll Down", x: x, y: y)
+        }
     case .keyDown:
         /* Two paths, and which one a key takes is decided by whether it can spell anything.
          *
@@ -3292,7 +4474,12 @@ enum Courier {
            when either fingerprint could not be taken: "could not tell" is not "did not move". */
         var stirred = "null"
         if let a = before, let b = Screen.grid() { stirred = jsonBool(self.stirred(a, b)) }
-        return "{\"id\":\(jsonString(id)),\"output\":\"done\",\"moved\":\(stirred)}"
+        /* "done", если действию нечего сказать. Всё остальное деплой передаёт модели как есть
+           (resultBlocks в api/_step.mjs) - поэтому здесь не нужно ни нового поля, ни новой формы: канал
+           был на месте и был пуст. */
+        let told = Output.take()
+        return "{\"id\":\(jsonString(id)),\"output\":\(jsonString(told ?? "done")),"
+            + "\"moved\":\(stirred)}"
     }
 
     /* Waiting, done here rather than by asking the model to look again.
@@ -3373,7 +4560,9 @@ enum Courier {
     }
 
     /** Has it stopped? Keeps the mean, which is what makes a caret and a dither not count as motion. */
-    private static func quiet(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+    /* Не private: тот же вопрос задают действия `scrollto` и `refresh`, и задавать его вторым кодом с
+     * теми же числами значило бы завести второй ответ на «оно перестало меняться». Числа остаются здесь. */
+    static func quiet(_ a: [UInt8], _ b: [UInt8]) -> Bool {
         if a.count != b.count { return false }
         var sum = 0
         for i in 0..<a.count { sum += abs(Int(a[i]) - Int(b[i])) }
@@ -4030,6 +5219,13 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         }
         if let bad = doAction(body) {
             return Response(status: 400, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
+        }
+        /* `output` только когда он есть, чтобы `{"ok":true}` осталось ровно тем же для действий, которым
+         * сказать нечего. У снимка и у чтения буфера есть что, и предложение из этого собирает вызывающий -
+         * см. actionSaid в api/_brain.mjs, который читают оба драйвера, чтобы они не сформулировали
+         * по-разному. */
+        if let said = Output.take() {
+            return Response(body: "{\"ok\":true,\"output\":\(jsonString(said))}")
         }
         return Response(body: "{\"ok\":true}")
 

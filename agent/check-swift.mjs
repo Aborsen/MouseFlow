@@ -182,5 +182,229 @@ group('содержимое поля ввода не становится име
     /elementAttr\(current, kAXTitleUIElementAttribute\)/.test(code));
 }
 
+// ------------------------------------------------------------------ 5. правила 0.16.0, исполнением
+/* Эти пять кусков - чистая логика, и потому единственный способ проверить их честно - выполнить.
+ *
+ * Регулярка над исходником говорит «функция похожа на правильную»; она пропустила бы перевёрнутый знак,
+ * порог не с той стороны сравнения и обрезку, которая режет предложения вместе с адресами. Всё это уже
+ * происходило в этом файле - см. историю про min(30, …), поданное как успех. Вырезается ТОТ ЖЕ текст, что в
+ * агенте, копии нет. */
+group('заголовок-адрес: обрезка исполняется, а не читается');
+{
+  const bare = slice('static func bareTitle(');
+  check('функция найдена в исходнике', !!bare);
+  if (bare) {
+    const dir = mkdtempSync(join(tmpdir(), 'mf-title-'));
+    const file = join(dir, 'title.swift');
+    writeFileSync(file, [
+      'import Foundation',
+      bare.replace('static func', 'func'),
+      'let asked = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""',
+      'print(bareTitle(asked) ?? "<kept>")',
+    ].join('\n\n'));
+    const built = join(dir, 'title');
+    const compile = spawnSync('swiftc', ['-O', '-o', built, file], { encoding: 'utf8' });
+    check('вырезанная обрезка компилируется сама по себе', compile.status === 0,
+      (compile.stderr || '').split('\n').filter((l) => /error:/.test(l)).slice(0, 4).join(' | '));
+    if (compile.status === 0) {
+      const cut = (title) => execFileSync(built, [title], { encoding: 'utf8' }).trim();
+      /* Та самая строка из настоящей записи: `state` - одноразовый токен входа. */
+      check('токен входа из настоящей записи срезается',
+        cut('auth.doubleword.ai/u/login?state=hKFo2SAwOWZhZDMzYQ') === 'auth.doubleword.ai/u/login');
+      check('и со схемой тоже, схема при этом сохраняется',
+        cut('https://auth.doubleword.ai/u/login?state=hKFo2SAw') === 'https://auth.doubleword.ai/u/login');
+      check('схема не дописывается там, где её не было',
+        cut('example.com/a?b=c') === 'example.com/a');
+      /* ГЛАВНОЕ, ЧТО НЕЛЬЗЯ СЛОМАТЬ: обычный заголовок с вопросительным знаком остаётся целым. */
+      /* Пробел - первый замок, и он не единственный: URLComponents не принимает строку с пробелом вовсе,
+       * так что снятие этой проверки заголовок всё равно не испортит. Она остаётся ровно потому, что
+       * повторяет правило Windows-агента, а расхождение правил здесь стоило бы обеим сторонам. */
+      check('предложение с вопросительным знаком не трогается',
+        cut('What is a good name? - Google Search') === '<kept>');
+      check('и заголовок без вопроса тоже', cut('Inbox - Gmail') === '<kept>');
+      /* Хост без точки - это не адрес, а слово: «TODO?» из заголовка редактора. */
+      check('слово без точки в хосте не считается адресом', cut('TODO?next') === '<kept>');
+      check('и не-веб схема не считается тоже', cut('file:///x?y=1') === '<kept>');
+      /* file: отбивается ещё и отсутствием хоста, так что проверка схемы сама по себе видна только на
+       * схеме, у которой хост есть. Без неё этот заголовок был бы обрезан - то есть правило «только веб»
+       * молча перестало бы существовать. */
+      check('и схема с хостом, но не веб - тоже',
+        cut('ftp://files.example.com/x?y=1') === '<kept>');
+      /* Без вопросительного знака резать нечего, и это первая же проверка в функции: заголовок-адрес без
+       * строки запроса обязан доехать до записи ровно таким, каким был. */
+      check('адрес без строки запроса не трогается', cut('example.com/page') === '<kept>');
+      /* Путь `/` не превращается в хвост: origin остаётся origin. */
+      check('корневой путь не оставляет косой черты', cut('example.com/?q=1') === 'example.com');
+      check('порт сохраняется, если он не по умолчанию',
+        cut('http://dev.local:4400/app?token=abc') === 'http://dev.local:4400/app');
+      /* И то же ограничение, что у Windows: хост без точки не считается адресом, так что заголовок с
+       * localhost остаётся целым вместе со своей строкой запроса. Названо тестом, а не оставлено на
+       * обнаружение - обе реализации ведут себя так, и разойтись им нельзя. */
+      check('localhost не считается адресом - ровно как на Windows',
+        cut('http://localhost:4400/app?token=abc') === '<kept>');
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+group('подпись против содержимого: порог исполняется');
+{
+  const ev = slice('final class Ev {');
+  const clipper = slice('func clip(');
+  const rule = slice('static func recordName(');
+  const max = src.match(/static let NAME_MAX = \d+/);
+  check('класс события, обрезка, правило и порог найдены', !!(ev && clipper && rule && max));
+  if (ev && clipper && rule && max) {
+    const dir = mkdtempSync(join(tmpdir(), 'mf-name-'));
+    const file = join(dir, 'name.swift');
+    writeFileSync(file, [
+      'import Foundation',
+      clipper,
+      ev,
+      max[0].replace('static let', 'let'),
+      rule.replace('static func', 'func'),
+      'let asked = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""',
+      'let e = Ev()',
+      'recordName(e, name: asked, type: "button")',
+      'print("\\(e.control ?? "<dropped>")|\\(e.nameLength)")',
+    ].join('\n\n'));
+    const built = join(dir, 'name');
+    const compile = spawnSync('swiftc', ['-O', '-o', built, file], { encoding: 'utf8' });
+    check('вырезанное правило компилируется само по себе', compile.status === 0,
+      (compile.stderr || '').split('\n').filter((l) => /error:/.test(l)).slice(0, 4).join(' | '));
+    if (compile.status === 0) {
+      const kept = (name) => execFileSync(built, [name], { encoding: 'utf8' }).trim();
+      /* Самое длинное имя на НАЖИМАЕМОМ элементе в замере - 43 символа. Подписи проходят целиком. */
+      check('обычная подпись остаётся', kept('Отправить') === 'Отправить|0');
+      check('и подпись в 60 символов - тоже', kept('x'.repeat(60)) === `${'x'.repeat(60)}|0`);
+      /* 61 - первый, который уходит. Проверяется граница, а не «что-то длинное». */
+      check('шестьдесят один символ уже не пишется',
+        kept('x'.repeat(61)) === '<dropped>|61');
+      /* Именно эта форма и утекала: имя элемента-сообщения ЕСТЬ сообщение. */
+      check('сообщение вместо подписи выбрасывается, а длина остаётся',
+        kept('Привет, я посмотрел твой документ и оставил там пару комментариев про сроки')
+          === '<dropped>|75');
+      /* Кириллица считается символами, а не байтами: иначе порог для русского был бы вдвое ниже. */
+      check('длина считается символами, а не байтами', kept('я'.repeat(50)) === `${'я'.repeat(50)}|0`);
+      check('пустое имя не даёт ни имени, ни длины', kept('') === '<dropped>|0');
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+group('знак горизонтального колеса согласован между записью и впрыском');
+{
+  const sideways = slice('enum Sideways {');
+  check('константа знака найдена', !!sideways);
+  if (sideways) {
+    const dir = mkdtempSync(join(tmpdir(), 'mf-side-'));
+    const file = join(dir, 'side.swift');
+    writeFileSync(file, [
+      'import Foundation',
+      sideways,
+      /* Круг замыкается: то, что впрыснули как «вправо», обязано прочитаться как "Scroll Right". Именно
+       * эта пара и разъезжается, когда знак правят в одном месте из двух. */
+      'for right in [true, false] {',
+      '  let injected = Sideways.wheel2(right: right)',
+      '  let readBack = Sideways.name(delta: Int64(injected))',
+      '  print("\\(right ? "right" : "left")->\\(injected)->\\(readBack)")',
+      '}',
+    ].join('\n\n'));
+    const built = join(dir, 'side');
+    const compile = spawnSync('swiftc', ['-O', '-o', built, file], { encoding: 'utf8' });
+    check('вырезанная константа компилируется сама по себе', compile.status === 0,
+      (compile.stderr || '').split('\n').filter((l) => /error:/.test(l)).slice(0, 4).join(' | '));
+    if (compile.status === 0) {
+      const lines = execFileSync(built, [], { encoding: 'utf8' }).trim().split('\n');
+      check('впрыснутое «вправо» читается как Scroll Right',
+        /^right->-?\d+->Scroll Right$/.test(lines[0]), lines[0]);
+      check('и «влево» - как Scroll Left', /^left->-?\d+->Scroll Left$/.test(lines[1]), lines[1]);
+      /* Ноль - не сторона, и обе стороны обязаны быть РАЗНЫМИ: одна константа, использованная дважды с
+       * одним знаком, прошла бы обе проверки выше поодиночке. */
+      const signs = lines.map((l) => Number(l.split('->')[1]));
+      check('и это два разных знака, а не один', signs[0] !== 0 && signs[1] !== 0 && signs[0] !== signs[1],
+        signs.join(' '));
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+group('перевод в пиксели скриншота исполняется');
+{
+  const geo = slice('enum Geometry {');
+  check('преобразование найдено', !!geo);
+  if (geo) {
+    const dir = mkdtempSync(join(tmpdir(), 'mf-geo-'));
+    const file = join(dir, 'geo.swift');
+    writeFileSync(file, [
+      'import Foundation',
+      geo,
+      'Geometry.read(["scale": "0.5", "ox": "100", "oy": "50"])',
+      'print("\\(Geometry.shotX(1574)),\\(Geometry.shotY(278)),\\(Geometry.shotSize(64))")',
+      'Geometry.read([:])',
+      'print("\\(Geometry.shotX(1574)),\\(Geometry.shotY(278)),\\(Geometry.shotSize(64))")',
+      'Geometry.read(["scale": "0", "ox": "x", "oy": ""])',
+      'print("\\(Geometry.shotX(10)),\\(Geometry.shotY(10)),\\(Geometry.shotSize(10))")',
+    ].join('\n\n'));
+    const built = join(dir, 'geo');
+    const compile = spawnSync('swiftc', ['-O', '-o', built, file], { encoding: 'utf8' });
+    check('вырезанное преобразование компилируется само по себе', compile.status === 0,
+      (compile.stderr || '').split('\n').filter((l) => /error:/.test(l)).slice(0, 4).join(' | '));
+    if (compile.status === 0) {
+      const out = execFileSync(built, [], { encoding: 'utf8' }).trim().split('\n');
+      /* Числа сняты с живого прогона агента: значок на рабочем столе в 1574,278 64x64 при scale 0.5 и
+       * начале 100,50 отвечает 737,114 32x32. */
+      check('масштаб и начало применяются оба', out[0] === '737,114,32', out[0]);
+      /* Отсутствие полей - это «экранные пиксели», как было до 0.14.0, а не ноль и не отказ. */
+      check('без полей ничего не меняется', out[1] === '1574,278,64', out[1]);
+      /* Ноль в масштабе схлопнул бы весь экран в точку. */
+      check('мусор в полях не ломает арифметику', out[2] === '10,10,10', out[2]);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+group('охрана собственного окна не запирает рабочий стол');
+{
+  const own = slice('enum Own {');
+  check('охрана найдена', !!own);
+  if (own) {
+    const dir = mkdtempSync(join(tmpdir(), 'mf-own-'));
+    const file = join(dir, 'own.swift');
+    writeFileSync(file, [
+      'import Foundation',
+      'import AppKit',
+      own,
+      'let mine = Own.pids()',
+      'print("self=\\(mine.contains(getpid()))")',
+      'print("init=\\(mine.contains(1))")',
+      /* Finder и Dock владеют рабочим столом и панелью - если охрана поднялась до них, запрещённым
+       * оказывается ВЕСЬ экран. На Windows тот же лишний шаг упёрся бы в explorer. */
+      'let shell = NSWorkspace.shared.runningApplications',
+      '  .filter { ["com.apple.finder", "com.apple.dock"].contains($0.bundleIdentifier ?? "") }',
+      '  .map { $0.processIdentifier }',
+      'print("shell=\\(shell.contains { mine.contains($0) })")',
+      'print("count=\\(mine.count)")',
+    ].join('\n\n'));
+    const built = join(dir, 'own');
+    const compile = spawnSync('swiftc', ['-O', '-o', built, file], { encoding: 'utf8' });
+    check('вырезанная охрана компилируется сама по себе', compile.status === 0,
+      (compile.stderr || '').split('\n').filter((l) => /error:/.test(l)).slice(0, 4).join(' | '));
+    if (compile.status === 0) {
+      const said = Object.fromEntries(execFileSync(built, [], { encoding: 'utf8' })
+        .trim().split('\n').map((l) => l.split('=')));
+      check('собственный процесс защищён всегда', said.self === 'true');
+      /* launchd - это всё, и подъём обязан на нём остановиться. Замка здесь два независимых - условие
+       * `walker > 1` и список notAHost, - поэтому одиночная правка любого из них эту проверку не уронит.
+       * Она держит СВОЙСТВО, а не строку: если однажды не станет обоих, здесь будет видно. */
+      check('launchd НЕ защищён', said.init === 'false');
+      check('Finder и Dock НЕ защищены', said.shell === 'false');
+      /* Ограничено сверху: подъём на шесть уровней с остановкой на первом окне не может собрать пол-машины. */
+      check('и список остаётся коротким', Number(said.count) >= 1 && Number(said.count) <= 7, said.count);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
