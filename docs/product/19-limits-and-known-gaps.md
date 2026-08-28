@@ -26,6 +26,13 @@ These are not bugs and no amount of work inside the current design removes them.
   **and cannot see input while one has focus**. A recording made over an admin app is silently incomplete —
   the events never arrive, so nothing downstream can detect the hole. The UAC secure desktop is unreachable
   either way.
+- **macOS has ten of the twenty-one tools.** Everything added from 0.10.0 onward is Windows only:
+  `capture_window`, `clipboard_read`, `clipboard_write`, `open_url`, `open_app`, `read_window`,
+  `find_element`, `scroll_to`, `drag`, `refresh_page`, `wait_for_window`. The macOS agent answers each of
+  them by name and says which version it arrived in, so a model stops rather than improvising — that part
+  works, and a watched macOS run shows it working. But a run that needs a screenshot, a clipboard or a
+  browser cannot be done there at all. Closing it is a piece of work of its own: `NSPasteboard`,
+  `CGWindowListCreateImage`, `NSWorkspace.open`, and the AX equivalents of the naming tools.
 - **`capture_window`, the clipboard and `open_url`/`open_app` are Windows only.** They landed in 0.10.0 on
   the Windows agent; the macOS equivalents (`NSPasteboard`, `CGWindowListCreateImage`, `NSWorkspace.open`)
   are not written. The macOS agent answers those four actions by name and says so, which is deliberately

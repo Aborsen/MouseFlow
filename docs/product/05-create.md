@@ -212,6 +212,21 @@ deployment: these actions send positions OUTWARDS, and the alternative is a conv
 coordinate systems. The rule they bend, the measurements that permit it, and the two failure modes
 (applications that stop answering; why a global lock was the wrong fix) are in `agent/PROTOCOL.md`.
 
+**A shortcut is a keycode, not a character** (fixed in 0.15.0), and this one is worth remembering because it
+hid behind two different symptoms. `VkFor` sent a single character through `VkKeyScan`, which answers *for the
+current keyboard layout*. With Russian active — one of three layouts on the machine where this was found —
+every Latin letter comes back `-1`: `a`, `A`, `c`, `v`, `s`, `z`, while digits and punctuation resolve. So
+every letter shortcut was refused as "unknown key" whenever a non-Latin layout was in front. And with a Latin
+layout it was worse: `VkKeyScan` also reports the modifiers the layout needs for that *character*, and an
+uppercase `V` needs Shift — so `press_key key=V ctrl=true` sent **Ctrl+Shift+V**, which in Google Docs is
+paste-without-formatting and drops an image without a word. `VK_A`–`VK_Z` are `0x41`–`0x5A` on every layout;
+`VkKeyScan` is still right for `%` and `/`, where the layout genuinely decides.
+
+macOS never had this bug — its table is Carbon keycodes, which are physical key positions. It had the mirror
+of it instead: it read five modifier fields and not `win`, which the Windows half has sent since 0.12.0, so
+`Win+D` arrived as a bare `D`. Refused there now rather than mapped onto Command, since `Cmd+D` is a
+different shortcut and a chord that quietly means something else is the worst of the three outcomes.
+
 **A dialog is a window, and it took a failed run to notice it was not treated as one.** A modal dialog is
 *owned* by whatever opened it, and both the window lookup and the "Already open" list dropped owned windows —
 a filter written when the list existed only to stop the model launching a second copy of something. The

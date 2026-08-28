@@ -1724,6 +1724,65 @@ check('with the table they were read off, not just the values',
     gridStirred(null, flat) === true && gridQuiet(null, flat) === false);
 }
 
+group('a shortcut is a keycode, and both halves read the same modifiers');
+const kbWin = read('../agent/mouseflow-agent.ps1');
+const kbMac = read('../agent/mouseflow-agent.swift');
+
+/* THE MEASUREMENT THAT NAMED IT: with a Russian layout active, VkKeyScan refuses every Latin letter, so
+ * every letter shortcut on the machine was "unknown key". And with a Latin layout it reported the modifiers
+ * that CHARACTER needs, so an uppercase V added Shift and Ctrl+V went out as Ctrl+Shift+V - which Google
+ * Docs reads as paste-without-formatting and which drops an image in silence. */
+check('a letter resolves to its keycode rather than through the layout',
+  /if \(one >= 'a' && one <= 'z'\) return \(ushort\)\(one - 'a' \+ 0x41\);/.test(kbWin)
+    && /if \(one >= 'A' && one <= 'Z'\) return \(ushort\)\(one - 'A' \+ 0x41\);/.test(kbWin));
+check('and so does a digit',
+  /if \(one >= '0' && one <= '9'\) return \(ushort\)\(one - '0' \+ 0x30\);/.test(kbWin));
+/* Case must not become a modifier: `key=V ctrl=1` is Ctrl+V, and Ctrl+Shift+V is a different instruction. */
+check('and case never turns into a Shift the caller did not ask for',
+  /if \(\(one >= 'a' && one <= 'z'\) \|\| \(one >= 'A' && one <= 'Z'\) \|\| \(one >= '0' && one <= '9'\)\) return;/
+    .test(kbWin));
+/* VkKeyScan is still right where the layout genuinely decides. */
+check('but punctuation still goes through the layout, because there it is the only thing that knows',
+  /short scan = Native\.VkKeyScan\(one\);/.test(kbWin));
+check('with the measurement written down rather than the conclusion alone',
+  /'a' -> -1    'A' -> -1    'c' -> -1    'v' -> -1/.test(kbWin));
+
+/* macOS never had that bug - Carbon keycodes are physical positions. It had the mirror: a modifier field
+ * that one half sent and the other did not read, so Win+D arrived as a bare D. */
+check('macOS resolves letters from a fixed keycode table, not a layout',
+  /"a": 0, "b": 11, "c": 8/.test(kbMac) && /"v": 9/.test(kbMac));
+check('and it reads the win field the Windows half sends',
+  /win: \(fields\["win"\] \?\? "0"\) == "1"/.test(kbMac));
+/* REFUSED rather than mapped onto Command: Win+D and Cmd+D are different instructions, and a chord that
+ * quietly means something else is worse than one that says it cannot be pressed. */
+check('refusing it rather than turning it into a different shortcut',
+  /if win \{ return NO_SUCH_KEY_HERE\["win"\] \}/.test(kbMac)
+    && /there is no Windows key on macOS/.test(kbMac));
+check('and the mirror: Windows reads cmd and meta onto its own command modifier',
+  /Get\(a, "ctrl", "0"\) == "1" \|\| Get\(a, "cmd", "0"\) == "1" \|\| Get\(a, "meta", "0"\) == "1"/.test(kbWin));
+/* The replay path calls the same function, and replaying the REMAINDER of a chord is replaying a different
+ * chord - which is how a Win+D recording would have become a D. */
+check('the replay path carries it too, on both sides',
+  /win: mods\.contains\("win"\)/.test(kbMac)
+    && /else if \(mod == "win" \|\| mod == "cmd"\) wantWin = true;/.test(kbWin));
+
+/* THE INVARIANT THAT STOPS THIS DRIFTING AGAIN: every key name one platform accepts is either accepted by
+ * the other or REFUSED BY NAME there. A name that exists on one side and falls through to "no key called
+ * that" on the other is how a skill made on Windows fails on a Mac for a reason nobody can read. */
+{
+  const winNames = [...kbWin.matchAll(/case "([a-z0-9]+)":/g)].map((m) => m[1]);
+  const macTable = /let KEY_CODES: \[String: CGKeyCode\] = \[([\s\S]*?)\n\]/.exec(kbMac)?.[1] ?? '';
+  const macRefused = /let NO_SUCH_KEY_HERE: \[String: String\] = \[([\s\S]*?)\n\]/.exec(kbMac)?.[1] ?? '';
+  const known = new Set([
+    ...[...macTable.matchAll(/"([a-z0-9]+)":/g)].map((m) => m[1]),
+    ...[...macRefused.matchAll(/"([a-z0-9]+)":/g)].map((m) => m[1]),
+  ]);
+  const orphans = winNames.filter((n) => !known.has(n));
+  check('every key Windows names is either known on macOS or refused there BY NAME',
+    winNames.length > 20 && orphans.length === 0,
+    `windows knows ${winNames.length}; unaccounted for on macOS: ${orphans.join(', ') || 'none'}`);
+}
+
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');
 const MD_STRUCTURE = {

@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.14.0"
+let VERSION = "0.15.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -1965,6 +1965,9 @@ let KEY_CODES: [String: CGKeyCode] = [
     "return": 36, "enter": 36, "tab": 48, "space": 49, "delete": 51, "backspace": 51,
     "escape": 53, "esc": 53, "forwarddelete": 117, "del": 117,
     "left": 123, "right": 124, "down": 125, "up": 126,
+    /* The aliases the Windows table accepts, so a skill that says `arrowup` does not fail on one platform
+     * for a reason nobody can read from the message. */
+    "arrowleft": 123, "arrowright": 124, "arrowdown": 125, "arrowup": 126,
     "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98, "f8": 100,
     "f9": 101, "f10": 109, "f11": 103, "f12": 111,
@@ -1972,6 +1975,26 @@ let KEY_CODES: [String: CGKeyCode] = [
     "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35, "q": 12, "r": 15, "s": 1,
     "t": 17, "u": 32, "v": 9, "w": 13, "x": 7, "y": 16, "z": 6,
     "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
+    /* kVK_Help sits where Insert sits on a PC keyboard, which is what a skill written on Windows means by
+     * it. Added when the Windows table grew Insert, so the two stay in step. */
+    "insert": 114, "ins": 114, "help": 114,
+]
+
+/* KEYS THE WINDOWS TABLE HAS AND THIS PLATFORM DOES NOT, named so the refusal says something useful.
+ *
+ * A skill created on Windows can carry any of these, and "no key called printscreen" sends a model looking
+ * for a spelling mistake in its own instruction. Each genuinely has no equivalent here, and for each there
+ * is something else to do - so the message says what. Held in step with the Windows table by a test: every
+ * name one platform accepts is either accepted here or refused here BY NAME. */
+let NO_SUCH_KEY_HERE: [String: String] = [
+    "printscreen": "there is no PrintScreen key on macOS - use capture_window, which saves a file AND sets "
+        + "the clipboard",
+    "prtsc": "there is no PrintScreen key on macOS - use capture_window instead",
+    "snapshot": "there is no PrintScreen key on macOS - use capture_window instead",
+    "menu": "there is no Menu key on macOS - right-click instead, which is click with button=right",
+    "contextmenu": "there is no Menu key on macOS - right-click instead, which is click with button=right",
+    "win": "there is no Windows key on macOS. In this grammar `ctrl` already means Command, which is the "
+        + "modifier that key stands in for",
 ]
 
 enum Input {
@@ -2070,8 +2093,20 @@ enum Input {
      * created skill that says ctrl=1 key=c means "copy". Posting a literal Control+C here would send an
      * interrupt to a terminal instead. `cmd=` and `meta=` are accepted as themselves for a caller that knows
      * which platform it is talking to, and `raw-ctrl=` asks for the literal Control key. */
-    static func key(_ name: String, ctrl: Bool, shift: Bool, alt: Bool, cmd: Bool, rawCtrl: Bool) -> String? {
-        guard let code = KEY_CODES[name.lowercased()] else { return "no key called \(name)" }
+    static func key(_ name: String, ctrl: Bool, shift: Bool, alt: Bool, cmd: Bool, rawCtrl: Bool,
+                    win: Bool) -> String? {
+        let wanted = name.lowercased()
+        /* WIN IS REFUSED RATHER THAN MAPPED, and that is the honest one of two bad choices. Turning it into
+         * Command would send a DIFFERENT shortcut under the same name - Win+D shows the desktop on Windows,
+         * Cmd+D duplicates on macOS - and a chord that quietly means something else is worse than one that
+         * says it cannot be pressed. A caller that wants Command has `ctrl`, which is what that field means
+         * in this grammar. Checked before the key, because the modifier is the part that cannot work.
+         *
+         * The Windows half has sent this field since 0.12.0 and this function read five modifiers and not
+         * that one, so Win+D arrived as a bare D with no complaint at all. */
+        if win { return NO_SUCH_KEY_HERE["win"] }
+        if let why = NO_SUCH_KEY_HERE[wanted] { return why }
+        guard let code = KEY_CODES[wanted] else { return "no key called \(name)" }
         var flags: CGEventFlags = []
         if shift { flags.insert(.maskShift) }
         if alt { flags.insert(.maskAlternate) }
@@ -2189,7 +2224,7 @@ func doAction(_ body: String) -> String? {
             if !one.isEmpty { Input.type(one) }
             if index < lines.count - 1 {
                 if let bad = Input.key("return", ctrl: false, shift: newline == "shift",
-                                       alt: false, cmd: false, rawCtrl: false) {
+                                       alt: false, cmd: false, rawCtrl: false, win: false) {
                     return bad
                 }
                 usleep(220_000)
@@ -2205,7 +2240,8 @@ func doAction(_ body: String) -> String? {
             shift: (fields["shift"] ?? "0") == "1",
             alt: (fields["alt"] ?? "0") == "1",
             cmd: (fields["cmd"] ?? fields["meta"] ?? "0") == "1",
-            rawCtrl: (fields["raw-ctrl"] ?? "0") == "1"
+            rawCtrl: (fields["raw-ctrl"] ?? "0") == "1",
+            win: (fields["win"] ?? "0") == "1"
         )
     case "activate":
         return Windows.activate(title: fields["title"], process: fields["process"])
@@ -2533,8 +2569,12 @@ final class Replayer {
                 var parts = spec.split(separator: "+").map(String.init)
                 let name = parts.popLast() ?? ""
                 let mods = Set(parts.map { $0.lowercased() })
+                /* `win` read here too: a chord recorded on Windows from 0.12.0 can name it, and replaying
+                 * the remainder of a chord is replaying a different chord. It is refused on this platform
+                 * rather than mapped - see NO_SUCH_KEY_HERE - and a refusal is counted, not guessed at. */
                 if Input.key(name, ctrl: mods.contains("ctrl"), shift: mods.contains("shift"),
-                             alt: mods.contains("alt"), cmd: mods.contains("cmd"), rawCtrl: false) == nil {
+                             alt: mods.contains("alt"), cmd: mods.contains("cmd"), rawCtrl: false,
+                             win: mods.contains("win")) == nil {
                     break
                 }
                 /* Input.key refused the name - an agent from a later build naming a key this one does not

@@ -448,7 +448,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.14.0";
+        public const string Version = "0.15.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -2306,7 +2306,13 @@ namespace MouseFlow
             }
             if (action == "key")
             {
-                return PressKey(Get(a, "key", ""), Get(a, "ctrl", "0") == "1",
+                /* `cmd` and `meta` read onto Ctrl, which is the mirror of the macOS agent reading `win`. A
+                   skill created on a Mac says cmd=1 for the command modifier, and on Windows that modifier
+                   IS Ctrl - while the Windows key is `win` and stays separate. A field one half sends and
+                   the other ignores is a chord that loses a modifier without saying so, which is exactly how
+                   Win+D became a bare D in the other direction. */
+                return PressKey(Get(a, "key", ""),
+                    Get(a, "ctrl", "0") == "1" || Get(a, "cmd", "0") == "1" || Get(a, "meta", "0") == "1",
                     Get(a, "shift", "0") == "1", Get(a, "alt", "0") == "1",
                     Get(a, "win", "0") == "1");
             }
@@ -3442,10 +3448,17 @@ namespace MouseFlow
             Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUTU))), 1);
         }
 
-        /* What the keyboard layout itself requires to produce this character. */
+        /* What the keyboard layout itself requires to produce this character - and NOT for a letter or a
+           digit, which VkFor now resolves as a keycode. Left in for `%`, which is Shift+5 on one layout and
+           a different key on another.
+
+           Skipping letters here is not tidiness: for `A` the layout would add Shift, so `press_key key=A`
+           with ctrl set would send Ctrl+Shift+A - a different shortcut from the one that was asked for. */
         static void ModifiersFor(string key, ref bool ctrl, ref bool shift, ref bool alt)
         {
             if (key == null || key.Length != 1) return;
+            char one = key[0];
+            if ((one >= 'a' && one <= 'z') || (one >= 'A' && one <= 'Z') || (one >= '0' && one <= '9')) return;
             short scan = Native.VkKeyScan(key[0]);
             if (scan == -1) return;
             int state = (scan >> 8) & 0xFF;
@@ -3487,11 +3500,37 @@ namespace MouseFlow
         static ushort VkFor(string key)
         {
             if (key == null || key.Length == 0) return 0;
-            /* A single character goes through the layout, because a shortcut IS a keycode - Ctrl+C is
-               Ctrl plus VK_C, not Ctrl plus the letter c. Text uses TypeText instead. */
+            /* A LETTER OR A DIGIT IS ITS OWN KEYCODE, and asking the layout for one was a bug with teeth.
+             *
+             * The comment that used to be here had the principle exactly right - "a shortcut IS a keycode:
+             * Ctrl+C is Ctrl plus VK_C, not Ctrl plus the letter c" - and then called VkKeyScan, which
+             * answers FOR THE CURRENT KEYBOARD LAYOUT. Measured on this machine with a Russian layout
+             * active, which is one of three installed:
+             *
+             *   'a' -> -1    'A' -> -1    'c' -> -1    'v' -> -1    's' -> -1    'z' -> -1
+             *   '1' -> 0x31  '%' -> 0x35
+             *
+             * There is no key on a Russian layout that produces a Latin 'v', so VkKeyScan refuses, and
+             * PressKey turned that into "unknown key: v". Which means that whenever a non-Latin layout was
+             * active, EVERY letter shortcut on the machine was refused - Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+S,
+             * Ctrl+Z. Typing was unaffected, because TypeText sends unicode scan codes and never consults a
+             * layout, so the failure looked intermittent and specific to shortcuts. A watched run spent
+             * dozens of steps deleting a title one Backspace at a time because Ctrl+A would not work.
+             *
+             * VK_A..VK_Z are 0x41..0x5A and VK_0..VK_9 are 0x30..0x39 on every layout, because that is what
+             * a virtual key IS. Case is irrelevant to the keycode; whether Shift is held is the caller's
+             * business and is passed separately.
+             *
+             * VkKeyScan is still right for everything else. `%` and `/` genuinely differ by layout, and the
+             * layout is the only thing that knows which key and which modifiers produce them. */
             if (key.Length == 1)
             {
-                short scan = Native.VkKeyScan(key[0]);
+                char one = key[0];
+                if (one >= 'a' && one <= 'z') return (ushort)(one - 'a' + 0x41);
+                if (one >= 'A' && one <= 'Z') return (ushort)(one - 'A' + 0x41);
+                if (one >= '0' && one <= '9') return (ushort)(one - '0' + 0x30);
+
+                short scan = Native.VkKeyScan(one);
                 if (scan == -1) return 0;
                 return (ushort)(scan & 0xFF);
             }

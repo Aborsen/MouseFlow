@@ -304,7 +304,32 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.14.0 is the build that can see a dialog, and that stops calling a text edit "nothing happened".
+/* 0.15.0 is the build where Ctrl+V is Ctrl+V.
+ *
+ * A shortcut is a KEYCODE, and the agent was asking the KEYBOARD LAYOUT for one. Measured on a machine with
+ * Russian active - one of three layouts installed - VkKeyScan refuses every Latin letter: 'a', 'A', 'c',
+ * 'v', 's', 'z' all come back -1, while digits and punctuation resolve. So with any non-Latin layout in
+ * front, every letter shortcut on the machine was refused as "unknown key" - Ctrl+A, Ctrl+C, Ctrl+V,
+ * Ctrl+S. Typing was unaffected, because type_text sends unicode scan codes and never consults a layout,
+ * which is why the failure looked intermittent and specific to shortcuts.
+ *
+ * And with a Latin layout it was worse than refused. VkKeyScan reports the modifiers the layout needs for
+ * that CHARACTER, and an uppercase V needs Shift - so `press_key key=V ctrl=true` sent Ctrl+SHIFT+V, which
+ * in Google Docs is paste-without-formatting and silently drops an image. A watched run concluded that
+ * Ctrl+V "does not paste" and wrote that into its handoff note for the next wave to believe.
+ *
+ * Verified end to end after the fix, in the user's own browser on a local test page: the captured window
+ * arrives as `IMAGE ARRIVED image/png 4389 bytes | types=[Files] items=[file:image/png]`. The clipboard
+ * format was never the problem - the chord was.
+ *
+ * macOS was already right about this, because its table is Carbon keycodes, which are physical positions.
+ * What it was NOT right about is `win`: the Windows half has sent that field since 0.12.0 and the macOS half
+ * read five modifier fields and not that one, so Win+D arrived as a bare D with no complaint. It is refused
+ * there now rather than mapped to Command, because Cmd+D is a different shortcut and a chord that quietly
+ * means something else is worse than one that says it cannot be pressed. The mirror was fixed too: Windows
+ * reads `cmd`/`meta` onto Ctrl.
+ *
+ * The previous note, kept because the reason still holds. 0.14.0 is the build that can see a dialog, and that stops calling a text edit "nothing happened".
  *
  * Three defects, all of them mine, all named by one watched run that was doing the right things.
  *
@@ -455,7 +480,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.14.0';
+export const AGENT_WANTS = '0.15.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {
