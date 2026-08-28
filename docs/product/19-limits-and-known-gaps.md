@@ -127,7 +127,23 @@ These are not bugs and no amount of work inside the current design removes them.
   it cannot tell a stale latch from a finger on a key, so a person physically holding Shift while a run
   types loses it, and there is no field to opt out. During a run that is the right trade — the run must do
   what it was asked, not what somebody's finger made of it — but it is a real behaviour, not a detail.
-- **Modified pointer gestures cannot be performed OR recorded, on either platform.** Shift-click to extend a
+- **Modified pointer gestures: recorded and replayed on macOS from 0.21.0; Windows and the action grammar
+  are not done.** A Shift-click, Command-click, Option-drag or Command+scroll made by a person on a Mac is
+  now recorded (`mods=` on the `#ctx` line), narrated (`Shift-clicked "Report.pdf"`, `Alt-dragged 202px`,
+  `Cmd-scrolled down 2 notches`) and replayed as the same gesture. **Verified end to end on a real Mac**, in
+  both directions: an injected Shift-click recorded as `mods=Shift`, and a replayed Option-drag posted the
+  flag on its press, its movement and its release, with the session's modifier state clean afterwards.
+
+  Settled by measurement, against the design's own expectation: on macOS the flags on a posted mouse event
+  are **sufficient** — a window reporting what it saw showed `NSEvent.modifierFlags = Alt` identically for
+  an event sent with flags only and one sent with the key physically held. So no modifier key is pressed.
+  The same measurement found the other half: those flags **latch** the session state exactly as a keyboard
+  chord does, so the replay releases them when a gesture closes.
+
+  **Still open:** the Windows recorder and replay (the readers are ready for them, and a `mods` line they do
+  not write is simply absent), and the action grammar — the model still cannot ASK for a Shift-click, only
+  replay one a person made.
+- **Modified pointer gestures could be neither performed nor recorded before 0.21.0, on either platform.** Shift-click to extend a
   selection, Command-click to open a link in a background tab, Option-drag to copy, Command+scroll to zoom:
   `click` reads only `button`, `double` and `name`; `drag` and `scroll` have no modifier field; and the bare
   modifier keys are not in the key table, so the chord cannot be composed by hand either. Recording is the

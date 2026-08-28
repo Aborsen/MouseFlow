@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.20.0"
+let VERSION = "0.21.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -282,6 +282,20 @@ final class Ev {
      * значит, что отбрасывать было нечего. */
     var nameLength = 0
     var url: String?
+    /* Модификаторы, зажатые в момент ЖЕСТА - только у нажатия кнопки и у прокрутки.
+     *
+     * Не у движения, и это не про размер файла. Тап отдаёт движения десятками в секунду; выборка
+     * глобального состояния клавиатуры на каждом из них, пересечённая с потактовой лентой нажатий, которую
+     * формат и так хранит, восстанавливает маску Shift и композиции для текста, который формат обещает не
+     * хранить. Одна выборка на осознанный жест такой возможности не даёт.
+     *
+     * И не у отпускания: повтор держит модификатор от нажатия до его пары, так что второй записи не нужно.
+     *
+     * Сказано вслух и то, чего это НЕ ловит: модификатор, нажатый или отпущенный ПОСРЕДИ перетаскивания -
+     * копирование в Finder, где сначала тянут, а потом дожимают Option, - не записывается. Поставить `mods`
+     * на отпускание значило бы, что нажатие и отпускание одного жеста расходятся во мнении о нём, и каждому
+     * читателю пришлось бы их мирить. */
+    var mods: String?
 }
 
 /// A resolution job. `target` is the event to write the names onto once they are known.
@@ -371,6 +385,23 @@ func releaseSteps(_ held: CGEventFlags) -> [(code: CGKeyCode, down: Bool, flags:
 /* The held modifiers, in a fixed order so the same chord always reads the same way. Shift is included for a
  * NAMED key - Shift+Tab goes backwards, which is a different instruction - and is never enough on its own
  * to make a character key readable. */
+/* МОДИФИКАТОРЫ ЖЕСТА, теми же словами, что у аккорда клавиатуры, и без хвостового `+`.
+ *
+ * Порядок фиксирован, чтобы один и тот же жест всегда читался одинаково: разбор сравнивает токены, а не
+ * множества. Пусто - значит ничего не держали, и тогда ключ на провод не уходит вовсе.
+ *
+ * ЧЕТЫРЕ МАСКИ И НИ ОДНОЙ БОЛЬШЕ. Ни caps lock, ни Fn: у ноутбучных стрелок стоит `.maskSecondaryFn`, и
+ * стоит начать его читать, как каждое нажатие стрелки станет «Fn+Down». Фильтр через четыре маски - это же
+ * и то, что не пускает сюда `.maskAlphaShift`. */
+func chordName(_ flags: CGEventFlags) -> String {
+    var parts: [String] = []
+    if flags.contains(.maskCommand) { parts.append("Cmd") }
+    if flags.contains(.maskControl) { parts.append("Ctrl") }
+    if flags.contains(.maskAlternate) { parts.append("Alt") }
+    if flags.contains(.maskShift) { parts.append("Shift") }
+    return parts.joined(separator: "+")
+}
+
 func chordPrefix(_ flags: CGEventFlags) -> String {
     var parts: [String] = []
     if flags.contains(.maskCommand) { parts.append("Cmd") }
@@ -728,7 +759,7 @@ final class Recorder {
     /* Called from the tap. Does the minimum and returns: the protocol's rule is that nothing on the input
      * path may resolve anything, because a tap that overruns its timeout is disabled by the OS without
      * telling anybody - the same failure the Windows hook has with LowLevelHooksTimeout. */
-    func capture(action: String, x: Int, y: Int) {
+    func capture(action: String, x: Int, y: Int, mods: String = "") {
         var toQueue: Ev?
         gate.lock()
         if recording {
@@ -761,6 +792,9 @@ final class Recorder {
                 e.y = y
                 e.delayMs = buffer.isEmpty ? 0 : (now - lastStamp)
                 e.action = action
+                /* Пусто - значит ничего не держали, и на провод ключ не уйдёт. Вызывающий передаёт их
+                 * только у нажатия и у прокрутки - см. поле `mods` у Ev о том, почему не у движения. */
+                if !mods.isEmpty { e.mods = mods }
                 buffer.append(e)
                 lastStamp = now
                 lastX = x
@@ -994,8 +1028,11 @@ final class Recorder {
         out.reserveCapacity(list.count * 48)
         var index = 1
         for e in list {
+            /* И `mods` держит строку живой. Иначе Cmd+прокрутка теряется целиком и молча: она не идёт на
+             * разрешение имён вовсе, так что кроме модификатора у неё в контексте ничего и нет. Пропустить
+             * это в guard'е - невидимая ошибка, теряющая ровно один из четырёх жестов. */
             if e.app != nil || e.window != nil || e.control != nil || e.controlType != nil
-                || e.nameLength > 0 {
+                || e.nameLength > 0 || e.mods != nil {
                 out += "#ctx"
                 if let v = e.app { out += "\tapp=" + v }
                 if let v = e.window { out += "\twindow=" + v }
@@ -1012,6 +1049,7 @@ final class Recorder {
                 if let v = e.container { out += "\tin=" + v }
                 if let v = e.containerName { out += "\tinName=" + v }
                 if let v = e.url { out += "\turl=" + v }
+                if let v = e.mods { out += "\tmods=" + v }
                 out += "\n"
             }
             out += "\(index) | \(e.x) | \(e.y) | \(e.delayMs) | \(e.action)\n"
@@ -2752,9 +2790,11 @@ enum Input {
         return nil
     }
 
-    static func move(x: Double, y: Double) {
+    /* `flags` со значением по умолчанию: движение само по себе модификатора не несёт, а движение ВНУТРИ
+     * модифицированного перетаскивания несёт - его передаёт повтор. */
+    static func move(x: Double, y: Double, flags: CGEventFlags = []) {
         send(CGEvent(mouseEventSource: source(), mouseType: .mouseMoved,
-                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left))
+                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left), flags: flags)
     }
 
     static func click(x: Double, y: Double, button: String, double: Bool) {
@@ -2810,7 +2850,8 @@ enum Input {
      * Потолок остался, потому что `amount=100000` - это не то, что кто-то имел в виду, а сорок минут
      * колеса не лучший ответ, чем предложение. Он вчетверо выше прежнего, ровно как на Windows, и когда
      * он срабатывает - об этом говорят вслух. */
-    static func scroll(x: Double, y: Double, amount: Int, dir: String = "") -> String? {
+    static func scroll(x: Double, y: Double, amount: Int, dir: String = "",
+                       flags: CGEventFlags = []) -> String? {
         let way = dir.trimmingCharacters(in: .whitespaces).lowercased()
         var sideways = false
         var positive = false
@@ -2823,7 +2864,7 @@ enum Input {
         default: return "dir is up, down, left or right - not \"\(way)\""
         }
 
-        move(x: x, y: y)
+        move(x: x, y: y, flags: flags)
         usleep(20_000)
         /* One event per notch, because a single event with a large delta is treated as a fling by some
          * applications and scrolls further than asked. */
@@ -2833,7 +2874,8 @@ enum Input {
         let wheel2: Int32 = sideways ? Sideways.wheel2(right: positive) : 0
         for _ in 0..<steps {
             send(CGEvent(scrollWheelEvent2Source: source(), units: .line,
-                         wheelCount: sideways ? 2 : 1, wheel1: wheel1, wheel2: wheel2, wheel3: 0))
+                         wheelCount: sideways ? 2 : 1, wheel1: wheel1, wheel2: wheel2, wheel3: 0),
+                 flags: flags)
             usleep(12_000)
         }
         if steps != wanted && wanted > 0 {
@@ -3680,6 +3722,36 @@ func doAction(_ body: String) -> String? {
 struct ReplayCtx {
     var control: String?
     var type: String?
+    /* Модификаторы жеста, как записаны: `Shift`, `Cmd+Shift`, `Alt`. Сырая строка хранится ВМЕСТЕ с
+     * разобранными флагами, чтобы значение переживало круговой путь нетронутым, как все прочие ключи. */
+    var mods: String?
+
+    /* ЗДЕСЬ `Ctrl` ЗНАЧИТ КЛАВИШУ CONTROL, а не «командный модификатор», и это сознательное расхождение с
+     * путём `Key <аккорд>`, где Input.key сворачивает `ctrl` в Command - там грамматика писалась на Windows,
+     * и `ctrl=1 key=c` значит «копировать».
+     *
+     * Здесь запись говорит, что человек ФИЗИЧЕСКИ держал. Control-клик на маке открывает контекстное меню;
+     * повторить его как Cmd-клик значит сделать другой жест и отчитаться о чистом прогоне. Это самый
+     * вероятный способ ошибиться в этой правке, поэтому написано здесь, а не подразумевается.
+     *
+     * Известная цена, названная вслух: запись Ctrl-клика, сделанная на Windows (там это множественный
+     * выбор), воспроизведётся на маке как Control-клик, то есть контекстное меню. Верного перевода без
+     * знания платформы записи не существует, а тело записи её не несёт. Дешёвое будущее решение - токен
+     * платформы в заголовке `#part`; в эту волну он не входит. */
+    var modFlags: CGEventFlags {
+        guard let mods, !mods.isEmpty else { return [] }
+        var out: CGEventFlags = []
+        for token in mods.split(separator: "+") {
+            switch token.lowercased() {
+            case "cmd", "command": out.insert(.maskCommand)
+            case "shift": out.insert(.maskShift)
+            case "alt", "option": out.insert(.maskAlternate)
+            case "ctrl", "control": out.insert(.maskControl)
+            default: break   // незнакомый токен - это данные, а не ошибка. См. PROTOCOL.md.
+            }
+        }
+        return out
+    }
 }
 
 struct ReplayStep {
@@ -3713,6 +3785,13 @@ final class Replayer {
     private var retargeted = 0
     /// Every button this replay is holding, so every exit path can let go of them.
     private var down: Set<String> = []
+    /* Модификаторы, которые несёт СЕЙЧАС ОТКРЫТОЕ нажатие - от press до его release.
+     *
+     * Записан модификатор только на нажатии и на прокрутке (см. PROTOCOL.md: у перетаскивания движения
+     * между press и release своего `#ctx` не несут), так что отпускание и движения берут его отсюда. Иначе
+     * Option-перетаскивание было бы Option-нажатием и обычным перетаскиванием - в Finder это разница между
+     * копированием и перемещением, и обнаружилась бы она на чужих файлах. */
+    private var gestureMods: CGEventFlags = []
     /* Where the last press actually landed after aiming. The release has to follow it: releasing at the
      * recorded coordinate after pressing somewhere else turns one click into a drag across the window. */
     private var aimed: CGPoint?
@@ -3789,8 +3868,12 @@ final class Replayer {
                     let value = String(parts[1])
                     if parts[0] == "control" { ctx.control = value }
                     if parts[0] == "type" { ctx.type = value }
+                    if parts[0] == "mods" { ctx.mods = value }
                 }
-                pending = (ctx.control == nil && ctx.type == nil) ? nil : ctx
+                /* И `mods` держит строку живой. Без этой половины получается функция, которая работает для
+                 * названных элементов и молча не работает везде остальном - то есть форма, проходящая
+                 * демонстрацию: Cmd+прокрутка имени не несёт никогда. */
+                pending = (ctx.control == nil && ctx.type == nil && ctx.mods == nil) ? nil : ctx
                 continue
             }
             if line.isEmpty || line.hasPrefix("#") { continue }
@@ -3937,31 +4020,46 @@ final class Replayer {
             y = at.y
         }
 
+        /* МОДИФИКАТОРЫ ЖЕСТА, и берутся они по-разному у трёх видов событий.
+         *
+         * Нажатие и прокрутка несут свои: у них есть собственный `#ctx`. Отпускание и движения между
+         * press и release своего не несут по устройству формата - они берут то, что открыло жест. Иначе
+         * Option-перетаскивание распалось бы на Option-нажатие и обычное перетаскивание, а в Finder это
+         * разница между копированием и перемещением. */
+        let carried = event.ctx?.modFlags ?? []
+        if event.action.hasSuffix("Click Down") { gate.lock(); gestureMods = carried; gate.unlock() }
+        let mods: CGEventFlags = {
+            if event.action.hasSuffix("Click Down") { return carried }
+            if event.action.hasPrefix("Scroll") { return carried }
+            gate.lock(); defer { gate.unlock() }
+            return gestureMods
+        }()
+
         switch event.action {
         case "Mouse Movement":
-            Input.move(x: x, y: y)
+            Input.move(x: x, y: y, flags: mods)
         case "Left Click Down":
-            hold("left"); post(.leftMouseDown, x, y, .left)
+            hold("left"); post(.leftMouseDown, x, y, .left, flags: mods)
         case "Left Click Release":
-            release("left"); post(.leftMouseUp, x, y, .left)
+            release("left"); post(.leftMouseUp, x, y, .left, flags: mods)
         case "Right Click Down":
-            hold("right"); post(.rightMouseDown, x, y, .right)
+            hold("right"); post(.rightMouseDown, x, y, .right, flags: mods)
         case "Right Click Release":
-            release("right"); post(.rightMouseUp, x, y, .right)
+            release("right"); post(.rightMouseUp, x, y, .right, flags: mods)
         case "Middle Click Down":
-            hold("middle"); post(.otherMouseDown, x, y, .center)
+            hold("middle"); post(.otherMouseDown, x, y, .center, flags: mods)
         case "Middle Click Release":
-            release("middle"); post(.otherMouseUp, x, y, .center)
+            release("middle"); post(.otherMouseUp, x, y, .center, flags: mods)
         case "Scroll Up":
-            _ = Input.scroll(x: x, y: y, amount: 3, dir: "up")
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "up", flags: mods)
         case "Scroll Down":
-            _ = Input.scroll(x: x, y: y, amount: 3, dir: "down")
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "down", flags: mods)
         /* Названы здесь, иначе боковая прокрутка человека уходит в default и считается непроигрываемой.
          * Транскрипт разбирает эти два слова с самого начала - читающая сторона давно готова. */
         case "Scroll Left":
-            _ = Input.scroll(x: x, y: y, amount: 3, dir: "left")
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "left", flags: mods)
         case "Scroll Right":
-            _ = Input.scroll(x: x, y: y, amount: 3, dir: "right")
+            _ = Input.scroll(x: x, y: y, amount: 3, dir: "right", flags: mods)
 
         /* Named here rather than dropped through the default, exactly as on Windows.
          *
@@ -3997,24 +4095,55 @@ final class Replayer {
             }
             gate.lock(); unplayable += 1; gate.unlock()
         }
+
+        /* И ОТПУСТИТЬ ИХ, КОГДА ЖЕСТ ЗАКРЫЛСЯ.
+         *
+         * Флагов на событии достаточно, чтобы приложение увидело модификатор, - это измерено. Измерено и
+         * второе: событие, посланное с флагом, ЗАЛИПАЕТ в состоянии сессии ровно так же, как аккорд на
+         * клавиатуре, и `flagsState` продолжает возвращать Alt, пока его не отпустят. Оставить так - значит
+         * отдать следующему клику повтора чужой модификатор, а человеку за клавиатурой - зажатый Option.
+         *
+         * Только когда жест что-то держал: отпускание на каждом клике стоило бы четырёх лишних событий на
+         * каждый шаг ни за чем. */
+        if !mods.isEmpty && event.action.hasSuffix("Click Release") { Input.releaseModifiers() }
+        if !mods.isEmpty && event.action.hasPrefix("Scroll") { Input.releaseModifiers() }
+
         return true
     }
 
-    private func post(_ type: CGEventType, _ x: Double, _ y: Double, _ button: CGMouseButton) {
+    private func post(_ type: CGEventType, _ x: Double, _ y: Double, _ button: CGMouseButton,
+                      flags: CGEventFlags = []) {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }
         guard let event = CGEvent(mouseEventSource: source, mouseType: type,
                                  mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: button) else { return }
         /* Пустые флаги ЯВНО, ровно как в Input.send и по той же причине: событие из `.hidSystemState` без
          * флагов забирает состояние системы, а повтор, в котором есть аккорд, оставляет это состояние
          * зажатым - и следующий клик повтора становится Cmd-кликом. Здесь у повтора своя копия отправки,
-         * так что правило приходится повторить; тест держит обе половины вместе. */
-        event.flags = []
+         * так что правило приходится повторить; тест держит обе половины вместе.
+         *
+         * И ФЛАГОВ ДОСТАТОЧНО, чтобы жест стал модифицированным - это измерено на живой машине, а не
+         * выведено: окно, сообщавшее, что видит, показало `NSEvent.modifierFlags = Alt` для события,
+         * посланного ТОЛЬКО с флагами, ровно так же, как для события с физически зажатой клавишей. Держать
+         * клавишу не нужно. См. releaseEverything о том, почему после жеста всё равно нужно отпускать. */
+        event.flags = flags
         event.setIntegerValueField(.eventSourceUserData, value: INJECTED_MARK)
         event.post(tap: .cghidEventTap)
     }
 
     private func hold(_ name: String) { gate.lock(); down.insert(name); gate.unlock() }
-    private func release(_ name: String) { gate.lock(); down.remove(name); gate.unlock() }
+    /// Возвращает, закрылся ли жест этим отпусканием - вызывающий по этому решает, пора ли отпускать
+    /// модификаторы.
+    @discardableResult
+    private func release(_ name: String) -> Bool {
+        gate.lock()
+        down.remove(name)
+        /* Жест закрыт - модификаторы больше не его. Держать их дальше значило бы отдать следующему клику
+         * чужой Option. */
+        let closed = down.isEmpty
+        if closed { gestureMods = [] }
+        gate.unlock()
+        return closed
+    }
 
     private func releaseEverything() {
         /* И МОДИФИКАТОРЫ ТОЖЕ - ВЫШЕ проверки на зажатые кнопки мыши, а не после неё.
@@ -4081,15 +4210,15 @@ private func tapCallback(
          * would give a press, no motion and a release - a drag that replays as a click. */
         Recorder.shared.capture(action: "Mouse Movement", x: x, y: y)
     case .leftMouseDown:
-        Recorder.shared.capture(action: "Left Click Down", x: x, y: y)
+        Recorder.shared.capture(action: "Left Click Down", x: x, y: y, mods: chordName(event.flags))
     case .leftMouseUp:
         Recorder.shared.capture(action: "Left Click Release", x: x, y: y)
     case .rightMouseDown:
-        Recorder.shared.capture(action: "Right Click Down", x: x, y: y)
+        Recorder.shared.capture(action: "Right Click Down", x: x, y: y, mods: chordName(event.flags))
     case .rightMouseUp:
         Recorder.shared.capture(action: "Right Click Release", x: x, y: y)
     case .otherMouseDown:
-        Recorder.shared.capture(action: "Middle Click Down", x: x, y: y)
+        Recorder.shared.capture(action: "Middle Click Down", x: x, y: y, mods: chordName(event.flags))
     case .otherMouseUp:
         Recorder.shared.capture(action: "Middle Click Release", x: x, y: y)
     case .scrollWheel:
@@ -4098,10 +4227,14 @@ private func tapCallback(
          * Ось выбирается по тому, где больше движения, потому что трекпад даёт обе сразу. */
         let up = event.getIntegerValueField(.scrollWheelEventDeltaAxis1)
         let side = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+        /* У прокрутки свой `mods`, потому что пары у неё нет: повтор держит модификатор от нажатия до
+         * отпускания, а прокрутке держать не от чего. */
+        let wheelMods = chordName(event.flags)
         if side != 0 && abs(side) >= abs(up) {
-            Recorder.shared.capture(action: Sideways.name(delta: side), x: x, y: y)
+            Recorder.shared.capture(action: Sideways.name(delta: side), x: x, y: y, mods: wheelMods)
         } else {
-            Recorder.shared.capture(action: up >= 0 ? "Scroll Up" : "Scroll Down", x: x, y: y)
+            Recorder.shared.capture(action: up >= 0 ? "Scroll Up" : "Scroll Down", x: x, y: y,
+                                    mods: wheelMods)
         }
     case .keyDown:
         /* Two paths, and which one a key takes is decided by whether it can spell anything.

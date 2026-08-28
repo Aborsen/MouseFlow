@@ -304,7 +304,34 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.20.0 finishes what 0.19.0 started, on both platforms, and most of it came from auditing the fix rather
+/* 0.21.0 is the build that can record a Shift-click, on macOS.
+ *
+ * A Shift-click, Command-click, Option-drag or Command+scroll could be neither performed nor recorded, and
+ * the recording half was the one that surprised: a recording of a person doing any of them replayed as the
+ * UNMODIFIED gesture and reported a clean run - not because the replay stripped it, but because the
+ * recording never saw it. In Finder that is the difference between copying a file and moving it, and the
+ * report said the run was fine.
+ *
+ * The modifier rides on the `#ctx` line as `mods=Shift`, `mods=Cmd+Shift`, and only on a button-down and a
+ * scroll. Not on a movement, and not for file size: a per-move sample of global keyboard state, crossed with
+ * the per-keystroke timeline this format already keeps, recovers the shift mask of text the format promises
+ * not to store. Not on a release either - the replay holds the modifier from the press to its pair.
+ *
+ * MEASURED rather than assumed, and the answer was the opposite of what the design expected: on macOS the
+ * flags on a posted mouse event are ENOUGH. A window reporting what it saw showed NSEvent.modifierFlags =
+ * Alt identically for an event sent with flags alone and one sent with the key physically held - so no
+ * modifier key is pressed, and a whole layer of the design was deleted. The same measurement found the
+ * other half: those flags LATCH the session state exactly as a keyboard chord does, so the replay releases
+ * them when a gesture closes.
+ *
+ * Verified end to end on a real Mac in both directions: an injected Shift-click recorded as `mods=Shift`
+ * beside its resolved name, a Command+scroll recorded as a `#ctx` line carrying nothing else, and a
+ * replayed Option-drag posted the flag on its press, its movement and its release.
+ *
+ * Windows is unchanged - it carries the number because the app compares one number - and its recorder and
+ * replay are not done. A `mods` it does not write is simply absent, which every reader already handles.
+ *
+ * The previous note, kept because the reason still holds. 0.20.0 finishes what 0.19.0 started, on both platforms, and most of it came from auditing the fix rather
  * than from the bug.
  *
  * 0.19.0 stopped the agent latching a modifier of its own. It did NOT handle a modifier latched by anything
@@ -600,7 +627,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.20.0';
+export const AGENT_WANTS = '0.21.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

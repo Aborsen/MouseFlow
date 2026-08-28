@@ -302,6 +302,28 @@ name is trimmed at the first space.
 
 Parsing rules that matter, both of them learned the hard way:
 
+**`mods` — the modifiers a gesture was made with.** `mods=Shift`, `mods=Cmd+Shift`, `mods=Alt`: a `+`-joined
+token list in a fixed order — `Cmd`, `Ctrl`, `Alt`, `Shift` — spelled as a keyboard chord already spells
+them. Absent means none were held; never written empty. An unknown token is data rather than an error, like
+every other value here.
+
+`Ctrl` in this value is the **literal Control key**, and that deliberately differs from `ctrl=` in the
+action grammar, where it means the command modifier because the grammar was written on Windows. This value
+says what a person physically held: a Control-click on macOS opens a context menu, and replaying it as a
+Command-click performs a different gesture and reports a clean run. The known cost, said out loud: a Windows
+recording of Ctrl-click (multi-select) replays on macOS as Control-click. There is no correct translation
+without knowing which platform wrote the line, and the body does not say.
+
+**Only on a button-down and on a scroll.** Not on a movement, not on a release, not on a key. Not for file
+size: a per-move sample of global keyboard state, intersected with the per-keystroke timeline this format
+already stores, recovers the shift-and-compose mask of text the format promises not to keep. A release needs
+none because a replay holds the modifier from the press to its pair; a scroll carries its own because it has
+no pair. What this does not catch, said rather than left to be found: a modifier pressed or released
+*mid-drag* is not recorded.
+
+**A `#ctx` line may carry `mods` and nothing else** — a Command+scroll is never sent for name resolution at
+all. Every guard that decides whether such a line exists has to allow for it.
+
 - `text=`, `title=` and `app=` take **the rest of the line**, unsplit — they contain spaces. The macOS
   agent adds `name=` to that list, because it is the half that reads the click label; the Windows agent
   ignores the field, so there is nothing there for it to split. Whichever marker comes first wins the rest
