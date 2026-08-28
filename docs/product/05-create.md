@@ -212,6 +212,21 @@ deployment: these actions send positions OUTWARDS, and the alternative is a conv
 coordinate systems. The rule they bend, the measurements that permit it, and the two failure modes
 (applications that stop answering; why a global lock was the wrong fix) are in `agent/PROTOCOL.md`.
 
+**A run is told what the account did just before it** — the three most recent goal runs, each as one line:
+how long ago, whether it finished, the goal, the sentence it finished with, and the addresses it *asked* to
+open with their query strings cut off. This exists because a request that began "now — ask a question … and
+add it into the document" had nothing to point at: the loop is handed the goal text and nothing else, so
+"now" and "the document" referred to a run it could not see, and the person had to paste the link by hand.
+
+What it can and cannot supply is worth knowing. A run records the addresses it *requested*, not where they
+redirected to — the run that created the document opened `docs.new`, and the document's real URL was never
+written down. So this does not hand the next run a link on its own; what it hands over is that a document
+called "dbForge Testing" was created and the run said it worked, which is enough to go looking for that
+document instead of making a second one. Once a later run opens the real URL, that one *is* carried.
+
+It sits **after** the goal and is labelled twice — as background and as not-instructions — because whatever
+comes first is read as the task, and a previous goal is not this goal. Own account only.
+
 **A shortcut is a keycode, not a character** (fixed in 0.15.0), and this one is worth remembering because it
 hid behind two different symptoms. `VkFor` sent a single character through `VkKeyScan`, which answers *for the
 current keyboard layout*. With Russian active — one of three layouts on the machine where this was found —

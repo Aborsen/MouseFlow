@@ -47,6 +47,9 @@ import { flowBody, parseMacro, summarize } from './_macro.mjs';
 import { flowFor } from './_flow-for.mjs';
 /* The decision loop, turned inside out so it can live in a row between requests. See api/_step.mjs. */
 import { advance, startLoop } from './_step.mjs';
+/* Composed in the brain rather than here, so the cloud driver and the browser one hand the model the same
+   background in the same words. */
+import { EARLIER_RUNS, earlierRuns } from './_brain.mjs';
 import { ALLOWED_MODELS } from './_vision.mjs';
 import { readSettings } from './admin.js';
 /* The one implementation of what a skill's parameters do to its goal. Imported rather than repeated for
@@ -1100,7 +1103,26 @@ async function workerRoute(action, req, res, sql, who) {
       const model = wanted && ALLOWED_MODELS.has(wanted) ? wanted : [...ALLOWED_MODELS][0];
       /* What the author said done looks like, carried from the skill into the run. Null when they said
        * nothing, which is most skills and is fine - the loop simply does not mention it. */
-      loop = startLoop({ goal, model, success: payload.success || null });
+      /* WHAT THIS ACCOUNT DID JUST BEFORE, so that "now do X with the thing we just made" has something to
+       * point at. Its own account only - never anybody else's - and composed in the brain so both drivers
+       * say it identically. `catch(() => null)` on purpose: background is worth a query and never worth
+       * failing a run over. */
+      const before = await sql`
+        select goal, outcome, summary, error, steps, started_at, finished_at
+        from user_run
+        where user_id = ${who.id} and deleted_at is null and kind = 'agent'
+        order by started_at desc nulls last limit ${EARLIER_RUNS}
+      `.catch(() => null);
+      const earlier = earlierRuns((before || []).map((r) => ({
+        goal: r.goal,
+        outcome: r.outcome,
+        summary: r.summary,
+        error: r.error,
+        steps: r.steps,
+        startedAt: r.started_at,
+        finishedAt: r.finished_at,
+      })));
+      loop = startLoop({ goal, model, success: payload.success || null, earlier });
       /* Who is driving. A worker runs the loop itself and never writes here; recorded so that a machine
        * with both cannot end up driving one mouse twice. */
       await sql`update run_queue set stepping = true where id = ${id} and user_id = ${who.id}`;

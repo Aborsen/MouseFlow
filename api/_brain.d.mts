@@ -77,6 +77,8 @@ export const STIR_CELLS: number;
 export const QUIET_MEAN: number;
 export function gridStirred(a: Uint8Array | null, b: Uint8Array | null): boolean;
 export function gridQuiet(a: Uint8Array | null, b: Uint8Array | null): boolean;
+export const EARLIER_RUNS: number;
+export function earlierRuns(runs: unknown[] | null | undefined, now?: number): string | null;
 export const OUTPUT_MAX: number;
 export function actionSaid(
   output: string | null | undefined,
@@ -108,4 +110,6 @@ export function openingMessage(
   handoff: string | null,
   /** What the author said done looks like. Its own paragraph, never folded into the goal. */
   success?: string | null,
+  /** Что аккаунт делал прямо перед этим - фон, а не задание. См. earlierRuns. */
+  earlier?: string | null,
 ): Message;

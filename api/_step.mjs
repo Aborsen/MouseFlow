@@ -75,7 +75,7 @@ export const MAX_STEPS = WAVE_TURNS * MAX_WAVES;
 export const MODEL_TIMEOUT_MS = 75_000;
 
 /** A run at its first step: the goal, and nothing seen yet. */
-export function startLoop({ goal, model, success = null }) {
+export function startLoop({ goal, model, success = null, earlier = null }) {
   return {
     v: LOOP_VERSION,
     goal: String(goal || ''),
@@ -99,7 +99,12 @@ export function startLoop({ goal, model, success = null }) {
      * действия в одном ходе и три в следующем - это шесть подряд, и человек, глядя на это, считал бы
      * именно так. */
     still: 0,
-    messages: [openingMessage(String(goal || ''), null, null, success ? String(success) : null)],
+    /* Kept on the loop as well as used once, for the same reason `success` is: a wave rebuilds the
+     * conversation from scratch, and background the model had in wave one would otherwise vanish in wave
+     * two - which is the wave most likely to go looking for something it has forgotten exists. */
+    earlier: earlier ? String(earlier) : null,
+    messages: [openingMessage(String(goal || ''), null, null,
+      success ? String(success) : null, earlier ? String(earlier) : null)],
     pending: [],
     mine: [],
     ending: null,
@@ -280,7 +285,8 @@ export async function advance({ loop, shot, windows, results, ask }) {
     }
     loop.wave += 1;
     loop.turn = 0;
-    loop.messages = [openingMessage(loop.goal, null, handed.note, loop.success || null)];
+    loop.messages = [openingMessage(loop.goal, null, handed.note, loop.success || null,
+      loop.earlier || null)];
   }
 
   // 3. The picture.

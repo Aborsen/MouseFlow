@@ -389,6 +389,10 @@ export const CreateView = () => {
             + 'and say so rather than going to look for it.'
           : text,
         machine: localMachine(state.port),
+        /* Что этот аккаунт делал прямо перед этим - фон, не задание. Только прогоны цели, только с этого
+         * аккаунта, и уже отсортированы новыми вперёд. Формулируется в мозге (earlierRuns), потому что
+         * облачный драйвер отдаёт модели то же самое теми же словами. */
+        earlier: runs.filter((run) => run.kind === 'agent'),
         onEvent: (event) => {
           /* СЛОВА ПРОГОНА, отложенные для записи на аккаунт.
            *

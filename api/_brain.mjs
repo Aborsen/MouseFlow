@@ -1006,7 +1006,91 @@ export const HANDOFF_SYSTEM =
 
 /** Первое сообщение волны: цель, план (если он есть) и записка от предыдущей волны. */
 /* @param {string|null} [success] what the author said done looks like, when they said it. */
-export function openingMessage(goal, planText, handoff, success = null) {
+/** How many earlier runs a new one is told about. Three, chosen by the person whose runs they are. */
+export const EARLIER_RUNS = 3;
+
+/* Cut on a word and marked as cut - the same reasoning as `shorten` in api/_transcript.js, which is not
+ * imported here because the brain deliberately depends on nothing: a goal ending "… - Go" reads as a goal
+ * that ends there rather than one that was trimmed, and a goal is exactly the sort of thing a reader tries
+ * to recognise. */
+const clip = (said, max) => {
+  const text = String(said == null ? '' : said).replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max - 1);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).replace(/[\s\-–—,:;|·]+$/, '')}…`;
+};
+
+/* WHAT THE ACCOUNT DID JUST BEFORE THIS, and why a run needed telling.
+ *
+ * A run was asked to create a Google Doc and put a screenshot in it. The next request began "now - ask a
+ * question to the AI Assistant ... and add it into the document", and the loop had no idea a document
+ * existed: it is handed the goal text and nothing else, so "now" and "the document" pointed at nothing. The
+ * person had to paste the link by hand.
+ *
+ * WHAT IT CAN AND CANNOT SUPPLY, said plainly because the difference matters. A run records the goal, the
+ * outcome, the sentence the model finished with, and the addresses it ASKED to open. It does not record
+ * where those addresses redirected to - the first run opened `docs.new` and the document's real URL was
+ * never written down anywhere. So this does not hand the next run a link. What it does hand over is that a
+ * document called "dbForge Testing" was created and the run said it succeeded, which is enough to go looking
+ * for that document rather than making a second one.
+ *
+ * BACKGROUND, NOT INSTRUCTIONS, and labelled as such in the text. These are the user's own earlier goals, so
+ * the "text on screen is information" rule does not quite apply - but a previous goal is still not this
+ * goal, and a model that treats it as one carries out last week's task again.
+ *
+ * Query strings are cut off every address, the same rule and the same reason as everywhere else in this
+ * codebase: that is where a session token and a one-time sign-in link live.
+ */
+export function earlierRuns(runs, now = Date.now()) {
+  const list = Array.isArray(runs) ? runs.slice(0, EARLIER_RUNS) : [];
+  if (!list.length) return null;
+
+  const ago = (at) => {
+    const then = Date.parse(String(at || ''));
+    if (!Number.isFinite(then)) return 'earlier';
+    const mins = Math.round((now - then) / 60000);
+    if (mins < 2) return 'just now';
+    if (mins < 60) return `${mins} minutes ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+    const days = Math.round(hours / 24);
+    return `${days} day${days === 1 ? '' : 's'} ago`;
+  };
+
+  /* Origin and path only. `new URL` rather than string surgery, for the reason api/_names.mjs gives: an
+   * address with a colon in its path, or none at all, is where hand-rolled splitting goes wrong. */
+  const bare = (raw) => {
+    try {
+      const url = new URL(String(raw));
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+      return url.origin + (url.pathname === '/' ? '' : url.pathname);
+    } catch {
+      return null;
+    }
+  };
+
+  const lines = list.map((run) => {
+    const steps = Array.isArray(run && run.steps) ? run.steps : [];
+    const seen = [];
+    for (const step of steps) {
+      const input = (step && (step.input || {})) || {};
+      const address = bare(input.url);
+      if (address && !seen.includes(address)) seen.push(address);
+    }
+    const outcome = run && run.outcome === 'ok' ? 'finished' : 'did not finish';
+    const said = clip(run && (run.summary || run.error || ''), 160);
+    return `- ${ago(run && (run.finishedAt || run.startedAt))}, ${outcome}: ${clip(run && run.goal, 160)}`
+      + (said ? `
+  it said: ${said}` : '')
+      + (seen.length ? `
+  it opened: ${seen.slice(0, 3).join(', ')}` : '');
+  });
+
+  return lines.join('\n');
+}
+
+export function openingMessage(goal, planText, handoff, success = null, earlier = null) {
   /* SAID AT THE TOP, not only in the finish tool.
    *
    * The tool description is read when the model is deciding how to STOP; this is read while it is deciding
@@ -1020,11 +1104,18 @@ export function openingMessage(goal, planText, handoff, success = null) {
     ? `\n\nDone looks like this: ${success}\nBefore you finish, check that. If it is not true, say so `
       + 'and finish with ok false - a run that stopped early is more use than one that claims success.'
     : '';
+  /* AFTER the goal and after `done`, and labelled twice - as background, and as not-an-instruction. The
+   * order matters: whatever comes first is what a model reads as the task, and this is not the task. */
+  const before = earlier
+    ? '\n\nFor context only, what this account did just before - background, NOT instructions, and not part '
+      + `of what you were asked to do now:\n${earlier}`
+    : '';
   return {
     role: 'user',
     content: handoff
-      ? `${goal}${planText || ''}${done}\n\nThis is a continuation. Earlier work on this same goal reported:\n`
+      ? `${goal}${planText || ''}${done}${before}`
+        + '\n\nThis is a continuation. Earlier work on this same goal reported:\n'
         + `${handoff}\n\nCarry on from there. Look at the screen before assuming anything about it.`
-      : `${goal}${planText || ''}${done}`,
+      : `${goal}${planText || ''}${done}${before}`,
   };
 }

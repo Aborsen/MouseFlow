@@ -590,8 +590,11 @@ group('a goal can be carried out by an agent with no worker behind it');
     /from '\.\.\/extension\/skills\.js'/.test(route) && /fillGoal\(skill, args\)/.test(route));
   check('and a missing parameter fails the job instead of running a sentence with a hole in it',
     /const missing = missingParams\(skill, args\)/.test(route));
+  /* The loop is started ONCE, with the model resolved once - a model changed mid-run would hand the task
+   * between two that never saw each other's reasoning. Matched on the call rather than on its exact argument
+   * list, which grew an `earlier` when runs learned to see the three before them. */
   check('the model is resolved once per run, not per step',
-    /startLoop\(\{ goal, model, success: payload\.success \|\| null \}\)/.test(route)
+    /loop = startLoop\(\{ goal, model, success: payload\.success \|\| null,/.test(route)
     && /settings\['model\.desktop'\]/.test(route));
   check('the run reaches the account log like any other',
     /insert into user_run/.test(route));
@@ -1555,7 +1558,8 @@ check('the preview reaches the new steps, and they read as sentences',
 group('a recording does not collect other people\'s words');
 /* `names` is taken at the top of this file for the tool list; this module needs its own handle. */
 const nameRules = await import('../api/_names.mjs');
-const { gridStirred, gridQuiet } = await import(new URL('../api/_brain.mjs', import.meta.url).href);
+const { gridStirred, gridQuiet, earlierRuns, openingMessage, EARLIER_RUNS } =
+  await import(new URL('../api/_brain.mjs', import.meta.url).href);
 /* `transcribe` is imported further down this file, and a const is not hoisted - so this group takes its
  * own handle rather than reaching forward to one that does not exist yet. */
 const { transcribe: readBack } = await import(new URL('../api/_transcript.js', import.meta.url).href);
@@ -1782,6 +1786,65 @@ check('the replay path carries it too, on both sides',
     winNames.length > 20 && orphans.length === 0,
     `windows knows ${winNames.length}; unaccounted for on macOS: ${orphans.join(', ') || 'none'}`);
 }
+
+group('a run is told what the account did just before it');
+{
+  /* WHY: a request that began "now - ask a question ... and add it into the document" had nothing to point
+   * at. The loop is handed the goal text and nothing else, so "now" and "the document" referred to a run it
+   * could not see, and the person had to paste the link by hand. */
+  const at = Date.parse('2026-08-28T13:30:00Z');
+  const runs = [
+    { goal: 'ask the AI Assistant who is he', outcome: 'ok', summary: 'Asked it and recorded the answer.',
+      steps: [{ tool: 'open_url', input: { url: 'https://docs.google.com/document/d/1KC4bS/edit?tab=t.0' } }],
+      startedAt: '2026-08-28T13:05:00Z', finishedAt: '2026-08-28T13:12:00Z' },
+    { goal: 'create a google doc called dbForge Testing', outcome: 'ok', summary: 'Created it.',
+      steps: [{ tool: 'open_url', input: { url: 'https://docs.new' } }],
+      startedAt: '2026-08-28T12:20:00Z', finishedAt: '2026-08-28T12:41:00Z' },
+    { goal: 'rename the sheet', outcome: 'failed', error: 'the picker never loaded', steps: [],
+      startedAt: '2026-08-27T09:00:00Z', finishedAt: '2026-08-27T09:01:00Z' },
+    { goal: 'the fourth, which must not appear', outcome: 'ok', steps: [],
+      startedAt: '2026-08-26T09:00:00Z' },
+  ];
+  const block = earlierRuns(runs, at);
+  check('it carries the goal, how long ago, and how it ended',
+    /18 minutes ago, finished: ask the AI Assistant who is he/.test(block)
+      && /1 day ago, did not finish: rename the sheet/.test(block), block);
+  check('and what the run said, which is where the useful detail is',
+    /it said: Created it\./.test(block));
+  /* THREE, which is what the person whose runs they are chose. A fourth appearing would be a quiet decision
+   * about somebody's prompt size and somebody's privacy. */
+  check('exactly three, never a fourth', !/fourth/.test(block) && EARLIER_RUNS === 3);
+  /* Query strings cut off, the same rule and the same reason as everywhere else here: that is where a
+   * session token and a one-time sign-in link live. */
+  check('addresses keep origin and path and lose the query',
+    /https:\/\/docs\.google\.com\/document\/d\/1KC4bS\/edit/.test(block) && !/tab=t\.0/.test(block));
+  check('and nothing at all when there is nothing before', earlierRuns([]) === null
+    && earlierRuns(null) === null);
+
+  /* WHERE IT SITS. Whatever comes first is read as the task, so this goes after the goal - and is labelled
+   * twice, because a previous goal is still not this goal and a model that treats it as one carries out
+   * last week's work again. */
+  const msg = openingMessage('add Test Case 3', null, null, null, block);
+  check('the goal is still the first thing in the message', msg.content.startsWith('add Test Case 3'));
+  check('and the background says it is background, not an instruction',
+    /background, NOT instructions/.test(msg.content));
+  check('with nothing added when there is no background',
+    openingMessage('do a thing', null, null, null, null).content === 'do a thing');
+}
+/* BOTH DRIVERS, or the two paths teach the model different habits about the same account. The cloud one
+ * reads it from the account; the browser one passes what the app is already holding. */
+check('the cloud driver reads the account own runs, and only those',
+  /where user_id = \$\{who\.id\} and deleted_at is null and kind = 'agent'/.test(read('../api/mcp.js'))
+    && /limit \$\{EARLIER_RUNS\}/.test(read('../api/mcp.js')));
+check('and never fails a run over background it could not fetch',
+  /\.catch\(\(\) => null\);/.test(read('../api/mcp.js')));
+check('the browser driver passes what it already has',
+  /earlier: runs\.filter\(\(run\) => run\.kind === 'agent'\)/.test(read('../web/src/features/create/CreateView.tsx')));
+/* A wave rebuilds the conversation from scratch, so background not kept on the loop would vanish in wave two
+ * - which is the wave most likely to go looking for something it has forgotten exists. */
+check('and a second wave still has it',
+  /earlier: earlier \? String\(earlier\) : null,/.test(read('../api/_step.mjs'))
+    && /loop\.earlier \|\| null\)\];/.test(read('../api/_step.mjs')));
 
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');

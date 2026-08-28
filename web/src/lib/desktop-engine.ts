@@ -54,6 +54,7 @@ import {
   truncatedAt,
   actionReport,
   actionSaid,
+  earlierRuns,
   gridQuiet,
   gridStirred,
   AFTER_CUT,
@@ -240,10 +241,14 @@ interface Options {
   /** Шлюз. Резолвится, когда человек решил: продолжать или остановиться. Пока промис не разрешён, цикл стоит -
    * и это единственное место, где он стоит по чужому решению. */
   onCheckpoint?: (at: { n: number; title: string; said: string }) => Promise<GateAnswer>;
+  /** Что этот аккаунт делал прямо перед этим - фон, а не задание. Формулируется в мозге (earlierRuns),
+   * потому что облачный драйвер отдаёт модели то же самое теми же словами. Отсутствует - и цикл о нём
+   * просто не заговаривает, что и происходит у первого прогона. */
+  earlier?: unknown[] | null;
 }
 
 export async function runOnDesktop({
-  goal, success, machine, onEvent, isAborted, checkpoints, onCheckpoint,
+  goal, success, machine, onEvent, isAborted, checkpoints, onCheckpoint, earlier,
 }: Options): Promise<RunResult> {
   /* Шлюз работает только когда есть и план, и кто-то, кто ответит. Одно без другого - это либо инструмент,
    * объявляющий чекпоинты, которых нет, либо пауза, из которой никто не выпустит. */
@@ -269,7 +274,11 @@ export async function runOnDesktop({
         + 'the plan was your intention, not an instruction you are bound to.'
       : '';
 
-    const messages: unknown[] = [openingMessage(goal, planText, handoff, success ?? null)];
+    /* The same background the cloud driver reads from the account, from what the app is already holding -
+     * see earlierRuns in the brain. Absent is fine and common: a first run has nothing before it. */
+    const messages: unknown[] = [
+      openingMessage(goal, planText, handoff, success ?? null, earlierRuns(earlier ?? null)),
+    ];
     if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
 
     const outcome = await runWave({
