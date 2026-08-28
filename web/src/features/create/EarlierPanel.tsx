@@ -35,6 +35,7 @@ import { cn } from '@insightis/ui/cn';
 import { ArmedButton } from '@/components/ArmedButton';
 import { StepLine } from '@/components/chat';
 import type { Flow, Run } from '@/lib/api';
+import { useAgent } from '@/lib/store';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
 import { asDid, describe } from './describe';
 import { dictatedFrom, goalRuns, provable, stepsOf, titleOf, took, when, wordsOf } from './run-history';
@@ -61,6 +62,9 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
   onRename: (id: string, name: string | null) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
 }) => {
+  /* Какой машиной подписывать аккорды: на маке `ctrl` в шаге - это ⌘. См. describe. */
+  const { health } = useAgent();
+  const platform = health?.platform;
   const [shown, setShown] = useState(() => {
     try { return localStorage.getItem(OPEN_KEY) !== '0'; } catch (_) { return true; }
   });
@@ -293,7 +297,7 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
                           ))}
 
                           {steps.map((step, i) => (
-                            <StepLine key={`s${i}`} kind="tool">{describe(asDid(step))}</StepLine>
+                            <StepLine key={`s${i}`} kind="tool">{describe(asDid(step), platform)}</StepLine>
                           ))}
 
                           {/* ЧТО СКАЗАТЬ, КОГДА ШАГОВ НЕ ВИДНО - и это три разных случая, а не один.

@@ -19,9 +19,13 @@ export interface Did {
 export const asDid = (step: { tool?: string; input?: Record<string, unknown> | null }): Did =>
   ({ name: step.tool, input: step.input });
 
+/** Which machine the reader is looking at. Undefined means "not connected", and then the wire's own
+ *  vocabulary is used, because inventing one of the two would be wrong half the time. */
+export type On = 'windows' | 'macos' | undefined;
+
 /** What a step actually did, not just which verb it used - afterwards is when somebody is working out
  *  where a run went wrong. */
-export function describe(did: Did): string {
+export function describe(did: Did, on: On = undefined): string {
   const input = (did.input ?? {}) as Record<string, any>;
   const at = Number.isFinite(input.x) && Number.isFinite(input.y) ? ` at ${input.x},${input.y}` : '';
   switch (did.name) {
@@ -47,7 +51,20 @@ export function describe(did: Did): string {
       return `type "${shown.length > 60 ? `${shown.slice(0, 60)}…` : shown}"${lines > 1 ? ` (${lines} lines)` : ''}`;
     }
     case 'press_key': {
-      const mods = [input.win && 'Win', input.ctrl && 'Ctrl', input.shift && 'Shift', input.alt && 'Alt']
+      /* `ctrl` НА ПРОВОДЕ - ЭТО КОМАНДНЫЙ МОДИФИКАТОР, а не клавиша Control: агент на маке ставит из него
+       * ⌘ (см. Input.key). Строка при этом говорила «press Ctrl+V» - то есть называла нажатие, которого на
+       * этой машине не было, и никакого Ctrl+V на маке действительно не существует.
+       *
+       * Стоило это дороже, чем выглядит. Владелец продукта прочитал свой собственный журнал, увидел там
+       * виндовые аккорды и сделал ровно тот вывод, который эта строка предлагает: «он жмёт шорткаты
+       * Windows, они на маке не работают». Вставка при этом работала - в том же прогоне ⌘V, ⌘N и ⌘S
+       * сработали четырежды. Врущая подпись увела диагностику в сторону от настоящей причины.
+       *
+       * Платформа берётся у ПОДКЛЮЧЁННОГО агента. Для живого прогона это точно та машина, на которой он
+       * идёт; для истории - почти всегда она же, а строки прогона платформы не несут вовсе. Без агента
+       * остаётся словарь провода: выдумать одну из двух значит ошибаться в половине случаев. */
+      const command = on === 'macos' ? 'Cmd' : 'Ctrl';
+      const mods = [input.win && 'Win', input.ctrl && command, input.shift && 'Shift', input.alt && 'Alt']
         .filter(Boolean);
       return `press ${[...mods, input.key ?? '?'].join('+')}`;
     }

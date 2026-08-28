@@ -29,6 +29,7 @@ import { cn } from '@insightis/ui/cn';
 import { AgentTurn, StepLine, UserTurn } from '@/components/chat';
 import { ArmedButton } from '@/components/ArmedButton';
 import type { Flow, Run } from '@/lib/api';
+import { useAgent } from '@/lib/store';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
 import { asDid, describe } from './describe';
 import { dictatedFrom, goalRuns, provable, stepsOf, titleOf, took, when, wordsOf } from './run-history';
@@ -59,6 +60,9 @@ export const Earlier = ({
   /** Развернуть сразу, когда в ленте больше нечего показать: за историей человек и пришёл. */
   openByDefault: boolean;
 }) => {
+  /* Какой машиной подписывать аккорды: на маке `ctrl` в шаге - это ⌘. См. describe. */
+  const { health } = useAgent();
+  const platform = health?.platform;
   const [open, setOpen] = useState(openByDefault);
   const [all, setAll] = useState(false);
   /** Какой прогон сейчас переименовывают, и что набрали. */
@@ -199,7 +203,7 @@ export const Earlier = ({
                   ))}
 
                   {steps.map((step, i) => (
-                    <StepLine key={`s${i}`} kind="tool">{describe(asDid(step))}</StepLine>
+                    <StepLine key={`s${i}`} kind="tool">{describe(asDid(step), platform)}</StepLine>
                   ))}
 
                   {/* ЧТО СКАЗАТЬ, КОГДА ШАГОВ НЕ ВИДНО - и это три разных случая, а не один.
