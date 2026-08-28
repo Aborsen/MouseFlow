@@ -1142,5 +1142,82 @@ check('и деплой умеет построить провод для каж�
     'find_element', 'scroll_to', 'drag', 'refresh_page', 'wait_for_window']
     .every((tool) => new RegExp(`name === '${tool}'`).test(read('api/_brain.mjs'))));
 
+/* ДВА ПУТИ, ОДНО ПРАВИЛО РАЗОШЛОСЬ НАДВОЕ - и это главное, что здесь надо удержать.
+ *
+ * Запись не берёт набранное НИКОГДА: она хранится, экспортируется в SKILL.md, скачивается и пересылается.
+ * Чтение окна берёт: его зовёт модель между ходами, ответ живёт один ход и не сохраняется (прогон пишет
+ * `{tool, input, ms}` - вывод действия в строку не попадает), а СНИМОК, который модели и так шлют каждый
+ * ход, это набранное уже содержит.
+ *
+ * Слить их обратно легко и незаметно: обе половины читают kAXValue / ValuePattern, и одна общая функция
+ * снова сделала бы из двух правил одно. Поэтому проверяется, что путь записи по-прежнему слеп. */
+group('набранный текст: запись слепа, чтение окна - нет');
+{
+  /* Путь ЗАПИСИ - без изменений, и это то, что было бы потеряно молча. */
+  check('macOS: запись по-прежнему не читает значение у того, во что можно писать',
+    /depth == 0, valueMayName, !holdsTypedText\(current\)/.test(swift));
+  check('и у сфокусированного элемента - вовсе',
+    /nameByClimbing\(focused, valueMayName: false\)/.test(swift));
+  check('windows: запись по-прежнему меряет имя, а не читает содержимое',
+    /static void RecordName\(Ev target, string name, string type\)/.test(ps)
+      && !/ValuePattern/.test(ps.slice(0, ps.indexOf('static void RecordName'))));
+
+  /* Путь ЧТЕНИЯ - отдельной функцией у обоих, а не веткой внутри имени. */
+  check('чтение окна отдаёт содержимое поля у обоих',
+    /private static func readableValue\(_ element: AXUIElement\) -> String\?/.test(swift)
+      && /static string ValueOf\(AutomationElement el\)/.test(ps));
+  check('и только у того, во что можно писать',
+    /guard !isSecure\(element\), holdsTypedText\(element\) else \{ return nil \}/.test(swift)
+      && /if \(!\(locked is bool\) \|\| \(bool\)locked\) return null;/.test(ps));
+  /* Обрезано одинаково: значение AXTextArea - это весь документ, а вывод режется на 2000 символах. */
+  check('и обрезано одним и тем же числом',
+    /VALUE_MAX = 80\b/.test(swift) && /const int ValueMax = 80;/.test(ps));
+  check('строка ответа устроена одинаково у обеих половин',
+    swift.includes('(seen.secret ? " = (password, not read)" : (seen.value.map { " = \\"\\($0)\\"" } ?? ""))')
+      && ps.includes('(secret ? " = (password, not read)" : (value == null ? "" : " = \\"" + value + "\\""))'));
+
+  /* ПАРОЛЬ - НЕ ЧАСТЬ ЭТОГО РАЗДЕЛЕНИЯ, ни на одном пути и ни при какой формулировке. Отдельный замок
+   * отдельной функцией: правило, живущее внутри другого правила, теряется вместе с ним - а то правило
+   * только что и поменяли. */
+  check('поле пароля не читается ни на одном пути, отдельным замком',
+    /private static func isSecure\(_ element: AXUIElement\) -> Bool/.test(swift)
+      && /kAXSubroleAttribute\), sub == "AXSecureTextField"/.test(swift));
+  check('и оно спрашивается ПЕРВЫМ, до чтения значения',
+    /guard !isSecure\(element\), holdsTypedText/.test(swift)
+      && /if \(IsSecret\(el\)\) return null;/.test(ps));
+  /* И запись тоже продолжает считать его набранным текстом - оба замка, а не один вместо другого. */
+  check('и запись по-прежнему считает его набранным текстом',
+    /if isSecure\(element\) \{ return true \}/.test(swift));
+
+  /* ПОЛЕ ВВОДА ВИДНО ВСЕГДА - и обе оговорки найдены пробой на живом окне, а не рассуждением.
+   *
+   * Условие «есть подпись ИЛИ есть значение» оставляло невидимыми ровно те два поля, ради которых всё
+   * писалось: ПУСТОЕ (до того, как в него напечатали, - то есть в тот момент, когда его надо найти) и
+   * ПАРОЛЬ (значение запрещено навсегда). Кликнуть в то, чего не видно, нельзя. */
+  check('безымянное и пустое поле ввода всё равно попадает в ответ',
+    /guard \(name\?\.isEmpty == false\) \|\| value != nil \|\| typed else \{ return nil \}/.test(swift));
+  /* Пустое поле и поле пароля иначе выглядят в ответе ОДИНАКОВО - ни там, ни там значения нет, - и модель,
+   * решившая, что поле просто пустое, напечатает в него то, что собиралась. Слова вместо значения ничего не
+   * раскрывают и снимают двусмысленность. */
+  check('а поле пароля названо словами, а не показано пустым',
+    /seen\.secret \? " = \(password, not read\)"/.test(swift)
+      && /secret \? " = \(password, not read\)"/.test(ps));
+  check('и «это пароль» спрашивается отдельно от «что в нём» у обоих',
+    /secret: isSecure\(element\)/.test(swift) && /static bool IsSecret\(AutomationElement el\)/.test(ps));
+
+  /* Инструмент, о возможности которого не сказано, не вызывается: в измеренном прогоне read_window и
+   * find_element не позваны ни разу, при том что промпт про них говорил. */
+  const brain = read('api/_brain.mjs');
+  check('и модели сказано, что поле можно прочитать обратно',
+    /WHAT IS IN a field/.test(brain) && /CHECK THAT TYPING LANDED/.test(brain));
+  check('и что пароль так не читается',
+    /Password fields never report their contents/.test(brain));
+  check('и что перенабор - не способ проверки',
+    /NEVER TYPE THE SAME THING TWICE/.test(brain));
+  /* Промах в строку меню стоил двух ходов: Cmd+S, клик в «Файл», Escape. */
+  check('и что после Cmd\\+S печатать можно сразу',
+    /SAVE DIALOG OPENS WITH ITS NAME FIELD ALREADY FOCUSED/.test(brain));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

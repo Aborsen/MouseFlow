@@ -95,6 +95,24 @@ These are not bugs and no amount of work inside the current design removes them.
 - **macOS `/shot` and `/pulse` need macOS 14+.** `CGWindowListCreateImage` is *unavailable* on macOS 15, not
   merely deprecated, and cannot be kept behind an `#available`. `capture_window` is on the same floor and
   says so rather than failing obscurely.
+- **`read_window` reports what is in a field; a recording still never does.** From 0.17.0 the two paths are
+  separate rules rather than one. A RECORDING takes no typed text on either platform — it is stored,
+  exported into a SKILL.md, downloaded and forwarded, and the promise printed on the record screen is about
+  that. READING A WINDOW does report it: the model calls it between turns, the answer lives one turn and is
+  stored nowhere (a run row holds `{tool, input, ms}`; an action's output never reaches it), and the
+  screenshot the model is sent every turn already contains the same text. Measured cause: a 198s run typed
+  one file name **four times by three mechanisms** — type, type again, then via the clipboard — because
+  nothing could say whether it had landed; nine of that block's fourteen steps were repeats, about sixty
+  seconds. Values are clipped to 80 characters, because the value of a document body is the document.
+  **A password field is exempt on every path**, checked before anything is read, and it is shown as
+  `= (password, not read)` rather than as nothing — an empty field shows nothing too, and a model that
+  reads a password box as "empty" will type into it. Both facts were found by probing a live window with
+  one plain and one secure field, not by reading the code:
+  `text field "" … = "plain-visible-value"; secure text field "" … = (password, not read)`.
+  **The Windows half is written, not run** — `ValuePattern.ValueProperty` with `IsPassword` and
+  `IsReadOnly` excluded — and one asymmetry is deliberate: the Windows search still requires a non-empty
+  Name, so an entirely unnamed field can be missed there where macOS now lists it. Relaxing that condition
+  changes the size of every Windows result set and was not worth doing blind.
 - **A short name that is content still gets recorded, on both platforms.** From 0.16.0 the macOS agent drops
   any element name over 60 characters and writes `namelen=` instead, which is what Windows has done since
   0.11.0 — the accessibility name of a message element *is* the message. The rule is a length, so it cannot

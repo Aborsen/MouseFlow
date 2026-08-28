@@ -304,7 +304,31 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.16.0 is the build where a Mac can do what a PC could.
+/* 0.17.0 is the build that will tell you what is in a field, so nothing has to be typed twice to be sure.
+ *
+ * MEASURED, on a 198-second run: the model typed one file name FOUR TIMES by three different mechanisms -
+ * typed it, typed it again, then wrote it to the clipboard and pasted - because it had no way to check that
+ * the first attempt had landed. Nine of that block's fourteen steps were repeats, about sixty seconds of a
+ * run whose every step costs a model call. `read_window` was the tool that should have answered it, and it
+ * was blind: it refused to report a field's contents.
+ *
+ * That refusal was a rule written for RECORDINGS wearing the wrong hat. A recording is stored, exported into
+ * a SKILL.md, downloaded and forwarded, and it still takes no typed text on either platform. Reading a
+ * window is the other path entirely - the model calls it between turns, the answer lives for one turn and is
+ * stored nowhere - and the SCREENSHOT the model is sent every single turn already contains the same text.
+ * Withholding the name of what was already pictured protected nothing; it made the model guess.
+ *
+ * A PASSWORD FIELD IS EXEMPT ON EVERY PATH, checked before anything is read, and it is reported as
+ * `(password, not read)` rather than as nothing - because nothing is what an EMPTY field shows, and a model
+ * that reads a password box as empty will type into it. Both that and "an unnamed empty field must still be
+ * listed at all" were found by probing a live window with one plain and one secure field in it, which is
+ * also how they are known to work.
+ *
+ * `press_key` now also says what its modifiers MEAN: `ctrl` is Control on Windows and Command on macOS, and
+ * `win` is the Windows key only. A run on a Mac had sent `win=1 key=n` for Cmd+N - faultless reasoning off a
+ * description that listed `win` and said nothing about `ctrl`.
+ *
+ * The previous note, kept because the reason still holds. 0.16.0 is the build where a Mac can do what a PC could.
  *
  * Six releases of Windows work had gone by and the macOS agent had been answering ten of them by name -
  * "not implemented on the macOS agent yet". That refusal is the right shape and it is not a feature: a run
@@ -503,7 +527,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.16.0';
+export const AGENT_WANTS = '0.17.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

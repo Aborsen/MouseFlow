@@ -50,6 +50,8 @@ How to work:
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
 - To reach a web application, call open_url with the address. "https://docs.new" is a new Google Doc; "https://sheets.new" a spreadsheet. Opening a browser and typing in the address bar is three turns for the same thing.
 - For anything long, or anything with punctuation a keyboard layout might mangle, clipboard_write then Control+V beats type_text - and both can go in one turn.
+- NEVER TYPE THE SAME THING TWICE TO MAKE SURE. If you cannot tell whether text landed in a field, read the field back with read_window or find_element - both report what is in it. Typing it again is the one repair that can make things worse: the field may already hold it, and the second attempt appends. A measured run typed one file name four times, by three different mechanisms, and spent a minute of its budget on it.
+- A SAVE DIALOG OPENS WITH ITS NAME FIELD ALREADY FOCUSED AND SELECTED, on both platforms. After Control+S (Command+S on macOS) the next thing to do is type the name - not to click the field, not to open the File menu, and not to select-all first.
 - COORDINATES FROM A PICTURE ARE A GUESS. The screenshot is scaled down, so a point read off it is approximate, and a layout that has shifted since makes it wrong. read_window lists what a window calls things and where they are, in the same pixels you click in; find_element answers where one named thing is. Both only LOOK, so either may be added after the aimed action in a turn - "click Help, then read the window" is one turn - but nothing can follow them, because their answer arrives with your next screenshot and until then there is nothing to aim with. When a click did not do what you expected, read the window rather than clicking again a few pixels over.
 - A wide table, a plan, a timeline or a board is reached SIDEWAYS: scroll with direction "left" or "right". A row of columns that runs off the edge of the screen is not reachable by scrolling down.
 - After opening or closing something, wait_for_window is sharper than waiting for the screen to settle: it names the thing it is waiting for, and says whether it happened.
@@ -230,10 +232,20 @@ export const TOOLS = [
      * model reads off a picture is already approximate; `label` on click corrects a miss AFTER it happens,
      * and this is how to not miss. */
     name: 'read_window',
-    description: 'List what a window calls the things on it - names, kinds, positions and whether each is '
-      + 'enabled. Use it when the screenshot is ambiguous, when a control is too small to read, or before '
-      + 'clicking anything whose position you are guessing at. Give a title to read a window that is not in '
-      + 'front. Positions come back in the same pixels as the screenshot, so they can be clicked directly.',
+    /* И ЧТО В ПОЛЕ - добавлено потому, что без этого модель проверяла набор ПЕРЕНАБОРОМ.
+     *
+     * Измерено на прогоне 198с: имя файла набрано ЧЕТЫРЕ раза тремя способами - печатью, второй печатью и
+     * через буфер, - девять шагов из четырнадцати в этом блоке были повторами, около шестидесяти секунд.
+     * Инструмент, который должен был отвечать «долетело ли», содержимое полей не отдавал, и сказать об этом
+     * в описании столь же важно, как реализовать: инструмент, о возможности которого не сказано, не
+     * вызывается. В том же прогоне read_window и find_element не вызваны НИ РАЗУ. */
+    description: 'List what a window calls the things on it - names, kinds, positions, whether each is '
+      + 'enabled, and WHAT IS IN a field that somebody can type into. Use it when the screenshot is '
+      + 'ambiguous, when a control is too small to read, or before clicking anything whose position you are '
+      + 'guessing at - and use it to CHECK THAT TYPING LANDED, which is what it is for: read the field back '
+      + 'rather than typing the same thing again. Password fields never report their contents. Give a title '
+      + 'to read a window that is not in front. Positions come back in the same pixels as the screenshot, '
+      + 'so they can be clicked directly.',
     input_schema: {
       type: 'object',
       properties: {
@@ -248,7 +260,8 @@ export const TOOLS = [
     description: 'Ask where one named thing is on the window in front, and be given its centre to click. '
       + 'Exact name first, then a case-insensitive part of a name. Says so when nothing matches, and says '
       + 'so when SEVERAL do rather than picking one - two controls with the same name is something you need '
-      + 'to know about before clicking.',
+      + 'to know about before clicking. If it is a field somebody can type into, the answer also says what '
+      + 'is in it.',
     input_schema: {
       type: 'object',
       properties: {

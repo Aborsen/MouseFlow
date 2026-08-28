@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.16.0"
+let VERSION = "0.17.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -1202,8 +1202,19 @@ enum Accessibility {
         "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField",
     ]
 
-    private static func holdsTypedText(_ element: AXUIElement) -> Bool {
+    /* ПОЛЕ ПАРОЛЯ - ОТДЕЛЬНЫЙ ЗАМОК, а не ветка другого правила, и стоит он на КАЖДОМ пути.
+     *
+     * Ниже правило про набранный текст расходится надвое: запись его не берёт никогда, а чтение окна берёт,
+     * потому что модели это нужно и снимок ей это и так показывает. Пароль не расходится: он не читается ни
+     * там, ни там. Вынесено в собственную функцию именно поэтому - правило, живущее внутри другого правила,
+     * теряется вместе с ним, когда то правило меняют. Его и меняют прямо сейчас. */
+    private static func isSecure(_ element: AXUIElement) -> Bool {
         if let sub = stringAttr(element, kAXSubroleAttribute), sub == "AXSecureTextField" { return true }
+        return false
+    }
+
+    private static func holdsTypedText(_ element: AXUIElement) -> Bool {
+        if isSecure(element) { return true }
         if let role = stringAttr(element, kAXRoleAttribute), TYPED_ROLES.contains(role) { return true }
         var settable: DarwinBoolean = false
         if AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success,
@@ -1599,6 +1610,13 @@ enum Accessibility {
         var kind: String
         var frame: CGRect
         var enabled: Bool
+        /* Что В ПОЛЕ, когда это поле ввода - см. readableValue. Отсутствует у всего остального, и отсутствует
+         * у поля пароля тоже. */
+        var value: String?
+        /* И ОТДЕЛЬНО - что это поле пароля. Пустое поле и поле пароля иначе выглядят в ответе ОДИНАКОВО
+         * (ни там, ни там значения нет), и модель, прочитавшая «поле без содержимого», начнёт в него
+         * печатать. Сказать «пароль, не читаю» - это не утечка, а снятие двусмысленности. */
+        var secret = false
     }
 
     /// Какое окно читать - и предложение, объясняющее, почему никакое.
@@ -1656,9 +1674,7 @@ enum Accessibility {
         return .found(window, info.title)
     }
 
-    /* Имя ДЛЯ ЧТЕНИЯ. Тот же порядок источников, что у записи, и с тем же запретом: у поля ввода значение -
-     * это набранное, и читать его здесь значило бы обойти обещание, которое агент печатает на экране записи.
-     * Содержимое поля модель видит на снимке; сюда оно не едет. */
+    /* ПОДПИСЬ ЭЛЕМЕНТА - только подпись, никогда содержимое. Тот же порядок источников, что у записи. */
     private static func readableName(_ element: AXUIElement) -> String? {
         if let name = nameAttr(element, kAXTitleAttribute) { return name }
         if let label = elementAttr(element, kAXTitleUIElementAttribute),
@@ -1670,8 +1686,48 @@ enum Accessibility {
         return nameAttr(element, kAXHelpAttribute)
     }
 
+    /* ЧТО В ПОЛЕ - и здесь пути ЗАПИСИ и ЧТЕНИЯ расходятся сознательно.
+     *
+     * Запись не берёт набранное никогда: она хранится, экспортируется в SKILL.md, скачивается и
+     * пересылается, и обещание, которое агент печатает на экране записи, - про неё. Чтение окна - другой
+     * путь: его зовёт модель между ходами, ответ живёт один ход и не сохраняется никуда (прогон пишет
+     * `{tool, input, ms}` - см. _step.mjs, вывод действия в строку не попадает).
+     *
+     * И ГЛАВНОЕ: то, что здесь «раскрывается», модели уже прислали. Снимок листа сохранения СОДЕРЖИТ
+     * набранное имя, в каждом кадре. Отказ назвать то, что уже показано, не защищал ничего - он заставлял
+     * модель угадывать.
+     *
+     * Измерено, из-за чего это написано: в прогоне на 198 секунд имя файла было набрано ЧЕТЫРЕ раза тремя
+     * разными способами - печатью, второй печатью и через буфер обмена, - потому что проверить «долетело
+     * ли» было нечем. Девять шагов из четырнадцати в этом блоке были повторами, около шестидесяти секунд.
+     *
+     * Обрезано коротко и намеренно: значение AXTextArea - это весь документ, а вывод действия деплой режет
+     * на 2000 символах. Восьмидесяти хватает, чтобы узнать имя файла и не хватает, чтобы вывезти текст.
+     * Поле пароля не читается здесь ни при каких условиях - см. isSecure. */
+    private static let VALUE_MAX = 80
+
+    private static func readableValue(_ element: AXUIElement) -> String? {
+        guard !isSecure(element), holdsTypedText(element) else { return nil }
+        guard let raw = nameAttr(element, kAXValueAttribute), !raw.isEmpty else { return nil }
+        return clip(raw, VALUE_MAX)
+    }
+
     private static func describeOne(_ element: AXUIElement) -> Seen? {
-        guard let name = readableName(element), !name.isEmpty else { return nil }
+        let name = readableName(element)
+        let value = readableValue(element)
+        let typed = holdsTypedText(element)
+        /* ПОЛЕ ВВОДА ПОКАЗЫВАЕТСЯ ВСЕГДА, даже безымянное и даже пустое - и обе оговорки найдены пробой,
+         * а не рассуждением.
+         *
+         * Раньше требовалось имя. У поля ввода подписи обычно нет (kAXTitle пусто, значение ему было
+         * запрещено), так что поле имени в листе сохранения не попадало в ответ ВОВСЕ - то самое поле, ради
+         * которого всё это и писалось. Первая правка чинила это через наличие ЗНАЧЕНИЯ, и оставляла две
+         * дыры ровно там, где больно: ПУСТОЕ поле (до того, как в него напечатали, - то есть в тот момент,
+         * когда его и надо найти) и поле ПАРОЛЯ (значение запрещено навсегда) оставались невидимы. Модель
+         * не может кликнуть в то, чего не видит.
+         *
+         * Поэтому условие - «есть подпись, ИЛИ есть значение, ИЛИ это вообще поле ввода». */
+        guard (name?.isEmpty == false) || value != nil || typed else { return nil }
         guard let origin = pointAttr(element, kAXPositionAttribute),
               let size = sizeAttr(element, kAXSizeAttribute),
               size.width > 1, size.height > 1,
@@ -1680,7 +1736,8 @@ enum Accessibility {
             ?? stringAttr(element, kAXRoleAttribute) ?? "element"
         var enabled = true
         if let flag = copyAttr(element, kAXEnabledAttribute as String) as? Bool { enabled = flag }
-        return Seen(name: name, kind: kind, frame: CGRect(origin: origin, size: size), enabled: enabled)
+        return Seen(name: name ?? "", kind: kind, frame: CGRect(origin: origin, size: size),
+                    enabled: enabled, value: value, secret: isSecure(element))
     }
 
     /// Breadth first, so the things a person sees first are the things that fit in the answer.
@@ -2761,6 +2818,12 @@ func elementLine(_ seen: Accessibility.Seen) -> String {
         + " \"\(clip(seen.name, 60))\""
         + " at \(Geometry.shotX(seen.frame.origin.x)),\(Geometry.shotY(seen.frame.origin.y))"
         + " \(Geometry.shotSize(seen.frame.width))x\(Geometry.shotSize(seen.frame.height))"
+        /* `= "…"` ПОСЛЕ прямоугольника и до «(disabled)», так что строка читается слева направо как
+         * «что это, где это, что в нём». Пусто у всего, что не поле ввода.
+         *
+         * У поля пароля - слова вместо значения, а не пустота: пустое поле и поле пароля иначе неразличимы,
+         * и модель, решившая, что поле просто пустое, напечатает пароль в отчёт о своих действиях. */
+        + (seen.secret ? " = (password, not read)" : (seen.value.map { " = \"\($0)\"" } ?? ""))
         + (seen.enabled ? "" : " (disabled)")
 }
 

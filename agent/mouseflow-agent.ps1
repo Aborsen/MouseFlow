@@ -448,7 +448,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.16.0";
+        public const string Version = "0.17.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -2732,6 +2732,12 @@ namespace MouseFlow
                     wanted.Add(AutomationElement.LocalizedControlTypeProperty);
                     wanted.Add(AutomationElement.BoundingRectangleProperty);
                     wanted.Add(AutomationElement.IsEnabledProperty);
+                    /* Added in 0.17.0 for ValueOf: what is IN a field, and whether that field is a password.
+                     * Asked for here rather than read afterwards for exactly the reason the four above are -
+                     * a property read off the element later is another cross-process call each. */
+                    wanted.Add(AutomationElement.IsPasswordProperty);
+                    wanted.Add(ValuePattern.ValueProperty);
+                    wanted.Add(ValuePattern.IsReadOnlyProperty);
                     wanted.TreeScope = TreeScope.Element;
                     using (wanted.Activate())
                     {
@@ -2839,8 +2845,65 @@ namespace MouseFlow
         static int ToShotY(double screenY) { return (int)Math.Round((screenY - _shotOy) * _shotScale); }
         static int ToShotSize(double px) { return (int)Math.Round(px * _shotScale); }
 
+        /* WHAT IS IN A FIELD, and why the recording still refuses to look.
+         *
+         * The two paths part company here on purpose. A RECORDING never takes typed text: it is stored,
+         * exported into a SKILL.md, downloaded and forwarded, and the promise the agent prints on the record
+         * screen is about that. READING A WINDOW is the other path - the model calls it between turns, the
+         * answer lives for one turn and is stored nowhere (a run writes `{tool, input, ms}`; the action's
+         * output never reaches the row).
+         *
+         * And the thing this "reveals" was already sent: the screenshot of a save dialog CONTAINS the typed
+         * name, in every frame. Refusing to name what was already pictured protected nothing - it made the
+         * model guess. Measured on macOS, where the same blindness cost a 198-second run nine repeated steps
+         * out of fourteen: the file name was typed FOUR times by three different mechanisms because nothing
+         * could say whether it had landed.
+         *
+         * A PASSWORD IS NOT PART OF THAT, on either path and under any wording. IsPassword first, before
+         * anything is read.
+         *
+         * Read-only is skipped too, which is the mirror of the macOS rule (`AXUIElementIsAttributeSettable`
+         * on the value): a read-only ValuePattern is a label wearing a pattern, not something somebody
+         * typed - and it is already in `name`.
+         *
+         * Clipped short and deliberately: the value of a document body is the document, and the deployment
+         * cuts an action's output at 2000 characters. Eighty is enough to read back a file name and not
+         * enough to carry off a text. */
+        const int ValueMax = 80;
+
+        /* Поле пароля - это ПОЛЕ, и его надо видеть. Отдельно от значения, потому что пустое поле и поле
+           пароля иначе выглядят в ответе одинаково, и модель, решившая, что поле просто пустое, напечатает
+           в него то, что собиралась. Найдено пробой на macOS - окно с двумя полями, обычным и защищённым. */
+        static bool IsSecret(AutomationElement el)
+        {
+            try
+            {
+                object secret = el.GetCachedPropertyValue(AutomationElement.IsPasswordProperty);
+                return secret is bool && (bool)secret;
+            }
+            catch { return false; }
+        }
+
+        static string ValueOf(AutomationElement el)
+        {
+            try
+            {
+                if (IsSecret(el)) return null;
+                object locked = el.GetCachedPropertyValue(ValuePattern.IsReadOnlyProperty);
+                if (!(locked is bool) || (bool)locked) return null;
+                string said = el.GetCachedPropertyValue(ValuePattern.ValueProperty) as string;
+                if (string.IsNullOrEmpty(said)) return null;
+                return Clip(said.Replace("\r", " ").Replace("\n", " ").Replace("\t", " "), ValueMax);
+            }
+            /* An element that does not support ValuePattern has nothing cached under it, and that is the
+               ordinary case rather than a fault - a button is not a field. Caught narrowly, so it does not
+               cost the element its whole line. */
+            catch { return null; }
+        }
+
         /* One element, described the way the model will read it back. */
-        static string Line(string kind, string name, System.Windows.Rect box, bool enabled)
+        static string Line(string kind, string name, System.Windows.Rect box, bool enabled, string value,
+            bool secret)
         {
             return (string.IsNullOrEmpty(kind) ? "element" : kind)
                 + " \"" + Clip(name, 60) + "\""
@@ -2848,6 +2911,11 @@ namespace MouseFlow
                 + ToShotY(box.Y).ToString(CultureInfo.InvariantCulture)
                 + " " + ToShotSize(box.Width).ToString(CultureInfo.InvariantCulture) + "x"
                 + ToShotSize(box.Height).ToString(CultureInfo.InvariantCulture)
+                /* `= "…"` AFTER the rectangle and before "(disabled)", so the line reads left to right as
+                   what it is, where it is, what is in it. Same order as the macOS half.
+                   A password field says so in words rather than showing nothing: nothing is what an EMPTY
+                   field shows, and the two must not read alike. */
+                + (secret ? " = (password, not read)" : (value == null ? "" : " = \"" + value + "\""))
                 + (enabled ? "" : " (disabled)");
         }
 
@@ -2890,7 +2958,8 @@ namespace MouseFlow
                                 (string)el.GetCachedPropertyValue(AutomationElement.LocalizedControlTypeProperty),
                                 (string)el.GetCachedPropertyValue(AutomationElement.NameProperty),
                                 box,
-                                (bool)el.GetCachedPropertyValue(AutomationElement.IsEnabledProperty));
+                                (bool)el.GetCachedPropertyValue(AutomationElement.IsEnabledProperty),
+                                ValueOf(el), IsSecret(el));
                             /* The same control reported twice - a wrapper and its label with one name and
                              * one rectangle - is one thing to a reader. */
                             if (!seen.Add(line)) continue;
@@ -2989,7 +3058,8 @@ namespace MouseFlow
                             (string)el.GetCachedPropertyValue(AutomationElement.LocalizedControlTypeProperty),
                             (string)el.GetCachedPropertyValue(AutomationElement.NameProperty),
                             box,
-                            (bool)el.GetCachedPropertyValue(AutomationElement.IsEnabledProperty))
+                            (bool)el.GetCachedPropertyValue(AutomationElement.IsEnabledProperty),
+                            ValueOf(el), IsSecret(el))
                         + ", centre " + cx.ToString(CultureInfo.InvariantCulture) + ","
                         + cy.ToString(CultureInfo.InvariantCulture));
                     if (said.Count >= 6) break;
