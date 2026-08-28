@@ -176,6 +176,11 @@ const RUNS = [
       { tool: 'find_element', input: { name: 'Send' }, ms: { model: 2200, act: 340 } },
       { tool: 'scroll_to', input: { to: 'end', x: 640, y: 400 }, ms: { model: 2500, act: 720 } },
       { tool: 'drag', input: { x: 200, y: 300, toX: 200, toY: 480 }, ms: { model: 2600, act: 610 } },
+      /* Wave 04. `direction` is the one that could not be recorded, replayed or commanded before. */
+      { tool: 'scroll', input: { x: 640, y: 400, amount: 4, direction: 'right' }, ms: { model: 2100, act: 180 } },
+      { tool: 'refresh_page', input: { process: 'chrome' }, ms: { model: 2300, act: 1540 } },
+      { tool: 'wait_for_window', input: { title: 'Save as', until: 'appears', ms: 8000 }, ms: { model: 2400, act: 900 } },
+      { tool: 'press_key', input: { key: 'd', win: true }, ms: { model: 1800, act: 70 } },
     ],
     startedAt: hoursAgo(3), finishedAt: new Date(now - 3 * 3600_000 + 7 * 60_000).toISOString(),
   },

@@ -29,8 +29,17 @@ export function describe(did: Did): string {
       return `${input.double ? 'double-click' : input.button === 'right' ? 'right-click' : 'click'}${at}`;
     case 'hover':
       return `hover${at}`;
-    case 'scroll':
-      return `scroll ${Number(input.amount) < 0 ? 'down' : 'up'}${at}`;
+    case 'scroll': {
+      const way = ['up', 'down', 'left', 'right'].includes(String(input.direction))
+        ? String(input.direction)
+        : (Number(input.amount) < 0 ? 'down' : 'up');
+      return `scroll ${way}${at}`;
+    }
+    case 'refresh_page':
+      return `reload ${input.title ?? input.process ?? 'the window in front'}`;
+    case 'wait_for_window':
+      return `wait for ${input.title ?? input.process ?? 'a window'} to ${
+        input.until === 'disappears' ? 'close' : 'appear'}`;
     case 'type_text': {
       const text = String(input.text ?? '');
       const lines = text.split('\n').length;
@@ -38,7 +47,8 @@ export function describe(did: Did): string {
       return `type "${shown.length > 60 ? `${shown.slice(0, 60)}…` : shown}"${lines > 1 ? ` (${lines} lines)` : ''}`;
     }
     case 'press_key': {
-      const mods = [input.ctrl && 'Ctrl', input.shift && 'Shift', input.alt && 'Alt'].filter(Boolean);
+      const mods = [input.win && 'Win', input.ctrl && 'Ctrl', input.shift && 'Shift', input.alt && 'Alt']
+        .filter(Boolean);
       return `press ${[...mods, input.key ?? '?'].join('+')}`;
     }
     case 'activate_window':

@@ -43,14 +43,16 @@ export const SYSTEM = `You are operating a real Windows computer for the user, w
 How to work:
 - Each turn you are given a fresh screenshot. Look at it before deciding.
 - Coordinates are in the pixels of the screenshot you were just given. Aim at the CENTRE of what you mean to click.
-- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one scroll_to, or one drag, or one activate_window, or one open_url/open_app, or one capture_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
-- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window, an open_url/open_app, a scroll_to, a drag or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
+- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one scroll_to, or one drag, or one activate_window, or one open_url/open_app, or one capture_window, or one refresh_page, or one wait_for_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
+- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window, an open_url/open_app, a scroll_to, a drag, a refresh_page, a wait_for_window or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
 - Do not put a one-way action in a batch. A message sent, a form submitted, a file deleted, a payment confirmed: look at the screen first and let that keystroke be a turn of its own, with the same care as a one-way click.
 - Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
 - To reach a web application, call open_url with the address. "https://docs.new" is a new Google Doc; "https://sheets.new" a spreadsheet. Opening a browser and typing in the address bar is three turns for the same thing.
 - For anything long, or anything with punctuation a keyboard layout might mangle, clipboard_write then Control+V beats type_text - and both can go in one turn.
 - COORDINATES FROM A PICTURE ARE A GUESS. The screenshot is scaled down, so a point read off it is approximate, and a layout that has shifted since makes it wrong. read_window lists what a window calls things and where they are, in the same pixels you click in; find_element answers where one named thing is. Both only LOOK, so either may be added after the aimed action in a turn - "click Help, then read the window" is one turn - but nothing can follow them, because their answer arrives with your next screenshot and until then there is nothing to aim with. When a click did not do what you expected, read the window rather than clicking again a few pixels over.
+- A wide table, a plan, a timeline or a board is reached SIDEWAYS: scroll with direction "left" or "right". A row of columns that runs off the edge of the screen is not reachable by scrolling down.
+- After opening or closing something, wait_for_window is sharper than waiting for the screen to settle: it names the thing it is waiting for, and says whether it happened.
 - Reaching something further down a list is scroll_to, not a string of scrolls: "end", "start", or the name of the thing to stop at. One step, and it says whether it arrived.
 - To read text you cannot make out in the screenshot: select it, Control+C, then clipboard_read. Guessing at small text is how a wrong address gets typed into a real message.
 - When the goal asks for a SCREENSHOT, call capture_window with the title of the window it means. That saves a file and puts the picture on the clipboard, so Control+V pastes it into a document. Never try to take a screenshot with a key: PrintScreen does not exist here, and there is no Win modifier for the snipping tool.
@@ -133,10 +135,11 @@ export const TOOLS = [
      * таблице нет F7-F10. Модель тратила ход на «unknown key» из-за нашего же текста - и в наблюдённом
      * прогоне потратила два, на PrintScreen и Snapshot, после чего пошла писать себе скриншотер в
      * PowerShell. Чего НЕТ - сказано вслух: это единственное, что мешает узнавать это перебором. */
-    description: 'Press a key, with modifiers. Enter, Tab, Escape, Backspace, Delete, Space, the arrows, '
-      + 'Home, End, PageUp, PageDown, F1-F6, F11, F12, Win, or a single character for a shortcut such as '
-      + 'Control+C. NOT available: F7-F10, PrintScreen and Snapshot, and there is no Win modifier - Win can '
-      + 'be the key itself but Win+Shift+S cannot be pressed. Do not try them; they are refused.',
+    description: 'Press a key, with modifiers including Win. Enter, Tab, Escape, Backspace, Delete, Space, '
+      + 'the arrows, Home, End, PageUp, PageDown, Insert, Menu, F1-F12, PrintScreen, Win, or a single '
+      + 'character for a shortcut such as Control+C. For a screenshot use capture_window rather than '
+      + 'PrintScreen or the snipping tool: it saves a file AND sets the clipboard, and it captures one '
+      + 'window rather than whatever happens to be in front.',
     input_schema: {
       type: 'object',
       properties: {
@@ -144,6 +147,9 @@ export const TOOLS = [
         ctrl: { type: 'boolean' },
         shift: { type: 'boolean' },
         alt: { type: 'boolean' },
+        /* Held like the others from 0.12.0. It was in the key table as a KEY since 0.7.0 and there was no
+         * way to hold it, so Win+D, Win+E, Win+L and Win+arrow were all unreachable. */
+        win: { type: 'boolean' },
       },
       required: ['key'],
       additionalProperties: false,
@@ -329,11 +335,46 @@ export const TOOLS = [
   },
   {
     name: 'scroll',
-    description: 'Scroll at a point. Negative amount scrolls down.',
+    description: 'Scroll at a point. Negative amount scrolls down; give a direction for sideways, which is '
+      + 'how a wide table, a plan, a timeline or a board is reached. Says so if it delivered fewer notches '
+      + 'than were asked for.',
     input_schema: {
       type: 'object',
-      properties: { x: { type: 'integer' }, y: { type: 'integer' }, amount: { type: 'integer' } },
+      properties: {
+        x: { type: 'integer' },
+        y: { type: 'integer' },
+        amount: { type: 'integer' },
+        direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
+      },
       required: ['x', 'y', 'amount'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* Not a new capability - F5 has always been reachable through press_key - but three model turns
+     * collapsed into one, and the waiting is the part worth having. */
+    name: 'refresh_page',
+    description: 'Reload what is in front, or a window you name, and WAIT for it to finish. One step '
+      + 'instead of activate, F5 and a wait. Says whether the screen settled or is still changing.',
+    input_schema: {
+      type: 'object',
+      properties: { title: { type: 'string' }, process: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'wait_for_window',
+    description: 'Wait until a window appears, or until it is gone - which is a sharper question than '
+      + 'waiting for the screen to settle. Use it after opening something, and after closing something. '
+      + 'Answers with how long it waited and what happened; not appearing is an answer, not a failure.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Part of the window title' },
+        process: { type: 'string' },
+        until: { type: 'string', enum: ['appears', 'disappears'] },
+        ms: { type: 'integer', description: 'At most, in milliseconds. Up to 120000.' },
+      },
       additionalProperties: false,
     },
   },
@@ -454,11 +495,28 @@ export function actionBody(name, input, frame) {
     return `action=move x=${x()} y=${y()}`;
   }
   if (name === 'scroll') {
-    return `action=scroll x=${x()} y=${y()} amount=${Number(input.amount) || -3}`;
+    const way = ['up', 'down', 'left', 'right'].includes(String(input.direction))
+      ? ` dir=${input.direction}` : '';
+    return `action=scroll x=${x()} y=${y()} amount=${Number(input.amount) || -3}${way}`;
+  }
+  if (name === 'refresh_page') {
+    const title = String(input.title ?? '').replace(/[\r\n]+/g, ' ').trim();
+    const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
+    // process first: title runs to the end of the line and would swallow it.
+    return `action=refresh${process ? ` process=${process}` : ''}${title ? ` title=${title}` : ''}`;
+  }
+  if (name === 'wait_for_window') {
+    const title = String(input.title ?? '').replace(/[\r\n]+/g, ' ').trim();
+    const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
+    if (!title && !process) return null;
+    const until = input.until === 'disappears' ? 'disappears' : 'appears';
+    const ms = Math.min(SETTLE_MAX_MS, Math.max(500, Number(input.ms) || 20000));
+    return `action=waitwindow ms=${ms} until=${until}`
+      + `${process ? ` process=${process}` : ''}${title ? ` title=${title}` : ''}`;
   }
   if (name === 'press_key') {
     return `action=key key=${String(input.key ?? '')} ctrl=${input.ctrl ? '1' : '0'}` +
-      ` shift=${input.shift ? '1' : '0'} alt=${input.alt ? '1' : '0'}`;
+      ` shift=${input.shift ? '1' : '0'} alt=${input.alt ? '1' : '0'} win=${input.win ? '1' : '0'}`;
   }
   if (name === 'type_text') {
     /* Base64, so line breaks survive: the wire format reads text= to the end of the line, and flattening
@@ -761,8 +819,11 @@ const BATCHABLE = new Set([
  * before it existed. */
 /* scroll_to and drag both move the screen under whatever comes next, and scroll_to may keep going for
  * seconds - so nothing aimed with the old picture may follow either. */
+/* refresh_page and wait_for_window both END with the screen in a state nobody has looked at: one reloaded
+ * it, the other waited for it to change. Same reason `wait` has always been here. */
 const TERMINAL = new Set([
   'wait', 'activate_window', 'hover', 'open_url', 'open_app', 'scroll_to', 'drag',
+  'refresh_page', 'wait_for_window',
 ]);
 
 /**
@@ -796,6 +857,11 @@ export function notBatched(sofar, next) {
       + 'change: a menu opens, a button appears, a tooltip is drawn. Whatever this was aimed at, it was '
       + 'aimed with the picture from BEFORE that. The rest of the turn was dropped with it; look at what '
       + 'the hover revealed and act on that.';
+  }
+  if (done[done.length - 1] === 'refresh_page' || done[done.length - 1] === 'wait_for_window') {
+    return 'not carried out — it came after a ' + done[done.length - 1] + ', which ends with the screen in a '
+      + 'state nothing has looked at yet: one of them reloaded it and the other waited for it to change. '
+      + 'The rest of the turn was dropped with it; a fresh screenshot is coming.';
   }
   if (done[done.length - 1] === 'scroll_to' || done[done.length - 1] === 'drag') {
     return 'not carried out — it came after a ' + done[done.length - 1] + ', which moves the screen under '

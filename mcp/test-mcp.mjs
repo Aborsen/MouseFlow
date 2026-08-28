@@ -1478,6 +1478,71 @@ check('the preview reaches the new steps, and they read as sentences',
     && /tool: 'drag'/.test(read('../web/src/dev/mock-api.ts'))
     && /case 'find_element':/.test(describer) && /case 'scroll_to':/.test(describer));
 
+group('wave 04: sideways, and no more silent under-delivery');
+const winAgent4 = read('../agent/mouseflow-agent.ps1');
+
+/* THE HOLE HAD THREE SIDES, and only a sweep finds that shape: a person's sideways scroll was never
+ * recorded, a recording carrying one could not be replayed, and no action could command one - while the
+ * transcript had been parsing "Scroll Left" and "Scroll Right" all along. All three are closed here, and the
+ * test names all three, because closing two of them would look like closing it. */
+check('a sideways scroll can be RECORDED',
+  /case Native\.WM_MOUSEHWHEEL:/.test(winAgent4)
+    && /action = wheel >= 0 \? "Scroll Right" : "Scroll Left"/.test(winAgent4));
+check('and REPLAYED',
+  /case "Scroll Right": flags \|= Native\.MOUSEEVENTF_HWHEEL; data = 120; break;/.test(winAgent4)
+    && /case "Scroll Left": flags \|= Native\.MOUSEEVENTF_HWHEEL/.test(winAgent4));
+check('and COMMANDED',
+  /if \(dir == "left"\) which = "Scroll Left";/.test(winAgent4)
+    && /dir=\$\{input\.direction\}/.test(brain));
+/* Positive is RIGHT for the horizontal wheel and UP for the vertical one - opposite conventions, and getting
+ * it backwards would record every sideways scroll as its mirror image. */
+check('with the sign convention written down, because it is the opposite of the vertical wheel',
+  /Positive is RIGHT here, which is the opposite convention/.test(winAgent4));
+/* And the old reading survives: a caller that sends no direction gets exactly what it always got. */
+check('and a caller that sends no direction is unaffected',
+  /else which = amount > 0 \? "Scroll Up" : "Scroll Down";/.test(winAgent4));
+
+/* UNDER-DELIVERY PRESENTED AS SUCCESS: Math.Min(20, ...) plus {"ok":true}. Same sin the transcript has a
+ * long note about, one file along. The fix is the report, not the cap. */
+check('a scroll that delivered fewer notches than asked says so',
+  /scrolled " \+ steps\.ToString\(CultureInfo\.InvariantCulture\) \+ " notches, not "/.test(winAgent4));
+check('and the silent clamp at twenty is gone',
+  !/Math\.Min\(20, Math\.Abs\(amount\)\)/.test(winAgent4));
+
+/* refresh_page is not a new capability - F5 was always reachable - it is three model turns collapsed into
+ * one, and the waiting is the part worth having. */
+check('a reload activates, presses F5 and waits',
+  /string refused = PressKey\("f5", false, false, false, false\);/.test(winAgent4)
+    && /bool quiet = SettleHere\(20000, out waited\);/.test(winAgent4));
+/* One threshold for "has this settled", shared with the courier's wait - see GridMoved. */
+check('using the same settling threshold as every other wait',
+  /if \(last != null && now != null && !GridMoved\(last, now\)\)/.test(winAgent4));
+/* "It did not appear" is an answer about the world. Reported as a failure, a model looks for a fault in the
+ * waiting rather than in its own expectation. */
+check('a window that never appears is an answer, not an error',
+  /NOT an error: "it did not appear" is an answer about the world/.test(winAgent4));
+
+/* Win was in the table as a KEY since 0.7.0 and there was no way to HOLD it, so Win+D, Win+E, Win+L and
+ * Win+arrow were all unreachable - and a watched run degraded Win+Shift+S into typing a capital S. */
+check('Win is a modifier now, released last so the Start menu is not left open',
+  /static string PressKey\(string key, bool ctrl, bool shift, bool alt, bool win\)/.test(winAgent4)
+    && /if \(win\) SendVk\(0x5B, true\);/.test(winAgent4));
+check('and a recorded chord naming it replays as that chord',
+  /else if \(mod == "win" \|\| mod == "cmd"\) wantWin = true;/.test(winAgent4));
+check('the four F-keys the description used to promise now exist',
+  /case "f7": return 0x76;/.test(winAgent4) && /case "f10": return 0x79;/.test(winAgent4));
+check('and PrintScreen, under both names people call it',
+  /case "printscreen": case "prtsc": case "snapshot": return 0x2C;/.test(winAgent4));
+/* The description no longer lists absences, because there are none left - and it points at capture_window,
+ * which is a better screenshot than any key. */
+check('press_key stops listing what it cannot do, and points at the better route',
+  !/NOT available: F7-F10/.test(brain) && /use capture_window rather than/.test(brain));
+
+check('the preview reaches the new steps, and they read as sentences',
+  /direction: 'right'/.test(read('../web/src/dev/mock-api.ts'))
+    && /tool: 'wait_for_window'/.test(read('../web/src/dev/mock-api.ts'))
+    && /case 'refresh_page':/.test(describer) && /input\.win && 'Win'/.test(describer));
+
 group('a skill can be handed to an agent as a file');
 const skillMd = await import('../api/_skill-md.mjs');
 const MD_STRUCTURE = {

@@ -380,6 +380,12 @@ namespace MouseFlow
         public const int WM_MBUTTONDOWN = 0x0207;
         public const int WM_MBUTTONUP = 0x0208;
         public const int WM_MOUSEWHEEL = 0x020A;
+        /* SIDEWAYS. Absent until 0.12.0, and its absence was a hole in three directions at once: a person's
+         * horizontal scroll was not RECORDED (this message never reached the hook's switch), a recording
+         * carrying one could not be REPLAYED (no flag), and no action could COMMAND one. Meanwhile the
+         * transcript has parsed "Scroll Left" and "Scroll Right" all along - the reading side was ready for
+         * something no part of the writing side could produce. */
+        public const int WM_MOUSEHWHEEL = 0x020E;
 
         public const uint INPUT_MOUSE = 0;
         public const uint MOUSEEVENTF_MOVE = 0x0001;
@@ -390,6 +396,7 @@ namespace MouseFlow
         public const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
         public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
         public const uint MOUSEEVENTF_WHEEL = 0x0800;
+        public const uint MOUSEEVENTF_HWHEEL = 0x1000;
         public const uint MOUSEEVENTF_VIRTUALDESK = 0x4000;
         public const uint MOUSEEVENTF_ABSOLUTE = 0x8000;
 
@@ -438,7 +445,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.11.0";
+        public const string Version = "0.12.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -745,6 +752,13 @@ namespace MouseFlow
                 case Native.WM_MOUSEWHEEL:
                     wheel = (short)((data.mouseData >> 16) & 0xFFFF);
                     action = wheel >= 0 ? "Scroll Up" : "Scroll Down";
+                    break;
+                /* Positive is RIGHT here, which is the opposite convention to the vertical wheel where
+                 * positive is up (away from the user). Windows defines it that way; getting it backwards
+                 * would record every sideways scroll as its mirror image. */
+                case Native.WM_MOUSEHWHEEL:
+                    wheel = (short)((data.mouseData >> 16) & 0xFFFF);
+                    action = wheel >= 0 ? "Scroll Right" : "Scroll Left";
                     break;
                 default: return;
             }
@@ -1762,6 +1776,8 @@ namespace MouseFlow
                 case "Middle Click Up": flags |= Native.MOUSEEVENTF_MIDDLEUP; break;
                 case "Scroll Up": flags |= Native.MOUSEEVENTF_WHEEL; data = 120; break;
                 case "Scroll Down": flags |= Native.MOUSEEVENTF_WHEEL; data = unchecked((uint)-120); break;
+                case "Scroll Right": flags |= Native.MOUSEEVENTF_HWHEEL; data = 120; break;
+                case "Scroll Left": flags |= Native.MOUSEEVENTF_HWHEEL; data = unchecked((uint)-120); break;
 
                 /* Named rather than left to `default`, because these two are not malformed lines - they are
                  * events this agent writes on purpose and cannot perform. A keystroke has no key in it, and
@@ -1785,15 +1801,19 @@ namespace MouseFlow
                         string spec = e.Action.Substring(4);
                         string[] parts = spec.Split('+');
                         string name = parts.Length > 0 ? parts[parts.Length - 1] : "";
-                        bool wantCtrl = false, wantShift = false, wantAlt = false;
+                        bool wantCtrl = false, wantShift = false, wantAlt = false, wantWin = false;
                         for (int m = 0; m < parts.Length - 1; m++)
                         {
                             string mod = parts[m].ToLowerInvariant();
                             if (mod == "ctrl") wantCtrl = true;
                             else if (mod == "shift") wantShift = true;
                             else if (mod == "alt") wantAlt = true;
+                            /* Read as well as written from 0.12.0: a chord recorded on a build that can hold
+                             * Win must replay as that chord rather than as its remainder. An older recording
+                             * simply never contains the word. */
+                            else if (mod == "win" || mod == "cmd") wantWin = true;
                         }
-                        if (PressKey(name, wantCtrl, wantShift, wantAlt) != null)
+                        if (PressKey(name, wantCtrl, wantShift, wantAlt, wantWin) != null)
                         {
                             /* PressKey refused the name - a recording from a later build naming a key this
                              * one does not know. Counted, never guessed at. */
@@ -2182,6 +2202,11 @@ namespace MouseFlow
             if (action == "find") return FindElement(a);
             if (action == "scrollto") return ScrollTo(a);
 
+            /* ------------------------------------------------------------------ 0.12.0 */
+
+            if (action == "refresh") return Refresh(a);
+            if (action == "waitwindow") return WaitForWindow(a);
+
             if (action == "open")
             {
                 string url = Get(a, "url", "");
@@ -2193,7 +2218,8 @@ namespace MouseFlow
             if (action == "key")
             {
                 return PressKey(Get(a, "key", ""), Get(a, "ctrl", "0") == "1",
-                    Get(a, "shift", "0") == "1", Get(a, "alt", "0") == "1");
+                    Get(a, "shift", "0") == "1", Get(a, "alt", "0") == "1",
+                    Get(a, "win", "0") == "1");
             }
 
             int x, y;
@@ -2236,12 +2262,42 @@ namespace MouseFlow
             {
                 int amount;
                 if (!int.TryParse(Get(a, "amount", "-3"), NumberStyles.Integer, CultureInfo.InvariantCulture, out amount)) amount = -3;
+
+                /* SIDEWAYS, when asked for. Absent `dir` keeps the old reading exactly - the sign of
+                 * `amount` chooses up or down - so a caller written before 0.12.0 behaves as it did. */
+                string dir = Get(a, "dir", "").Trim().ToLowerInvariant();
+                string which;
+                if (dir == "left") which = "Scroll Left";
+                else if (dir == "right") which = "Scroll Right";
+                else if (dir == "up") which = "Scroll Up";
+                else if (dir == "down") which = "Scroll Down";
+                else if (dir.Length > 0) return "dir is up, down, left or right - not \"" + dir + "\"";
+                else which = amount > 0 ? "Scroll Up" : "Scroll Down";
+
+                /* THE COUNT IS REPORTED, and that is the fix rather than the cap.
+                 *
+                 * It used to be Math.Min(20, ...) and the answer was `{"ok":true}` - so a request for fifty
+                 * notches delivered twenty and reported success, and the model then reasoned about a
+                 * position it had not reached. This is the same sin the transcript has a long note about
+                 * (`summary.applications` reading 24 for a recording that touched thirty windows):
+                 * under-delivery presented as a fact.
+                 *
+                 * There is still a ceiling, because `amount=100000` is a request nobody meant and forty
+                 * minutes of wheel is not a better answer than a sentence. It is six times higher than the
+                 * old one, and when it bites it says so. */
+                int wanted = Math.Abs(amount);
+                int steps = Math.Min(120, wanted);
                 Emit(At(x, y, "Mouse Movement"));
-                int steps = Math.Min(20, Math.Abs(amount));
                 for (int i = 0; i < steps; i++)
                 {
-                    Emit(At(x, y, amount > 0 ? "Scroll Up" : "Scroll Down"));
+                    Emit(At(x, y, which));
                     Thread.Sleep(25);
+                }
+                if (steps != wanted)
+                {
+                    Say("scrolled " + steps.ToString(CultureInfo.InvariantCulture) + " notches, not "
+                        + wanted.ToString(CultureInfo.InvariantCulture)
+                        + " - 120 is as much as one scroll does. Call it again, or use scroll_to");
                 }
                 return null;
             }
@@ -2290,6 +2346,10 @@ namespace MouseFlow
             if (action == "capture" || action == "clipread" || action == "clipwrite" || action == "open")
             {
                 return "this agent is too old for " + action + " - it arrived in 0.10.0. Update the agent.";
+            }
+            if (action == "refresh" || action == "waitwindow")
+            {
+                return "this agent is too old for " + action + " - it arrived in 0.12.0. Update the agent.";
             }
             if (action == "read" || action == "find" || action == "scrollto" || action == "drag")
             {
@@ -2947,6 +3007,121 @@ namespace MouseFlow
             return null;
         }
 
+        /* ---------------------------------------------------------------- 0.12.0: waiting for one thing
+
+           A QUIET SCREEN, measured here rather than by asking the model to look again. The same fingerprint
+           and the same threshold the courier's wait uses - see GridMoved - because two answers to "has this
+           settled" would settle differently. Returns how long it waited, so a caller can say whether it
+           arrived or ran out. */
+        static bool SettleHere(int limitMs, out int waited)
+        {
+            DateTime started = DateTime.UtcNow;
+            byte[] last = null;
+            int still = 0;
+            waited = 0;
+            while (true)
+            {
+                waited = (int)(DateTime.UtcNow - started).TotalMilliseconds;
+                if (waited >= limitMs) return false;
+                byte[] now = null;
+                try { now = Grid(); } catch { now = null; }
+                if (last != null && now != null && !GridMoved(last, now))
+                {
+                    /* Two still frames, not one: a page that redraws a moment late looks settled once. */
+                    if (++still >= 2) return true;
+                }
+                else still = 0;
+                last = now;
+                Thread.Sleep(400);
+            }
+        }
+
+        /* RELOAD, and the point is the waiting rather than the keystroke.
+         *
+         * F5 has always been available through press_key, so this is not a new capability - it is three
+         * model turns collapsed into one: bring the window forward, press the key, wait for it to finish.
+         * Each of those turns cost eight to fifty seconds in a watched run, against about a second here. */
+        static string Refresh(Dictionary<string, string> a)
+        {
+            string title = Get(a, "title", "");
+            string process = Get(a, "process", "");
+            if (title.Length > 0 || process.Length > 0)
+            {
+                IntPtr wanted = WindowMatching(title, process);
+                if (wanted == IntPtr.Zero)
+                {
+                    return "no open window matches "
+                        + (title.Length > 0 ? "title \"" + title + "\"" : "process " + process);
+                }
+                string mine = Mine(wanted);
+                if (mine != null) return mine;
+                string failed = Activate(title, process);
+                if (failed != null) return failed;
+                Thread.Sleep(250);
+            }
+            else
+            {
+                string mine = Mine(Native.GetForegroundWindow());
+                if (mine != null) return mine;
+            }
+
+            string refused = PressKey("f5", false, false, false, false);
+            if (refused != null) return refused;
+
+            int waited;
+            bool quiet = SettleHere(20000, out waited);
+            Say("pressed F5 and waited " + (waited / 1000.0).ToString("0.0", CultureInfo.InvariantCulture)
+                + "s" + (quiet
+                    ? " - the screen has stopped changing"
+                    : ", and it is still changing. Look, and wait again if it is not ready"));
+            return null;
+        }
+
+        /* WAITING FOR A WINDOW rather than for the screen, which is a different question and the one that
+           actually gets asked: "has the Save dialog appeared", "has the splash gone".
+         *
+         * The alternative was the choreography the failed run had to invent - sleep twenty seconds and hope
+         * something has happened by then - and a fixed sleep is both too long when it works and too short
+         * when it does not. */
+        static string WaitForWindow(Dictionary<string, string> a)
+        {
+            string title = Get(a, "title", "");
+            string process = Get(a, "process", "");
+            if (title.Length == 0 && process.Length == 0) return "waitwindow needs a title or a process";
+            bool wantGone = Get(a, "until", "appears").Trim().ToLowerInvariant() == "disappears";
+
+            int limitMs;
+            if (!int.TryParse(Get(a, "ms", "20000"), NumberStyles.Integer, CultureInfo.InvariantCulture, out limitMs))
+            {
+                limitMs = 20000;
+            }
+            if (limitMs < 500) limitMs = 500;
+            if (limitMs > 120000) limitMs = 120000;
+
+            DateTime started = DateTime.UtcNow;
+            while (true)
+            {
+                bool there = WindowMatching(title, process) != IntPtr.Zero;
+                int waited = (int)(DateTime.UtcNow - started).TotalMilliseconds;
+                if (there != wantGone)
+                {
+                    Say((wantGone ? "it was gone" : "it appeared") + " after "
+                        + (waited / 1000.0).ToString("0.0", CultureInfo.InvariantCulture) + "s");
+                    return null;
+                }
+                if (waited >= limitMs)
+                {
+                    /* NOT an error: "it did not appear" is an answer about the world, and a model told this
+                     * failed would look for a fault in the waiting rather than in the expectation. */
+                    Say("waited " + (waited / 1000.0).ToString("0.0", CultureInfo.InvariantCulture)
+                        + "s and it " + (wantGone ? "is still there" : "has not appeared")
+                        + ". The window list under the screenshot is what is actually open");
+                    return null;
+                }
+                Thread.Sleep(250);
+            }
+        }
+
         /* PRESS, MOVE, RELEASE - which could not be composed from what existed, because click sends the
            press and the release together and nothing sent one without the other.
          *
@@ -3135,7 +3310,7 @@ namespace MouseFlow
                 if (c == '\r') continue;                 // CRLF is one break, not two
                 if (c == '\n')
                 {
-                    PressKey("Enter", false, shiftNewline, false);
+                    PressKey("Enter", false, shiftNewline, false, false);
                     /* A break usually makes the application do something - reflow a paragraph, start a
                      * list item, grow a box - and typing into it mid-reflow drops characters. */
                     Thread.Sleep(60);
@@ -3184,12 +3359,23 @@ namespace MouseFlow
             if ((state & 4) != 0) alt = true;
         }
 
-        static string PressKey(string key, bool ctrl, bool shift, bool alt)
+        /* WIN IS A MODIFIER NOW, and that was the gap: `win` has been in the table as a KEY since 0.7.0,
+           but with only ctrl/shift/alt to hold down there was no way to express Win+Shift+S. A watched run
+           tried Alt+PrintScreen, then Alt+Snapshot, then gave up and pressed Shift+S - which typed a capital
+           S into somebody's dialog and taught nobody anything.
+         *
+         * Worth having even though capture_window is the better route to a screenshot: Win+D, Win+E, Win+L
+         * and Win+arrow are how people actually drive the shell, and none of them was reachable. */
+        static string PressKey(string key, bool ctrl, bool shift, bool alt, bool win)
         {
             ushort vk = VkFor(key);
             if (vk == 0) return "unknown key: " + key;
             ModifiersFor(key, ref ctrl, ref shift, ref alt);
 
+            /* Win outermost, released last, and that order is not arbitrary: the shell watches for the Win
+             * key going down and up with nothing between it, and a release order that lets go of Win first
+             * can leave the Start menu open on top of whatever the chord was meant to do. */
+            if (win) SendVk(0x5B, false);
             if (ctrl) SendVk(0x11, false);
             if (shift) SendVk(0x10, false);
             if (alt) SendVk(0x12, false);
@@ -3199,6 +3385,7 @@ namespace MouseFlow
             if (alt) SendVk(0x12, true);
             if (shift) SendVk(0x10, true);
             if (ctrl) SendVk(0x11, true);
+            if (win) SendVk(0x5B, true);
             return null;
         }
 
@@ -3239,8 +3426,20 @@ namespace MouseFlow
                 case "f4": return 0x73;
                 case "f5": return 0x74;
                 case "f6": return 0x75;
+                /* F7 TO F10 WERE MISSING, while the tool description promised "F1-F12" - so the model paid
+                 * a step to discover each one that did not exist. Wave 01 made the description honest;
+                 * this makes the description unnecessary. */
+                case "f7": return 0x76;
+                case "f8": return 0x77;
+                case "f9": return 0x78;
+                case "f10": return 0x79;
                 case "f11": return 0x7A;
                 case "f12": return 0x7B;
+                /* VK_SNAPSHOT. Both spellings, because "PrintScreen" is what a person calls it and
+                 * "Snapshot" is what Windows calls it, and a run tried both. */
+                case "printscreen": case "prtsc": case "snapshot": return 0x2C;
+                case "insert": case "ins": return 0x2D;
+                case "menu": case "contextmenu": return 0x5D;
                 case "win": return 0x5B;
                 default: return 0;
             }

@@ -302,7 +302,24 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.11.0 is the build that can be asked what is on screen by NAME.
+/* 0.12.0 is the build that can scroll SIDEWAYS, and that stops under-reporting what it did.
+ *
+ * Horizontal scrolling was a hole in three directions at once, which is the sort of thing only a sweep
+ * finds: a person's sideways scroll was not RECORDED (WM_MOUSEHWHEEL never reached the hook's switch), a
+ * recording carrying one could not be REPLAYED (no MOUSEEVENTF_HWHEEL), and no action could COMMAND one -
+ * while the transcript had been parsing "Scroll Left" and "Scroll Right" all along. A wide result grid, a
+ * query plan, a timeline, a board: none of them was reachable.
+ *
+ * And `scroll` used to clamp silently at twenty notches and answer `{"ok":true}`, so fifty delivered twenty
+ * and reported success. The ceiling is 120 now and it says when it bites.
+ *
+ * Plus the small ones that cost turns: refresh_page is activate, F5 and a wait in one step; wait_for_window
+ * asks the sharper question ("has the Save dialog appeared") instead of waiting for the whole screen to go
+ * quiet; F7 to F10 and PrintScreen are in the key table at last; and Win is a MODIFIER, so Win+D, Win+E and
+ * Win+arrow exist. For a screenshot, capture_window is still the better route than any key.
+ *
+ * The previous note, kept because the reason still holds. 0.11.0 is the build that can be asked what is on
+ * screen by NAME.
  *
  * Every coordinate a model produced came off a screenshot that /shot had scaled down, so every one of them
  * was approximate - and `label` on a click could only correct a miss after it had happened. read_window lists
@@ -392,7 +409,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.11.0';
+export const AGENT_WANTS = '0.12.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

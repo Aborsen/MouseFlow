@@ -173,7 +173,7 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 | `click` | `x`, `y`, `button`, `double`, `label` | `label` is the visible text it believes it is clicking; the agent hit-tests the point and, if something else is there, looks for that name among the neighbours |
 | `hover` | `x`, `y` | Moves the pointer and presses nothing — a menu that opens on hover, a button that appears on a row, a tooltip spelling out a short label. Goes out as the agent's `move`, which has existed since 0.7.0. **Terminal:** nothing follows it, because hovering is done precisely because the screen is about to change |
 | `type_text` | `text`, `newline: enter \| shift-enter` | Sent base64 so line breaks survive |
-| `press_key` | `key`, `ctrl`, `shift`, `alt` | `ctrl` means Command on macOS. The description names what is **not** there — F7-F10, PrintScreen, Snapshot, and any Win modifier — because it used to promise "F1-F12" while `VkFor` had F1-F6, F11 and F12, and the model paid a step per discovery |
+| `press_key` | `key`, `ctrl`, `shift`, `alt`, `win` | `ctrl` means Command on macOS. **0.12.0** filled the table in: F7-F10, PrintScreen/Snapshot, Insert, Menu, and `win` as a MODIFIER — it had been in the table as a key since 0.7.0 with no way to hold it, so Win+D, Win+E and Win+arrow were unreachable. For a screenshot, `capture_window` is still the better route than any key |
 | `activate_window` | `title`, `process` | Preferred over opening anything again |
 | `capture_window` | `title`, `process`, or `x`/`y`/`w`/`h` | **0.10.0.** Saves a picture of one window to a file **and onto the clipboard**, so Control+V pastes it. By window rather than by screen: the agent asks the window to draw itself, so anything in front of it is not in the picture. Answers with the size and the path |
 | `read_window` | `title`, `process` | **0.11.0.** What a window calls the things on it — name, kind, position, enabled — in **the same pixels as the screenshot**, so they can be clicked directly. Capped at 40 entries and 1500 characters, and says how many were left out |
@@ -184,7 +184,9 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 | `clipboard_write` | `text` | **0.10.0.** Faster than `type_text` for anything long, and independent of the keyboard layout. May share a turn with the Control+V that pastes it |
 | `open_url` | `url` | **0.10.0.** http and https only — a scheme is a choice of program, which is a different question. `https://docs.new` is a new Google Doc in one action instead of four |
 | `open_app` | `name` | **0.10.0.** A name, never a path or a command line; the agent refuses both. Read the "Already open" list first |
-| `scroll` | `x`, `y`, `amount` | Negative scrolls down |
+| `scroll` | `x`, `y`, `amount`, `direction` | Negative amount scrolls down; `direction` gives sideways, which is how a wide grid, a plan, a timeline or a board is reached. **0.12.0.** Says so when it delivered fewer notches than were asked for — it used to clamp at twenty and answer `{"ok":true}` |
+| `refresh_page` | `title`, `process` | **0.12.0.** Activate, F5, and wait for the screen to settle, in one step instead of three turns. F5 was always reachable; the waiting is the point |
+| `wait_for_window` | `title`, `process`, `until`, `ms` | **0.12.0.** Waits for a named window to appear or to be gone — sharper than waiting for the whole screen to go quiet, and it replaces the "sleep twenty seconds and hope" the failed run had to invent. Not appearing is an answer, not an error |
 | `wait` | `ms` (to 120 s), `reason` | **Blocks until the screen stops changing and does not cost a step** |
 | `note` | `text` | Writes one line into the run's own record — a test result, a value read off the screen. Not an action: it touches nothing, is never sent to the machine, and does not enter the batch count, so it can ride in the same turn as real work. Refused behind a cut turn, because a note is a claim about what happened |
 | `reached_checkpoint` | `n`, `said` | Only when a plan is armed |
@@ -194,6 +196,13 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 grid, about 3 KB — until it has been still for two frames. A wait used to cost a screenshot and a model
 step, so waiting for a page to finish burned the whole budget. An agent too old for `/pulse` gets the same
 reduction done in the browser from a 640px screenshot.
+
+**Sideways scrolling was a hole in three directions at once** (fixed in 0.12.0), and it is the shape of
+gap worth remembering: a person's horizontal scroll was never **recorded**, because `WM_MOUSEHWHEEL` never
+reached the hook's switch; a recording carrying one could not be **replayed**, because no flag mapped it; and
+no action could **command** one. Meanwhile `api/_transcript.js` had been parsing "Scroll Left" and "Scroll
+Right" the whole time — the reading side was ready for something no part of the writing side could produce.
+A wide result grid, a query plan, a timeline, a kanban board: none of them was reachable.
 
 **Aiming by name rather than by pixel** (0.11.0). `/shot` scales the screenshot down and reports the
 `scale`, so every coordinate the model produces from a picture is approximate — and `label` on a click could
@@ -230,7 +239,7 @@ Not decoration — these are the product's position on what an agent driving a r
   a mess the user has to clean up.
 - **One thing aimed at the screen per turn** — one click, or one hover, or one scroll, or one `scroll_to`,
   or one `drag`, or one `activate_window`, or one `open_url`/`open_app`, or one `capture_window`, or one
-  wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
+  `refresh_page`, or one `wait_for_window`, or one wait. Its coordinates came from the picture the model was handed, and that picture is out of date the
   moment anything happens. After it, in the same turn, the typing and key presses that follow from it: those
   go to whatever has focus, not to a place on screen. "Click the box, type the address, press Tab" is one
   turn, not three. Up to `BATCH_MAX` actions; nothing follows a wait (the screen changed by definition), an
@@ -241,7 +250,8 @@ Not decoration — these are the product's position on what an agent driving a r
   capture taken straight after a click races the window it is trying to photograph. `read_window` and
   `find_element` are batchable because they only LOOK — "click Help, then read the window" is one turn — but
   nothing may follow them, since their answer arrives with the next screenshot and there is nothing to aim
-  with until it does. `scroll_to` and `drag` are terminal: both move the screen under whatever comes next.
+  with until it does. `scroll_to` and `drag` are terminal: both move the screen under whatever comes next, and so are
+  `refresh_page` and `wait_for_window`, which end with the screen in a state nothing has looked at.
   This one is not a request — `sameTurn` in `api/_brain.mjs` enforces it, and both drivers cut the turn at
   the first refusal rather than filtering it, because typing meant for a second click's target is typing in
   the wrong place. What the code *cannot* enforce is the next line, because `Enter` sends an email and

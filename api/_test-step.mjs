@@ -25,6 +25,8 @@
  *
  * Run: node api/_test-step.mjs
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { MAX_STEPS, MIN_SHOT_W, advance, startLoop } from './_step.mjs';
 import { BATCH_MAX, SETTLE_MAX_MS, TOOLS, WAVE_TURNS } from './_brain.mjs';
 
@@ -753,14 +755,33 @@ group('the window list carries where each window is');
 group('press_key promises exactly what the agent can do');
 {
   const key = TOOLS.find((t) => t.name === 'press_key');
-  /* The schema said "F1-F12" and the agent's table has no F7-F10. The model paid a step to discover that,
-   * twice in one watched run - on PrintScreen and on Snapshot - and then went to write itself a
-   * screenshotter in PowerShell. What is NOT there is the half worth saying. */
-  check('it names what is missing rather than leaving it to be found by trying',
-    /F7-F10/.test(key.description) && /PrintScreen/.test(key.description));
-  check('and says there is no Win modifier, which is why Win+Shift+S cannot be pressed',
-    /no Win modifier/.test(key.description));
-  check('it no longer claims F7 to F10 exist', !/F1-F12/.test(key.description), key.description);
+  const table = readFileSync(fileURLToPath(new URL('../agent/mouseflow-agent.ps1', import.meta.url)), 'utf8');
+
+  /* WHAT THIS GROUP IS FOR, restated once the answer changed - because that is when a test either becomes an
+   * invariant or becomes a fossil.
+   *
+   * It began in wave 01 by asserting the description NAMED WHAT WAS MISSING: the schema promised "F1-F12"
+   * while the agent's table had F1-F6, F11 and F12, so the model paid a step to discover each absence - and
+   * in one watched run it paid two, on PrintScreen and on Snapshot, and then went to write itself a
+   * screenshotter in PowerShell. Wave 04 put the keys in, so there is nothing left to name. Asserting the
+   * old wording would now be asserting the old bug.
+   *
+   * The invariant underneath both is the same and is what is checked here: the description and the table
+   * agree. */
+  check('every F-key the description promises is in the table',
+    /F1-F12/.test(key.description)
+      && [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].every((n) => table.includes(`case "f${n}":`)));
+  check('and so is PrintScreen, under the names people call it',
+    /PrintScreen/.test(key.description)
+      && /case "printscreen": case "prtsc": case "snapshot":/.test(table));
+  /* Win is held now, so the schema must offer it - it was in the table as a KEY since 0.7.0 with no way to
+   * hold it, which is what made Win+Shift+S inexpressible. */
+  check('Win is offered as a modifier, not only as a key',
+    key.input_schema.properties.win !== undefined && /including Win/.test(key.description));
+  /* And the description stops listing absences, because listing one that no longer exists is worse than
+   * listing none: it sends the model round a wall that has been taken down. */
+  check('nothing is listed as unavailable any more',
+    !/NOT available/.test(key.description), key.description);
 }
 
 group('an action can answer with a fact, not just with done');
@@ -937,6 +958,73 @@ group('aiming by name, and the geometry that makes it clickable');
   const blocks = ask2.seen[0].messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
   check('a window that will not talk is reported in its own words',
     blocks.some((b) => b.type === 'tool_result' && b.content === quiet && b.is_error === true));
+}
+
+group('sideways, and a scroll that says what it actually did');
+{
+  const ask = scripted([answer([use('scroll', { x: 100, y: 200, amount: 4, direction: 'right' }, 's1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a direction reaches the agent',
+    out.actions[0]?.body === 'action=scroll x=200 y=400 amount=4 dir=right', out.actions[0]?.body);
+}
+{
+  /* No direction keeps the reading that every caller before 0.12.0 relied on: the sign of `amount`. */
+  const ask = scripted([answer([use('scroll', { x: 100, y: 200, amount: -3 }, 's1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('and without one, nothing about the old behaviour changes',
+    out.actions[0]?.body === 'action=scroll x=200 y=400 amount=-3', out.actions[0]?.body);
+}
+{
+  /* THE UNDER-DELIVERY THAT USED TO BE SILENT. `Math.Min(20, ...)` plus `{"ok":true}` meant fifty notches
+   * delivered twenty and reported success, and the model then reasoned about a position it had not reached.
+   * The agent composes the sentence; what this holds is that the loop passes it through instead of replacing
+   * it with "done". */
+  const first = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [],
+    ask: scripted([answer([use('scroll', { x: 1, y: 1, amount: 500, direction: 'down' }, 's1')])]),
+  });
+  const short = 'scrolled 120 notches, not 500 - 120 is as much as one scroll does. Call it again, or use '
+    + 'scroll_to';
+  const ask2 = scripted([answer([use('finish', { ok: true, said: 'x' })])]);
+  await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS,
+    results: [{ id: 's1', output: short, moved: true }], ask: ask2,
+  });
+  const blocks = ask2.seen[0].messages.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+  check('a short scroll says so, in the agent own words',
+    blocks.some((b) => b.type === 'tool_result' && b.content === short));
+}
+
+group('two waits that name what they are waiting for');
+{
+  const ask = scripted([answer([use('wait_for_window', { title: 'Save as', ms: 8000 }, 'w1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a wait for a window carries its limit and its direction',
+    out.actions[0]?.body === 'action=waitwindow ms=8000 until=appears title=Save as',
+    out.actions[0]?.body);
+}
+{
+  /* Neither a title nor a process is not a wait, it is a wait for nothing - answered here rather than sent. */
+  const ask = scripted([answer([use('wait_for_window', { ms: 3000 }, 'w1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('and one with nothing named never leaves', out.actions.length === 0,
+    JSON.stringify(out.actions));
+}
+{
+  const ask = scripted([answer([
+    use('refresh_page', { process: 'chrome' }, 'r1'),
+    use('click', { x: 5, y: 5 }, 'c1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('nothing follows a reload or a window wait', out.actions.length === 1);
+  check('and the refusal says the screen has not been looked at',
+    JSON.stringify(out.loop.mine).includes('a state nothing has looked at yet'));
+}
+{
+  const ask = scripted([answer([use('press_key', { key: 'd', win: true }, 'k1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('Win can be held now, which is what made Win+Shift+S impossible',
+    out.actions[0]?.body === 'action=key key=d ctrl=0 shift=0 alt=0 win=1', out.actions[0]?.body);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

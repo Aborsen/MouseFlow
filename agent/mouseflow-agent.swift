@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.11.0"
+let VERSION = "0.12.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -2223,6 +2223,9 @@ func doAction(_ body: String) -> String? {
      * for read and find, and a press/move/release triple for drag - and none of them is written yet. */
     case "read", "find", "scrollto", "drag":
         return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.11.0. "
+            + "Say so and carry on without it; there is no workaround worth trying."
+    case "refresh", "waitwindow":
+        return "\(action) is not implemented on the macOS agent yet - it arrived on Windows in 0.12.0. "
             + "Say so and carry on without it; there is no workaround worth trying."
     default:
         return "no action called \(action.isEmpty ? "(none given)" : action)"
