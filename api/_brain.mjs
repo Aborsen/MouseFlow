@@ -136,9 +136,24 @@ export const TOOLS = [
      * таблице нет F7-F10. Модель тратила ход на «unknown key» из-за нашего же текста - и в наблюдённом
      * прогоне потратила два, на PrintScreen и Snapshot, после чего пошла писать себе скриншотер в
      * PowerShell. Чего НЕТ - сказано вслух: это единственное, что мешает узнавать это перебором. */
-    description: 'Press a key, with modifiers including Win. Enter, Tab, Escape, Backspace, Delete, Space, '
+    /* И ЧТО ОЗНАЧАЮТ МОДИФИКАТОРЫ - тоже здесь, потому что этого не было нигде.
+     *
+     * Наблюдённый прогон на маке: модели нужен был новый документ в Pages, то есть Cmd+N, и она послала
+     * `win=1 key=n`. Рассуждение безупречное - «командная клавиша, которая не Control» - и опиралось оно
+     * ровно на этот текст, где `win` перечислен, а про `ctrl` не сказано ничего. Агент отказал верными
+     * словами, но ход был уже потрачен и в журнале осталась красная строка.
+     *
+     * Та же ошибка, что с F7-F10 абзацем выше, и того же происхождения: модель тратит ход на то, чему
+     * научил её наш собственный текст. Грамматика одна на две платформы намеренно - `ctrl` значит
+     * «командный модификатор», а не «клавиша Control», - и это надо СКАЗАТЬ, а не оставить выводимым. */
+    description: 'Press a key, with modifiers. Enter, Tab, Escape, Backspace, Delete, Space, '
       + 'the arrows, Home, End, PageUp, PageDown, Insert, Menu, F1-F12, PrintScreen, Win, or a single '
-      + 'character for a shortcut such as Control+C. For a screenshot use capture_window rather than '
+      + 'character for a shortcut such as Control+C. '
+      + 'MODIFIERS: `ctrl` is the COMMAND modifier and means Control on Windows and Command on macOS - it '
+      + 'is what copy, paste, save, new, select-all and every other everyday shortcut are held with, on '
+      + 'both. `win` is the Windows key ONLY; there is no such key on macOS and it is refused there, so '
+      + 'never reach for it to mean Command - `ctrl` already is Command. '
+      + 'For a screenshot use capture_window rather than '
       + 'PrintScreen or the snipping tool: it saves a file AND sets the clipboard, and it captures one '
       + 'window rather than whatever happens to be in front.',
     input_schema: {

@@ -777,7 +777,22 @@ group('press_key promises exactly what the agent can do');
   /* Win is held now, so the schema must offer it - it was in the table as a KEY since 0.7.0 with no way to
    * hold it, which is what made Win+Shift+S inexpressible. */
   check('Win is offered as a modifier, not only as a key',
-    key.input_schema.properties.win !== undefined && /including Win/.test(key.description));
+    key.input_schema.properties.win !== undefined && /\bWin\b/.test(key.description));
+  /* AND WHAT THE MODIFIERS MEAN, because leaving it out cost a turn on a real run.
+   *
+   * On a Mac the model needed Cmd+N and sent `win=1 key=n` - flawless reasoning off this very text, which
+   * listed `win` and said nothing at all about `ctrl`. The agent refused in the right words, but the turn
+   * was spent and the run carries a red line. The grammar is deliberately ONE grammar for two platforms -
+   * `ctrl` means "the command modifier", not "the Control key" - and a design that has to be inferred is a
+   * design the model will infer wrongly. */
+  check('the description says ctrl IS Command on macOS',
+    /Command on macOS/.test(key.description) && /\bctrl\b/.test(key.description));
+  check('and that Win is not a way to say Command',
+    /no such key on macOS/i.test(key.description) && /never reach for it to mean Command/.test(key.description));
+  /* И агент отказывает теми же словами, а не своими: две формулировки одного правила - это два правила. */
+  const swift = readFileSync(fileURLToPath(new URL('../agent/mouseflow-agent.swift', import.meta.url)), 'utf8');
+  check('and the agent refuses it in the same terms',
+    /there is no Windows key on macOS/.test(swift) && /`ctrl` already means Command/.test(swift));
   /* And the description stops listing absences, because listing one that no longer exists is worse than
    * listing none: it sends the model round a wall that has been taken down. */
   check('nothing is listed as unavailable any more',
