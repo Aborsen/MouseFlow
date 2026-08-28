@@ -33,7 +33,8 @@ export function flowFor(rec, health) {
     throw new Error(
       `"${rec.name}" is held on your account rather than in this browser - there was no room for its events `
       + 'here. Sending it up from here would overwrite what the account holds with nothing, so it is '
-      + 'refused. Open it to fetch it back first.',
+      + 'refused. Playing or exporting it fetches it back from the account first; do that if you need '
+      + 'it here.',
     );
   }
   const s = summarize(rec.events);

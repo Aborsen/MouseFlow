@@ -33,7 +33,11 @@ on its own terms, provable from the tree, and worth doing whether or not it caus
 
 ## 1. Facts you can re-measure
 
-### 1.1 Every recording is written to the account twice
+### 1.1 Every recording is written to the account twice — **THIS SECTION IS WRONG, see Fix 1 above**
+
+Left in place rather than deleted, because the reasoning error is worth seeing: a column was read without
+checking what it measured, and the conclusion was then repeated as fact for a day.
+
 
 Run this against the production database (read-only, metadata only — no payload contents):
 
@@ -96,7 +100,30 @@ At the measured rate (~24 KB per minute of recording) the account ceiling is abo
 One fix per commit. Do them in this order — the first two share a mechanism, and doing 2 without 1 means
 building a progress indicator for two uploads instead of one.
 
-### Fix 1 — one stop, one upload — **DONE 2026-08-28**
+### Fix 1 — one stop, one upload — **DONE 2026-08-28, but §1.1 below is WRONG and its number is unfounded**
+
+**Read this before believing §1.1.** That section offers `rewritten_after_s` as proof that every recording
+is written twice. It is not proof of anything of the kind. `api/sync.js` inserts with
+`created_at = ${when(flow.created)}` — *the browser's stamp, taken when the recording stopped* — and
+`updated_at = now()`, the database clock. The column therefore measures **stop-to-server latency plus clock
+skew**, and a single insert can never make it zero. Every number in that table is consistent with upload
+duration: 1 KB at 1.1s, 3591 KB at 5.5s. The check the section proposes ("`rewritten_after_s` should be
+`0.000`") was impossible to pass.
+
+The "11.7 MB of traffic instead of 5.85" figure that follows from it is **unfounded**. Nobody measured it.
+
+**What was actually measured, 2026-08-28**, using `pg_stat_user_tables` around one recording made by hand:
+
+```
+before : n_tup_ins 307  n_tup_upd 319
+after  : n_tup_ins 308  n_tup_upd 319      →  inserts +1, updates +0
+```
+
+One write. That is the first measurement in this defect's history that answers the question asked. It was
+taken *after* Fix 1 shipped, so it does not settle whether the duplicate ever occurred — only that it does
+not occur now. The mechanism traced in §1.2 remains plausible from the code and the fix is a legitimate
+guard against a race the code plainly allows; it is no longer described as a cure for a measured disease.
+
 
 Implemented as `web/src/features/record/sending.ts`: a module-level registry, `claim` before every push and
 `release` in a `finally`. Five senders claim (stop, the two session-part pushes, import, restore) and the
@@ -105,8 +132,6 @@ stays a pure function of `(flows, local)` and its rules are still runnable in a 
 releases **after** `reload()`, not after the push — in between, a released recording gets picked up by the
 next pass as "only here", which is the same second request in a longer form. Held by
 `agent/test-contract.mjs`, group *одна остановка - одна загрузка*, all twelve mutations caught.
-
-**Still to confirm on a live recording:** re-run the query in §1.1. `rewritten_after_s` should be `0.000`.
 
 
 **Now:** every stop uploads the payload twice, concurrently (§1.1, §1.2). Today that was ~11.7 MB of

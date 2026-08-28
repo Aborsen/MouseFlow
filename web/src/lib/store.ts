@@ -251,6 +251,9 @@ export const storeHeldFor = (): string | null => heldFor;
 /** На выходе: в памяти пусто, указателя нет, диск не тронут. */
 export function releaseStore(): void {
   heldFor = null;
+  /* Вместе со слотом: и факт про диск, и набор выложенного - про ушедшего человека, а не про машину. */
+  trouble = null;
+  shedFor = null;
   try { localStorage.removeItem(WHO); } catch (_) { /* private mode */ }
   commit(EMPTY);
 }
@@ -267,10 +270,16 @@ const listeners = new Set<() => void>();
 export type PersistTrouble =
   /** Диск не отвечает вовсе: приватный режим, отключённое хранилище. Размер тут ни при чём. */
   | { kind: 'no-storage' }
-  /** Не поместилось. `freed` - записи, чьи события выложены на аккаунт, чтобы поместилось остальное. */
-  | { kind: 'too-big'; freed: string[]; stillFailing: boolean };
+  /* Не поместилось. `freed` - записи, чьи события выложены на аккаунт, И ЭТО ЗАПИСАЛОСЬ. `atRisk` -
+   * записи, которых на аккаунте ещё нет: только они и могут пропасть, и человек иначе не отличит их от
+   * остальных одиннадцати строк. */
+  | { kind: 'too-big'; freed: string[]; atRisk: string[]; stillFailing: boolean };
 
 let trouble: PersistTrouble | null = null;
+
+/* Что уже выложено на диске для этого слота. Держится, чтобы лестница не искалась заново на каждый коммит;
+ * привязано к ключу, потому что при смене аккаунта это другой слот и другой ответ. */
+let shedFor: { key: string; ids: string[] } | null = null;
 
 /** Что не так с диском прямо сейчас, или null. Экран читает это, чтобы сказать. */
 export const persistTrouble = (): PersistTrouble | null => trouble;
@@ -321,27 +330,52 @@ function persist(next: Console): void {
   /* Правило - в api/_quota.mjs, чтобы его можно было ВЫПОЛНИТЬ в тесте: единственный запрет в нём стоит
    * между «освободили место» и «стёрли единственную копию чужой работы», а регулярка над исходником
    * сказала бы только, что функция похожа на правильную. */
-  const freed: string[] = [];
-  let attempt = next;
-  for (const id of freeingOrder(next.recordings)) {
-    freed.push(id);
-    attempt = {
-      ...attempt,
-      recordings: attempt.recordings.map((rec) => (
-        rec.id === id
-          ? { ...rec, events: [], eventsOnAccount: true, summary: rec.summary ?? summarize(rec.events) }
-          : rec
-      )),
-    };
+  /* УЖЕ ИЗВЕСТНОЕ - ПЕРВЫМ, И БЕЗ ПОВТОРНОГО ПОИСКА.
+   *
+   * Лестница освобождения стоит одного JSON.stringify консоли на ступень, а консоль - это мегабайты.
+   * Прогонять её заново на КАЖДЫЙ коммит - то есть на каждое нажатие клавиши в поле переименования -
+   * значит превратить починку в тормоз. Набор, найденный в прошлый раз, применяется сразу; ищется только
+   * то, чего в нём ещё нет. Чистится от исчезнувших id, чтобы не расти вечно. */
+  const remembered = shedFor && shedFor.key === key
+    ? shedFor.ids.filter((id) => next.recordings.some((rec) => rec.id === id))
+    : [];
+
+  const shed = (was: Console, ids: string[]): Console => ({
+    ...was,
+    recordings: was.recordings.map((rec) => (
+      ids.includes(rec.id)
+        ? { ...rec, events: [], eventsOnAccount: true, summary: rec.summary ?? summarize(rec.events) }
+        : rec
+    )),
+  });
+
+  const unsynced = () => next.recordings.filter((rec) => !rec.syncedAt && !rec.borrowed).map((r) => r.id);
+
+  const taken = [...remembered];
+  let attempt = remembered.length ? shed(next, remembered) : next;
+  if (tryWrite(key, attempt)) {
+    shedFor = { key, ids: taken };
+    /* В памяти события ОСТАЮТСЯ: выложено то, что на диске, а не то, что в руках. Вкладка, которую не
+     * перезагружали, работает как работала. */
+    trouble = taken.length ? { kind: 'too-big', freed: taken, atRisk: [], stillFailing: false } : null;
+    return;
+  }
+
+  for (const id of freeingOrder(attempt.recordings)) {
+    taken.push(id);
+    attempt = shed(attempt, [id]);
     if (tryWrite(key, attempt)) {
-      /* В памяти события ОСТАЮТСЯ: выложено то, что на диске, а не то, что в руках. Вкладка, которую не
-       * перезагружали, работает как работала. */
-      trouble = { kind: 'too-big', freed, stillFailing: false };
+      shedFor = { key, ids: [...taken] };
+      trouble = { kind: 'too-big', freed: [...taken], atRisk: [], stillFailing: false };
       return;
     }
   }
 
-  trouble = { kind: 'too-big', freed, stillFailing: true };
+  /* НИЧЕГО НЕ ЗАПИСАЛОСЬ - и `freed` поэтому пуст. Раньше здесь стояло всё, что перебрала лестница, то
+   * есть экран говорил «четыре записи теперь на вашем аккаунте» ровно в том случае, когда на диск не легло
+   * НИЧЕГО. Самое громкое состояние утверждало самую уверенную неправду. */
+  shedFor = { key, ids: taken };
+  trouble = { kind: 'too-big', freed: [], atRisk: unsynced(), stillFailing: true };
 }
 
 function commit(next: Console) {

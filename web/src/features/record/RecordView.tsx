@@ -49,6 +49,7 @@ import type { GoalSkillSource } from './save-as-skill';
 import { WaitingForThisMac } from './WaitingForThisMac';
 import { flowFor } from './flow-for';
 import { claim, release } from './sending';
+import { eventsAreHere, eventsFor } from './events-for';
 /* Payload записи догружается по просьбе: список его больше не везёт. */
 import { payloadOf } from '@/lib/api';
 
@@ -834,6 +835,17 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
   const playOne = useCallback(async (rec: Recording) => {
     if (!health) { setNote('The agent is not running.'); return; }
     const settings = replayOf(rec);
+    /* События - откуда бы они ни лежали. Запись, выложенную на аккаунт из-за нехватки места, надо забрать
+     * прежде, чем играть: без этого повтор проиграл бы пустоту и отчитался об успехе. См. events-for.ts. */
+    let events: RecordedEvent[];
+    try {
+      if (!eventsAreHere(rec)) setNote(`Fetching "${rec.name}" back from your account…`);
+      events = await eventsFor(rec);
+    } catch (err) {
+      setNote(err instanceof Error ? err.message : 'those events could not be fetched');
+      return;
+    }
+    const playing = { ...rec, events };
     try {
       /* Bring the application this was recorded in to the front first.
        *
@@ -860,7 +872,9 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
 
       await replay(port, flowBody(
         [{ recordingId: rec.id, repeat: settings.repeat, speed: settings.speed, delayAfterMs: 0 }],
-        [rec],
+        /* `playing`, а не `rec`: у записи, выложенной на аккаунт, `rec.events` пуст, и flowBody построил бы
+         * тело повтора без единого события - агент отчитался бы о безупречном прогоне, не сделав ничего. */
+        [playing],
         { startDelayMs: state.startDelayMs, flowRepeat: 1, flowForever: settings.loop },
       ));
       setPlaying(rec.name);
@@ -1231,12 +1245,16 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       {trouble?.kind === 'too-big' && (
         <Typography variant="p" className="text-ink-inactive text-[0.84rem]">
           {trouble.stillFailing
-            ? 'There is no room left in this browser, and the recording that does not fit has not been sent '
-              + 'to your account yet — so it is being kept in memory only. Do not close this tab until it '
-              + 'syncs.'
+            ? 'There is no room left in this browser and nothing could be written to disk, so this session '
+              + `is being held in memory only.${trouble.atRisk.length
+                ? ` ${trouble.atRisk.length} recording${trouble.atRisk.length === 1 ? '' : 's'} `
+                  + `${trouble.atRisk.length === 1 ? 'has' : 'have'} not reached your account yet — do not `
+                  + 'close this tab until they do.'
+                : ' Everything here is already on your account, so nothing is at risk of being lost.'}`
             : `${trouble.freed.length} recording${trouble.freed.length === 1 ? '' : 's'} `
               + `${trouble.freed.length === 1 ? 'is' : 'are'} now kept on your account rather than in this `
-              + 'browser — there was no room here. Nothing was lost; opening one fetches it back.'}
+              + 'browser — there was no room here. Nothing was lost: playing or exporting one fetches it '
+              + 'back from your account first.'}
         </Typography>
       )}
 

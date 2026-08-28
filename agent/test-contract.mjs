@@ -1577,7 +1577,25 @@ group('переполнение диска: отступление вместо 
       && /export const heldElsewhere = \(rec\) => !!\(rec && rec\.syncedAt\);/.test(quota));
   check('и стор берёт правило оттуда, а не заводит своё',
     /import \{ freeingOrder \} from '\.\.\/\.\.\/\.\.\/api\/_quota\.mjs';/.test(store)
-      && /for \(const id of freeingOrder\(next\.recordings\)\)/.test(store));
+      && /for \(const id of freeingOrder\(attempt\.recordings\)\)/.test(store));
+
+  /* УЖЕ НАЙДЕННОЕ НЕ ИЩЕТСЯ ЗАНОВО. Лестница стоит одного JSON.stringify консоли на ступень, а консоль -
+   * мегабайты; прогонять её на каждый коммит значит на каждое нажатие клавиши в поле переименования. */
+  check('и найденное однажды применяется сразу, без повторного поиска',
+    /let shedFor: \{ key: string; ids: string\[\] \} \| null = null;/.test(store)
+      && /const remembered = shedFor && shedFor\.key === key/.test(store));
+  /* И забывается вместе со слотом: это факт про ушедшего человека, а не про машину. */
+  check('и забывается на выходе',
+    /heldFor = null;[\s\S]{0,240}trouble = null;\s*\n\s*shedFor = null;/.test(store));
+
+  /* САМОЕ ГРОМКОЕ СОСТОЯНИЕ НЕ ДОЛЖНО УТВЕРЖДАТЬ САМУЮ УВЕРЕННУЮ НЕПРАВДУ. `freed` собирался ДО того, как
+   * запись удастся, так что при полном провале экран говорил «четыре записи теперь на вашем аккаунте» -
+   * ровно тогда, когда на диск не легло ничего. */
+  check('и при полном провале не заявляется освобождённым ничего',
+    /trouble = \{ kind: 'too-big', freed: \[\], atRisk: unsynced\(\), stillFailing: true \};/.test(store));
+  /* И называется то, что действительно под угрозой: без штампа - единственная копия. */
+  check('а под угрозой называются только записи без второй копии',
+    /const unsynced = \(\) => next\.recordings\.filter\(\(rec\) => !rec\.syncedAt && !rec\.borrowed\)/.test(store));
 
   /* Отправить наверх запись с выложенными событиями значило бы записать поверх хорошего payload пустой -
    * то есть уничтожить единственную оставшуюся копию действием под названием «сохранить». Отказ стоит в
@@ -1603,8 +1621,27 @@ group('переполнение диска: отступление вместо 
   /* Разные слова для «не поместилось, но всё на аккаунте» и «не поместилось, и на аккаунт ещё не уехало» -
    * второе единственное, где действительно можно потерять работу. */
   check('и различает «всё цело» от «не закрывайте вкладку»',
-    /Nothing was lost; opening one fetches it back/.test(view)
-      && /Do not close this tab until it/.test(view) && /trouble\.stillFailing/.test(view));
+    /Nothing was lost: playing or exporting one fetches it/.test(view)
+      && /do not `\s*\n?\s*\+ 'close this tab until they do\./.test(view) && /trouble\.stillFailing/.test(view));
+
+  /* И ОБЕЩАНИЕ ВЫПОЛНЯЕТСЯ. Два места обещали, что события вернутся, а вернуть их было нечем: поле только
+   * ставилось и никогда не снималось. Обещание, которого код не выполняет, хуже отсутствующей функции -
+   * по нему принимают решения. */
+  const back = read('web/src/features/record/events-for.ts');
+  check('дорога назад существует',
+    /export async function eventsFor\(rec: Recording\): Promise<RecordedEvent\[\]>/.test(back)
+      && /await fetchPayload\(rec\.id\)/.test(back));
+  check('и ею пользуются те, кому события действительно нужны',
+    /events = await eventsFor\(rec\);/.test(view)
+      && /events = await eventsFor\(rec\);/.test(read('web/src/features/record/RecordingsTable.tsx')));
+  /* Повтор строится из ЗАБРАННЫХ событий: из `rec` он собрал бы пустое тело, и агент отчитался бы о
+   * безупречном прогоне, не сделав ничего. */
+  check('и повтор играет забранное, а не пустое',
+    /\[playing\],/.test(view) && /const playing = \{ \.\.\.rec, events \};/.test(view));
+  /* Обратно в консоль не пишется: положить 5850КБ на место значит снова не поместиться и снова всё
+   * выложить - круг. */
+  check('и обратно в консоль не записывается',
+    !/update\(/.test(back) && /НА ОДИН ВЫЗОВ/.test(back));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

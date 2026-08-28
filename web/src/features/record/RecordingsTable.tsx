@@ -33,7 +33,8 @@ import { exportMacro, fmtMs, summarize } from '@/lib/macro';
 import { Signal } from '@/components/Signal';
 import { type Flow, push } from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
-import { type Recording, useConsole } from '@/lib/store';
+import { type RecordedEvent, type Recording, useConsole } from '@/lib/store';
+import { eventsFor } from './events-for';
 import { useSending } from './sending';
 
 /* How many rows before Load more. Ten is theirs, and it is about the point where a list stops being
@@ -127,8 +128,10 @@ export const RecordingsTable = ({
   /* Which row has its replay controls open. One at a time: two open panels push the list twice and the
    * second one is never the one being looked at. */
   const [openRow, setOpenRow] = useState<string | null>(null);
-  /* Only ever set when a delete could not reach the account. There is no success message: a delete that
-   * worked is a row that is gone, which is the whole of the feedback. */
+  /* Что пошло не так с этой строкой - и раньше это было только про удаление. Теперь ещё и про экспорт,
+   * который не смог забрать события с аккаунта: тихо скачать файл на 1КБ вместо четырёхчасовой записи
+   * значило бы отдать пустой экспорт под видом успешного. Сообщения об успехе по-прежнему нет: удалённая
+   * строка это и есть вся обратная связь. */
   const [gone, setGone] = useState<string | null>(null);
   /* Разоружается сам через шесть секунд: кнопка, снимающая несколько записей с аккаунта, не должна оставаться
    * взведённой, пока человек читает, что она делает. */
@@ -234,8 +237,17 @@ export const RecordingsTable = ({
     }
   }, [update, reload]);
 
-  const exportOne = useCallback((rec: Recording) => {
-    const blob = new Blob([exportMacro(rec)], { type: 'text/plain' });
+  const exportOne = useCallback(async (rec: Recording) => {
+    /* Забрать с аккаунта, если здесь их нет: файл на 1 КБ вместо четырёхчасовой записи выглядит как
+     * успешный экспорт и обнаруживается через неделю. См. events-for.ts. */
+    let events: RecordedEvent[];
+    try {
+      events = await eventsFor(rec);
+    } catch (err) {
+      setGone(err instanceof Error ? err.message : 'those events could not be fetched');
+      return;
+    }
+    const blob = new Blob([exportMacro({ ...rec, events })], { type: 'text/plain' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `${rec.name.replace(/[^\w.-]+/g, '-')}.mmmacro`;
@@ -377,7 +389,7 @@ export const RecordingsTable = ({
               variant="ghost"
               size="sm"
               leftSlot={<Download className="size-4" />}
-              onClick={() => rows.filter((r) => live.has(r.id)).forEach(exportOne)}
+              onClick={() => { void Promise.all(rows.filter((r) => live.has(r.id)).map(exportOne)); }}
             >
               Export
             </Button>
@@ -571,7 +583,7 @@ export const RecordingsTable = ({
                         >
                           Skill
                         </Button>
-                        <Button variant="ghost" size="sm" leftSlot={<Download className="size-4" />} onClick={() => exportOne(rec)}>
+                        <Button variant="ghost" size="sm" leftSlot={<Download className="size-4" />} onClick={() => { void exportOne(rec); }}>
                           Export
                         </Button>
                         {/* Everything that is not reached for while scanning: the three replay knobs, and
