@@ -304,7 +304,39 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.18.0 is the build that stops offering a save panel as a window to activate.
+/* 0.19.0 is the build where typing is typing again, and it is the most consequential fix in this list.
+ *
+ * MEASURED on a real Mac, with a listen-only tap printing the modifier flags of events carrying the
+ * agent's own mark. After ONE `press_key` with a modifier:
+ *
+ *   keyDown   mods=Cmd  text=""     <- the chord itself, as asked
+ *   mouseDown mods=Cmd              <- the next CLICK was a Command-click
+ *   scroll    mods=Cmd              <- the next SCROLL was a Command-scroll, which is zoom
+ *   keyDown   mods=Cmd  text="z"    <- the next TYPING was Command+Z, which is undo
+ *
+ * An event built from CGEventSource(stateID: .hidSystemState) inherits the current modifier state, and only
+ * press_key was setting flags explicitly. Worse, the state latched GLOBALLY - flagsState kept returning Cmd
+ * indefinitely - so the whole machine, including the person's own keyboard, believed Command was held.
+ *
+ * So typing "mouse test4" after Command+S sent Command+M (minimise), Command+O, Command+U, Command+S (save
+ * again - which is where that "replace?" dialog came from), Command+E, Command+T. Not one character reached
+ * the field, macOS beeped at the combinations that do nothing, and the model reported "the typing didn't
+ * land" - which was true, and which it was then blamed for misreading.
+ *
+ * Three changes, each closing a different half: every posted event now states its flags explicitly; a chord
+ * presses and RELEASES its modifiers as keys, which is what clears the global latch (chosen by measuring
+ * four candidate releases, not by convention); and type() releases anything still held before it starts,
+ * because the latch could come from somewhere else entirely.
+ *
+ * And a recording now begins by releasing them too - that one is about a promise, not accuracy. A letter is
+ * only ever named when it arrives under Command or Control, which is what makes "a key that can write
+ * something is never named" true. With Command latched, EVERY keystroke a person made arrived as a chord
+ * and the letter WOULD have been named.
+ *
+ * Windows is unchanged and does not have this: there a modifier is its own SendInput entry and PressKey
+ * sends its release itself.
+ *
+ * The previous note, kept because the reason still holds. 0.18.0 is the build that stops offering a save panel as a window to activate.
  *
  * From a watched run: `activate_window {title: "Открыть"}` came back "macOS refused to bring Open and Save
  * Panel Service (Pages) forward", which reads as a fault in macOS and is not one. Measured on a real Mac
@@ -545,7 +577,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.18.0';
+export const AGENT_WANTS = '0.19.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

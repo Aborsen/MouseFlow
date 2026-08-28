@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.18.0"
+let VERSION = "0.19.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -318,6 +318,49 @@ let NAMED_KEYS: [Int64: String] = [
     0x73: "Home", 0x77: "End", 0x74: "PageUp", 0x79: "PageDown",
 ]
 
+/* МОДИФИКАТОРЫ КАК КЛАВИШИ, и порядок событий аккорда - отдельно от их отправки.
+ *
+ * Отдельно ровно затем, чтобы это можно было ВЫПОЛНИТЬ в тесте: правило про залипший Command проверяется
+ * тем, что последний шаг несёт пустые флаги, а тест, который для этого нажимает клавиши на живой машине,
+ * никто не станет держать в наборе.
+ *
+ * Порядок фиксирован (Command, Shift, Option, Control) и снимается в обратном, по одному флагу за раз -
+ * так это выглядит с настоящей клавиатуры, и приложение, которое смотрит на flagsChanged, видит связную
+ * последовательность. */
+let MODIFIER_KEYS: [(flag: CGEventFlags, code: CGKeyCode)] = [
+    (.maskCommand, 55), (.maskShift, 56), (.maskAlternate, 58), (.maskControl, 59),
+]
+
+/// Что послать за один аккорд: нажать модификаторы, нажать клавишу, отпустить клавишу, отпустить
+/// модификаторы. ПОСЛЕДНИЙ шаг обязан нести пустые флаги - без него Command остаётся зажатым для всей
+/// машины, и следующий набор уходит аккордами. Измерено; см. Input.send.
+func chordSteps(_ flags: CGEventFlags, key: CGKeyCode)
+    -> [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] {
+    var out: [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] = []
+    for one in MODIFIER_KEYS where flags.contains(one.flag) {
+        out.append((one.code, true, flags))
+    }
+    out.append((key, true, flags))
+    out.append((key, false, flags))
+    var left = flags
+    for one in MODIFIER_KEYS.reversed() where flags.contains(one.flag) {
+        left.remove(one.flag)
+        out.append((one.code, false, left))
+    }
+    return out
+}
+
+/// Отпускание того, что уже зажато, без нажатия чего-либо.
+func releaseSteps(_ held: CGEventFlags) -> [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] {
+    var out: [(code: CGKeyCode, down: Bool, flags: CGEventFlags)] = []
+    var left = held
+    for one in MODIFIER_KEYS.reversed() where held.contains(one.flag) {
+        left.remove(one.flag)
+        out.append((one.code, false, left))
+    }
+    return out
+}
+
 /* The held modifiers, in a fixed order so the same chord always reads the same way. Shift is included for a
  * NAMED key - Shift+Tab goes backwards, which is a different instruction - and is never enough on its own
  * to make a character key readable. */
@@ -448,6 +491,22 @@ final class Recorder {
     /// zero, and zero samples a second is not something anybody can want, so the harmless value is the one
     /// that means unspecified.
     func start(moveMs: Int) -> String? {
+        /* НИ ОДИН МОДИФИКАТОР НЕ ЗАЖАТ, КОГДА ЗАПИСЬ НАЧИНАЕТСЯ - и это про обещание, а не про удобство.
+         *
+         * Обещание записи: клавиша, которая может что-то написать, никогда не называется. Держится оно на
+         * том, что БУКВА читается только под Command или Control (см. tapCallback): аккорд - это команда
+         * приложению, и пароль никто не набирает, держа Command.
+         *
+         * А теперь то, что это ломало. До 0.19.0 аккорд агента оставлял Command зажатым для ВСЕЙ машины -
+         * измерено, `CGEventSource.flagsState` возвращал Cmd и не переставал. Прогон в десять утра оставлял
+         * это состояние, запись в одиннадцать начиналась при зажатом Command, и тогда КАЖДОЕ нажатие
+         * человека приходило с maskCommand - то есть читалось как аккорд, и буква НАЗЫВАЛАСЬ. Обещание
+         * переставало быть правдой ровно там, где на него полагаются.
+         *
+         * Само залипание чинится в Input; здесь стоит второй замок, потому что залипнуть модификатор мог и
+         * не от нас - от чужого приложения, от прошлой сборки этого агента, от зависшей физической клавиши.
+         * Запись начинается с чистого состояния, чего бы это ни стоило одному нажатию. */
+        Input.releaseModifiers()
         gate.lock()
         if heldText != nil || ending {
             /* Atomic with the state it protects: a check on the route and an act in here would leave a gap
@@ -2625,11 +2684,51 @@ enum Input {
         CGEventSource(stateID: .hidSystemState)
     }
 
-    /// Every event this agent posts carries the mark, so the tap can tell a replay from a person.
-    private static func send(_ event: CGEvent?) {
+    /* КАЖДОЕ СОБЫТИЕ НЕСЁТ РОВНО ТЕ МОДИФИКАТОРЫ, О КОТОРЫХ ЕГО ПОПРОСИЛИ, И НИ ОДНОГО ЛИШНЕГО.
+     *
+     * `flags` со значением по умолчанию, а не «не трогать»: событие, созданное из источника
+     * `.hidSystemState` и не получившее флагов, ЗАБИРАЕТ ТЕКУЩЕЕ СОСТОЯНИЕ МОДИФИКАТОРОВ СИСТЕМЫ. До этой
+     * правки флаги ставила только key(...), а move, click, scroll и type не ставили вовсе - и потому
+     * наследовали то, что осталось от предыдущего аккорда.
+     *
+     * ИЗМЕРЕНО на живой машине тапом, который печатал флаги событий с нашей меткой. После одного
+     * `action=key key=a ctrl=1`:
+     *
+     *   keyDown   mods=Cmd  text=""    <- сам аккорд, как и просили
+     *   mouseDown mods=Cmd             <- клик стал Cmd-кликом
+     *   scroll    mods=Cmd             <- прокрутка стала Cmd-прокруткой, то есть зумом
+     *   keyDown   mods=Cmd  text="z"   <- набор буквы стал Cmd+Z, то есть отменой
+     *
+     * То есть после ЛЮБОГО аккорда набор «mouse test4» уходил как Cmd+M (свернуть окно), Cmd+O, Cmd+U,
+     * Cmd+S (сохранить ещё раз), Cmd+E, Cmd+T. Ни один символ не попадал в поле, macOS пищала на те
+     * сочетания, которым нечего делать, и модель честно писала «the typing didn't land». */
+    private static func send(_ event: CGEvent?, flags: CGEventFlags = []) {
         guard let event else { return }
+        event.flags = flags
         event.setIntegerValueField(.eventSourceUserData, value: INJECTED_MARK)
         event.post(tap: .cghidEventTap)
+    }
+
+    /* Модификаторы как КЛАВИШИ, потому что отпускать нужно клавишу, а не флаг.
+     *
+     * Второй половиной той же аварии было то, что состояние залипало ГЛОБАЛЬНО: после аккорда
+     * `CGEventSource.flagsState(.combinedSessionState)` возвращал Cmd и не переставал - то есть вся машина,
+     * включая собственный ввод человека, считала Command зажатым. Чистых флагов на наших событиях мало,
+     * нужно отпускание.
+     *
+     * Способ выбран замером, а не по обычаю. Четыре варианта на живой машине:
+     *   A  down/up с флагами, как было              -> Cmd остаётся
+     *   B  + keyUp(Command) с пустыми флагами       -> (none)
+     *   C  полный аккорд с клавишей-модификатором   -> (none)
+     *   D  flagsChanged с пустыми флагами           -> (none)
+     * Взят C: так делает настоящая клавиатура, и приложение, которое смотрит на flagsChanged - а таких
+     * много, - видит связную последовательность, а не букву под флагом, взявшимся ниоткуда. */
+    /// Отпустить всё, что осталось зажатым - кем угодно, включая прошлую сборку этого агента.
+    static func releaseModifiers() {
+        for step in releaseSteps(CGEventSource.flagsState(.combinedSessionState)) {
+            send(CGEvent(keyboardEventSource: source(), virtualKey: step.code, keyDown: step.down),
+                 flags: step.flags)
+        }
     }
 
     /* There is no return value to check.
@@ -2739,6 +2838,11 @@ enum Input {
 
     /* Any text, on any layout, without a keymap: a synthetic key event carrying a unicode string. */
     static func type(_ text: String) {
+        /* И НИКОГДА НЕ АККОРДОМ, что бы ни случилось раньше. Флаги ниже ставятся в пустые, но этого мало:
+         * пока система считает Command зажатым, она так и разбирает то, что мы шлём. Отпускается здесь, а
+         * не только в key(), потому что залипнуть могло что угодно - другое приложение, прошлая сборка
+         * этого агента, зависший физический модификатор, - а набор обязан быть набором в любом случае. */
+        releaseModifiers()
         /* In small pieces rather than one event: a synthetic key event carries a bounded unicode string, and
          * a paragraph handed over in one go arrives truncated. */
         for chunk in Array(text).chunked(into: 16) {
@@ -2785,10 +2889,18 @@ enum Input {
               let up = CGEvent(keyboardEventSource: source(), virtualKey: code, keyDown: false) else {
             return "macOS refused to make that key event"
         }
-        down.flags = flags
-        up.flags = flags
-        send(down)
-        send(up)
+        /* Нажать модификаторы, нажать клавишу, отпустить клавишу, отпустить модификаторы - и отпустить их
+         * КЛАВИШАМИ, снимая по одному флагу за раз, чтобы аккорд из двух модификаторов разбирался так же,
+         * как с настоящей клавиатуры. См. MODIFIER_KEYS: без последнего шага Command остаётся зажатым для
+         * всей машины. */
+        for step in chordSteps(flags, key: code) {
+            /* Событие клавиши уже создано выше (down/up), и переиспользовать его здесь нельзя: у аккорда
+             * с двумя модификаторами шагов больше двух, а CGEvent одноразов на отправку. Клавиша-цель
+             * узнаётся по коду. */
+            let event = step.code == code && step.down ? down : (step.code == code ? up
+                : CGEvent(keyboardEventSource: source(), virtualKey: step.code, keyDown: step.down))
+            send(event, flags: step.flags)
+        }
         return nil
     }
 }
@@ -3867,6 +3979,11 @@ final class Replayer {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return }
         guard let event = CGEvent(mouseEventSource: source, mouseType: type,
                                  mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: button) else { return }
+        /* Пустые флаги ЯВНО, ровно как в Input.send и по той же причине: событие из `.hidSystemState` без
+         * флагов забирает состояние системы, а повтор, в котором есть аккорд, оставляет это состояние
+         * зажатым - и следующий клик повтора становится Cmd-кликом. Здесь у повтора своя копия отправки,
+         * так что правило приходится повторить; тест держит обе половины вместе. */
+        event.flags = []
         event.setIntegerValueField(.eventSourceUserData, value: INJECTED_MARK)
         event.post(tap: .cghidEventTap)
     }

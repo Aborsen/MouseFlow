@@ -95,6 +95,29 @@ These are not bugs and no amount of work inside the current design removes them.
 - **macOS `/shot` and `/pulse` need macOS 14+.** `CGWindowListCreateImage` is *unavailable* on macOS 15, not
   merely deprecated, and cannot be kept behind an `#available`. `capture_window` is on the same floor and
   says so rather than failing obscurely.
+- **Until 0.19.0 a modifier stayed pressed after every chord, on macOS, for the whole machine.** This is the
+  most consequential defect found so far and it was found by measurement, not by reading. A listen-only
+  `CGEventTap` printing the flags of events carrying the agent's mark, after one `press_key` with a modifier:
+
+  ```
+  keyDown   mods=Cmd  text=""     <- the chord itself, as asked
+  mouseDown mods=Cmd              <- the next click was a Command-click
+  scroll    mods=Cmd              <- the next scroll was Command-scroll, i.e. zoom
+  keyDown   mods=Cmd  text="z"    <- the next typing was Command+Z, i.e. undo
+  ```
+
+  `CGEventSource(stateID: .hidSystemState)` gives a new event the *current* modifier state, and only
+  `press_key` set flags explicitly. The state also latched globally: `flagsState(.combinedSessionState)`
+  returned `Cmd` indefinitely, so the person's own keyboard was affected too. Typing `mouse test4` after
+  Command+S therefore sent Command+M (minimise), Command+O, Command+U, **Command+S (save again — which is
+  where the "replace this file?" dialog came from)**, Command+E, Command+T. Nothing reached the field, macOS
+  beeped at the combinations that do nothing, and the model's "the typing didn't land" was **correct**.
+  Fixed three ways: explicit flags on every posted event, a chord that presses and releases its modifiers as
+  keys (chosen by measuring four candidate releases), and `type()` releasing anything still held first.
+  **A recording now starts by releasing them as well, and that half is about a promise:** a letter is only
+  named when it arrives under Command or Control, so with Command latched every keystroke a person made
+  would have arrived as a chord and **the letter would have been named**. The rule is held by an executable
+  test that runs the chord order without posting anything.
 - **The "already open" list was in screen pixels while everything else was in the picture's.** Fixed in
   0.18.0. `/windows` reports rectangles in screen pixels and `openList` printed them as such, one paragraph
   below a screenshot the model clicks in — and on a 1680x1050 Mac the shot goes out 1280 wide, so the two

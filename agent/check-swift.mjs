@@ -406,5 +406,96 @@ group('охрана собственного окна не запирает ра
   }
 }
 
+// ------------------------------------------------------------------ 6. аккорд не оставляет модификатор
+/* САМАЯ ДОРОГАЯ ОШИБКА ИЗ ВСЕХ, ЧТО ЗДЕСЬ БЫЛИ, и найдена она замером, а не чтением.
+ *
+ * После одного `action=key key=a ctrl=1` Command оставался зажатым ДЛЯ ВСЕЙ МАШИНЫ, и каждое следующее
+ * событие агента его наследовало. Снято тапом с живой машины, по событиям с меткой агента:
+ *
+ *   keyDown   mods=Cmd  text=""     <- сам аккорд, как и просили
+ *   mouseDown mods=Cmd              <- клик стал Cmd-кликом
+ *   scroll    mods=Cmd              <- прокрутка стала зумом
+ *   keyDown   mods=Cmd  text="z"    <- набор буквы стал Cmd+Z, то есть отменой
+ *
+ * То есть набор «mouse test4» после Cmd+S уходил как Cmd+M, Cmd+O, Cmd+U, Cmd+S, Cmd+E, Cmd+T: ни один
+ * символ не попадал в поле, macOS пищала, и модель писала «the typing didn't land» - и была права.
+ *
+ * ПОЧЕМУ ЭТО ИСПОЛНЯЕМЫЙ ТЕСТ, А НЕ РЕГУЛЯРКА. Правило состоит в том, что ПОСЛЕДНИЙ шаг аккорда несёт
+ * пустые флаги; регулярка на «есть цикл по MODIFIER_KEYS» прошла бы и на коде, который снимает флаги не в
+ * ту сторону. А проверить это нажатием клавиш на живой машине нельзя - такой тест никто не станет держать
+ * в наборе. Поэтому порядок событий вынесен в чистую функцию, и здесь выполняется ОНА, не тронув ничего. */
+group('аккорд отпускает модификатор, и это выполняется');
+{
+  const keys = src.match(/let MODIFIER_KEYS: \[\(flag: CGEventFlags, code: CGKeyCode\)\] = \[[\s\S]*?\]/);
+  const chord = slice('func chordSteps(');
+  const release = slice('func releaseSteps(');
+  check('таблица модификаторов и обе функции найдены', !!(keys && chord && release));
+
+  if (keys && chord && release) {
+    const dir = mkdtempSync(join(tmpdir(), 'mf-chord-'));
+    const file = join(dir, 'chord.swift');
+    writeFileSync(file, [
+      'import CoreGraphics',
+      'import Foundation',
+      keys[0],
+      chord,
+      release,
+      'func show(_ steps: [(code: CGKeyCode, down: Bool, flags: CGEventFlags)]) -> String {',
+      '  steps.map { s in',
+      '    var m: [String] = []',
+      '    if s.flags.contains(.maskCommand) { m.append("Cmd") }',
+      '    if s.flags.contains(.maskShift) { m.append("Shift") }',
+      '    if s.flags.contains(.maskAlternate) { m.append("Alt") }',
+      '    if s.flags.contains(.maskControl) { m.append("Ctrl") }',
+      '    return "\\(s.code)\\(s.down ? "v" : "^")[\\(m.isEmpty ? "-" : m.joined(separator: "+"))]"',
+      '  }.joined(separator: " ")',
+      '}',
+      'let what = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""',
+      'switch what {',
+      'case "plain":    print(show(chordSteps([], key: 9)))',
+      'case "cmd":      print(show(chordSteps(.maskCommand, key: 9)))',
+      'case "cmdshift": print(show(chordSteps([.maskCommand, .maskShift], key: 9)))',
+      'case "release":  print(show(releaseSteps(.maskCommand)))',
+      'case "nothing":  print(show(releaseSteps([])))',
+      'default: print("?")',
+      '}',
+    ].join('\n\n'));
+
+    const built = join(dir, 'chord');
+    const compile = spawnSync('swiftc', ['-O', '-o', built, file], { encoding: 'utf8' });
+    check('вырезанное правило компилируется само по себе', compile.status === 0,
+      (compile.stderr || '').split('\n').filter((l) => /error:/.test(l)).slice(0, 4).join(' | '));
+
+    if (compile.status === 0) {
+      const steps = (what) => execFileSync(built, [what], { encoding: 'utf8' }).trim();
+
+      /* Без модификаторов аккорда нет: ровно нажатие и отпускание, и оба без флагов. */
+      check('без модификаторов - два события и ни одного флага',
+        steps('plain') === '9v[-] 9^[-]', steps('plain'));
+
+      /* Command НАЖИМАЕТСЯ клавишей и ОТПУСКАЕТСЯ клавишей. 55 - kVK_Command. */
+      check('Command нажимается и отпускается своей клавишей',
+        steps('cmd') === '55v[Cmd] 9v[Cmd] 9^[Cmd] 55^[-]', steps('cmd'));
+
+      /* ВОТ ЭТО И ЕСТЬ ВСЯ ПОЧИНКА: последний шаг с пустыми флагами. Без него Command остаётся зажатым
+       * для всей машины - включая собственный ввод человека, - и следующий набор уходит аккордами. */
+      check('и ПОСЛЕДНИЙ шаг несёт пустые флаги',
+        /55\^\[-\]$/.test(steps('cmd')), steps('cmd'));
+
+      /* Два модификатора снимаются по одному, в обратном порядке: приложение, читающее flagsChanged,
+       * должно видеть то же, что от настоящей клавиатуры. */
+      check('два модификатора снимаются по одному, в обратном порядке',
+        steps('cmdshift') === '55v[Cmd+Shift] 56v[Cmd+Shift] 9v[Cmd+Shift] 9^[Cmd+Shift] 56^[Cmd] 55^[-]',
+        steps('cmdshift'));
+
+      /* Отпускание уже зажатого - без единого нажатия: набор обязан быть набором, что бы ни залипло
+       * раньше, включая прошлую сборку агента и чужое приложение. */
+      check('зажатое отпускается, ничего не нажимая', steps('release') === '55^[-]', steps('release'));
+      check('а когда ничего не зажато - не шлётся ничего', steps('nothing') === '', `"${steps('nothing')}"`);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
