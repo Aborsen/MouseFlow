@@ -313,6 +313,9 @@ async function push(req, res, sql, who) {
   }
 
   let savedFlows = 0;
+  /* Отметки, которые база поставила на каждую записанную строку. Клиент кладёт их себе вместо своих
+   * собственных - см. `returning updated_at` ниже и Fix 6 в docs/HANDOFF-recording-sync.md. */
+  const stamped = [];
   let savedRuns = 0;
   let namedRuns = 0;
   let droppedRuns = 0;
@@ -416,7 +419,15 @@ async function push(req, res, sql, who) {
       continue;
     }
 
-    await sql`
+    /* ВОЗВРАЩАЕТСЯ ТО, ЧТО БАЗА ЗАПИСАЛА, и это чинит сравнение двух разных часов.
+     *
+     * Клиент штампует `syncedAt` своим `new Date()` и присылает его обратно как `updated`; проверка выше
+     * сравнивает это с `updated_at`, который ставит Postgres через now(). Две разные часовые области в
+     * одном `<`. Браузер, отстающий от сервера, делает отказ ПОСТОЯННЫМ, и починить его было нечем: ответ
+     * не нёс никакой отметки, которую клиент мог бы принять за свою.
+     *
+     * Теперь несёт. Обе стороны сравнения начинают приходить с одних часов - серверных. */
+    const [wrote] = await sql`
       insert into user_flow
         (user_id, client_id, source, kind, name, description, payload, origins, created_at, updated_at)
       values
@@ -427,7 +438,9 @@ async function push(req, res, sql, who) {
         source = excluded.source, kind = excluded.kind, name = excluded.name,
         description = excluded.description, payload = excluded.payload, origins = excluded.origins,
         updated_at = now()
+      returning updated_at
     `;
+    if (wrote) stamped.push({ id: clientId, updated: new Date(wrote.updated_at).toISOString() });
     savedFlows++;
   }
 
@@ -522,6 +535,9 @@ async function push(req, res, sql, who) {
   return res.status(200).json({
     ok: true,
     flows: savedFlows,
+    /* По одной на каждую записанную строку. Пусто у клиента, который ничего не слал, и у старого сервера
+     * отсутствует вовсе - клиент это переживает, см. push() в web/src/lib/api.ts. */
+    stamped,
     runs: savedRuns,
     deleted: removed.length,
     renamedRuns: namedRuns,

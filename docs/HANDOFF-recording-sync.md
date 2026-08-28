@@ -251,7 +251,11 @@ happened rather than showing an empty table.
 
 ---
 
-### Fix 4 — a failed "Put it back" must not leave the old error underneath the new one
+### Fix 4 — a failed "Put it back" must not leave the old error underneath the new one — **DONE 2026-08-28**
+
+The failure path bumps `attempt` as the success path always did, so the body is re-read and describes the
+row as it stands now. The note describes what just failed. Both are then about the same moment.
+
 
 **Now:** [`TranscriptPanel.tsx:818-832`](../web/src/features/record/TranscriptPanel.tsx). A **successful**
 restore bumps `attempt`, which re-reads the transcript. A **failed** one only calls `setNote`. The body
@@ -268,7 +272,26 @@ disappears when the new error appears.
 
 ---
 
-### Fix 5 — the 404 says three different things in one sentence
+### Fix 5 — the 404 says three different things in one sentence — **DONE 2026-08-28**
+
+`readFlow` selects `deleted_at` instead of filtering on it, and the route answers three ways: **404** never
+reached this account, **410** deleted (with the date), **409** a created skill rather than a recording. The
+shape is copied from `unusable` in `api/_recording-tools.js`, which answers the same three against the same
+table.
+
+There is deliberately no fourth answer for *not yours*: the query is by `(user_id, client_id)`, so somebody
+else's row and a row that does not exist are indistinguishable — and confirming that a stranger's recording
+exists would be answering a question nobody asked. That is written into the code so the next person does not
+"finish" it.
+
+The *Put it back* button now appears for the 404 alone, which is the only one a push repairs. It does not
+repair a tombstone — `api/sync.js` refuses to write over `deleted_at`, or a delete made on one machine would
+come back from the next — and a created skill does not become a recording by being sent again. The prose
+that claimed deleting in Skills was the cause is gone; it was a causal assertion the panel never checked.
+
+**The edit path keeps its `deleted_at is null`, and that is correct** — a tombstoned recording must not be
+editable. Held by its own check, because removing it would look like finishing this fix.
+
 
 **Now:** [`transcript.js:278-290`](../api/transcript.js). `readFlow`'s `WHERE` has three conjuncts — owner,
 id, not tombstoned — and any of them failing yields the same words: `no recording with that id on this
@@ -291,7 +314,16 @@ the one it can actually fix.
 
 ---
 
-### Fix 6 — `syncedAt` is the browser's clock, compared against the database's
+### Fix 6 — `syncedAt` is the browser's clock, compared against the database's — **DONE 2026-08-28**
+
+The push response carries `stamped: [{ id, updated }]` from `returning updated_at`, and the client stores
+that instead of its own `new Date()`. Both sides of the comparison now come from the database's clock.
+
+Two paths adopt it: the stop path takes its own row's stamp out of the response, and the reconcile takes
+stamps from two server sources — the push response for what it just sent, and `flow.updated` in the account
+list for what was already there. The browser's clock survives only as the last fallback, for a deployment
+old enough to send neither.
+
 
 **Now:** [`_flow-for.mjs:36`](../api/_flow-for.mjs) sends `updated: rec.syncedAt`, which is stamped with
 `new Date()` in the browser after a clean push ([`RecordView.tsx:597`](../web/src/features/record/RecordView.tsx),

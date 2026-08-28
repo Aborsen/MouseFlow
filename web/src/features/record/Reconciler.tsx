@@ -76,6 +76,8 @@ export const Reconciler = () => {
     (async () => {
       let sent: string[] = [];
       let mine: string[] = [];
+      /* Ответ push целиком: из него берутся отметки времени, поставленные базой. */
+      let pushed: Awaited<ReturnType<typeof push>> | null = null;
       /* Записи, которые аккаунт назвал удалёнными. Отдельно от `sent`: их не приняли, но и пробовать
        * снова незачем - см. ниже. */
       const buried = new Set<string>();
@@ -87,6 +89,7 @@ export const Reconciler = () => {
            * друг на друга тем же способом, каким на него наезжала остановка записи. */
           mine = claim(plan.push.map((rec) => rec.id));
           const saved = await push({ flows: plan.push.map((rec) => flowFor(rec, health)) });
+          pushed = saved;
           if (!saved.problems.length) sent = plan.push.map((rec) => rec.id);
           /* УДАЛЁННОЕ НА АККАУНТЕ - ЗАБЫВАЕТСЯ И ЗДЕСЬ.
            *
@@ -111,6 +114,18 @@ export const Reconciler = () => {
       }
 
       const stamped = new Set([...plan.stamp, ...sent]);
+      /* ЧАСЫ СЕРВЕРА, А НЕ БРАУЗЕРА - для каждой записи, для которой их можно узнать.
+       *
+       * Штамп едет обратно как `updated` и сравнивается на сервере с `updated_at`, который ставит Postgres.
+       * Пока штамп ставился здешним `new Date()`, это было сравнением двух разных часовых областей, и
+       * браузер, отстающий от сервера, получал «older here than on the account» навсегда.
+       *
+       * Два источника, и оба серверные: отправленное только что несёт свою отметку в ответе push, а то, что
+       * на аккаунте уже лежало, несёт её в самом списке (`flow.updated`). Здешние часы остаются последним
+       * запасом - для старого деплоя, который ни того, ни другого не шлёт. */
+      const fromServer = new Map<string, string>();
+      for (const one of pushed?.stamped ?? []) fromServer.set(one.id, one.updated);
+      for (const flow of flows) if (flow.updated) fromServer.set(flow.id, flow.updated);
       /* Забытое включает похороненное аккаунтом: удаление, сделанное на другой машине, доходит сюда именно
        * так - не тем, что запись пропала из списка, а тем, что аккаунт отказался её принимать. */
       const forget = new Set([...plan.forget, ...buried]);
@@ -156,7 +171,9 @@ export const Reconciler = () => {
           recordings: [
             ...prev.recordings
               .filter((rec) => !forget.has(rec.id))
-              .map((rec) => (stamped.has(rec.id) ? { ...rec, syncedAt: rec.syncedAt ?? now } : rec)),
+              .map((rec) => (stamped.has(rec.id)
+                ? { ...rec, syncedAt: rec.syncedAt ?? fromServer.get(rec.id) ?? now }
+                : rec)),
             /* Appended, and the ids are the account's own, so a second pass finds them already here rather
              * than pulling a duplicate under a new name. */
             ...pulled.filter((rec) => !prev.recordings.some((had) => had.id === rec.id)),

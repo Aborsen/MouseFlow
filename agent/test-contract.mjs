@@ -1644,5 +1644,97 @@ group('переполнение диска: отступление вместо 
     !/update\(/.test(back) && /НА ОДИН ВЫЗОВ/.test(back));
 }
 
+/* Fix 4, 5 и 6 work order'а - три независимых дефекта на пути от Stop до читаемого транскрипта. */
+group('старая ошибка не остаётся под новой');
+{
+  const panel = read('web/src/features/record/TranscriptPanel.tsx');
+  /* Удачное «положить обратно» двигало `attempt` и перечитывало тело; неудачное только ставило `note`, а
+   * тело оставалось со своим 404 и кнопкой. `problem` же чистится только при смене `flowId`. Так на одном
+   * экране оказывались фраза про состояние строки СЕЙЧАС и фраза про её состояние минуты назад. */
+  /* По КОДУ: объяснение этой правки занимает восемь строк комментария ровно между теми двумя, которые
+   * проверяются, и оно длиннее любого разумного окна. */
+  const panelCode = panel.replace(/\/\*[\s\S]*?\*\//g, '');
+  /* ДВА подъёма `attempt` в обработчике «положить обратно»: один на удаче, один на неудаче. Проверка на
+   * «есть хотя бы один» прошла бы и на прежнем коде, где он был только на удаче. */
+  const restoreHandler = panelCode.slice(panelCode.indexOf('await onRestore();'),
+    panelCode.indexOf('Put it back on my account'));
+  check('неудачная попытка тоже перечитывает тело',
+    (restoreHandler.match(/setAttempt\(\(n\) => n \+ 1\);/g) || []).length === 2,
+    String((restoreHandler.match(/setAttempt\(\(n\) => n \+ 1\);/g) || []).length));
+}
+
+group('404 больше не говорит три разные вещи одними словами');
+{
+  const route = read('api/transcript.js');
+  const panel = read('web/src/features/record/TranscriptPanel.tsx');
+
+  /* Условие ушло из WHERE в SELECT: пока `deleted_at is null` стояло в запросе, надгробие и никогда не
+   * существовавшая строка возвращались одинаково, и одна фраза обязана была покрыть обе. Не может: одна
+   * чинится нажатием, вторая нет. */
+  /* Именно у readFlow, а не по всему файлу: у `save` то же условие стоит и стоит ВЕРНО - редактировать
+   * надгробие нельзя, и снять его там значило бы починить одно, сломав другое. */
+  const readFlowBody = route.slice(route.indexOf('async function readFlow'),
+    route.indexOf('/* ТРИ ОТВЕТА ВМЕСТО ОДНОГО'));
+  check('надгробие теперь отличимо от «не было никогда»',
+    /created_at, updated_at, deleted_at/.test(readFlowBody)
+      && !/deleted_at is null/.test(readFlowBody));
+  check('а у пути правки то же условие осталось - редактировать надгробие нельзя',
+    /update user_flow[\s\S]{0,300}deleted_at is null/.test(route));
+  check('и на каждую причину свой ответ и свой код',
+    /const notThere = \(res\) => fail\(res, 404,/.test(route)
+      && /const wasDeleted = \(res, when\) => fail\(res, 410,/.test(route)
+      && /const notARecording = \(res\) => fail\(res, 409,/.test(route));
+  /* И РАЗВИЛКА ДЕЙСТВИТЕЛЬНО ВЕТВИТСЯ. Три объявленных ответа, из которых зовётся один, - это тот же
+   * единственный ответ, только с двумя неиспользуемыми константами рядом. */
+  check('и развилка действительно спрашивает про каждую',
+    /if \(!row\) return notThere\(res\);\s*\n\s*if \(row\.deleted_at\) return wasDeleted\(res, row\.deleted_at\);\s*\n\s*if \(row\.kind !== 'recorded'\) return notARecording\(res\);/.test(route));
+  check('и оба маршрута спрашивают одно и то же место',
+    (route.match(/const refused = unusable\(res, row\);/g) || []).length === 2);
+  /* Отдельного «эта запись чужая» нет и быть не может: запрос идёт по паре (user_id, client_id), так что
+   * чужая строка и несуществующая неразличимы - и подтвердить существование чужой записи было бы ответом
+   * на незаданный вопрос. Сказано в коде, чтобы следующий не «доделал» третий случай. */
+  check('и сказано, почему «чужая» отдельным ответом быть не может',
+    /чужая строка и несуществующая неразличимы/.test(route));
+
+  /* Кнопка предлагается ровно там, где push действительно чинит. Удалённую он не чинит - sync.js отвергает
+   * запись поверх надгробия; созданный скилл записью не станет от повторной отправки. */
+  check('кнопка предлагается только для того, что push чинит',
+    /const canRestore = !!onRestore && !!problem\s*\n\s*&& \/\^no recording with that id on this account\/i\.test\(problem\);/.test(panel));
+  /* И причинное утверждение, которого никто не проверял, из текста ушло. */
+  check('и прежнего необоснованного объяснения там больше нет',
+    !/deleting it in Skills takes the recording with it/.test(panel));
+}
+
+group('штамп синхронизации приходит с тех же часов, с какими сравнивается');
+{
+  const sync = read('api/sync.js');
+  const api = read('web/src/lib/api.ts');
+  const view = read('web/src/features/record/RecordView.tsx');
+  const rec = read('web/src/features/record/Reconciler.tsx');
+
+  /* Клиент штамповал `syncedAt` своим `new Date()`, сервер сравнивал это с `updated_at` из Postgres. Две
+   * часовые области в одном `<`. Браузер, отстающий от сервера, получал отказ НАВСЕГДА: ответ не нёс
+   * никакой отметки, которую клиент мог бы принять за свою. */
+  /* `returning updated_at` есть в этом файле и у прогонов - проверяется тот, что у ВСТАВКИ ПОТОКА, вместе
+   * с тем, что его ответ действительно куда-то кладут. */
+  check('сервер возвращает то, что записал',
+    /const \[wrote\] = await sql`\s*\n\s*insert into user_flow[\s\S]{0,900}returning updated_at/.test(sync)
+      && /if \(wrote\) stamped\.push\(\{ id: clientId, updated:/.test(sync)
+      && /\n    stamped,/.test(sync));
+  check('и клиент это объявляет',
+    /stamped\?: \{ id: string; updated: string \}\[\];/.test(api));
+  check('путь остановки берёт отметку сервера',
+    /const said = saved\.stamped\?\.find\(\(one\) => one\.id === made\.id\)\?\.updated;/.test(view)
+      && /syncedAt: said \?\? new Date\(\)\.toISOString\(\)/.test(view));
+  /* И сверка тоже - из двух серверных источников: отправленное несёт отметку в ответе push, лежащее на
+   * аккаунте несёт её в самом списке. */
+  check('и сверка берёт её из ответа push и из списка аккаунта',
+    /for \(const one of pushed\?\.stamped \?\? \[\]\) fromServer\.set\(one\.id, one\.updated\);/.test(rec)
+      && /for \(const flow of flows\) if \(flow\.updated\) fromServer\.set\(flow\.id, flow\.updated\);/.test(rec));
+  /* Свои часы остаются последним запасом - ровно для старого деплоя, который поля не шлёт. */
+  check('а свои часы остаются только запасом для старого деплоя',
+    /syncedAt: rec\.syncedAt \?\? fromServer\.get\(rec\.id\) \?\? now/.test(rec));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -517,6 +517,16 @@ export const TranscriptPanel = ({
   /* Едет ли эта запись прямо сейчас на аккаунт. Одна запись, а не весь реестр: панель смотрит на одну, и
    * подписка на весь реестр будила бы её на каждую чужую загрузку. */
   const sending = useIsSending(flowId);
+  /* ЧИНИТСЯ ЛИ ЭТО НАЖАТИЕМ - один вопрос, один ответ, и раньше его никто не задавал.
+   *
+   * Кнопка предлагалась по фразе «no recording with that id», которая до Fix 5 покрывала три разные
+   * причины сразу. Из них push чинит РОВНО ОДНУ: строку, которой на аккаунте никогда не было. Удалённую он
+   * не чинит - sync.js отвергает запись поверх надгробия, иначе удаление, сделанное на одной машине,
+   * возвращалось бы с другой; а созданный скилл записью не станет от того, что его отправят ещё раз.
+   *
+   * Сравнение по началу фразы, а не по всей: слова после первой точки объясняют, и их правят чаще. */
+  const canRestore = !!onRestore && !!problem
+    && /^no recording with that id on this account/i.test(problem);
   const [busy, setBusy] = useState(true);
   /* Bumped to ask for the same transcript again. A state value rather than calling the loader directly,
    * so the effect stays the only thing that starts a request and its abort always matches it. */
@@ -832,12 +842,11 @@ export const TranscriptPanel = ({
               * like a skill - leaves this page still listing it and this panel answering 404. The events are
               * in the browser, so it is one push from being right, and api/sync.js upserts over a tombstone
               * (deleted_at = null), which makes putting it back the ordinary save applied again. */}
-            {onRestore && /no recording with that id/i.test(problem) && (
+            {canRestore && (
               <>
                 <Typography variant="p" className="mt-2 max-w-[60ch] break-words text-ink-inactive text-[0.8rem]">
-                  This browser still has it. A recording and a skill made from it are the same thing on your
-                  account, so deleting it in Skills takes the recording with it — putting it back is the same
-                  save that happens when you stop recording.
+                  This browser still has it, and the account has never had it — so putting it back is the
+                  ordinary save that happens when you stop recording, applied again.
                 </Typography>
                 <Button
                   size="sm"
@@ -854,6 +863,15 @@ export const TranscriptPanel = ({
                         text: err instanceof Error ? err.message : 'it could not be put back',
                         kind: 'bad',
                       });
+                      /* И ПЕРЕЧИТАТЬ ТЕЛО ТОЖЕ - иначе на экране окажутся две фразы про разные моменты.
+                       *
+                       * Удачное «положить обратно» двигало `attempt`, то есть перечитывало транскрипт.
+                       * Неудачное только ставило `note`, а тело оставалось со своим 404, объяснением и
+                       * кнопкой ровно в том виде, в каком было; `problem` же чистится только при смене
+                       * `flowId`. Так на одном экране оказывались предложение про состояние строки СЕЙЧАС
+                       * и предложение про её состояние несколько минут назад, и ничто не говорило, какое
+                       * из них какое. Это и дало ту пару противоречивых сообщений в отчёте. */
+                      setAttempt((n) => n + 1);
                     } finally {
                       setRestoring(false);
                     }
@@ -866,7 +884,7 @@ export const TranscriptPanel = ({
 
             <Button
               size="sm"
-              variant={onRestore && /no recording with that id/i.test(problem) ? 'tertiary' : 'primary'}
+              variant={canRestore ? 'tertiary' : 'primary'}
               className="mt-3"
               onClick={() => setAttempt((n) => n + 1)}
             >

@@ -275,19 +275,57 @@ async function handler(req, res) {
 /* --------------------------------------------------------------------------- reading one */
 
 async function readFlow(sql, userId, flowId) {
-  /* The owner check is inside the WHERE clause so no code path can forget it, and deleted_at is null
-   * so a tombstoned flow reads as gone rather than as editable. */
+  /* The owner check is inside the WHERE clause so no code path can forget it.
+   *
+   * `deleted_at` is SELECTED rather than filtered on, and that is the whole of Fix 5: with it in the WHERE
+   * clause, a tombstoned row and a row that never existed came back identical, and one sentence had to
+   * cover both. It cannot: one of them is repairable and the other is not. */
   const rows = await sql`
-    select client_id, source, kind, name, description, payload, origins, created_at, updated_at
+    select client_id, source, kind, name, description, payload, origins,
+           created_at, updated_at, deleted_at
     from user_flow
-    where user_id = ${userId} and client_id = ${flowId} and deleted_at is null
+    where user_id = ${userId} and client_id = ${flowId}
     limit 1
   `;
   return rows[0] || null;
 }
 
-// Says nothing about whether that id exists elsewhere. See the header.
-const notThere = (res) => fail(res, 404, 'no recording with that id on this account');
+/* ТРИ ОТВЕТА ВМЕСТО ОДНОГО, потому что причин было три, а слова одни.
+ *
+ * `where` у readFlow держал три условия - владелец, id, не удалено, - и падение любого давало одну и ту же
+ * фразу «no recording with that id on this account». Панель ловила эту фразу регуляркой и печатала поверх
+ * неё причинное утверждение, которого никогда не проверяла: что запись удалили в Skills и что «положить
+ * обратно» это тот же сохраняющий вызов. Для строки, которая просто ещё не доехала, неверно каждое слово.
+ * И лекарство, которое там предлагалось, больше не работает: sync.js отвергает push поверх надгробия, а не
+ * снимает `deleted_at`.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ И БЫТЬ НЕ МОЖЕТ: отдельного ответа «эта запись чужая». Запрос идёт по паре
+ * (user_id, client_id), так что чужая строка и несуществующая неразличимы - и это правильно: подтвердить
+ * существование чужой записи значило бы отвечать на вопрос, которого не задавали.
+ *
+ * Форма скопирована с `unusable` в api/_recording-tools.js, который отвечает на те же три вопроса против
+ * той же таблицы. */
+const notThere = (res) => fail(res, 404,
+  'no recording with that id on this account - it may never have reached it. If this browser still has '
+  + 'it, putting it back is the ordinary save applied again.');
+
+const wasDeleted = (res, when) => fail(res, 410,
+  'that recording was deleted' + (when ? ' on ' + new Date(when).toISOString().slice(0, 10) : '')
+  + '. The row is kept as a tombstone so the delete reaches every machine, and putting it back is refused '
+  + 'for the same reason - a delete that came back would not be a delete. Make a new recording, or remove '
+  + 'this copy here too.');
+
+const notARecording = (res) => fail(res, 409,
+  'that is a created skill, not a recording: it holds a goal and its parameters rather than captured '
+  + 'events, so there is no transcript of it.');
+
+/** The three answers, or null when this row is a recording that can be shown. */
+const unusable = (res, row) => {
+  if (!row) return notThere(res);
+  if (row.deleted_at) return wasDeleted(res, row.deleted_at);
+  if (row.kind !== 'recorded') return notARecording(res);
+  return null;
+};
 
 /* transcribe() is another file's work, and a seam between two files is where a mismatch shows up as a
  * half-written response. So its output is checked against the contract before it is served: a missing
@@ -365,7 +403,10 @@ function editedGap(payload) {
 
 async function show(res, sql, userId, flowId) {
   const row = await readFlow(sql, userId, flowId);
-  if (!row) return notThere(res);
+  {
+    const refused = unusable(res, row);
+    if (refused) return refused;
+  }
 
   const payload = payloadOf(row.payload);
   const t = build(flowInput(row, payload));
@@ -414,7 +455,10 @@ async function edit(req, res, sql, userId, flowId) {
   }
 
   const row = await readFlow(sql, userId, flowId);
-  if (!row) return notThere(res);
+  {
+    const refused = unusable(res, row);
+    if (refused) return refused;
+  }
 
   /* A created skill is a goal and its parameters. The steps kept alongside it are evidence of what the
    * run that produced it did, not the thing replayed (see extension/skills.js) - editing them would be

@@ -612,9 +612,16 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
            * separates "this exists only here, send it" from "this was deleted on another machine, drop it".
            * Setting it hopefully would make the second reconciliation delete a recording that never
            * arrived. */
+          /* ОТМЕТКА СЕРВЕРА, А НЕ СВОЯ. Она едет обратно как `updated` и сравнивается там с `updated_at`,
+           * который ставит Postgres; до этого обе стороны сравнения приходили с разных часов, и браузер,
+           * отстающий от сервера, получал «older here than on the account» навсегда - починить это было
+           * нечем, потому что ответ не нёс отметки, которую можно было бы принять за свою.
+           *
+           * Свои часы остаются запасным вариантом ровно для старого деплоя, который поля не шлёт. */
+          const said = saved.stamped?.find((one) => one.id === made.id)?.updated;
           update((prev) => ({
             recordings: prev.recordings.map((rec) => (
-              rec.id === made.id ? { ...rec, syncedAt: new Date().toISOString() } : rec
+              rec.id === made.id ? { ...rec, syncedAt: said ?? new Date().toISOString() } : rec
             )),
           }));
         }

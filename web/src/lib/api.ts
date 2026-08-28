@@ -313,6 +313,13 @@ export const push = async (payload: {
   call<{
     ok: true; flows: number; runs: number; deleted: number;
     renamedRuns: number; deletedRuns: number; problems: string[];
+    /* Отметка, которую база поставила каждой записанной строке. Клиент кладёт ЕЁ вместо своего
+     * `new Date()`: сервер сравнивает присланное `updated` со своим `updated_at`, и до этого поля две
+     * стороны сравнения приходили с разных часов - браузер, отстающий от сервера, получал отказ навсегда,
+     * и починить его было нечем.
+     *
+     * Необязательное: старый деплой этого не шлёт, и клиент тогда ведёт себя ровно как раньше. */
+    stamped?: { id: string; updated: string }[];
   }>('/api/sync', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
