@@ -738,6 +738,77 @@ check('оба повторяют шаг ровно один раз - и толь
   /attempt == 0 && \(status == 0 \|\| status >= 500\)/.test(swift)
     && /attempt == 0 && \(status == 0 \|\| status >= 500\)/.test(ps));
 const version = (text, re) => (text.match(re) || [])[1];
+
+/* РАМКА «ЭТОЙ МАШИНОЙ УПРАВЛЯЮТ» - одна и та же на обеих, включая то, чего она НЕ делает.
+ *
+ * Здесь легко разъехаться незаметно: рамка, которая на одной платформе горит весь прогон, а на другой
+ * мигает, - это два разных обещания под одним номером версии, и человек, пересевший с Mac на PC, читает
+ * второе как поломку. Поэтому в шаге держатся все три ведущих, длина аренды и момент её взятия. */
+check('обе зажигают рамку тремя одними и теми же ведущими',
+  /case goal/.test(swift) && /case replay/.test(swift) && /case hand/.test(swift)
+    && /Acting\.Begin\("goal"\)/.test(ps) && /Acting\.Begin\("replay"\)/.test(ps)
+    && /_drivers\.Contains\("hand"\)/.test(ps));
+/* Прогон по цели - единственный путь с точными границами, и конец обязан быть на ВСЕХ выходах: drive()
+ * возвращается из десятка мест, и парный вызов в конце тела покрыл бы один из них. */
+check('обе снимают рамку прогона на всех выходах, а не в конце тела',
+  /defer \{ Acting\.end\(\.goal\) \}/.test(swift)
+    && /finally \{ Acting\.End\("goal"\); \}/.test(ps));
+/* Повтор - в том же месте, где отпускаются кнопки мыши: если это два разных места, однажды освободят
+ * кнопки и оставят рамку. */
+check('и рамку повтора - там же, где отпускают кнопки мыши',
+  /releaseEverything\(\)\s*\n\s*Acting\.end\(\.replay\)/.test(swift)
+    && /ReleaseAllButtons\(\);\s*\n\s*Acting\.End\("replay"\);/.test(ps));
+/* ДО действия, а не после: смысл рамки - гореть, ПОКА машину трогают. Взятая после, она зажигается,
+ * когда всё уже нажато. */
+check('обе берут аренду до действия, а не после',
+  /Acting\.touch\(\)\s*\n\s*if let bad = doAction\(body\)/.test(swift)
+    && /Acting\.Touch\(\);\s*\n\s*string problem = DoAction\(body\);/.test(ps));
+check('и аренда у обеих одной длины',
+  version(swift, /leaseSeconds: TimeInterval = ([\d.]+)/)
+    === version(ps, /LeaseSeconds = ([\d.]+)/),
+  `${version(swift, /leaseSeconds: TimeInterval = ([\d.]+)/)} vs ${version(ps, /LeaseSeconds = ([\d.]+)/)}`);
+/* Три способа сломать агента собственным окном, закрытые на обеих. Четвёртый - список окон - закрыт на
+ * каждой по-своему (слой против пустого заголовка), поэтому в шаге не держится. */
+/* ПРИМЕНЕНИЕ, А НЕ УПОМИНАНИЕ. Первая версия этих двух проверок искала имена флагов где угодно в файле -
+ * и обе мутации прошли насквозь: `const int WS_EX_TRANSPARENT = ...` и `public const uint
+ * WDA_EXCLUDEFROMCAPTURE = ...` остаются объявленными, когда их перестают использовать. Проверка, что имя
+ * встречается, - это проверка, что константу не удалили, а не что окно сквозное. */
+check('окно рамки на обеих сквозное для мыши и не забирает фокус',
+  /ignoresMouseEvents = true/.test(swift) && /orderFrontRegardless\(\)/.test(swift)
+    && /cp\.ExStyle \|=[^;]*WS_EX_TRANSPARENT/.test(ps)
+    && /cp\.ExStyle \|=[^;]*WS_EX_NOACTIVATE/.test(ps)
+    && /ShowWithoutActivation \{ get \{ return true; \} \}/.test(ps));
+check('и обе прячут её от захвата экрана',
+  /window\.sharingType = \.none/.test(swift)
+    && /SetWindowDisplayAffinity\(Handle, Native\.WDA_EXCLUDEFROMCAPTURE\)/.test(ps));
+/* НЕ АНИМИРОВАНА, и это не про вкус: пульсация означала бы, что экран шевелится всегда - каждое
+ * ожидание досиживало бы до предела, каждое действие отчитывалось бы как подействовавшее.
+ *
+ * Проверяется ВНУТРИ классов рамки, а не по всему файлу: `Timer` и `frame` в агенте на каждом шагу, и
+ * первая же попытка написать это одной регуляркой по всему тексту поймала чужой таймер строки состояния.
+ * Отрицательная проверка, промахнувшаяся мимо своей области, - это проверка, которая всегда зелёная. */
+const body = (text, opener) => {
+  const at = text.indexOf(opener);
+  if (at < 0) return '';
+  let depth = 0;
+  for (let i = at; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) return text.slice(at, i + 1); }
+  }
+  return '';
+};
+const noMotion = /animat|CABasic|alphaValue|Opacity|Interval|Timer|Blink|pulse/i;
+const swiftFrame = body(swift, 'final class ScreenFrame {');
+const psFrame = body(ps, 'public static class Frame');
+check('оба класса рамки найдены целиком', swiftFrame.length > 400 && psFrame.length > 400,
+  `${swiftFrame.length} / ${psFrame.length}`);
+check('и ни одна её не анимирует',
+  !noMotion.test(swiftFrame.replace(/\/\*[\s\S]*?\*\//g, '')) && !noMotion.test(psFrame.replace(/\/\*[\s\S]*?\*\//g, '')),
+  (noMotion.exec(swiftFrame.replace(/\/\*[\s\S]*?\*\//g, '')) || noMotion.exec(psFrame.replace(/\/\*[\s\S]*?\*\//g, '')) || [''])[0]);
+/* Оба говорят, кто ведёт, - чтобы поведение рамки можно было проверить, не глядя на экран. */
+check('и обе отвечают в /health, кто ведёт машину',
+  /"acting":/.test(swift.replace(/\\/g, '')) && /\\"acting\\":/.test(ps));
+
 const swiftVersion = version(swift, /let VERSION = "([\d.]+)"/);
 check('и обе версии совпадают',
   swiftVersion && swiftVersion === version(ps, /public const string Version = "([\d.]+)";/),

@@ -588,6 +588,61 @@ inside every sleep, and release every held button and key on every exit path, in
 a replay that dies holding the left mouse button leaves the machine unusable. The Windows agent also honours
 a held ESC as a hardware-level escape hatch, which is worth copying.
 
+## Saying, on the machine itself, that the machine is being driven
+
+**Since 0.22.0 the agent draws a border round every screen while something is driving this computer.** A
+run starts silently: the pointer moves on its own, a window rises, text appears in a field. The person
+sitting at the machine used to learn about it by discovering that the mouse had stopped obeying them —
+which is the moment they are already fighting the run and the run is already fighting them. A page in a
+browser on another monitor is not an answer to that, and a courier run arrives from the account with no
+browser open at all. So it is said here, on the screen being driven.
+
+`/health` reports the same fact as `acting`: a list of who is driving, empty when nobody is. It exists so
+the behaviour can be checked from outside without looking at the screen, and so a person can ask "is that
+the agent moving my mouse, or is something broken".
+
+**Three drivers, and only two of them have edges.**
+
+| driver | lit from | until |
+|---|---|---|
+| `goal` | the courier claims a goal job | `drive()` returns, on every exit path |
+| `replay` | a replay begins | the same `defer` that releases held buttons |
+| `hand` | a single `/do` arrives | a short lease, refreshed by each `/do` |
+
+`hand` is a lease and not a hold because **the browser driver never tells the agent that a run is
+happening.** What the agent sees is `/shot`, `/windows`, then up to 75 seconds of silence while the model
+thinks, then `/do`. So on that path the border lights per action and goes out a few seconds after the last
+one — it pulses through a run rather than burning steadily. This is an honest limit, not an oversight: a
+lease long enough to bridge a model turn would make "lit" accurate and "out" a lie for a minute and a
+quarter after the run had finished, and an indicator that lies *after* the end is worse than one that
+blinks. It becomes steady when the driver says where a run starts and stops, which is an addition to this
+document and a change to the client, not something an agent can infer.
+
+**A second implementation must clear the same four traps, and each was measured rather than reasoned
+about.** These are the ways an agent's own window breaks the agent:
+
+- **The window list must not contain it.** `/windows` and the click resolver both drop anything whose layer
+  is not a normal application window; on macOS a window at `CGShieldingWindowLevel()` reports layer
+  2147483628 and is dropped with no filtering added. An implementation whose overlay lands in `/windows`
+  has given the model a full-screen target to aim at.
+- **Clicks must pass through it.** macOS: `ignoresMouseEvents`. Windows: `WS_EX_TRANSPARENT`. Measured with
+  a synthetic click posted at a point covered by the border, onto a window underneath.
+- **It must not take focus.** Raise it without activating (`orderFrontRegardless`; `WS_EX_NOACTIVATE`), or
+  the run's next keystroke goes to the border instead of the field it was aimed at.
+- **It must not appear in the agent's own screenshots.** Two locks, deliberately: the window is marked
+  unshareable (`NSWindowSharingType.none`; `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`), *and* the
+  agent excludes its own windows from the capture filter. Measured on macOS with a second, independently
+  permissioned agent as the camera and a positive control built with sharing left on: the control moved the
+  outer ring of the 64×36 fingerprint by +11.89/255, the shipping build by +0.02.
+
+**And it must not move.** No pulsing, no breathing, no animation. The 64×36 fingerprint that both sides use
+to decide "the screen moved" and "it has settled" compares two consecutive frames: a still border subtracts
+from itself and means nothing, while a pulsing one would mean the screen is always moving — every wait
+would sit out its full limit and every action would report that it had worked. This is not a decoration
+that was declined; it is a decoration that would break the run.
+
+The colour is the product's own accent (`#bdff7a`), not red: this is not a failure and not a system alert.
+
 ## Who may talk to the agent
 
 **The origin is checked, and until 0.9.7 it was not.** This section used to say authentication was "none",

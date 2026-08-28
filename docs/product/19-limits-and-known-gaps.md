@@ -375,6 +375,30 @@ Mac), so the transcript is the half that needs them most.
 
 ---
 
+## The border that says a machine is being driven, and where it does not yet say it
+
+Since 0.22.0 both agents draw a border round every screen while something is driving the computer. Two
+things it does not do yet, stated here rather than left to be discovered:
+
+- **On the browser-driven path it pulses instead of burning steadily.** The browser runs the loop and never
+  tells the agent that a run is happening — what the agent sees is `/shot`, `/windows`, up to 75 seconds of
+  silence while the model thinks, then `/do`. So the border lights per action and goes out a few seconds
+  after the last one. Making it steady is a protocol addition (a run-scoped start/stop) plus a change to
+  `web/src/lib/desktop-engine.ts`; the courier path already burns steadily because it has real edges. The
+  deliberate choice was a lease short enough that "out" is true over one long enough to bridge a model
+  turn, because an indicator that lies *after* the end is worse than one that blinks.
+- **On Windows older than 10 2004 the border appears in the agent's own screenshots.**
+  `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` is what keeps it out, and it does not exist there. The
+  border never animates, so the stillness guard still works; the model simply sees a border in the picture.
+  macOS has two locks for this (the window is unshareable *and* the agent excludes its own windows from the
+  capture filter), and Windows only has the one, because `CopyFromScreen` photographs the screen and cannot
+  be asked to leave a window out.
+
+Neither is a reason to hold the feature: a person who cannot tell that their mouse is about to be driven is
+a worse problem than a border in a screenshot.
+
+---
+
 ## Where this would go next
 
 Carried over from the project's own notes, and still current:

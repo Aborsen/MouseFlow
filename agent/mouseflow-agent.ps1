@@ -311,6 +311,17 @@ namespace MouseFlow
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern short VkKeyScan(char ch);
 
+        /* Keeping the agent's own border out of the agent's own screenshots. WDA_EXCLUDEFROMCAPTURE makes
+           the window invisible to every capture path including BitBlt, which is what CopyFromScreen is
+           underneath - so one call covers Shot and Grid both. It needs Windows 10 2004; on anything older
+           it returns false and the border is simply visible in the picture, which is stated in
+           PROTOCOL.md rather than left to be discovered. The border is STILL then, never animated, so even
+           there it cannot make the stillness guard think the screen is moving. */
+        public const uint WDA_NONE = 0x00000000;
+        public const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
         public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
         [DllImport("user32.dll")]
         public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
@@ -448,7 +459,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.21.0";
+        public const string Version = "0.22.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1681,6 +1692,10 @@ namespace MouseFlow
             for (int i = 0; i < flow.Steps.Count; i++) totalEvents += flow.Steps[i].Events.Count;
             if (totalEvents == 0) return "flow contains no events";
 
+            /* The border, on the same two edges as _playing and for the same reason it is released in
+               Finish: an indicator that stays lit after the thing it announces has stopped lies in the one
+               direction an indicator must never lie. */
+            Acting.Begin("replay");
             lock (Gate)
             {
                 _playing = true;
@@ -1768,6 +1783,7 @@ namespace MouseFlow
                 /* Unconditionally, not only on abort: a flow whose last event is a button-down used to
                  * leave the mouse held down over the desktop, and everything after it dragged. */
                 ReleaseAllButtons();
+                Acting.End("replay");
                 lock (Gate) { _playing = false; }
             }
         }
@@ -4477,6 +4493,9 @@ namespace MouseFlow
                     + ",\"hook\":" + (_hook != IntPtr.Zero ? "true" : "false")
                     + ",\"recording\":" + (IsRecording ? "true" : "false")
                     + ",\"playing\":" + (IsPlaying ? "true" : "false")
+                    /* Who is driving this PC right now - the same list the border is lit from. Empty means
+                       nobody. Makes the border checkable from outside without looking at the screen. */
+                    + ",\"acting\":[" + Acting.WhoJson() + "]"
                     + ",\"autostart\":" + (AutostartEnabled() ? "true" : "false")
                     + ",\"canAutostart\":" + (CanAutostart() ? "true" : "false")
                     + ",\"originPinned\":" + (AllowOrigin.Length > 0 && AllowOrigin != "*" ? "true" : "false")
@@ -4645,6 +4664,13 @@ namespace MouseFlow
             if (path == "/do" && method == "POST")
             {
                 if (IsPlaying) { Respond(stream, 409, "application/json", "{\"ok\":false,\"error\":\"busy replaying\"}", origin); return; }
+                /* A LEASE, NOT A HOLD, because a single action has no end anybody reports. The browser
+                   driver runs the loop and never tells the agent where a run begins or ends - what arrives
+                   here is /shot, /windows, up to 75 seconds of silence while the model thinks, then /do. So
+                   the border lights per action and goes out a few seconds after the last one. Taken BEFORE
+                   the action, not after: the point is to be lit WHILE the machine is being touched, and an
+                   action refused a moment later has still been attempted. See PROTOCOL.md. */
+                Acting.Touch();
                 string problem = DoAction(body);
                 if (problem != null) { Respond(stream, 400, "application/json", "{\"ok\":false,\"error\":\"" + JsonEscape(problem) + "\"}", origin); return; }
                 /* `output` only when there is one, so `{"ok":true}` stays exactly what it was for the eight
@@ -5368,6 +5394,16 @@ namespace MouseFlow
 
         static void Drive(string root, string token, string id)
         {
+            /* THE ONE PATH WITH EXACT EDGES, so the one where the border burns steadily for the whole run.
+               try/finally rather than a call at the end: this method returns from a dozen places, and a
+               paired call would cover one of them. */
+            Acting.Begin("goal");
+            try { DriveInner(root, token, id); }
+            finally { Acting.End("goal"); }
+        }
+
+        static void DriveInner(string root, string token, string id)
+        {
             int width = StepFirstWidth;
             string results = "";
 
@@ -5749,6 +5785,222 @@ namespace MouseFlow
      * the main thread, so the tray gets a third of its own.
      *
      * Everything the menu does is a call into Agent, which is locked - the tray holds no state of its own. */
+    /* WHAT IS HAPPENING ON THIS COMPUTER RIGHT NOW, SAID ON THE COMPUTER ITSELF.
+     *
+     * A run starts silently: the pointer moves on its own, a window rises, text appears in a field. The
+     * person sitting here used to learn about it by discovering the mouse had stopped obeying them - which
+     * is the moment they are already fighting the run and the run is already fighting them. A page in a
+     * browser on another monitor is not an answer to that, and a courier run arrives from the account with
+     * no browser open at all.
+     *
+     * The macOS agent carries the same two classes, hook for hook, and PROTOCOL.md carries the four traps
+     * an agent's own window has to clear. In short, and each one measured rather than reasoned about:
+     * /windows must not list it (here: it has no title, and the enumerator drops untitled windows before
+     * anything else), clicks must pass through it (WS_EX_TRANSPARENT), it must not take focus
+     * (WS_EX_NOACTIVATE plus ShowWithoutActivation), and it must stay out of the agent's own screenshots
+     * (WDA_EXCLUDEFROMCAPTURE).
+     *
+     * AND IT DOES NOT MOVE. No pulsing, no breathing. The 64x36 fingerprint that decides "the screen
+     * moved" and "it has settled" compares two consecutive frames: a still border subtracts from itself
+     * and means nothing, a pulsing one would mean the screen is always moving - every wait would sit out
+     * its limit and every action would report that it had worked. This is not a decoration that was
+     * declined; it is a decoration that would break the run.
+     */
+    public static class Acting
+    {
+        /* Long enough that the border does not blink between two actions of one turn (an action plus the
+           350ms the screen is given to react), short enough that "out" means out. */
+        public const double LeaseSeconds = 6;
+
+        static readonly object Gate = new object();
+        /* A SET, NOT A COUNT. A counter has a failure a set does not: one path that forgets to decrement
+           leaves the border lit until the agent restarts - an "you are being driven" light burning while
+           nobody is driving. A name can be removed twice and nothing happens. */
+        static readonly System.Collections.Generic.List<string> _drivers = new System.Collections.Generic.List<string>();
+        static DateTime _leaseUntil = DateTime.MinValue;
+
+        /* The rule itself, pure and taking its clock as an argument, because the only way to check a lease
+           is to run it - see check-csharp.mjs. Two silent ways to be wrong live here: a border that does
+           not go out after the end, and one that goes out in the middle. */
+        public static bool FrameShows(int drivers, DateTime leaseUntil, DateTime now)
+        {
+            return drivers > 0 || now < leaseUntil;
+        }
+
+        public static bool On
+        {
+            get { lock (Gate) { return FrameShows(_drivers.Count, _leaseUntil, DateTime.UtcNow); } }
+        }
+
+        /// Who is driving, as the body of a JSON array. Empty when nobody is.
+        public static string WhoJson()
+        {
+            List<string> names = new List<string>();
+            lock (Gate)
+            {
+                foreach (string d in _drivers) names.Add("\"" + d + "\"");
+                if (DateTime.UtcNow < _leaseUntil && !_drivers.Contains("hand")) names.Add("\"hand\"");
+            }
+            names.Sort();
+            return string.Join(",", names.ToArray());
+        }
+
+        public static void Begin(string driver)
+        {
+            lock (Gate) { if (!_drivers.Contains(driver)) _drivers.Add(driver); }
+            Frame.Sync();
+        }
+
+        public static void End(string driver)
+        {
+            lock (Gate) { _drivers.Remove(driver); }
+            Frame.Sync();
+        }
+
+        /// Extend the lease. For an action nobody will report the end of.
+        public static void Touch()
+        {
+            lock (Gate) { _leaseUntil = DateTime.UtcNow.AddSeconds(LeaseSeconds); }
+            Frame.Sync();
+        }
+    }
+
+    /// The border itself. One window per screen, and only ever on the tray's STA thread.
+    public static class Frame
+    {
+        /* MouseFlow's own accent. Not red: this is not a failure and not a system alert. */
+        static readonly System.Drawing.Color Lime = System.Drawing.Color.FromArgb(0xbd, 0xff, 0x7a);
+        const int Thickness = 5;
+
+        const int WS_EX_TRANSPARENT = 0x00000020;
+        const int WS_EX_TOOLWINDOW = 0x00000080;
+        const int WS_EX_LAYERED = 0x00080000;
+        const int WS_EX_NOACTIVATE = 0x08000000;
+
+        static System.Windows.Forms.Form _pump;
+        static readonly List<System.Windows.Forms.Form> _windows = new List<System.Windows.Forms.Form>();
+        static bool _up;
+
+        class Border : System.Windows.Forms.Form
+        {
+            public Border(System.Drawing.Rectangle bounds)
+            {
+                /* NO TITLE, and that is load-bearing rather than tidy: WindowsArray drops every window
+                   whose title length is zero before it tests anything else, so this one never reaches the
+                   model as something to aim at. Same for the click resolver. */
+                Text = "";
+                FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
+                StartPosition = System.Windows.Forms.FormStartPosition.Manual;
+                ShowInTaskbar = false;
+                TopMost = true;
+                Bounds = bounds;
+                /* The interior is keyed out, so what is left on screen is the stroke and nothing else. */
+                BackColor = System.Drawing.Color.Black;
+                TransparencyKey = System.Drawing.Color.Black;
+                DoubleBuffered = true;
+            }
+
+            protected override System.Windows.Forms.CreateParams CreateParams
+            {
+                get
+                {
+                    System.Windows.Forms.CreateParams cp = base.CreateParams;
+                    /* TRANSPARENT so every click - the person's and the agent's - passes through to the
+                       window underneath; NOACTIVATE so raising it never steals focus from the field the
+                       run is about to type into; TOOLWINDOW so it is out of Alt-Tab; LAYERED for the
+                       colour key. Without the first of these the border would swallow every click on the
+                       screen, which is the whole product. */
+                    cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED;
+                    return cp;
+                }
+            }
+
+            /// Shown without ever becoming the active window.
+            protected override bool ShowWithoutActivation { get { return true; } }
+
+            protected override void OnHandleCreated(EventArgs e)
+            {
+                base.OnHandleCreated(e);
+                /* False on Windows older than 10 2004. Then the border is simply visible in the agent's
+                   own screenshots - stated in PROTOCOL.md, and survivable because it never animates. */
+                try { Native.SetWindowDisplayAffinity(Handle, Native.WDA_EXCLUDEFROMCAPTURE); }
+                catch (Exception) { }
+            }
+
+            protected override void OnPaint(System.Windows.Forms.PaintEventArgs e)
+            {
+                using (System.Drawing.Pen pen = new System.Drawing.Pen(Lime, Thickness))
+                {
+                    /* Inset, or half the stroke would be drawn off the edge of the screen and the border
+                       would read half as thick as it was asked to be. */
+                    pen.Alignment = System.Drawing.Drawing2D.PenAlignment.Inset;
+                    e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+                }
+            }
+        }
+
+        /* Called once from the tray thread, before Application.Run. The pump is an invisible window whose
+           only job is to own a handle on that thread, so Sync can marshal onto it from the HTTP worker,
+           the courier and the replay thread alike. Everything that touches a Form must happen there. */
+        public static void Attach()
+        {
+            _pump = new System.Windows.Forms.Form();
+            _pump.Text = "";
+            _pump.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
+            _pump.ShowInTaskbar = false;
+            _pump.StartPosition = System.Windows.Forms.FormStartPosition.Manual;
+            _pump.Bounds = new System.Drawing.Rectangle(-32000, -32000, 1, 1);
+            IntPtr forced = _pump.Handle;   // creating the handle is the point of the line
+            GC.KeepAlive(forced);
+        }
+
+        /// Bring the border into line with Acting. Safe to call from any thread, any number of times.
+        public static void Sync()
+        {
+            System.Windows.Forms.Form pump = _pump;
+            if (pump == null || !pump.IsHandleCreated) return;
+            try { pump.BeginInvoke((System.Windows.Forms.MethodInvoker)delegate { Apply(); }); }
+            catch (Exception) { /* the tray is going away; there is nothing to keep in line */ }
+        }
+
+        /// STA thread only. Also called by the tray's one-second tick, which is what expires the lease.
+        public static void Apply()
+        {
+            bool want;
+            try { want = Acting.On; }
+            catch (Exception) { return; }
+            if (want == _up) return;
+            _up = want;
+            if (want) Raise(); else Drop();
+        }
+
+        static void Raise()
+        {
+            /* Rebuilt on every raise rather than once at startup: between two runs a monitor may have been
+               unplugged, added or re-resolutioned. Windows are cheap and runs are rare. */
+            Drop();
+            foreach (System.Windows.Forms.Screen screen in System.Windows.Forms.Screen.AllScreens)
+            {
+                try
+                {
+                    Border b = new Border(screen.Bounds);
+                    _windows.Add(b);
+                    b.Show();
+                }
+                catch (Exception) { /* one screen failing is not a reason to leave the others unmarked */ }
+            }
+        }
+
+        static void Drop()
+        {
+            foreach (System.Windows.Forms.Form w in _windows)
+            {
+                try { w.Close(); w.Dispose(); } catch (Exception) { }
+            }
+            _windows.Clear();
+        }
+    }
+
     public static class Tray
     {
         static System.Windows.Forms.NotifyIcon _icon;
@@ -5870,8 +6122,19 @@ namespace MouseFlow
                         _icon.Icon = live ? _liveIcon : _idleIcon;
                         _icon.Text = live ? "MouseFlow agent - recording" : "MouseFlow agent";
                     }
+                    /* Putting the border out when the lease runs out. Lighting it is an event and calls
+                       Sync itself; a lease EXPIRING is not an event, and only something watching the
+                       clock can notice it. A second is fine: the border goes out six seconds after the
+                       last action, and the seventh changes nothing. The tray's timer rather than a second
+                       one - two timers for one status area is two. */
+                    Frame.Apply();
                 };
                 light.Start();
+
+                /* The border lives on this thread too - it is the only one in the agent with a message
+                   pump that may block for a repaint. Attached before Application.Run so a run starting a
+                   second later has something to marshal onto. */
+                Frame.Attach();
 
                 Refresh();
                 System.Windows.Forms.Application.Run();

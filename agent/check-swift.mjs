@@ -500,5 +500,95 @@ group('аккорд отпускает модификатор, и это вып�
   }
 }
 
+
+group('рамка «этой машиной управляют»: когда горит, и чем не задевает агента');
+{
+  const rule = slice('func frameShows(');
+  check('правило показа найдено', !!rule);
+  if (rule) {
+    const dir = mkdtempSync(join(tmpdir(), 'mf-frame-'));
+    const file = join(dir, 'frame.swift');
+    writeFileSync(file, [
+      'import Foundation',
+      rule,
+      'let now = Date(timeIntervalSince1970: 1_000_000)',
+      'let past = now.addingTimeInterval(-1)',
+      'let soon = now.addingTimeInterval(5)',
+      'func say(_ tag: String, _ v: Bool) { print("\\(tag)=\\(v)") }',
+      'say("idle", frameShows(drivers: [], leaseUntil: past, now: now))',
+      'say("lease", frameShows(drivers: [], leaseUntil: soon, now: now))',
+      'say("expired", frameShows(drivers: [], leaseUntil: past, now: now))',
+      'say("goal", frameShows(drivers: ["goal"], leaseUntil: past, now: now))',
+      'say("goalExpired", frameShows(drivers: ["goal"], leaseUntil: past, now: now))',
+      /* Два ведущих сразу: курьерский прогон и повтор. Снятие ОДНОГО не гасит рамку - иначе прогон,
+       * закончившийся раньше повтора, погасил бы предупреждение о ещё идущем повторе. */
+      'var two: Set<String> = ["goal", "replay"]',
+      'two.remove("goal")',
+      'say("oneLeft", frameShows(drivers: two, leaseUntil: past, now: now))',
+      'two.remove("replay")',
+      'say("bothGone", frameShows(drivers: two, leaseUntil: past, now: now))',
+      /* Множество, а не счётчик: снять одно и то же имя дважды безопасно. У счётчика это ушло бы в -1 и
+       * рамка не зажглась бы больше НИКОГДА - самый тихий из возможных отказов. */
+      'var twice: Set<String> = ["goal"]',
+      'twice.remove("goal"); twice.remove("goal"); twice.insert("goal")',
+      'say("removedTwiceStillLights", frameShows(drivers: twice, leaseUntil: past, now: now))',
+    ].join('\n\n'));
+    const built = join(dir, 'frame');
+    const compile = spawnSync('swiftc', ['-O', '-o', built, file], { encoding: 'utf8' });
+    check('вырезанное правило компилируется само по себе', compile.status === 0,
+      (compile.stderr || '').split('\n').filter((l) => /error:/.test(l)).slice(0, 4).join(' | '));
+    if (compile.status === 0) {
+      const out = Object.fromEntries(
+        execFileSync(built, [], { encoding: 'utf8' }).trim().split('\n').map((l) => l.split('=')),
+      );
+      const on = (k) => out[k] === 'true';
+      check('никто не ведёт - рамки нет', !on('idle'), out.idle);
+      check('живая аренда одиночного действия - горит', on('lease'), out.lease);
+      /* ГАСНЕТ. Индикатор «вами управляют», оставшийся гореть после конца, врёт ровно в ту сторону, в
+       * которую индикатору врать нельзя, и заметить это можно только выполнив правило. */
+      check('истёкшая аренда - гаснет', !on('expired'), out.expired);
+      check('прогон по цели держит её сам, без аренды', on('goal'), out.goal);
+      check('и держит даже когда аренда давно истекла', on('goalExpired'), out.goalExpired);
+      check('пока остаётся хоть один ведущий - горит', on('oneLeft'), out.oneLeft);
+      check('ушли оба - гаснет', !on('bothGone'), out.bothGone);
+      check('снятое дважды имя не ломает рамку навсегда', on('removedTwiceStillLights'),
+        out.removedTwiceStillLights);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  /* СТРУКТУРНЫЕ проверки: это не правило, а четыре способа сломать агента собственным окном, и каждый
+   * закрыт одной строкой, которую легко потерять при правке. Выполнить их здесь нельзя - нужен экран, -
+   * но замерены они на живой машине (см. комментарий у ScreenFrame). */
+  const frameWindow = slice('final class ScreenFrame {');
+  check('класс рамки найден', !!frameWindow);
+  if (frameWindow) {
+    const bare = frameWindow.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    check('окно сквозное для мыши - иначе оно съест каждый клик на экране',
+      /ignoresMouseEvents\s*=\s*true/.test(bare));
+    check('и не попадает в чужой захват экрана', /sharingType\s*=\s*\.none/.test(bare));
+    check('и поднимается, никого не активируя', /orderFrontRegardless\(\)/.test(bare)
+      && !/makeKeyAndOrderFront/.test(bare));
+    check('и живёт выше полноэкранных окон, на всех рабочих столах',
+      /CGShieldingWindowLevel\(\)/.test(bare) && /\.canJoinAllSpaces/.test(bare)
+      && /\.fullScreenAuxiliary/.test(bare));
+  }
+
+  /* И ГЛАВНОЕ: у обоих путей с точными границами конец обязан быть на ВСЕХ выходах. drive() выходит из
+   * восьми мест, run() - из десятка; парный вызов в конце тела покрывал бы один из них. */
+  const drive = slice('private static func drive(');
+  const replay = slice('private func run(steps:');
+  check('прогон по цели снимает рамку через defer, а не в конце тела',
+    !!drive && /Acting\.begin\(\.goal\)/.test(drive) && /defer\s*\{\s*Acting\.end\(\.goal\)\s*\}/.test(drive));
+  check('повтор - тоже, и в том же defer, что отпускает кнопки мыши',
+    !!replay && /Acting\.begin\(\.replay\)/.test(replay)
+    && /defer\s*\{[\s\S]*?releaseEverything\(\)[\s\S]*?Acting\.end\(\.replay\)[\s\S]*?\}/.test(replay));
+
+  /* Снимок агента не должен содержать его собственную рамку - второй замок к sharingType. */
+  const grab = slice('private static func grab(');
+  check('свои окна вычитаются из снимка экрана',
+    !!grab && /excludingWindows:\s*ours/.test(grab.replace(/\/\*[\s\S]*?\*\//g, '')));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

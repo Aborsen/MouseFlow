@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.21.0"
+let VERSION = "0.22.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -2277,7 +2277,22 @@ enum Screen {
                 }) ?? content.displays.first
                 guard let display else { return }
 
-                let filter = SCContentFilter(display: display, excludingWindows: [])
+                /* НАШИ СОБСТВЕННЫЕ ОКНА - ВОН ИЗ КАДРА, и это не косметика.
+                 *
+                 * Начиная с 0.22.0 у агента есть окно на весь экран - рамка, говорящая человеку, что
+                 * машину сейчас ведут (см. Acting ниже). Если оставить её в кадре, она попадает и в
+                 * снимок, который видит модель, и в отпечаток 64x36, по которому обе стороны решают,
+                 * шевельнулся ли экран, - а зажигается и гаснет она ровно на границах хода. То есть
+                 * каждый прогон начинался бы с кадра, где «что-то изменилось», и это изменение было бы
+                 * наше собственное.
+                 *
+                 * По pid, а не по списку конкретных окон: меню в строке состояния - тоже наше окно, и
+                 * открытое меню в снимке модели нужно ей не больше, чем рамка. Одно правило вместо
+                 * двух. */
+                let ours = content.windows.filter {
+                    $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier
+                }
+                let filter = SCContentFilter(display: display, excludingWindows: ours)
                 let config = SCStreamConfiguration()
                 config.width = max(1, width)
                 config.height = max(1, height)
@@ -3939,11 +3954,16 @@ final class Replayer {
     }
 
     private func run(steps: [ReplayStep], startDelay: Int, flowRepeat: Int) {
+        /* Рамка - по тем же путям выхода и по той же причине: индикатор «вами управляют», который остался
+         * гореть после того, как управление кончилось, врёт ровно в ту сторону, в которую индикатору врать
+         * нельзя. begin здесь, а не в start(body:), потому что здесь есть defer, покрывающий все выходы. */
+        Acting.begin(.replay)
         /* Released on EVERY exit path, including the failure paths: a replay that dies holding the left
          * mouse button leaves the machine unusable, and that is not a hypothetical - it is why the protocol
          * says so twice. */
         defer {
             releaseEverything()
+            Acting.end(.replay)
             gate.lock()
             playing = false
             gate.unlock()
@@ -4740,6 +4760,11 @@ enum Courier {
 
     private static func drive(_ link: Account.Link, id: String) {
         guard let url = URL(string: link.base + "/api/mcp?worker=step") else { return }
+        /* ЕДИНСТВЕННЫЙ ПУТЬ, У КОТОРОГО ЕСТЬ ТОЧНЫЕ ГРАНИЦЫ, и поэтому единственный, где рамка горит
+         * ровно весь прогон. Курьер знает и начало (работа взята), и конец (эта функция вернулась) - а
+         * возвращается она из восьми мест, так что defer, а не парный вызов в конце. */
+        Acting.begin(.goal)
+        defer { Acting.end(.goal) }
         var width = stepFirstWidth
         var results: [String] = []
 
@@ -5467,6 +5492,10 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         json += ",\"hook\":\(jsonBool(eventTap != nil))"
         json += ",\"recording\":\(jsonBool(status.recording))"
         json += ",\"playing\":\(jsonBool(Replayer.shared.isPlaying))"
+        /* Кто ведёт машину прямо сейчас - тот же список, по которому поднята рамка. Пустой - никто.
+         * Отвечает на вопрос «это агент шевелит мышь или у меня что-то сломалось», не требуя смотреть
+         * на экран, и делает поведение рамки проверяемым снаружи. */
+        json += ",\"acting\":[" + Acting.who.map { jsonString($0) }.joined(separator: ",") + "]"
         json += ",\"autostart\":\(jsonBool(Autostart.enabled))"
         json += ",\"canAutostart\":\(jsonBool(!allowOrigin.isEmpty && allowOrigin != "*"))"
         /* «Закреплён» - это про то, что оператор НАЗВАЛ страницу, а не про то, что проверка есть.
@@ -5602,6 +5631,18 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         if Replayer.shared.isPlaying {
             return Response(status: 409, body: "{\"ok\":false,\"error\":\"busy replaying\"}")
         }
+        /* ОДИНОЧНОЕ ДЕЙСТВИЕ, У КОТОРОГО НЕТ КОНЦА, О КОТОРОМ КТО-ТО СООБЩИТ.
+         *
+         * Браузерный драйвер ведёт прогон сам и агенту про его границы не рассказывает: агент видит
+         * /shot, /windows, потом до 75 секунд тишины, пока думает модель, потом /do. Поэтому здесь -
+         * аренда, а не удержание: рамка загорается на действии и гаснет через несколько секунд после
+         * последнего. На браузерном пути она пульсирует по ходам, а не горит ровно.
+         *
+         * Это ЧЕСТНЫЙ предел, а не недоделка: агенту нечего удерживать - он не знает, что прогон идёт.
+         * Аренда длиной в ход (75с) сделала бы «горит» точным и «погасла» ложным на минуту с четвертью
+         * после конца прогона, а индикатор, который врёт после конца, хуже мигающего. Ровно горящей она
+         * станет, когда драйвер скажет про начало и конец - это добавка к протоколу и правка клиента. */
+        Acting.touch()
         if let bad = doAction(body) {
             return Response(status: 400, body: "{\"ok\":false,\"error\":\(jsonString(bad))}")
         }
@@ -5884,6 +5925,201 @@ acceptThread.start()
  * agent dies with its console window, so this is the macOS answer to the same need - a status item saying
  * the recorder exists, with the two honest ways out. LSUIElement was already true, which is exactly the
  * mode a menu-bar-only application runs in; nothing appears in the Dock. */
+/* ЧТО ПРОИСХОДИТ НА ЭТОМ КОМПЬЮТЕРЕ ПРЯМО СЕЙЧАС, СКАЗАННОЕ НА САМОМ КОМПЬЮТЕРЕ.
+ *
+ * ЗАЧЕМ. Прогон, которым управляет модель, начинается беззвучно: указатель вдруг едет сам, окно
+ * поднимается, в поле появляется текст. Человек, сидящий за этим Mac, узнавал об этом по тому, что мышь
+ * перестала его слушаться - то есть в тот момент, когда он уже мешает прогону, а прогон мешает ему.
+ * «Невозможно понять, когда он начался» - это ровно та жалоба, и отвечать на неё надо ЗДЕСЬ: страница в
+ * браузере на другом мониторе не считается, а курьерский прогон приходит с аккаунта, и браузер при нём
+ * может быть не открыт вовсе.
+ *
+ * ПОЧЕМУ РАМКА, А НЕ КУРСОР. Курсор был первым предложением, и на macOS он невозможен: NSCursor
+ * принадлежит тому приложению, над окном которого указатель, и оно переустанавливает свой курсор на
+ * каждое движение мыши. Публичного системного сеттера - того, чем на Windows является SetSystemCursor -
+ * в macOS нет. Измерено обе стороны: сквозной оверлей не получил ни одного cursorUpdate, а оверлей,
+ * который его получал бы, обязан принимать события мыши - то есть съедать все клики, ломая ровно то,
+ * ради чего агент существует.
+ *
+ * ПОЧЕМУ ОНА НЕ ЛОМАЕТ АГЕНТА - четыре способа, и каждый закрыт измерением, а не рассуждением:
+ *
+ *   /windows и windowAt   оба отбрасывают всё, у чего слой не 0. Окно на уровне CGShieldingWindowLevel()
+ *                         отчитывается слоем 2147483628 - замерено, - так что модель эту рамку не видит
+ *                         и прицелиться в неё не может. Ни строки фильтра дописывать не пришлось.
+ *   клики                 ignoresMouseEvents = true: синтетический клик, посланный в точку поверх
+ *                         рамки, дошёл до окна под ней - замерено.
+ *   фокус                 пока рамка поднята, frontmostApplication не меняется - замерено; borderless
+ *                         к тому же canBecomeKey = false сам по себе, и поднимается она
+ *                         orderFrontRegardless, который никого не активирует.
+ *   снимки экрана         sharingType = .none плюс excludingWindows в фильтре SCK - см. Screen.grab.
+ *
+ * И ОНА НЕ ДВИЖЕТСЯ. Не мигает, не пульсирует, не дышит. Отпечаток экрана 64x36, по которому обе стороны
+ * решают «экран шевельнулся» и «уже устоялось», сравнивает два ПОДРЯД идущих кадра: неподвижная рамка
+ * вычитается сама из себя и не значит ничего, а пульсирующая означала бы, что экран шевелится всегда -
+ * каждое ожидание досиживало бы до предела, а каждое действие отчитывалось бы как подействовавшее. Это
+ * не украшение, от которого отказались; это украшение, которое сломало бы прогон. Вычитание из кадра
+ * делает вопрос спорным дважды, и оба замка стоят нарочно: один - на случай, если второй не сработает.
+ */
+
+/// Кто именно ведёт машину. Строкой - чтобы то же множество можно было проверить, не заводя экрана.
+enum Driving: String {
+    /// Прогон по цели, взятый курьером с аккаунта. Единственный путь с точными границами.
+    case goal
+    /// Повтор записи. Границы тоже точные.
+    case replay
+    /// Одиночное действие через /do. Границ нет - см. аренду.
+    case hand
+}
+
+/* ЧИСТАЯ И НАВЕРХУ ФАЙЛА, потому что единственный способ проверить аренду - выполнить её.
+ *
+ * Правило в одну строку, но ошибиться в нём можно двумя способами, и оба тихие: рамка, не гаснущая
+ * после конца, и рамка, гаснущая посреди прогона. Регулярка над исходником сказала бы, что здесь
+ * написано что-то похожее на правильное; check-swift.mjs вырезает эту функцию и ВЫПОЛНЯЕТ её. */
+func frameShows(drivers: Set<String>, leaseUntil: Date, now: Date) -> Bool {
+    return !drivers.isEmpty || now < leaseUntil
+}
+
+/// Ведут ли эту машину прямо сейчас, и кто.
+enum Acting {
+    /* Аренда одиночного действия. Достаточно длинная, чтобы рамка не моргала между действиями одного
+     * хода (действие плюс 350мс на реакцию экрана), и достаточно короткая, чтобы «погасла» значило
+     * «погасла». Ход модели длиннее - см. комментарий у Acting.touch() в маршруте /do. */
+    static let leaseSeconds: TimeInterval = 6
+
+    private static let gate = NSLock()
+    /* МНОЖЕСТВО, А НЕ СЧЁТЧИК. У счётчика есть отказ, которого у множества нет: путь, забывший вычесть,
+     * оставляет рамку гореть до перезапуска агента - то есть индикатор «вами управляют» горит, когда
+     * никто не управляет. Имя можно снять дважды, и ничего не случится. */
+    private static var drivers: Set<String> = []
+    private static var leaseUntil = Date.distantPast
+
+    /// Горит ли рамка. Читается и из фонового потока, и с главного.
+    static var on: Bool {
+        gate.lock()
+        defer { gate.unlock() }
+        return frameShows(drivers: drivers, leaseUntil: leaseUntil, now: Date())
+    }
+
+    /// Кто ведёт - для строки состояния и для /health.
+    static var who: [String] {
+        gate.lock()
+        defer { gate.unlock() }
+        var out = drivers.sorted()
+        if Date() < leaseUntil, !out.contains(Driving.hand.rawValue) { out.append(Driving.hand.rawValue) }
+        return out
+    }
+
+    static func begin(_ driver: Driving) {
+        gate.lock()
+        drivers.insert(driver.rawValue)
+        gate.unlock()
+        ScreenFrame.sync()
+    }
+
+    static func end(_ driver: Driving) {
+        gate.lock()
+        drivers.remove(driver.rawValue)
+        gate.unlock()
+        ScreenFrame.sync()
+    }
+
+    /// Продлить аренду. Для действия, у которого никто не сообщит о конце.
+    static func touch() {
+        gate.lock()
+        leaseUntil = Date().addingTimeInterval(leaseSeconds)
+        gate.unlock()
+        ScreenFrame.sync()
+    }
+}
+
+/// Сама рамка. Одно окно на каждый экран, только с главного потока.
+final class ScreenFrame {
+    static let shared = ScreenFrame()
+
+    private var windows: [NSWindow] = []
+    private var up = false
+
+    /* Толщина в ПУНКТАХ, а не в пикселях: на Retina окно всё равно живёт в пунктах, и рамка одинаковой
+     * видимой ширины на обоих типах экрана - это одно число, а не два. */
+    private static let thickness: CGFloat = 5
+
+    /// Лайм продукта - #bdff7a. Не красный: это не отказ, и не системное предупреждение.
+    private static let colour = NSColor(srgbRed: 0xbd / 255.0, green: 0xff / 255.0,
+                                        blue: 0x7a / 255.0, alpha: 0.92)
+
+    private final class Border: NSView {
+        override var isFlipped: Bool { false }
+        override func draw(_ dirty: NSRect) {
+            /* Внутрь на половину толщины: NSBezierPath рисует по осевой линии, и без этого половина
+             * рамки оказалась бы за краем экрана - то есть невидимой, и рамка читалась бы вдвое тоньше
+             * заказанной. Радиус - под скруглённый угол современных Mac; на прямоугольном экране он
+             * просто не виден. */
+            let inset = ScreenFrame.thickness / 2
+            let path = NSBezierPath(roundedRect: bounds.insetBy(dx: inset, dy: inset),
+                                    xRadius: 11, yRadius: 11)
+            path.lineWidth = ScreenFrame.thickness
+            ScreenFrame.colour.setStroke()
+            path.stroke()
+        }
+    }
+
+    private func make(_ screen: NSScreen) -> NSWindow {
+        let window = NSWindow(contentRect: screen.frame, styleMask: .borderless,
+                              backing: .buffered, defer: false)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        /* Сквозная. Без этой строки рамка съедала бы каждый клик на экране - и человека, и агента. */
+        window.ignoresMouseEvents = true
+        /* Выше всего, что рисует приложение, включая полноэкранные окна и Dock. */
+        window.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
+        /* Первый замок против попадания в кадр - см. Screen.grab про второй. Заодно означает, что рамку
+         * не увидит и тот, кому этот экран показывают по Zoom: она предупреждает того, кто сидит за
+         * машиной, а не всех, кто смотрит. */
+        window.sharingType = .none
+        /* На всех рабочих столах, поверх полноэкранного окна, и мимо Cmd-Tab. .stationary - чтобы она не
+         * уезжала вместе с рабочим столом при переключении: экран остаётся тем же экраном. */
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        window.contentView = Border(frame: NSRect(origin: .zero, size: screen.frame.size))
+        window.setFrame(screen.frame, display: false)
+        return window
+    }
+
+    /// Привести рамку в соответствие с Acting. Можно звать откуда угодно и сколько угодно раз.
+    static func sync() {
+        if Thread.isMainThread { shared.apply() } else { DispatchQueue.main.async { shared.apply() } }
+    }
+
+    private func apply() {
+        let want = Acting.on
+        if want == up { return }
+        up = want
+        want ? raise() : drop()
+    }
+
+    private func raise() {
+        /* Строятся заново на каждый подъём, а не один раз при старте: между двумя прогонами монитор
+         * могли отключить, добавить или пересчитать по разрешению. Окна дешёвые, прогоны редкие. */
+        drop()
+        windows = NSScreen.screens.map(make)
+        /* orderFrontRegardless, а не makeKeyAndOrderFront: второй активировал бы агента и увёл фокус из
+         * того окна, в котором прогон как раз собирается что-то нажать. */
+        windows.forEach { $0.orderFrontRegardless() }
+    }
+
+    private func drop() {
+        windows.forEach { $0.orderOut(nil) }
+        windows = []
+    }
+
+    /// Монитор подключили или отключили, пока рамка горит - перестроить под новый набор экранов.
+    func screensChanged() {
+        guard up else { return }
+        raise()
+    }
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
@@ -6067,6 +6303,17 @@ Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
         iconShowsLive = recording
         if let want = recording ? liveIcon : idleIcon { statusItem.button?.image = want }
     }
+    /* Гашение по истечении аренды. Зажигается рамка сразу - Acting.touch() зовёт sync() сам, - а вот
+     * истечение аренды это не событие, и заметить его может только тот, кто смотрит на часы. Секунды
+     * хватает: рамка гаснет через 6 секунд после последнего действия, и седьмая ничего не меняет.
+     * Тот же таймер, что и у иконки, а не свой: два таймера на одну строку состояния - это два. */
+    ScreenFrame.sync()
 }
+
+/* Монитор подключили, отключили или пересчитали разрешение. Без этого рамка на новом экране не
+ * появилась бы, а на отключённом осталась бы окном в никуда. */
+NotificationCenter.default.addObserver(
+    forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+) { _ in ScreenFrame.shared.screensChanged() }
 
 app.run()
