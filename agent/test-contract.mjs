@@ -1427,5 +1427,109 @@ group('синтетический ввод несёт ровно те модиф
     /private func releaseEverything\(\) \{[\s\S]{0,900}Input\.releaseModifiers\(\)[\s\S]{0,200}guard !holding\.isEmpty else \{ return \}/.test(swift));
 }
 
+/* ОДНА ОСТАНОВКА - ОДНА ЗАГРУЗКА, и это измерено, а не выведено.
+ *
+ * Каждая остановка отправляла payload ДВАЖДЫ, одновременно. `end()` кладёт запись в общий стор за двадцать
+ * строк до того, как разрешится её собственный push; сигнатура эффекта Reconciler'а построена по
+ * `local.recordings`, так что запись его будит; у новорождённой нет `syncedAt` и на аккаунте её нет, значит
+ * reconcile относит её к `push`; те же байты уезжают вторым запросом. Оба несут `updated: null`, ни один не
+ * отвергается, побеждает поздний.
+ *
+ * По метаданным живого аккаунта: КАЖДАЯ строка `kind='recorded'` переписана через 1.0-5.5 с после создания,
+ * и разрыв растёт с размером - 697 КБ через 2.75 с, 5850 КБ через 3.4 с. Для четырёхчасовой записи это
+ * 11.7 МБ трафика вместо 5.85. */
+group('одна остановка - одна загрузка');
+{
+  const sending = read('web/src/features/record/sending.ts');
+  const view = read('web/src/features/record/RecordView.tsx');
+  const reconciler = read('web/src/features/record/Reconciler.tsx');
+  const rules = read('web/src/features/record/reconcile.ts');
+
+  check('реестр того, что в полёте, существует и живёт отдельно',
+    /export function claim\(ids: string\[\]\): string\[\]/.test(sending)
+      && /export function release\(ids: string\[\]\): void/.test(sending));
+
+  /* КАЖДЫЙ отправитель заявляется - иначе остаётся дверь, через которую двойная отправка возвращается.
+   * Пять мест: остановка, две сессионных отправки, импорт и «положить обратно». */
+  check('заявляются все пять отправителей записи',
+    (view.match(/claim\(/g) || []).length === 5 && /mine = claim\(plan\.push\.map/.test(reconciler),
+    String((view.match(/claim\(/g) || []).length));
+  /* И отдают в `finally`: незакрытая заявка - это запись, которую reconcile будет пропускать вечно. */
+  check('и каждая заявка отдаётся в finally',
+    (view.match(/\} finally \{\s*\n\s*release\(mine\);/g) || []).length === 5,
+    String((view.match(/\} finally \{\s*\n\s*release\(mine\);/g) || []).length));
+
+  /* Фильтр стоит НА ВЫЗОВЕ, а не внутри правил: reconcile - чистая функция от (flows, local), и такой она
+   * нужна, чтобы её можно было прогнать в тесте без сети и без сторов. Реестр в полёте - состояние сети. */
+  check('в полёте не отправляется второй раз',
+    /plan\.push = plan\.push\.filter\(\(rec\) => !isSending\(rec\.id\)\)/.test(reconciler));
+  /* By CODE, not by file: reconcile.ts uses the word "sending" in a paragraph about something else, and a
+   * file-level test would be catching prose. What matters is exactly one thing - the rules import nothing
+   * from the registry. */
+  check('а правила остаются чистыми',
+    !/from '\.\/sending'/.test(rules)
+      && !/isSending/.test(rules.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')));
+
+  /* Заявка снимается ПОСЛЕ reload: между push и reload запись, отпущенная рано, успевает попасть в
+   * следующий проход как «только здесь» - то есть в тот самый второй запрос. */
+  /* Ровно одна отдача, и она ПОСЛЕ reload. Две - это уже дверь: ранняя отпускает запись до того, как
+   * аккаунт перечитан, и следующий проход видит её как «только здесь». */
+  check('и заявка снимается после reload, а не сразу после push',
+    (reconciler.match(/release\(mine\);/g) || []).length === 1
+      && reconciler.indexOf('release(mine);') > reconciler.indexOf('if (sent.length) await reload();'),
+    String((reconciler.match(/release\(mine\);/g) || []).length));
+}
+
+/* И ПОКА ОНО ЕДЕТ - ОБ ЭТОМ ГОВОРЯТ. Строка уже в таблице, подпись говорила «54157 events captured» - то
+ * есть «готово», - и только потом начиналась загрузка. Человек жал View, панель спрашивала у аккаунта
+ * строку, которой там ещё нет, и получала «no recording with that id on this account». */
+group('пока запись едет на аккаунт, это видно');
+{
+  const view = read('web/src/features/record/RecordView.tsx');
+  const table = read('web/src/features/record/RecordingsTable.tsx');
+  const panel = read('web/src/features/record/TranscriptPanel.tsx');
+  const sending = read('web/src/features/record/sending.ts');
+
+  /* Счёт событий объявляется ПОСЛЕ подтверждения аккаунта, а не до начала загрузки. */
+  /* И «captured» не звучит НИ РАЗУ до отправки: проверяется отрезок между записью в стор и push, потому
+   * что именно там эта строка и стояла. Проверка «есть после» одна прошла бы и на коде, где она есть в
+   * обоих местах. */
+  /* Comments stripped first: the paragraph explaining this very decision quotes the old sentence, and a
+   * test that reads prose is a test that fails on its own explanation. It has happened here before. */
+  const stopBlock = view.slice(
+    view.indexOf('update((prev) => ({ recordings: [...prev.recordings, made] }));'),
+    view.indexOf('const saved = await push({ flows: [flowFor(made, health)] });'))
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  check('карточка говорит «отправляется», а счёт - только после подтверждения',
+    /setNote\(`Sending \$\{s\.count\} events to your account…`\)/.test(view)
+      && !/events captured/.test(stopBlock)
+      && /const saved = await push\(\{ flows: \[flowFor\(made, health\)\] \}\);[\s\S]{0,400}events captured/.test(view));
+
+  /* В таблице «Sending…» ПЕРЕД остальными состояниями: пока запись едет, и «Ready», и «Skill saved»
+   * утверждают, что она на аккаунте, а её там нет. */
+  /* Positions compared in the CODE: the comment above the branch explains the decision in the same words
+   * and sits earlier in the file. */
+  const tableCode = table.replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  check('строка таблицы показывает отправку, и раньше остальных состояний',
+    /\{sending\(rec\.id\) \? \(/.test(tableCode) && /Sending…/.test(tableCode)
+      && tableCode.indexOf('sending(rec.id)') < tableCode.indexOf('Skill saved'));
+  check('и это спиннер, а не статичная плашка', /Loader2 className="size-3 animate-spin"/.test(table));
+
+  /* Панель говорит «ещё не доехало» вместо «нет такой записи» - и это не ошибка, а ожидание: транскрипт
+   * выводится на сервере из сохранённого payload, так что у не доехавшей записи его нет по устройству. */
+  check('панель говорит «ещё едет» вместо ошибки',
+    /\{sending && \(/.test(panel) && /Still going up to your account/.test(panel));
+  check('и блок ошибки при этом не показывается', /\{!sending && problem && \(/.test(panel));
+  /* И дочитывается само: `sending` перестанет быть true, и эффект перечитает транскрипт без нажатия. */
+  check('и транскрипт перечитывается сам, когда загрузка кончилась',
+    /\}, \[flowId, attempt, sending\]\);/.test(panel));
+
+  /* Панель смотрит на ОДНУ запись: подписка на весь реестр будила бы её на каждую чужую загрузку, а на
+   * длинной сессии с частями это не редкость. */
+  check('панель подписана на одну запись, а список - на все',
+    /useIsSending\(flowId\)/.test(panel) && /const sending = useSending\(\)/.test(table)
+      && /export function useIsSending/.test(sending) && /export function useSending/.test(sending));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

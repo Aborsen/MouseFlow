@@ -47,6 +47,7 @@ import { SkillWizard } from './SkillWizard';
 import type { GoalSkillSource } from './save-as-skill';
 import { WaitingForThisMac } from './WaitingForThisMac';
 import { flowFor } from './flow-for';
+import { claim, release } from './sending';
 /* Payload записи догружается по просьбе: список его больше не везёт. */
 import { payloadOf } from '@/lib/api';
 
@@ -354,6 +355,9 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
 
     let sent: string[] = [];
     let problem: string | null = null;
+    /* Части заявляются так же, как целая запись: два прохода Reconciler'а могут наехать друг на друга
+     * ровно тем же способом. */
+    const mine = claim(pending.current.map((p) => p.part.id));
     try {
       const flows = pending.current.map((p) => partFlow({
         part: p.part, session: current, name: p.name, events: p.events, windows: p.windows, health,
@@ -365,6 +369,8 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       await reload();
     } catch (err) {
       problem = err instanceof Error ? err.message : 'the account could not be reached';
+    } finally {
+      release(mine);
     }
 
     const delivered = new Set(sent);
@@ -565,9 +571,10 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
         windows: where,
       };
       update((prev) => ({ recordings: [...prev.recordings, made] }));
-      setNote(`${s.count} events captured (${fmtMs(s.durationMs)})${
-        where.length ? ` in ${where.length} window${where.length === 1 ? '' : 's'}` : ''
-      }`);
+      /* Счёт событий - НЕ здесь, а после того, как аккаунт подтвердит. Раньше эта строка говорила «54157
+       * events captured» ровно в тот момент, когда загрузка ещё не начиналась, и читалась как «готово»:
+       * человек жал View, панель спрашивала у аккаунта строку, которой там ещё нет, и получала «нет такой
+       * записи». Окно длиной в секунды и целиком невидимое. */
 
       /* And onto the account, at once.
        *
@@ -583,11 +590,19 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
        *
        * Best effort: the recording is safe in the browser either way, and a failed sync is worth a line of
        * text rather than losing what was just captured. */
+      /* Заявка на эту запись - до отправки, снимается в `finally` ниже. Без неё Reconciler, разбуженный
+       * записью в стор двадцатью строками выше, отправит те же байты вторым запросом, пока этот ещё в
+       * полёте. См. sending.ts: это измерено, а не предположено. */
+      const mine = claim([made.id]);
+      setNote(`Sending ${s.count} events to your account…`);
       try {
         const saved = await push({ flows: [flowFor(made, health)] });
         if (saved.problems.length) {
           setNote(`Captured, but the account refused it: ${saved.problems.join('; ')}`);
         } else {
+          setNote(`${s.count} events captured (${fmtMs(s.durationMs)})${
+            where.length ? ` in ${where.length} window${where.length === 1 ? '' : 's'}` : ''
+          }`);
           /* Stamped only on a clean push, because the stamp is a fact about the ACCOUNT: it is what later
            * separates "this exists only here, send it" from "this was deleted on another machine, drop it".
            * Setting it hopefully would make the second reconciliation delete a recording that never
@@ -603,6 +618,8 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
         setNote(`Captured ${s.count} events, but syncing failed: ${
           err instanceof Error ? err.message : 'unknown error'
         }. The transcript needs the recording on your account.`);
+      } finally {
+        release(mine);
       }
     } catch (err) {
       setLive(null);
@@ -689,6 +706,7 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       let problem: string | null = null;
       let flipped = false;
       if (pending.current.length) {
+        const mine = claim(pending.current.map((p) => p.part.id));
         try {
           const flows = pending.current.map((p) => partFlow({
             part: p.part, session: sess, name: p.name, events: p.events, windows: p.windows, health,
@@ -704,6 +722,8 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
           }
         } catch (err) {
           problem = err instanceof Error ? err.message : 'the account could not be reached';
+        } finally {
+          release(mine);
         }
       }
       const finished = problem === null;
@@ -975,6 +995,7 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
      * the same operation: a recording that only exists in this browser has no transcript, and every screen
      * that reads one asks the account. */
     if (!made.length) return;
+    const mine = claim(made.map((rec) => rec.id));
     try {
       const saved = await push({ flows: made.map((rec) => flowFor(rec, health)) });
       if (saved.problems.length) {
@@ -985,6 +1006,8 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       setNote(`Imported ${added} into this browser, but syncing failed: ${
         err instanceof Error ? err.message : 'unknown error'
       }. View needs the recording on your account.`);
+    } finally {
+      release(mine);
     }
   }, [update, health, reload]);
 
@@ -997,9 +1020,14 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
   const restore = useCallback(async (id: string) => {
     const rec = state.recordings.find((r) => r.id === id);
     if (!rec) throw new Error('this browser no longer holds that recording, so there is nothing to put back');
-    const saved = await push({ flows: [flowFor(rec, health)] });
-    if (saved.problems.length) throw new Error(saved.problems.join('; '));
-    await reload();
+    const mine = claim([rec.id]);
+    try {
+      const saved = await push({ flows: [flowFor(rec, health)] });
+      if (saved.problems.length) throw new Error(saved.problems.join('; '));
+      await reload();
+    } finally {
+      release(mine);
+    }
   }, [state.recordings, health, reload]);
 
   /* Забрать осиротевшую запись в этот браузер — под ЕЁ id.

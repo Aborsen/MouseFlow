@@ -96,7 +96,18 @@ At the measured rate (~24 KB per minute of recording) the account ceiling is abo
 One fix per commit. Do them in this order — the first two share a mechanism, and doing 2 without 1 means
 building a progress indicator for two uploads instead of one.
 
-### Fix 1 — one stop, one upload
+### Fix 1 — one stop, one upload — **DONE 2026-08-28**
+
+Implemented as `web/src/features/record/sending.ts`: a module-level registry, `claim` before every push and
+`release` in a `finally`. Five senders claim (stop, the two session-part pushes, import, restore) and the
+Reconciler claims its own batch as well. The filter sits at the Reconciler's call site, so `reconcile()`
+stays a pure function of `(flows, local)` and its rules are still runnable in a test. The Reconciler
+releases **after** `reload()`, not after the push — in between, a released recording gets picked up by the
+next pass as "only here", which is the same second request in a longer form. Held by
+`agent/test-contract.mjs`, group *одна остановка - одна загрузка*, all twelve mutations caught.
+
+**Still to confirm on a live recording:** re-run the query in §1.1. `rewritten_after_s` should be `0.000`.
+
 
 **Now:** every stop uploads the payload twice, concurrently (§1.1, §1.2). Today that was ~11.7 MB of
 traffic for a 5.85 MB recording, on the worst possible connection moment.
@@ -125,7 +136,16 @@ because `updated_at = created_at`.
 
 ---
 
-### Fix 2 — say that it is still going up
+### Fix 2 — say that it is still going up — **DONE 2026-08-28**
+
+The recorder card now says `Sending 54157 events to your account…` and only announces the count once the
+account has acknowledged it; the row's status cell shows `Sending…` with a spinner, ahead of both `Ready`
+and `Skill saved`, because while it is in flight both of those claim it is on the account; and the
+transcript panel shows *Still going up to your account* instead of the 404 block and its *Put it back*
+button, and re-reads itself when the upload lands rather than waiting for *Try again*. The panel subscribes
+to one id (`useIsSending`) rather than the whole registry, so a long session cutting parts does not wake it
+on every one.
+
 
 **Now:** [`RecordView.tsx:567`](../web/src/features/record/RecordView.tsx) puts the row in the table and
 [`:568`](../web/src/features/record/RecordView.tsx) says `54157 events captured` — which reads as finished

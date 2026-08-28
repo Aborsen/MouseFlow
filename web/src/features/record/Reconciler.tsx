@@ -13,6 +13,7 @@ import { type Recording, storeHeldFor, useAgent, useConsole } from '@/lib/store'
 import { useAccount } from '@/shell/AccountProvider';
 import { flowFor } from './flow-for';
 import { reconcile } from './reconcile';
+import { claim, isSending, release } from './sending';
 
 export const Reconciler = () => {
   const { account, flows, loaded, reload } = useAccount();
@@ -49,6 +50,12 @@ export const Reconciler = () => {
     if (!flows.length && !local.recordings.length) return;
 
     const plan = reconcile({ flows, local: local.recordings });
+    /* ТО, ЧТО УЖЕ ЕДЕТ, НЕ ОТПРАВЛЯЕТСЯ ВТОРОЙ РАЗ - и фильтр стоит ЗДЕСЬ, а не внутри reconcile.
+     *
+     * reconcile - чистая функция от (flows, local), и такой она нужна: её правила прогоняются в тестах без
+     * сети и без сторов. Реестр в полёте - это состояние сети, то есть ровно то, что в чистое правило не
+     * помещается. См. sending.ts: каждая остановка записи отправляла payload дважды, и это измерено. */
+    plan.push = plan.push.filter((rec) => !isSending(rec.id));
     const nothing = !plan.pull.length && !plan.push.length && !plan.forget.length && !plan.stamp.length;
     done.current = signature;
     if (nothing) return;
@@ -56,6 +63,7 @@ export const Reconciler = () => {
     busy.current = true;
     (async () => {
       let sent: string[] = [];
+      let mine: string[] = [];
       /* Записи, которые аккаунт назвал удалёнными. Отдельно от `sent`: их не приняли, но и пробовать
        * снова незачем - см. ниже. */
       const buried = new Set<string>();
@@ -63,6 +71,9 @@ export const Reconciler = () => {
         if (plan.push.length) {
           /* Up first. If this fails, nothing else in the plan is wrong - but a recording that exists only
            * here is the one thing that can actually be lost, so it goes before any local change. */
+          /* Заявка и на своё тоже: `busy` держит ОДИН проход, а два прохода этого эффекта могут наехать
+           * друг на друга тем же способом, каким на него наезжала остановка записи. */
+          mine = claim(plan.push.map((rec) => rec.id));
           const saved = await push({ flows: plan.push.map((rec) => flowFor(rec, health)) });
           if (!saved.problems.length) sent = plan.push.map((rec) => rec.id);
           /* УДАЛЁННОЕ НА АККАУНТЕ - ЗАБЫВАЕТСЯ И ЗДЕСЬ.
@@ -153,6 +164,10 @@ export const Reconciler = () => {
       }
 
       if (sent.length) await reload();
+      /* Заявка снимается здесь, а не рядом с push: между ними стоит `reload()`, и запись, отпущенная до
+       * него, успевает попасть в следующий проход как «только здесь» - то есть ровно тот второй запрос,
+       * ради предотвращения которого всё это и написано. */
+      release(mine);
       busy.current = false;
     })();
   }, [account, flows, loaded, local.recordings, health, reload, update]);

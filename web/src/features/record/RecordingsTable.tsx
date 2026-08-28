@@ -26,7 +26,7 @@ import { cn } from '@insightis/ui/cn';
 import { ArmedButton } from '@/components/ArmedButton';
 import { SortButton } from '@/components/SortButton';
 import {
-  Download, Eye, Play, Repeat, Check, Ellipsis, Sparkles, Upload, X,
+  Download, Eye, Loader2, Play, Repeat, Check, Ellipsis, Sparkles, Upload, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { exportMacro, fmtMs, summarize } from '@/lib/macro';
@@ -34,6 +34,7 @@ import { Signal } from '@/components/Signal';
 import { type Flow, push } from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
 import { type Recording, useConsole } from '@/lib/store';
+import { useSending } from './sending';
 
 /* How many rows before Load more. Ten is theirs, and it is about the point where a list stops being
  * scannable rather than a number with a reason behind it. */
@@ -112,6 +113,9 @@ export const RecordingsTable = ({
   orphans,
   onAdopt,
 }: RecordingsTableProps) => {
+  /* Что прямо сейчас едет на аккаунт. Список смотрит на все строки, поэтому подписка на весь
+   * реестр - см. useSending против useIsSending в sending.ts. */
+  const sending = useSending();
   const [state, update] = useConsole();
   const { reload, readFailed } = useAccount();
   const [term, setTerm] = useState('');
@@ -501,7 +505,16 @@ export const RecordingsTable = ({
                           also what a skill created from the transcript panel shows - that mints its own id,
                           and under-reporting is a smaller error than claiming a skill that may not be there. */}
                       <span>
-                        {hasSkill?.(rec) ? (
+                        {/* «Отправляется» ПЕРЕД всем остальным, потому что это единственное состояние, в
+                            котором остальные подписи неверны: пока запись едет, её нет на аккаунте, а
+                            «Ready» и «Skill saved» оба утверждают, что она там. Секунды на короткой записи
+                            и заметное время на четырёхчасовой - см. sending.ts. */}
+                        {sending(rec.id) ? (
+                          <Pill tone="neutral" title="Still going up to your account">
+                            <Loader2 className="size-3 animate-spin" />
+                            Sending…
+                          </Pill>
+                        ) : hasSkill?.(rec) ? (
                           <Pill tone="skill">
                             <Sparkles className="size-3" />
                             Skill saved

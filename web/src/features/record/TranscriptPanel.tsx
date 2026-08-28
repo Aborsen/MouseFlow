@@ -32,6 +32,7 @@ import {
   Globe,
   Sparkles,
   Trash2,
+  Loader2,
   TriangleAlert,
   Upload,
   X,
@@ -42,6 +43,7 @@ import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { Said } from '@/components/Said';
 import { push } from '@/lib/api';
+import { useIsSending } from './sending';
 
 /* ---------------------------------------------------------------- the endpoint's shape
  *
@@ -512,6 +514,9 @@ export const TranscriptPanel = ({
 }: Props) => {
   const [data, setData] = useState<Transcript | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  /* Едет ли эта запись прямо сейчас на аккаунт. Одна запись, а не весь реестр: панель смотрит на одну, и
+   * подписка на весь реестр будила бы её на каждую чужую загрузку. */
+  const sending = useIsSending(flowId);
   const [busy, setBusy] = useState(true);
   /* Bumped to ask for the same transcript again. A state value rather than calling the loader directly,
    * so the effect stays the only thing that starts a request and its abort always matches it. */
@@ -563,7 +568,7 @@ export const TranscriptPanel = ({
       }
     })();
     return () => stop.abort();
-  }, [flowId, attempt]);
+  }, [flowId, attempt, sending]);
 
   // Armed only briefly: a destructive button left cocked is one stray click away from being pressed.
   useEffect(() => {
@@ -785,7 +790,31 @@ export const TranscriptPanel = ({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
-        {problem && (
+        {/* ЕЩЁ НЕ ДОЕХАЛО - И ЭТО НЕ ОШИБКА, поэтому стоит ПЕРЕД блоком ошибки и вместо него.
+          *
+          * Транскрипт выводится на сервере из сохранённого payload, так что у записи, не доехавшей до
+          * аккаунта, транскрипта нет - это по устройству, а не поломка (см. §3.2 work order'а). Но ответ
+          * «no recording with that id on this account» описывает совсем другой случай и предлагал кнопку
+          * «Put it back on my account», которая здесь чинит то, что не сломано.
+          *
+          * Само дочитывается: `attempt` перечитывает транскрипт, а `sending` перестанет быть true, когда
+          * загрузка завершится, - значит эффект ниже сработает сам, без единого нажатия. */}
+        {sending && (
+          <section className="rounded-xl border border-stroke-divider bg-surface-card p-4">
+            <div className="flex items-center gap-1.5">
+              <Loader2 className="size-4 animate-spin text-brand-primary" />
+              <Typography variant="span" weight="semibold" className="text-[0.9rem]">
+                Still going up to your account
+              </Typography>
+            </div>
+            <Typography variant="p" className="mt-1 max-w-[60ch] break-words text-ink-secondary text-[0.85rem]">
+              The transcript is read from your account, so it appears once the recording has arrived. A long
+              recording takes a few seconds. Nothing to do — this reads itself when it lands.
+            </Typography>
+          </section>
+        )}
+
+        {!sending && problem && (
           <section className="rounded-xl border-fb-red/40 border bg-surface-card p-4">
             <div className="flex items-center gap-1.5">
               <TriangleAlert className="size-4 text-fb-red-text" />
