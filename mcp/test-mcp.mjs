@@ -1228,8 +1228,11 @@ check('and it shows which column is deciding, and which way',
     && /!asc && 'rotate-180'/.test(read('../web/src/components/SortButton.tsx')));
 /* A sparkline has nothing alphabetical about it; what somebody reads off that column is how much is in the
  * recording, so that is what it sorts on. */
+/* And it keeps sorting on that when the events themselves are no longer in this browser: a recording whose
+ * events were put out to the account to make room still knows how many there were, and sorting it as zero
+ * would put a four-hour recording at the bottom of the column that exists to find it. */
 check('the sparkline column sorts on how much was recorded',
-  /case 'size':\s*\n\s*return a\.events\.length - b\.events\.length;/.test(recTable));
+  /case 'size':\s*\n\s*return \(a\.summary\?\.count \?\? a\.events\.length\) - \(b\.summary\?\.count \?\? b\.events\.length\);/.test(recTable));
 check('names sort numerically, since every default name is a date and a time',
   /numeric: true, sensitivity: 'base'/.test(recTable));
 check('and newest-first is still where it starts',
@@ -3445,8 +3448,11 @@ group('записи не переходят к следующему, кто во
    * этой машине, это не медленная страница, это утечка», - и там же сказано, что ЭТО хранилище по человеку
    * не ключуется. Последствие было хуже показа: Reconciler отправлял чужие записи на аккаунт вошедшего. */
   check('у записей теперь слот на аккаунт', /const slotFor = \(id: string\) => `\$\{KEY\}:\$\{id\}`;/.test(store));
+  /* Проверка переехала вместе с кодом: запись на диск теперь отдельной функцией, потому что у неё
+   * появилось отступление на случай переполнения. Свойство то же - без назвавшегося не пишется ничего. */
   check('и на диск не пишется, пока никто не назвался',
-    /if \(heldFor\) localStorage\.setItem\(slotFor\(heldFor\)/.test(store));
+    /function persist\(next: Console\): void \{\s*\n\s*if \(!heldFor\) return;/.test(store)
+      && /localStorage\.setItem\(key, JSON\.stringify\(value\)\)/.test(store));
   /* Указатель - то, что сохраняет мгновенное открытие страницы: ждать сессию значило бы менять утечку на
    * секунду ожидания для каждого. Пересечение случается по пути «A вышел → B вошёл», а выход это наш код. */
   check('выход стирает указатель, но не диск',

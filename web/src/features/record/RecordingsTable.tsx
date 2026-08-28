@@ -26,7 +26,7 @@ import { cn } from '@insightis/ui/cn';
 import { ArmedButton } from '@/components/ArmedButton';
 import { SortButton } from '@/components/SortButton';
 import {
-  Download, Eye, Loader2, Play, Repeat, Check, Ellipsis, Sparkles, Upload, X,
+  Cloud, Download, Eye, Loader2, Play, Repeat, Check, Ellipsis, Sparkles, Upload, X,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { exportMacro, fmtMs, summarize } from '@/lib/macro';
@@ -165,7 +165,7 @@ export const RecordingsTable = ({
         case 'name':
           return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
         case 'size':
-          return a.events.length - b.events.length;
+          return (a.summary?.count ?? a.events.length) - (b.summary?.count ?? b.events.length);
         case 'status':
           return Number(!!hasSkill?.(a)) - Number(!!hasSkill?.(b));
         default:
@@ -422,7 +422,10 @@ export const RecordingsTable = ({
                 data-has-selection={live.size > 0 ? '' : undefined}
               >
               {visible.map((rec) => {
-                const s = summarize(rec.events);
+                /* Сохранённые числа, когда события выложены на аккаунт: считать их по пустому массиву
+                   значило бы показать «0 событий» как факт про четырёхчасовую запись. См. `summary` в
+                   store.ts. */
+                const s = rec.summary ?? summarize(rec.events);
                 const replay = replayOf(rec);
                 const where = rec.windows.map((w) => w.title).filter(Boolean).join(', ');
                 const isSelected = live.has(rec.id);
@@ -513,6 +516,14 @@ export const RecordingsTable = ({
                           <Pill tone="neutral" title="Still going up to your account">
                             <Loader2 className="size-3 animate-spin" />
                             Sending…
+                          </Pill>
+                        ) : rec.eventsOnAccount ? (
+                          /* НЕ «Ready», потому что «Ready» здесь значит «лежит в этом браузере», а она не
+                             лежит: для неё не нашлось места на диске, и её события остались на аккаунте.
+                             Сказать «готово» значило бы обещать то, чего в браузере нет. */
+                          <Pill tone="neutral" title="Its events are on your account, not in this browser — there was no room here">
+                            <Cloud className="size-3" />
+                            On your account
                           </Pill>
                         ) : hasSkill?.(rec) ? (
                           <Pill tone="skill">

@@ -169,7 +169,29 @@ lands — with no error at any point.
 
 ---
 
-### Fix 3 — a recording too large for localStorage must not be lost in silence
+### Fix 3 — a recording too large for localStorage must not be lost in silence — **DONE 2026-08-28**
+
+The write retreats instead of swallowing. Private mode is told apart from a full quota by writing a
+one-byte probe, not by the error's name — Safari's private mode throws the same `QuotaExceededError` with a
+quota of zero, and the codes differ between browsers. `persistTrouble()` then carries the fact, and the
+Record screen says which of the two happened in two different sentences.
+
+The retreat: the biggest recordings **that are already on the account** give up their local `events`, one at
+a time, until the console fits. A recording with no `syncedAt` never does — it is the only copy, and
+freeing it is the loss this was written to prevent; if the console only fits at its expense it does not fit,
+and the screen says *do not close this tab until it syncs*. That rule lives in `api/_quota.mjs` as a pure
+function precisely so it can be **executed** by `api/_test-quota.mjs` rather than read.
+
+Two things that had to come with it. The counts are stashed on the row before the events go, so the table
+still shows `54157 events` rather than `0` — a wrong number presented as a fact is worse than the failure
+it describes. And `api/_flow-for.mjs` now **refuses** to build a row for an emptied recording: the payload
+is built from `rec.events`, so pushing one up would overwrite the account's good payload with nothing —
+destroying the last copy by way of an action called "save". The refusal sits at the single payload builder
+because it has four callers.
+
+Not done, and deliberately: the plain Record path still does not fall back to `long-session.ts` above a
+threshold. That is the larger and better fix and it is a separate commit, as this document already says.
+
 
 **Now:** [`store.ts:237-247`](../web/src/lib/store.ts) serialises the **whole** console — every recording
 together — into one localStorage slot, and swallows the failure:

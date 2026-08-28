@@ -32,6 +32,7 @@ import { SKILL_ROLE, roleOf } from '@/lib/flow-role';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
 import {
   type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
+  persistTrouble,
 } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { Page } from '@/shell/Surface';
@@ -227,6 +228,9 @@ export interface RecordViewProps {
 
 export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
   const [state, update] = useConsole();
+  /* Читается на каждом ререндере консоли, а не хранится: это факт про последнюю попытку записи на диск, и
+   * useConsole уже будит компонент ровно тогда, когда такая попытка была. */
+  const trouble = persistTrouble();
   const { health } = useAgent();
   const { reload, flows } = useAccount();
   const navigate = useNavigate();
@@ -1205,6 +1209,34 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
               + 'account — this browser holds about 3MB of recordings, and the transcript reads them from '
               + 'the account anyway.'
             : '.'}
+        </Typography>
+      )}
+
+      {/* ЧТО СЛУЧИЛОСЬ С ДИСКОМ, если случилось - и раньше об этом не говорилось ничего.
+        *
+        * Консоль пишется одной строкой на весь браузер, и четырёхчасовая запись в неё не помещается. Раньше
+        * это был пустой catch: запись оставалась в памяти, на диск не попадала, и человек узнавал об этом,
+        * перезагрузив вкладку и не найдя своих записей. Хуже: строка одна, так что одна непомещающаяся
+        * запись роняла запись и всего остального - штампов, квитанций, других записей той же сессии.
+        *
+        * Две разные беды и два разных предложения. Ни одно не извиняется и ни одно не говорит «потеряно»
+        * про то, что лежит на аккаунте. */}
+      {trouble?.kind === 'no-storage' && (
+        <Typography variant="p" className="text-ink-inactive text-[0.84rem]">
+          This browser is not letting anything be saved to disk — private browsing, or storage turned off for
+          this site. Recordings still work and still go to your account; this tab just will not remember them
+          after a reload.
+        </Typography>
+      )}
+      {trouble?.kind === 'too-big' && (
+        <Typography variant="p" className="text-ink-inactive text-[0.84rem]">
+          {trouble.stillFailing
+            ? 'There is no room left in this browser, and the recording that does not fit has not been sent '
+              + 'to your account yet — so it is being kept in memory only. Do not close this tab until it '
+              + 'syncs.'
+            : `${trouble.freed.length} recording${trouble.freed.length === 1 ? '' : 's'} `
+              + `${trouble.freed.length === 1 ? 'is' : 'are'} now kept on your account rather than in this `
+              + 'browser — there was no room here. Nothing was lost; opening one fetches it back.'}
         </Typography>
       )}
 

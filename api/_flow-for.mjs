@@ -15,6 +15,27 @@
 import { RECORDING_ROLE } from './_flow-role.mjs';
 import { fmtMs, summarize } from './_macro.mjs';
 export function flowFor(rec, health) {
+  /* ПУСТУЮ ЗАПИСЬ НАВЕРХ НЕ ОТПРАВИТЬ, И ЭТО ОТКАЗ, А НЕ ПРОПУСК.
+   *
+   * Когда консоль не помещается в localStorage, события самых больших записей выкладываются из слота -
+   * они на аккаунте, и это место их хранения, а не потеря (см. `eventsOnAccount` в web/src/lib/store.ts).
+   * Но payload здесь собирается ИЗ `rec.events`, так что такая запись, отправленная наверх, записала бы
+   * поверх хорошего payload пустой - то есть уничтожила бы единственную оставшуюся копию тем самым
+   * действием, которое называется «сохранить».
+   *
+   * Отказ живёт ЗДЕСЬ, потому что здесь одно место, где строится строка, и четыре вызывающих: отправка на
+   * остановке, «положить обратно», сверка и /api/mcp. Проверка у каждого из них - это четыре проверки, из
+   * которых первая же забытая и есть та самая потеря.
+   *
+   * Бросается, а не возвращается null: вызывающие обрабатывают исключение и показывают человеку строку, а
+   * молчаливый пропуск был бы «сохранено» про то, что не сохранено. */
+  if (rec.eventsOnAccount && (!rec.events || rec.events.length === 0)) {
+    throw new Error(
+      `"${rec.name}" is held on your account rather than in this browser - there was no room for its events `
+      + 'here. Sending it up from here would overwrite what the account holds with nothing, so it is '
+      + 'refused. Open it to fetch it back first.',
+    );
+  }
   const s = summarize(rec.events);
   const where = rec.windows ?? [];
   return {

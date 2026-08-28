@@ -1541,5 +1541,71 @@ group('пока запись едет на аккаунт, это видно');
       && /export function useIsSending/.test(sending) && /export function useSending/.test(sending));
 }
 
+/* ЗАПИСЬ, НЕ ПОМЕСТИВШАЯСЯ НА ДИСК, БОЛЬШЕ НЕ ТЕРЯЕТСЯ МОЛЧА (Fix 3 work order'а).
+ *
+ * Консоль пишется в localStorage ОДНОЙ строкой - все записи вместе, - а квота около 5000КБ на origin.
+ * Четырёхчасовая запись это 5850КБ сама по себе. Раньше здесь стоял пустой catch с комментарием «только
+ * персистентность потеряна», и это было неправдой дважды: терялась персистентность ВСЕГО, что писалось
+ * после (строка одна, и одна непомещающаяся запись роняла каждую следующую попытку), и никому об этом не
+ * сообщалось - человек узнавал, перезагрузив вкладку. */
+group('переполнение диска: отступление вместо молчания');
+{
+  const store = read('web/src/lib/store.ts');
+  const quota = read('api/_quota.mjs');
+  const flowFor = read('api/_flow-for.mjs');
+  const table = read('web/src/features/record/RecordingsTable.tsx');
+  const view = read('web/src/features/record/RecordView.tsx');
+
+  /* Приватный режим и переполнение бросают неразличимые ошибки: Safari в приватном шлёт то же
+   * QuotaExceededError с квотой ноль, Firefox зовёт это иначе, коды по браузерам разные. Надёжный вопрос
+   * один - записывается ли КРОШЕЧНОЕ значение. */
+  check('приватный режим отличается от переполнения пробной записью, а не именем ошибки',
+    /function storageWorks\(\): boolean/.test(store)
+      && /localStorage\.setItem\(PROBE, '1'\)/.test(store)
+      && !/QuotaExceededError/.test(store.replace(/\/\*[\s\S]*?\*\//g, '')));
+  check('и факт остаётся читаемым, а не глотается',
+    /export const persistTrouble = \(\): PersistTrouble \| null/.test(store)
+      && /kind: 'no-storage'/.test(store) && /kind: 'too-big'/.test(store));
+
+  /* САМОЕ ВАЖНОЕ ЗДЕСЬ. Запись без штампа - единственная копия, и выложить её события значит их потерять,
+   * то есть сделать ровно то, ради предотвращения чего всё это написано. Правило живёт отдельным чистым
+   * файлом ИМЕННО чтобы это проверялось выполнением - см. api/_test-quota.mjs. */
+  check('правило отступления - чистая функция, которую можно выполнить',
+    /export function freeingOrder\(recordings\)/.test(quota));
+  check('и оно НИКОГДА не трогает запись без второй копии',
+    /\.filter\(\(rec\) => rec && rec\.id && heldElsewhere\(rec\)\)/.test(quota)
+      && /export const heldElsewhere = \(rec\) => !!\(rec && rec\.syncedAt\);/.test(quota));
+  check('и стор берёт правило оттуда, а не заводит своё',
+    /import \{ freeingOrder \} from '\.\.\/\.\.\/\.\.\/api\/_quota\.mjs';/.test(store)
+      && /for \(const id of freeingOrder\(next\.recordings\)\)/.test(store));
+
+  /* Отправить наверх запись с выложенными событиями значило бы записать поверх хорошего payload пустой -
+   * то есть уничтожить единственную оставшуюся копию действием под названием «сохранить». Отказ стоит в
+   * ЕДИНСТВЕННОМ месте, где payload собирается, потому что вызывающих у него четыре. */
+  check('пустую запись наверх не отправить, и отказ стоит у сборщика payload',
+    /if \(rec\.eventsOnAccount && \(!rec\.events \|\| rec\.events\.length === 0\)\) \{/.test(flowFor)
+      && /throw new Error\(/.test(flowFor));
+
+  /* Числа сохраняются вместе с решением их выложить: «0 событий» про четырёхчасовую запись - это не
+   * «неизвестно», а неверное число, поданное как факт. */
+  check('числа переживают выкладывание событий',
+    /summary: rec\.summary \?\? summarize\(rec\.events\)/.test(store)
+      && /const s = rec\.summary \?\? summarize\(rec\.events\);/.test(table));
+  check('и сортировка по размеру тоже ими пользуется',
+    /\(a\.summary\?\.count \?\? a\.events\.length\) - \(b\.summary\?\.count \?\? b\.events\.length\)/.test(table));
+
+  /* И человеку сказано - двумя разными предложениями, потому что это две разные беды, и ни одно из них не
+   * говорит «потеряно» про то, что лежит на аккаунте. */
+  check('строка показывает такую запись как живущую на аккаунте, а не как готовую',
+    /rec\.eventsOnAccount \? \(/.test(table) && /On your account/.test(table));
+  check('и экран говорит, что случилось с диском',
+    /trouble\?\.kind === 'no-storage'/.test(view) && /trouble\?\.kind === 'too-big'/.test(view));
+  /* Разные слова для «не поместилось, но всё на аккаунте» и «не поместилось, и на аккаунт ещё не уехало» -
+   * второе единственное, где действительно можно потерять работу. */
+  check('и различает «всё цело» от «не закрывайте вкладку»',
+    /Nothing was lost; opening one fetches it back/.test(view)
+      && /Do not close this tab until it/.test(view) && /trouble\.stillFailing/.test(view));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

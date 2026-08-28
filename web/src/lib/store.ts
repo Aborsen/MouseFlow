@@ -10,6 +10,8 @@
  * Kept in hand-written hooks over a state library: two stores do not earn a dependency, and the shapes
  * here are the ones the old code already proved it needed.
  */
+import { freeingOrder } from '../../../api/_quota.mjs';
+import { summarize } from '../../../api/_macro.mjs';
 import { useCallback, useEffect, useState } from 'react';
 import { type AgentHealth, health, type LoopbackTrouble, loopbackTrouble, olderThan } from './agent';
 
@@ -69,6 +71,26 @@ export interface Recording {
    * absent rather than being filled with the import's own clock. */
   startedAt?: string;
   events: RecordedEvent[];
+  /* СОБЫТИЯ ЛЕЖАТ НА АККАУНТЕ, А НЕ ЗДЕСЬ - и это не потеря, а место хранения.
+   *
+   * Консоль пишется на диск ОДНОЙ строкой, а localStorage даёт около 5000КБ на весь origin. Четырёхчасовая
+   * запись - 5850КБ сама по себе, то есть не помещается вовсе; и поскольку строка одна, одна такая запись
+   * ломала запись ВСЕГО остального - штампа `syncedAt`, квитанции о синхронизации и любой другой записи,
+   * сделанной в той же сессии.
+   *
+   * Поэтому при переполнении события самых больших записей, КОТОРЫЕ УЖЕ НА АККАУНТЕ, выкладываются из
+   * слота, а строка остаётся: у неё есть имя, счётчики, окна и штамп. Возвращаются они с аккаунта по
+   * требованию - см. api.fetchPayload.
+   *
+   * Записи БЕЗ штампа это не касается никогда: у неё нет второй копии, и выложить её события значит их
+   * потерять. Если поместиться можно только за её счёт - не помещаемся и говорим об этом. */
+  eventsOnAccount?: boolean;
+  /* Числа, снятые с событий ПЕРЕД тем, как их выложили. Есть только у записи с `eventsOnAccount`.
+   *
+   * Иначе строка в таблице показала бы «0 событий, 0 кликов, 0 секунд» - и это было бы не «мы не знаем», а
+   * НЕВЕРНОЕ ЧИСЛО, поданное как факт: ровно то, чего в этом продукте стараются не делать. Учить пять
+   * потребителей отвечать «неизвестно» было бы хуже и дороже, чем один раз сохранить то, что известно. */
+  summary?: { count: number; clicks: number; moves: number; durationMs: number };
   /** Which applications were in front while this was recorded, in first-touched order. */
   windows: { title: string; process: string }[];
   /* When the account last acknowledged this recording, or absent if it never has.
@@ -234,16 +256,100 @@ export function releaseStore(): void {
 }
 const listeners = new Set<() => void>();
 
+/* ЧТО СЛУЧИЛОСЬ С ЗАПИСЬЮ НА ДИСК, если что-то случилось.
+ *
+ * Раньше здесь стоял пустой catch с комментарием «только персистентность потеряна». Это было неправдой
+ * дважды: терялась не только персистентность этой записи, но и всего, что писалось после неё, - слот один,
+ * и одна непомещающаяся запись роняла каждую следующую попытку; и «потеряна» никому не сообщалось, так что
+ * человек узнавал об этом, перезагрузив вкладку и не найдя своих записей.
+ *
+ * НЕ персистится само - по определению: это факт про то, что записать не удалось. */
+export type PersistTrouble =
+  /** Диск не отвечает вовсе: приватный режим, отключённое хранилище. Размер тут ни при чём. */
+  | { kind: 'no-storage' }
+  /** Не поместилось. `freed` - записи, чьи события выложены на аккаунт, чтобы поместилось остальное. */
+  | { kind: 'too-big'; freed: string[]; stillFailing: boolean };
+
+let trouble: PersistTrouble | null = null;
+
+/** Что не так с диском прямо сейчас, или null. Экран читает это, чтобы сказать. */
+export const persistTrouble = (): PersistTrouble | null => trouble;
+
+function tryWrite(key: string, value: Console): boolean {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/* ПРИВАТНЫЙ РЕЖИМ ИЛИ ПЕРЕПОЛНЕНИЕ - и отличить их по имени ошибки нельзя.
+ *
+ * Safari в приватном режиме бросает то же QuotaExceededError с квотой ноль, Firefox зовёт это
+ * NS_ERROR_DOM_QUOTA_REACHED, а код 22 против 1014 отличается по браузерам. Надёжный вопрос один: а
+ * КРОШЕЧНОЕ значение записывается? Не записывается - хранилища нет вообще; записывается - дело в размере. */
+function storageWorks(): boolean {
+  try {
+    localStorage.setItem(PROBE, '1');
+    localStorage.removeItem(PROBE);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+const PROBE = 'mouseflow.probe';
+
+/* НА ДИСК, И С ОТСТУПЛЕНИЕМ ВМЕСТО МОЛЧАНИЯ.
+ *
+ * Порядок отступления: самые большие записи, УЖЕ ЛЕЖАЩИЕ НА АККАУНТЕ, отдают свои события - по одной,
+ * начиная с самой большой, пока не поместится. Что не отдаёт события НИКОГДА: запись без штампа. У неё нет
+ * второй копии, и выложить её события значит их потерять - то есть сделать ровно то, ради предотвращения
+ * чего всё это написано. Если поместиться можно только за её счёт, не помещаемся и говорим об этом.
+ *
+ * И НЕ «выбросить самые старые», хотя это короче: человек не давал согласия терять записи, а тот, кто
+ * молча удаляет данные, чтобы влезть в квоту, второй раз доверия не получит. */
+function persist(next: Console): void {
+  if (!heldFor) return;
+  const key = slotFor(heldFor);
+
+  if (tryWrite(key, next)) { trouble = null; return; }
+
+  if (!storageWorks()) { trouble = { kind: 'no-storage' }; return; }
+
+  /* Правило - в api/_quota.mjs, чтобы его можно было ВЫПОЛНИТЬ в тесте: единственный запрет в нём стоит
+   * между «освободили место» и «стёрли единственную копию чужой работы», а регулярка над исходником
+   * сказала бы только, что функция похожа на правильную. */
+  const freed: string[] = [];
+  let attempt = next;
+  for (const id of freeingOrder(next.recordings)) {
+    freed.push(id);
+    attempt = {
+      ...attempt,
+      recordings: attempt.recordings.map((rec) => (
+        rec.id === id
+          ? { ...rec, events: [], eventsOnAccount: true, summary: rec.summary ?? summarize(rec.events) }
+          : rec
+      )),
+    };
+    if (tryWrite(key, attempt)) {
+      /* В памяти события ОСТАЮТСЯ: выложено то, что на диске, а не то, что в руках. Вкладка, которую не
+       * перезагружали, работает как работала. */
+      trouble = { kind: 'too-big', freed, stillFailing: false };
+      return;
+    }
+  }
+
+  trouble = { kind: 'too-big', freed, stillFailing: true };
+}
+
 function commit(next: Console) {
   current = next;
-  try {
-    /* В слот того, чьё это. Пока никто не назвался, на диск не пишется вовсе: запись, сделанная до того,
-     * как аккаунт ответил, не знает, чья она, и класть её в общий ключ значило бы завести ровно ту кучу,
-     * из-за которой всё это переписано. В памяти она есть и никуда не денется - claimStore её сохранит. */
-    if (heldFor) localStorage.setItem(slotFor(heldFor), JSON.stringify(next));
-  } catch (_) {
-    // Private mode, or a full quota. The session still works; only persistence is lost.
-  }
+  /* В слот того, чьё это. Пока никто не назвался, на диск не пишется вовсе: запись, сделанная до того,
+   * как аккаунт ответил, не знает, чья она, и класть её в общий ключ значило бы завести ровно ту кучу,
+   * из-за которой всё это переписано. В памяти она есть и никуда не денется - claimStore её сохранит. */
+  persist(next);
   for (const listener of listeners) listener();
 }
 

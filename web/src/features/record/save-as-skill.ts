@@ -16,7 +16,10 @@ import type { Recording } from '@/lib/store';
 
 /** Описание, которое человек узнает в списке через неделю: что повторяется, сколько это заняло и где. */
 export function describeRecording(rec: Recording): string {
-  const s = summarize(rec.events);
+  /* Сохранённые числа, когда события выложены на аккаунт - см. `summary` в store.ts. Описание, в котором
+   * стоит «Repeats 0 recorded actions» про четырёхчасовую запись, человек прочитает как испорченную
+   * запись, а не как нехватку места на диске. */
+  const s = rec.summary ?? summarize(rec.events);
   const where = rec.windows.map((w) => w.title).filter(Boolean);
   return (
     `Repeats ${s.count} recorded actions`
