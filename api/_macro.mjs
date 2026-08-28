@@ -71,6 +71,13 @@ export function parseMacro(text) {
           /* Origin and path, cut in the agent - see PROTOCOL.md. Carried through untouched here: this is
            * a parser, and a parser that also edited values would be a second place the rule lived. */
           url: found.url,
+          /* МОДИФИКАТОРЫ, ЗАЖАТЫЕ ВО ВРЕМЯ ЖЕСТА - `Shift`, `Cmd+Shift`, `Alt`. Отсутствуют, если ничего не
+           * держали или запись сделана агентом, который их ещё не писал.
+           *
+           * Одной строкой ровно такой формы: сборщик соответствия в agent/test-contract.mjs собирает эти
+           * пары регуляркой `^\s+(\w+): found\.(\w+),$`, и разложенная на две строки или через
+           * деструктуризацию форма молча выпадает из проверки соответствия. */
+          modifiers: found.mods,
         };
         pending = Object.values(context).some(Boolean) ? context : undefined;
       }
@@ -153,6 +160,11 @@ export function flowBody(flow, recordings, opts) {
           fields.push(`inName=${e.context.containerName}`);
         if (e.context.url)
           fields.push(`url=${e.context.url}`);
+        /* Последним, в том же порядке, в каком пишут агенты. Значение проходит НЕТРОНУТЫМ - ни plainName,
+         * ни приведения регистра: это набор токенов, а не имя. Проверка на пустоту обязательна: `mods=` с
+         * пустым значением - это поле, которое каждому читателю пришлось бы отдельно оговаривать. */
+        if (e.context.modifiers)
+          fields.push(`mods=${e.context.modifiers}`);
         if (fields.length)
           lines.push(`#ctx	${fields.join('	')}`);
       }
@@ -176,6 +188,14 @@ export function exportMacro(rec) {
         e.context.window && `window=${e.context.window}`,
         e.context.control && `control=${plainName(e.context.control)}`,
         e.context.type && `type=${e.context.type}`,
+        /* И модификаторы, иначе экспорт с последующим импортом молча превращает каждый Shift-клик в клик:
+         * перечитанный файл разбирается безупречно и беднее оригинала на то, чего в нём уже нет.
+         *
+         * Здесь же видно, что этот писатель теряет `role`, `subrole`, `in`, `inName` и `url` с тех пор, как
+         * каждое из них появилось, - вопреки собственному комментарию про круговой путь. Это по одной
+         * строке на каждое и ни одной правки у читателей, но это изменение поведения существующего формата
+         * файла, и оно заслуживает отдельного решения, а не попутного. */
+        e.context.modifiers && `mods=${e.context.modifiers}`,
       ].filter(Boolean);
       if (fields.length)
         lines.push(`#ctx	${fields.join('	')}`);

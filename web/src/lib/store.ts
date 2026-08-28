@@ -41,6 +41,13 @@ export interface RecordedEvent {
     subrole?: string;
     container?: string;
     containerName?: string;
+    /* Модификаторы, зажатые во время жеста: `Shift`, `Cmd+Shift`, `Alt`. Отсутствуют, если ничего не
+     * держали или запись сделана агентом, который их ещё не писал.
+     *
+     * Форма нарочно та же, что у MacroEvent.context в api/_macro.d.mts: типы в TypeScript структурные, и
+     * если поле появится только у одного из двух, Recording перестанет удовлетворять MacroRecording - а
+     * поломка вылезет далеко отсюда. */
+    modifiers?: string;
   };
 }
 

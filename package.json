@@ -10,7 +10,7 @@
   "scripts": {
     "migrate": "node scripts/migrate.mjs",
     "build:extension": "npm --prefix web run build:extension",
-    "test": "node agent/check-csharp.mjs && node agent/check-swift.mjs && node agent/test-contract.mjs && node api/_test-step.mjs && node api/_test-report.mjs && node api/_test-provider.mjs && node api/_test-quota.mjs && node api/_test-gallery.mjs && node mcp/test-mcp.mjs"
+    "test": "node agent/check-csharp.mjs && node agent/check-swift.mjs && node agent/test-contract.mjs && node api/_test-step.mjs && node api/_test-report.mjs && node api/_test-provider.mjs && node api/_test-quota.mjs && node api/_test-gestures.mjs && node api/_test-gallery.mjs && node mcp/test-mcp.mjs"
   },
   "devDependencies": {
     "pg": "^8.23.0"

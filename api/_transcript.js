@@ -677,9 +677,16 @@ function ctxOf(raw) {
   const subrole = oneLine(src.subrole, 40);
   const container = oneLine(src.container ?? src.in, 40);
   const containerName = shorten(plainName(src.containerName ?? src.inName), CTX_MAX);
+  /* МОДИФИКАТОРЫ ЖЕСТА - `Shift`, `Cmd+Shift`, `Alt`. Токен печатается ДОСЛОВНО: перевести `Alt` в
+   * `Option` можно, только зная, какая система это записала, а тело записи об этом надёжно не говорит. */
+  const modifiers = oneLine(src.modifiers, 40);
   /* A type on its own is not context: "a button" with no name and no application says nothing a reader
    * could act on, and keeping it would make a step look resolved when it was not. */
-  if (!app && !window && !control) return null;
+  /* И модификатор ТОЖЕ держит строку живой. `#ctx`, несущий одни модификаторы, - обычное дело: Cmd+прокрутка
+   * никуда не отправляется на разрешение имён, а Shift-клик по элементу, которому приложение не дало имени,
+   * не разрешит ничего. Без этого условия такая строка выбрасывалась бы целиком - то есть модификатор
+   * терялся бы ровно там, где он единственное, что о жесте известно. */
+  if (!app && !window && !control && !modifiers) return null;
   return {
     app: app || null,
     window: window || null,
@@ -691,6 +698,7 @@ function ctxOf(raw) {
     subrole: subrole || null,
     container: container || null,
     containerName: containerName || null,
+    modifiers: modifiers || null,
   };
 }
 
@@ -731,6 +739,15 @@ const tabPlace = (ctx) => ({ app: ctx.app, window: ctx.control, control: null, t
 
 // ` in OUTLOOK`, or nothing. The application is worth saying even when the control is not known.
 const inApp = (ctx) => (ctx && ctx.app ? ' in ' + ctx.app : '');
+
+/* `Shift-clicked`, `Alt-dragged`, `Cmd-scrolled`. Пусто, когда ничего не держали.
+ *
+ * Токен ДОСЛОВНО, без перевода: `Alt` в `Option` можно превратить, только зная, какая система это записала,
+ * а тело записи об этом надёжно не говорит. Прибавляется в ШЕСТИ местах, а не в одном - перетаскивание и
+ * прокрутка строят свою фразу сами, мимо actWords, и приставка, добавленная только внутрь actWords,
+ * оставила бы Option-перетаскивание и Cmd-прокрутку читаться ровно так же, как сегодня. А это два из
+ * четырёх жестов, ради которых всё это писалось. */
+const modPrefix = (ctx) => (ctx && ctx.modifiers ? ctx.modifiers + '-' : '');
 
 /* What the accessibility tree called the thing that was actually hit, in words.
  *
@@ -1321,11 +1338,24 @@ function deriveDesktop(events, seen) {
     typedMs: 0, typeRuns: 0, focuses: 0,
   };
   const apps = new Set();
-  const perStep = parsed.some((event) => event.readable && event.ctx);
+  /* «У ЭТОГО СОБЫТИЯ ЕСТЬ МЕСТО» - и это перестало совпадать с «у него есть ctx».
+   *
+   * `#ctx` теперь бывает и с одними модификаторами: Cmd+прокрутка на разрешение имён не отправляется вовсе,
+   * а Shift-клик по безымянному элементу не разрешает ничего. Такая строка НЕ называет места, и считать её
+   * местом значит печатать арифметику, которая сама себе противоречит: сводка скажет «для 7 из 5 кликов
+   * агент прочитал и то, что было под курсором». Ровно тот перекос, о котором подробно написано у счётчика
+   * двойных кликов ниже.
+   *
+   * `app || window`, а не `app && window`: клик по оболочке несёт приложение и не несёт заголовка по
+   * устройству, и на этом же различии держится inShell. */
+  const placed = (ctx) => !!(ctx && (ctx.app || ctx.window));
+
+  const perStep = parsed.some((event) => event.readable && placed(event.ctx));
   const opening = desktopWhere(seen.windows, seen.total, perStep);
   openSegment(state, opening.where, opening.note);
 
   const point = (event) => Math.round(event.x) + ',' + Math.round(event.y);
+
 
   /* The place in force, and a segment cut when it changes.
    *
@@ -1336,7 +1366,7 @@ function deriveDesktop(events, seen) {
   let placeName = null;
   let firstPlace = true;
   const enter = (ctx) => {
-    if (!ctx) return;
+    if (!placed(ctx)) return;
     if (ctx.app) apps.add(ctx.app);
     const key = placeKey(ctx);
     if (key === place) return;
@@ -1440,7 +1470,7 @@ function deriveDesktop(events, seen) {
          * separate movement step would imply it was not. */
         emit(state, {
           action: 'other',
-          what: actWords('pressed the ' + event.button + ' button', event.ctx, point(event)),
+          what: actWords(modPrefix(event.ctx) + 'pressed the ' + event.button + ' button', event.ctx, point(event)),
           target: point(event),
           note: 'no release was recorded for this press. The recording may have been stopped mid-click, '
             + 'or the release happened while a window the agent cannot see had focus.',
@@ -1466,7 +1496,7 @@ function deriveDesktop(events, seen) {
           action: 'drag',
           ctx: event.ctx,
           px: Math.round(straight),
-          what: 'dragged ' + pxText(straight) + ' from ' + point(event) + ' to ' + point(release)
+          what: modPrefix(event.ctx) + 'dragged ' + pxText(straight) + ' from ' + point(event) + ' to ' + point(release)
             + ' over ' + spanText(own) + inApp(event.ctx),
           target: point(event) + ' to ' + point(release),
           note: [
@@ -1496,7 +1526,7 @@ function deriveDesktop(events, seen) {
         action: tab ? 'tab' : 'click',
         what: tab
           ? 'switched to the tab "' + event.ctx.control + '"' + inApp(event.ctx)
-          : actWords(verb, event.ctx, point(event)),
+          : actWords(modPrefix(event.ctx) + verb, event.ctx, point(event)),
         ctx: event.ctx,
         target: point(event),
         note: tab
@@ -1513,7 +1543,7 @@ function deriveDesktop(events, seen) {
       /* Counted as a click, because it was one: the summary's number has to reconcile with the events. What
        * changes is how it READS, not whether it happened. */
       counts.clicks++;
-      if (event.ctx) counts.ctxClicks++;
+      if (placed(event.ctx)) counts.ctxClicks++;
       if (event.ctx && event.ctx.control) counts.ctxNamed++;
 
       /* Two presses that close together in the same place are one double click as far as the
@@ -1534,7 +1564,7 @@ function deriveDesktop(events, seen) {
         && Math.abs(event.x - previous.x) <= DOUBLE_PX
         && Math.abs(event.y - previous.y) <= DOUBLE_PX) {
         mergeDouble(state, previous, step, apart, event,
-          actWords('double-clicked', event.ctx, point(event)));
+          actWords(modPrefix(event.ctx) + 'double-clicked', event.ctx, point(event)));
         /* All THREE counters, or the summary contradicts itself in print.
          *
          * Two presses become one double-click, so the click count goes down - but the context counters were
@@ -1544,7 +1574,7 @@ function deriveDesktop(events, seen) {
          * cannot unsee. The folded press had its own context, and it is the same context: one click, landing
          * on one thing. */
         counts.clicks--;
-        if (event.ctx) counts.ctxClicks--;
+        if (placed(event.ctx)) counts.ctxClicks--;
         if (event.ctx && event.ctx.control) counts.ctxNamed--;
       } else {
         step.button = event.button;
@@ -1558,7 +1588,7 @@ function deriveDesktop(events, seen) {
     if (event.kind === 'up') {
       emit(state, {
         action: 'other',
-        what: actWords('released the ' + event.button + ' button', event.ctx, point(event)),
+        what: actWords(modPrefix(event.ctx) + 'released the ' + event.button + ' button', event.ctx, point(event)),
         target: point(event),
         note: 'no press was recorded before it, so this recording started part-way through a click',
         own: 0,
@@ -1602,8 +1632,16 @@ function deriveDesktop(events, seen) {
       const group = [i];
       let own = 0;
       let j = i + 1;
+      /* И МОДИФИКАТОР ТОЖЕ - иначе три Cmd-прокрутки и три обычные складываются в одну строку «scrolled
+       * down 6 times», а это два разных жеста: один зумит, второй листает.
+       *
+       * Обе стороны приводятся к null: сравнение сырых строк, где одна `undefined`, а другая отсутствует,
+       * разваливает складывание у КАЖДОЙ немодифицированной прокрутки - то есть ломает то, что и так
+       * работало. */
+      const modsOf = (e) => ((e && e.ctx && e.ctx.modifiers) || null);
       while (j < parsed.length && parsed[j].readable && parsed[j].kind === 'scroll'
-        && parsed[j].direction === event.direction && parsed[j].delay < SCROLL_JOIN_MS) {
+        && parsed[j].direction === event.direction && modsOf(parsed[j]) === modsOf(event)
+        && parsed[j].delay < SCROLL_JOIN_MS) {
         own += clampedPause(state, parsed[j].delay);
         group.push(j);
         j++;
@@ -1616,7 +1654,7 @@ function deriveDesktop(events, seen) {
         ctx: event.ctx,
         notches: group.length,
         direction: event.direction,
-        what: (event.direction ? 'scrolled ' + event.direction : 'scrolled') + notches
+        what: modPrefix(event.ctx) + (event.direction ? 'scrolled ' + event.direction : 'scrolled') + notches
           + inApp(event.ctx),
         target: point(event),
         note: event.direction ? '' : 'the recorded action was "' + event.action + '", which does not '

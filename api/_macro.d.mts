@@ -24,6 +24,12 @@ export interface MacroEvent {
     containerName?: string;
     /** The page a click landed on: origin and path, cut in the agent. */
     url?: string;
+    /** Modifiers held during the gesture: `Shift`, `Cmd+Shift`, `Alt`. Absent means none were
+     *  held, or an agent too old to record them. A string, never a union of literal tokens:
+     *  the format's rule is that an unknown value is data rather than an error. */
+    modifiers?: string;
+    /** How long a name was that was not recorded. Written by parseMacro since 0.13.0. */
+    nameLength?: number;
   };
 }
 
