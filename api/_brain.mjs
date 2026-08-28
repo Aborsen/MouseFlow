@@ -55,6 +55,7 @@ How to work:
 - After opening or closing something, wait_for_window is sharper than waiting for the screen to settle: it names the thing it is waiting for, and says whether it happened.
 - Reaching something further down a list is scroll_to, not a string of scrolls: "end", "start", or the name of the thing to stop at. One step, and it says whether it arrived.
 - To read text you cannot make out in the screenshot: select it, Control+C, then clipboard_read. Guessing at small text is how a wrong address gets typed into a real message.
+- A DIALOG IS A WINDOW. The "Already open" list marks one as a dialog, and its title is what capture_window, read_window and activate_window take. Do not photograph a region of the screen to get a dialog: capture it by title, and then nothing in front of it can spoil the picture.
 - When the goal asks for a SCREENSHOT, call capture_window with the title of the window it means. That saves a file and puts the picture on the clipboard, so Control+V pastes it into a document. Never try to take a screenshot with a key: PrintScreen does not exist here, and there is no Win modifier for the snipping tool.
 - Some things are only reachable by hovering: a menu that opens on the pointer, a button that appears on a row, a tooltip that spells out a label too short to read. Hover, then look at what it revealed.
 - The "Already open" list gives each window's size and position. Use them to work out what is covering what: a window in front of the one you need is why a click can land somewhere unexpected, and activate_window is how you fix it.
@@ -195,7 +196,11 @@ export const TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        title: { type: 'string', description: 'Part of the window title, as shown in the "Already open" list' },
+        title: {
+          type: 'string',
+          description: 'Part of the window title, as shown in the "Already open" list - including a dialog, '
+            + 'which that list marks as one',
+        },
         process: { type: 'string' },
         x: { type: 'integer' },
         y: { type: 'integer' },
@@ -481,6 +486,15 @@ export function actionBody(name, input, frame) {
   const x = () => toScreen(input.x, frame.originX || 0);
   const y = () => toScreen(input.y, frame.originY || 0);
 
+  /* THE THREE NUMBERS THAT LET THE AGENT ANSWER IN THE MODEL'S OWN PIXELS.
+   *
+   * Everything else in this function converts INWARDS - a point from the picture into a point on the screen -
+   * and one place to do that is the rule. Some actions answer WITH coordinates, which travels the other way,
+   * and the agent applies the same formula in reverse. The alternative is a conversation with two coordinate
+   * systems in it: positions read off read_window in screen pixels, clicks sent in screenshot pixels, and a
+   * wrong click on any scaled screenshot. See ReadGeometry in the agent. */
+  const geometry = () => `scale=${frame.scale || 1} ox=${frame.originX || 0} oy=${frame.originY || 0}`;
+
   if (name === 'click') {
     const button = input.button === 'right' || input.button === 'middle' ? input.button : 'left';
     /* `name=` last, because it takes the rest of the line - a label contains spaces, and the wire format
@@ -540,18 +554,12 @@ export function actionBody(name, input, frame) {
       const h = Math.round(Number(input.h) / (frame.scale || 1));
       return `action=capture x=${x()} y=${y()} w=${w} h=${h}`;
     }
+    /* The geometry, because the agent answers a region capture in these coordinates now - see the note at
+     * the top of Capture there. Sent for a window capture too: the reply names the size either way. */
     // process first: title runs to the end of the line and would swallow it.
-    return `action=capture${process ? ` process=${process}` : ''}${title ? ` title=${title}` : ''}`;
+    return `action=capture ${geometry()}${process ? ` process=${process}` : ''}`
+      + (title ? ` title=${title}` : '');
   }
-  /* THE THREE NUMBERS THAT LET THE AGENT ANSWER IN THE MODEL'S OWN PIXELS.
-   *
-   * Everything else in this function converts INWARDS - a point from the picture into a point on the screen -
-   * and one place to do that is the rule. These three actions answer with coordinates, which travels the
-   * other way, and the agent applies the same formula in reverse. The alternative is a conversation with two
-   * coordinate systems in it: positions read off read_window in screen pixels, clicks sent in screenshot
-   * pixels, and a wrong click on any scaled screenshot. See ReadGeometry in the agent. */
-  const geometry = () => `scale=${frame.scale || 1} ox=${frame.originX || 0} oy=${frame.originY || 0}`;
-
   if (name === 'read_window') {
     const title = String(input.title ?? '').replace(/[\r\n]+/g, ' ').trim();
     const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
@@ -632,7 +640,12 @@ export function openList(windows) {
   const list = Array.isArray(windows) ? windows : [];
   if (!list.length) return null;
   return list.slice(0, 24).map((w) => {
-    const state = w.active ? 'in front' : w.minimized ? 'minimised' : 'open behind';
+    /* DIALOG SAID OUT LOUD, from agent 0.14.0. Until then an owned window was filtered out of this list
+     * entirely, so a model looking at a screen with a modal dialog on it saw no dialog in the list, had no
+     * title to pass to capture_window, and was told "no open window matches" while the thing was in front
+     * of it. Of everything in this list, "a dialog is open" is usually the most important line. */
+    const state = (w.dialog ? 'dialog, ' : '')
+      + (w.active ? 'in front' : w.minimized ? 'minimised' : 'open behind');
     const box = !w.minimized && Number(w.w) > 0 && Number(w.h) > 0
       ? `, ${Math.round(Number(w.w))}x${Math.round(Number(w.h))} at ${Math.round(Number(w.x) || 0)},${Math.round(Number(w.y) || 0)}`
       : '';
@@ -737,6 +750,58 @@ export const actionReport = (moved, streak = 0) => {
       + 'finish with ok false and say what you could not reach.';
   }
   return STILL_NOTE;
+};
+
+/* ONE FINGERPRINT, TWO QUESTIONS - and they want opposite biases, which is why there are two predicates
+ * here where there used to be one.
+ *
+ * "DID ANYTHING HAPPEN?" is asked after an action, and a wrong NO ends runs: six of them in a row stops the
+ * run outright. "HAS IT STOPPED?" is asked by a wait, and a wrong NO burns the whole limit. One threshold
+ * cannot be biased both ways, and using one was the reason a run that was working got killed.
+ *
+ * MEASURED, on Notepad in the foreground, through the agent's own actions - over the 64x36 grid /pulse
+ * returns (2304 cells of 0-255, so each cell is a 30x30 average of the screen):
+ *
+ *                                     mean    cells>4   cells>8   cells>16
+ *   idle, a caret blinking in it      0.001         0         0          0
+ *   idle again                        0.045        13         0          0
+ *   typed "dbForge Testing"           0.049         5         5          4
+ *   typed 19 more characters          3.786       672       465        178
+ *   one single character              0.003         0         0          0
+ *
+ * The old rule was `mean > 3` for BOTH questions. Typing fifteen characters therefore read as NOTHING
+ * HAPPENED - the mean is diluted across 2304 cells, while a text edit is a few cells changing a lot. A real
+ * run renamed a Google Doc, typed into it and clicked into its body, and was stopped after six such answers
+ * with the message that whatever it was aiming at was not receiving anything.
+ *
+ * SO THE NUMBERS ARE READ OFF THAT TABLE. Level 8, because level 4 sees thirteen cells on an idle screen and
+ * level 8 sees none. ONE cell, because the smallest real change measured five and idle measured zero twice -
+ * a first attempt at three was inside the noise of the signal rather than of the floor. A blinking caret
+ * counts as nothing because a cell is a 30x30 average and a caret is two pixels wide, and the pointer counts
+ * as nothing because CopyFromScreen does not capture the cursor - which matters, or every click would report
+ * that something happened and the stillness guard would be dead code.
+ *
+ * WHAT NEITHER RULE CAN SEE is a single character. Nothing on a 64x36 grid can. */
+export const STIR_LEVEL = 8;
+export const STIR_CELLS = 1;
+export const QUIET_MEAN = 3;
+
+/** Did anything happen? Biased towards yes: a wrong no ends runs. */
+export const gridStirred = (a, b) => {
+  if (!a || !b || a.length !== b.length) return true;
+  let cells = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (Math.abs((a[i] ?? 0) - (b[i] ?? 0)) > STIR_LEVEL && ++cells >= STIR_CELLS) return true;
+  }
+  return false;
+};
+
+/** Has it stopped? Biased towards yes: a wrong no burns the whole wait. */
+export const gridQuiet = (a, b) => {
+  if (!a || !b || a.length !== b.length) return false;
+  let sum = 0;
+  for (let i = 0; i < a.length; i++) sum += Math.abs((a[i] ?? 0) - (b[i] ?? 0));
+  return sum / a.length <= QUIET_MEAN;
 };
 
 /** As much of an action's own answer as is worth carrying: a path, a clipboard, a size. */

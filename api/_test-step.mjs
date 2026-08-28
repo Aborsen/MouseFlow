@@ -790,8 +790,11 @@ group('an action can answer with a fact, not just with done');
    * `output`; the loop must hand that to the model verbatim rather than replacing it with "done". */
   const ask = scripted([answer([use('capture_window', { title: 'dbForge' }, 'c1')])]);
   const first = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
-  check('the capture goes out as the agent action',
-    first.actions[0]?.body === 'action=capture title=dbForge', first.actions[0]?.body);
+  /* The geometry travels with it from 0.14.0: a region capture used to answer in SCREEN pixels while
+   * read_window answered in screenshot pixels, and a model that read one reply back after the other had two
+   * coordinate systems in one conversation. */
+  check('the capture goes out as the agent action, carrying the geometry it answers in',
+    first.actions[0]?.body === 'action=capture scale=0.5 ox=0 oy=0 title=dbForge', first.actions[0]?.body);
 
   const said = 'captured "About dbForge Studio", 320x246, to C:\\x.png and onto the clipboard';
   const ask2 = scripted([answer([use('finish', { ok: true, said: 'done' })])]);

@@ -54,6 +54,8 @@ import {
   truncatedAt,
   actionReport,
   actionSaid,
+  gridQuiet,
+  gridStirred,
   AFTER_CUT,
   notBatched,
   sameTurn,
@@ -130,13 +132,9 @@ const decodeGrid = (b64: string) => {
   return grid;
 };
 
-const moved = (a: Uint8Array | null, b: Uint8Array | null) => {
-  if (!a || !b || a.length !== b.length) return true;
-  let sum = 0;
-  for (let i = 0; i < a.length; i++) sum += Math.abs((a[i] ?? 0) - (b[i] ?? 0));
-  // Mean difference per sample out of 255: three is above dither and below anything visible.
-  return sum / a.length > 3;
-};
+/* Both predicates now live in the brain, beside the words composed from them - see the long note there for
+ * why there are two and what was measured. This file had its own copy of the one threshold, which is exactly
+ * how the browser driver and the agent would have drifted apart on the fix. */
 
 /* The same 64x36 grey reduction the agent does in /pulse, for an agent that cannot do it yet. */
 async function fingerprintPng(png: string): Promise<Uint8Array | null> {
@@ -184,7 +182,7 @@ async function settle(machine: Machine, limitMs: number, aborted: () => boolean,
       }
     }
 
-    if (last && !moved(last, now)) {
+    if (last && gridQuiet(last, now)) {
       if (quietSince === null) quietSince = Date.now();
       const frames = Math.round((Date.now() - quietSince) / SETTLE_POLL_MS) + 1;
       if (frames >= SETTLE_QUIET_FRAMES) {
@@ -654,7 +652,10 @@ async function runWave(o: {
          * a click on something already selected - so this reports what was observed and leaves the reading
          * to the model. Saying "that failed" would be this loop guessing about applications it cannot see
          * inside, which is how a working step gets abandoned. */
-        const inert = !!(before && after && !moved(before, after));
+        /* STIRRED, not "not quiet": after an action the question is whether anything happened, and a wrong
+         * "nothing did" is what ends runs. A renamed title moves four cells out of 2304 and the mean barely
+         * twitches. */
+        const inert = !!(before && after && !gridStirred(before, after));
         /* «Не смог снять отпечаток» - это не «не сдвинулось», и ход, про который ничего не известно, счёт
          * не трогает вовсе. */
         if (before && after) {

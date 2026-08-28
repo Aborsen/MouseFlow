@@ -713,8 +713,21 @@ check('ожидание отвечает числами, а не фразой',
 check('и обе реализации ждут по одним и тем же числам',
   /settlePollMs = 1500/.test(swift) && /SettlePollMs = 1500/.test(ps)
     && /settleQuietFrames = 2/.test(swift) && /SettleQuietFrames = 2/.test(ps));
+/* ДВА ВОПРОСА, А НЕ ОДИН, и оба агента обязаны отвечать на них одинаково - иначе модель услышит про одно и
+ * то же действие разное на двух платформах. «Что-то произошло?» спрашивают после действия, и ложное НЕТ
+ * останавливает прогон (шесть подряд - и он закончен). «Оно перестало меняться?» спрашивает ожидание, и
+ * ложное НЕТ сжигает весь лимит. До 0.14.0 это был один тест `mean > 3`, и набор пятнадцати символов даёт
+ * среднюю 0.049 - то есть переименование документа читалось как «ничего не произошло». Числа - в
+ * api/_brain.mjs, вместе с таблицей, с которой они сняты. */
 check('и одинаково решают, что экран шевельнулся',
-  /Double\(sum\) \/ Double\(a\.count\) > 3/.test(swift) && /\(double\)sum \/ a\.Length > 3/.test(ps));
+  /private static let stirLevel = 8/.test(swift) && /private static let stirCells = 1/.test(swift)
+    && /const int StirLevel = 8;/.test(ps) && /const int StirCells = 1;/.test(ps));
+check('и одинаково решают, что он перестал',
+  /private static let quietMean = 3\.0/.test(swift) && /const int QuietMean = 3;/.test(ps));
+/* И спрашивают их в правильных местах: отчёт о действии - «произошло», ожидание - «перестало». */
+check('и спрашивают их там, где надо',
+  /stirred = jsonBool\(self\.stirred\(a, b\)\)/.test(swift) && /if let was = last, quiet\(was, now\)/.test(swift)
+    && /return Agent\.GridStirred\(a, b\)/.test(ps) && /GridQuiet\(last, now\)/.test(ps));
 check('оба дают экрану те же 350мс среагировать',
   /forTimeInterval: 0\.35/.test(swift) && /Thread\.Sleep\(350\)/.test(ps));
 /* Мышь одна. Повтор, запущенный из приложения посреди прогона, дрался бы с ним за курсор. */

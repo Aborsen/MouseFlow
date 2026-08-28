@@ -69,6 +69,8 @@ export interface AgentWindow {
   y: number;
   w: number;
   h: number;
+  /** Owned by another window - a modal dialog. From agent 0.14.0. */
+  dialog?: boolean;
 }
 
 export interface Shot {
@@ -302,7 +304,30 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.13.0 is the build that stops recording other people's words.
+/* 0.14.0 is the build that can see a dialog, and that stops calling a text edit "nothing happened".
+ *
+ * Three defects, all of them mine, all named by one watched run that was doing the right things.
+ *
+ * A MODAL DIALOG IS AN OWNED WINDOW, and both the window lookup and the "Already open" list skipped owned
+ * windows. So `capture_window title=About` answered "no open window matches" while the About dialog was on
+ * screen in front of the model - and the list could not even tell it the dialog's title, so it had nothing
+ * to pass and nothing to activate. Watched on a live desktop:
+ *   OWNED  WindowsForms10...  dbforgesql  About dbForge Studio for SQL Server
+ * Visible and titled is the test now, and the list says `dialog`, which is often the most important line
+ * in it.
+ *
+ * A REGION CAPTURE ANSWERED IN SCREEN PIXELS while read_window answers in screenshot pixels, so a model
+ * that asked for a region and read the reply got numbers from the other coordinate system. It spent a step
+ * correcting itself over exactly that.
+ *
+ * AND ONE FINGERPRINT WAS ANSWERING TWO OPPOSITE QUESTIONS. "Did anything happen?" wants to say yes when in
+ * doubt, because six noes in a row end the run; "has it stopped?" wants to say yes, because a no burns the
+ * whole wait. Both were `mean > 3` over a 2304-cell grid, and typing fifteen characters measures a mean of
+ * 0.049 - so renaming a Google Doc read as nothing happening, and the run was stopped for it while it was
+ * working. Two predicates now, with the measured table beside them in api/_brain.mjs.
+ *
+ * The previous note, kept because the reason still holds. 0.13.0 is the build that stops recording other
+ * people's words.
  *
  * TWO LEAKS OF ONE CLASS, both found by looking at a real transcript rather than at the code.
  *
@@ -430,7 +455,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.13.0';
+export const AGENT_WANTS = '0.14.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

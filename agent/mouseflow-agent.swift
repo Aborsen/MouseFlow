@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.13.0"
+let VERSION = "0.14.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -3251,7 +3251,7 @@ enum Courier {
            for a wait - two agents phrasing this differently would teach it two different habits. Absent
            when either fingerprint could not be taken: "could not tell" is not "did not move". */
         var stirred = "null"
-        if let a = before, let b = Screen.grid() { stirred = jsonBool(moved(a, b)) }
+        if let a = before, let b = Screen.grid() { stirred = jsonBool(self.stirred(a, b)) }
         return "{\"id\":\(jsonString(id)),\"output\":\"done\",\"moved\":\(stirred)}"
     }
 
@@ -3279,7 +3279,7 @@ enum Courier {
                 return (false, since(started), 0)
             }
             guard let now = Screen.grid() else { break }   // no screen to watch; the next picture reports it
-            if let was = last, !moved(was, now) {
+            if let was = last, quiet(was, now) {
                 if quietSince == nil { quietSince = Date() }
                 let frames = Int((Double(since(quietSince!)) / Double(settlePollMs)).rounded()) + 1
                 if frames >= settleQuietFrames {
@@ -3305,11 +3305,39 @@ enum Courier {
         return (raw["state"] as? String) != "claimed"
     }
 
-    private static func moved(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+    /* ONE FINGERPRINT, TWO QUESTIONS - and they want opposite biases. The measurements are beside
+     * gridStirred in api/_brain.mjs and the numbers here must match them; agent/test-contract.mjs holds the
+     * two agents to the same pair.
+     *
+     * "Did anything happen?" is asked after an action, and a wrong NO ends runs - six in a row stops one.
+     * "Has it stopped?" is asked by a wait, and a wrong NO burns the whole limit. Until 0.14.0 both were the
+     * one mean test below, and typing fifteen characters measures a mean of 0.049 over 2304 cells: a text
+     * edit is a few cells changing a lot, not many changing a little. A real run renamed a document, typed
+     * into it, and was stopped for having changed nothing.
+     *
+     * NOT VERIFIED BY RUNNING IT on this platform - the measurements behind the numbers were taken on
+     * Windows, and this is the same arithmetic over the same 64x36 grid rather than a separate judgement. */
+    private static let stirLevel = 8
+    private static let stirCells = 1
+    private static let quietMean = 3.0
+
+    /** Did anything happen? Counts cells that changed strongly; an idle screen measured zero of them. */
+    private static func stirred(_ a: [UInt8], _ b: [UInt8]) -> Bool {
         if a.count != b.count { return true }
+        var cells = 0
+        for i in 0..<a.count where abs(Int(a[i]) - Int(b[i])) > stirLevel {
+            cells += 1
+            if cells >= stirCells { return true }
+        }
+        return false
+    }
+
+    /** Has it stopped? Keeps the mean, which is what makes a caret and a dither not count as motion. */
+    private static func quiet(_ a: [UInt8], _ b: [UInt8]) -> Bool {
+        if a.count != b.count { return false }
         var sum = 0
         for i in 0..<a.count { sum += abs(Int(a[i]) - Int(b[i])) }
-        return Double(sum) / Double(a.count) > 3
+        return Double(sum) / Double(a.count) <= quietMean
     }
 
     /* ------------------------------------------------------------------ doing it */

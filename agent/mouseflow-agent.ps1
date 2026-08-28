@@ -448,7 +448,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.13.0";
+        public const string Version = "0.14.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -2513,6 +2513,11 @@ namespace MouseFlow
          * better than nothing and is said out loud so nobody reads an occluded picture as a clean one. */
         static string Capture(Dictionary<string, string> a)
         {
+            /* THE REGION IS REPORTED IN THE COORDINATES THE CALLER SENT IT IN, which it was not until
+             * 0.14.0. `read_window` answers in screenshot pixels and this answered in screen pixels, so a
+             * model that asked for a region and read the reply back got numbers from the other system - and
+             * in a watched run it spent a step correcting itself over exactly that. */
+            ReadGeometry(a);
             /* Initialised, because `&&` short-circuits and the compiler cannot see that a false chain
              * means the window branch is taken - it only sees four maybe-unassigned locals. */
             int rx = 0, ry = 0, rw = 0, rh = 0;
@@ -2529,9 +2534,10 @@ namespace MouseFlow
             if (haveRegion)
             {
                 if (rw < 2 || rh < 2) return "a region needs a width and height of at least 2 pixels";
-                what = "the region " + rw.ToString(CultureInfo.InvariantCulture) + "x"
-                    + rh.ToString(CultureInfo.InvariantCulture) + " at "
-                    + rx.ToString(CultureInfo.InvariantCulture) + "," + ry.ToString(CultureInfo.InvariantCulture);
+                what = "the region " + ToShotSize(rw).ToString(CultureInfo.InvariantCulture) + "x"
+                    + ToShotSize(rh).ToString(CultureInfo.InvariantCulture) + " at "
+                    + ToShotX(rx).ToString(CultureInfo.InvariantCulture) + ","
+                    + ToShotY(ry).ToString(CultureInfo.InvariantCulture);
             }
             else
             {
@@ -2602,8 +2608,8 @@ namespace MouseFlow
                     /* The size once. A region already names its own dimensions, and "the region 200x120 at
                      * 100,100, 200x120, to ..." is the sort of thing that reads as a bug in the sentence. */
                     string said = "captured " + what
-                        + (haveRegion ? "" : ", " + rw.ToString(CultureInfo.InvariantCulture) + "x"
-                            + rh.ToString(CultureInfo.InvariantCulture))
+                        + (haveRegion ? "" : ", " + ToShotSize(rw).ToString(CultureInfo.InvariantCulture) + "x"
+                            + ToShotSize(rh).ToString(CultureInfo.InvariantCulture))
                         + ", to " + path;
                     said += failed == null
                         ? " and onto the clipboard - paste it with Control+V"
@@ -3073,7 +3079,7 @@ namespace MouseFlow
 
                 byte[] after = null;
                 try { after = Grid(); } catch { after = null; }
-                if (before != null && after != null && !GridMoved(before, after))
+                if (before != null && after != null && GridQuiet(before, after))
                 {
                     still++;
                     /* Twice, not once: a list that redraws a moment late looks still for one comparison. */
@@ -3114,7 +3120,7 @@ namespace MouseFlow
                 if (waited >= limitMs) return false;
                 byte[] now = null;
                 try { now = Grid(); } catch { now = null; }
-                if (last != null && now != null && !GridMoved(last, now))
+                if (last != null && now != null && GridQuiet(last, now))
                 {
                     /* Two still frames, not one: a page that redraws a moment late looks settled once. */
                     if (++still >= 2) return true;
@@ -3568,16 +3574,44 @@ namespace MouseFlow
             }
         }
 
-        /* Whether two screen fingerprints differ enough to call it movement. ONE definition, because the
-           courier asks it about an action and scroll_to asks it about a wheel burst, and a threshold that
-           existed twice would answer those two questions differently the first time somebody tuned one. */
-        public static bool GridMoved(byte[] a, byte[] b)
+        /* ONE FINGERPRINT, TWO QUESTIONS - and they want opposite biases. The long version of this, with the
+           measurements, is beside gridStirred in api/_brain.mjs; the numbers here must match those.
+
+           "Did anything happen?" is asked after an action and a wrong NO ends runs - six in a row stops the
+           run. "Has it stopped?" is asked by a wait and a wrong NO burns the whole limit. Until 0.14.0 both
+           were one `mean > 3` test, and typing fifteen characters measures a mean of 0.049 - so renaming a
+           document read as nothing happening, and a real run was stopped for it.
+
+           The numbers are read off a measured table: level 8 because level 4 sees thirteen cells on an idle
+           screen and level 8 sees none; ONE cell because the smallest change measured five against zero
+           twice. A caret is invisible here because a cell is a 30x30 average, and the pointer is invisible
+           because CopyFromScreen does not capture the cursor - which is what keeps the stillness guard
+           alive. A single character is invisible to both, and nothing on this grid can fix that. */
+        const int StirLevel = 8;
+        const int StirCells = 1;
+        const int QuietMean = 3;
+
+        /** Did anything happen? Counts cells that changed STRONGLY - the noise floor is zero of them. */
+        public static bool GridStirred(byte[] a, byte[] b)
         {
             if (a == null || b == null) return true;
             if (a.Length != b.Length) return true;
+            int cells = 0;
+            for (int i = 0; i < a.Length; i++)
+            {
+                if (Math.Abs((int)a[i] - (int)b[i]) > StirLevel && ++cells >= StirCells) return true;
+            }
+            return false;
+        }
+
+        /** Has it stopped? Keeps the mean, which is what makes a caret and a dither not count as motion. */
+        public static bool GridQuiet(byte[] a, byte[] b)
+        {
+            if (a == null || b == null) return false;
+            if (a.Length != b.Length) return false;
             long sum = 0;
             for (int i = 0; i < a.Length; i++) sum += Math.Abs((int)a[i] - (int)b[i]);
-            return (double)sum / a.Length > 3;
+            return (double)sum / a.Length <= QuietMean;
         }
 
         public static string Pulse()
@@ -3612,7 +3646,10 @@ namespace MouseFlow
             Native.EnumWindows(delegate(IntPtr hWnd, IntPtr lParam)
             {
                 if (!Native.IsWindowVisible(hWnd)) return true;
-                if (Native.GetWindow(hWnd, Native.GW_OWNER) != IntPtr.Zero) return true;
+                /* AND LISTED, for the same reason - see WindowMatching. The old filter meant a model could
+                 * not even learn the dialog's title from the list under its screenshot, so it had nothing to
+                 * pass to capture_window and nothing to activate. Reported as `dialog` rather than silently,
+                 * because "a dialog is open" is often the most important fact about a screen. */
 
                 int length = Native.GetWindowTextLength(hWnd);
                 if (length < 1) return true;
@@ -3656,6 +3693,8 @@ namespace MouseFlow
                 item.Append(",\"process\":\"").Append(JsonEscape(process)).Append("\"");
                 item.Append(",\"active\":").Append(hWnd == front ? "true" : "false");
                 item.Append(",\"minimized\":").Append(Native.IsIconic(hWnd) ? "true" : "false");
+                item.Append(",\"dialog\":")
+                    .Append(Native.GetWindow(hWnd, Native.GW_OWNER) != IntPtr.Zero ? "true" : "false");
                 item.Append(",\"x\":").Append(r.Left.ToString(CultureInfo.InvariantCulture));
                 item.Append(",\"y\":").Append(r.Top.ToString(CultureInfo.InvariantCulture));
                 item.Append(",\"w\":").Append((r.Right - r.Left).ToString(CultureInfo.InvariantCulture));
@@ -3692,7 +3731,16 @@ namespace MouseFlow
             {
                 if (found != IntPtr.Zero) return false;
                 if (!Native.IsWindowVisible(hWnd)) return true;
-                if (Native.GetWindow(hWnd, Native.GW_OWNER) != IntPtr.Zero) return true;
+                /* OWNED WINDOWS ARE NOT SKIPPED HERE ANY MORE, and that was a real failure rather than a
+                 * preference. A modal dialog is owned by the window that opened it, so the old filter
+                 * excluded every dialog - and a dialog is the thing capture_window is most often pointed at.
+                 * Watched on a live desktop:
+                 *
+                 *   OWNED  WindowsForms10...  dbforgesql  About dbForge Studio for SQL Server
+                 *
+                 * `capture_window title=About` answered "no open window matches", which is what the model
+                 * was told while the dialog was on screen in front of it. Visible and titled is the test;
+                 * an owner is not a reason to pretend a window is not there. */
 
                 int length = Native.GetWindowTextLength(hWnd);
                 if (length < 1) return true;
@@ -5379,7 +5427,7 @@ namespace MouseFlow
         /* Moved to Agent.GridMoved in 0.11.0, because scroll_to needs the same question answered - "has
            this stopped changing" - and a second copy of a threshold is a second copy that drifts. Kept as a
            forwarder rather than replaced at the call sites: the name reads better here. */
-        static bool Moved(byte[] a, byte[] b) { return Agent.GridMoved(a, b); }
+        static bool Moved(byte[] a, byte[] b) { return Agent.GridStirred(a, b); }
 
         /* ------------------------------------------------------------------ doing it */
 

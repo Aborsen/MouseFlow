@@ -1468,10 +1468,18 @@ check('a drag presses, moves in steps, and releases',
 check('and the guard covers both of its ends',
   /string minedTarget = Mine\(Native\.WindowFromPoint\(new POINT \{ X = tx, Y = ty \}\)\)/.test(winAgent3));
 
-/* One threshold for "has this stopped changing", now that the courier and scroll_to both ask it. */
-check('one movement threshold, shared rather than copied',
-  /public static bool GridMoved\(byte\[\] a, byte\[\] b\)/.test(winAgent3)
-    && /static bool Moved\(byte\[\] a, byte\[\] b\) \{ return Agent\.GridMoved\(a, b\); \}/.test(winAgent3));
+/* WHAT THIS ASSERTED, AND WHY IT CHANGED. Wave 03 lifted the movement threshold into one definition because
+ * the courier and scroll_to had started asking it separately - the right move against a copy that drifts.
+ * What it got wrong was assuming the two callers were asking the SAME question. They were not: the courier
+ * asks "did anything happen" after an action, and scroll_to asks "has it stopped" - and one threshold cannot
+ * be biased both ways. A run was stopped for typing fifteen characters because of it.
+ *
+ * So there are two definitions now, still one each, and the invariant this holds is the one that mattered
+ * all along: no caller carries its own copy. */
+check('each question has exactly one definition, and no caller copies it',
+  /public static bool GridStirred\(byte\[\] a, byte\[\] b\)/.test(winAgent3)
+    && /public static bool GridQuiet\(byte\[\] a, byte\[\] b\)/.test(winAgent3)
+    && /static bool Moved\(byte\[\] a, byte\[\] b\) \{ return Agent\.GridStirred\(a, b\); \}/.test(winAgent3));
 
 check('the preview reaches the new steps, and they read as sentences',
   /tool: 'read_window'/.test(read('../web/src/dev/mock-api.ts'))
@@ -1514,9 +1522,10 @@ check('and the silent clamp at twenty is gone',
 check('a reload activates, presses F5 and waits',
   /string refused = PressKey\("f5", false, false, false, false\);/.test(winAgent4)
     && /bool quiet = SettleHere\(20000, out waited\);/.test(winAgent4));
-/* One threshold for "has this settled", shared with the courier's wait - see GridMoved. */
+/* The SETTLING question, which is the insensitive one - see the note beside GridStirred for why a reload
+ * must not use the same test an action report uses. */
 check('using the same settling threshold as every other wait',
-  /if \(last != null && now != null && !GridMoved\(last, now\)\)/.test(winAgent4));
+  /if \(last != null && now != null && GridQuiet\(last, now\)\)/.test(winAgent4));
 /* "It did not appear" is an answer about the world. Reported as a failure, a model looks for a fault in the
  * waiting rather than in its own expectation. */
 check('a window that never appears is an answer, not an error',
@@ -1546,6 +1555,7 @@ check('the preview reaches the new steps, and they read as sentences',
 group('a recording does not collect other people\'s words');
 /* `names` is taken at the top of this file for the tool list; this module needs its own handle. */
 const nameRules = await import('../api/_names.mjs');
+const { gridStirred, gridQuiet } = await import(new URL('../api/_brain.mjs', import.meta.url).href);
 /* `transcribe` is imported further down this file, and a const is not hoisted - so this group takes its
  * own handle rather than reaching forward to one that does not exist yet. */
 const { transcribe: readBack } = await import(new URL('../api/_transcript.js', import.meta.url).href);
@@ -1635,6 +1645,83 @@ check('the reader applies the same rule, because older recordings already hold t
     !JSON.stringify(auth).includes('hKFo2SAw')
       && auth.segments?.[0]?.where?.label === 'auth.doubleword.ai/u/login',
     auth.segments?.[0]?.where?.label);
+}
+
+group('what a failed run showed: a dialog is a window, and a text edit is a change');
+const traceAgent = read('../agent/mouseflow-agent.ps1');
+const traceBrain = read('../api/_brain.mjs');
+const traceEngine = read('../web/src/lib/desktop-engine.ts');
+
+/* A MODAL DIALOG IS AN OWNED WINDOW. Both the lookup and the list skipped owned windows, so
+ * `capture_window title=About` answered "no open window matches" with the About dialog on screen in front of
+ * the model - and the list could not even tell it the title to ask for. Watched on a live desktop:
+ *   OWNED  WindowsForms10...  dbforgesql  About dbForge Studio for SQL Server */
+check('the window lookup no longer skips owned windows',
+  !/if \(found != IntPtr\.Zero\) return false;\s*\n\s*if \(!Native\.IsWindowVisible\(hWnd\)\) return true;\s*\n\s*if \(Native\.GetWindow\(hWnd, Native\.GW_OWNER\)/
+    .test(traceAgent));
+check('nor does the list of what is open',
+  !/if \(!Native\.IsWindowVisible\(hWnd\)\) return true;\s*\n\s*if \(Native\.GetWindow\(hWnd, Native\.GW_OWNER\) != IntPtr\.Zero\) return true;\s*\n\s*int length/
+    .test(traceAgent));
+check('and a dialog is reported as one, because that is usually the most important line in the list',
+  /dialog\\":/.test(traceAgent) && /w\.dialog \? 'dialog, ' : ''/.test(traceBrain));
+/* Said in the prompt too, or the model has the fact and not the habit. */
+check('the model is told a dialog is a window it can name',
+  /A DIALOG IS A WINDOW/.test(traceBrain));
+
+/* A REGION CAPTURE ANSWERED IN SCREEN PIXELS while read_window answers in screenshot pixels - two coordinate
+ * systems in one conversation, and a watched run spent a step correcting itself over it. */
+check('a capture carries the geometry it answers in',
+  /return `action=capture \$\{geometry\(\)\}/.test(traceBrain)
+    && /ReadGeometry\(a\);\s*\n\s*int rx = 0/.test(traceAgent.replace(/\/\*[\s\S]*?\*\//g, '')));
+check('and reports a region in those coordinates rather than in screen pixels',
+  /what = "the region " \+ ToShotSize\(rw\)/.test(traceAgent));
+
+/* ONE FINGERPRINT, TWO OPPOSITE QUESTIONS. This is the one that killed the run: typing fifteen characters
+ * measures a mean of 0.049 over 2304 cells, so `mean > 3` read it as nothing happening - six times, and the
+ * run stopped while it was working. */
+check('there are two predicates now, not one threshold serving both',
+  /export const gridStirred = /.test(traceBrain) && /export const gridQuiet = /.test(traceBrain));
+check('the action report asks whether anything happened',
+  /!gridStirred\(before, after\)/.test(traceEngine)
+    && /static bool Moved\(byte\[\] a, byte\[\] b\) \{ return Agent\.GridStirred\(a, b\); \}/.test(traceAgent));
+check('and the waits ask whether it has stopped',
+  /if \(last && gridQuiet\(last, now\)\)/.test(traceEngine)
+    && /GridQuiet\(last, now\)/.test(traceAgent) && /GridQuiet\(before, after\)/.test(traceAgent));
+/* The numbers must match on both sides of the wire, because the browser driver and the agent each measure
+ * their own fingerprint and a model must not be told different things by the two paths. */
+check('the two sides agree on the numbers',
+  /export const STIR_LEVEL = 8;/.test(traceBrain) && /export const STIR_CELLS = 1;/.test(traceBrain)
+    && /const int StirLevel = 8;/.test(traceAgent) && /const int StirCells = 1;/.test(traceAgent));
+/* And the measurements are written down, because the next person to tune one of these numbers needs to know
+ * what an idle screen and a text edit actually measure rather than guessing again. */
+check('with the table they were read off, not just the values',
+  /idle, a caret blinking in it/.test(traceBrain) && /typed "dbForge Testing"/.test(traceBrain));
+
+/* The predicates themselves, on grids rather than on source. */
+{
+  const grid = (fill) => new Uint8Array(2304).fill(fill);
+  /* Wrapped, because `i * 37` runs off the end after 62 steps - the first version of this asked for 2304
+   * changed cells and got 62, which made "moved everywhere" quiet and the test wrong rather than the rule. */
+  const bump = (base, cells, by) => {
+    const out = new Uint8Array(base);
+    for (let i = 0; i < cells; i++) {
+      const at = (i * 37) % base.length;
+      out[at] = Math.min(255, (base[at] ?? 0) + by);
+    }
+    return out;
+  };
+  const flat = grid(120);
+  check('one cell changing strongly is something happening, which is what a text edit looks like',
+    gridStirred(flat, bump(flat, 1, 30)) === true);
+  check('but a whole grid drifting by dither is not',
+    gridStirred(flat, bump(flat, 2304, 4)) === false);
+  /* The other question, and the opposite bias: a screen nudged in one cell has still settled. */
+  check('and a screen that moved one cell counts as settled for a wait',
+    gridQuiet(flat, bump(flat, 1, 30)) === true);
+  check('while one that moved everywhere does not',
+    gridQuiet(flat, bump(flat, 2304, 40)) === false);
+  check('an unreadable fingerprint is movement, and is NOT quiet - the two defaults differ on purpose',
+    gridStirred(null, flat) === true && gridQuiet(null, flat) === false);
 }
 
 group('a skill can be handed to an agent as a file');

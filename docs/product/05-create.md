@@ -212,6 +212,20 @@ deployment: these actions send positions OUTWARDS, and the alternative is a conv
 coordinate systems. The rule they bend, the measurements that permit it, and the two failure modes
 (applications that stop answering; why a global lock was the wrong fix) are in `agent/PROTOCOL.md`.
 
+**A dialog is a window, and it took a failed run to notice it was not treated as one.** A modal dialog is
+*owned* by whatever opened it, and both the window lookup and the "Already open" list dropped owned windows —
+a filter written when the list existed only to stop the model launching a second copy of something. The
+result was that `capture_window title=About` answered "no open window matches" with the dialog on screen, and
+the list could not even supply its title. Visible and titled is the test now; the list marks one as `dialog`.
+
+**"Did anything happen?" and "has it stopped?" are different questions**, and one threshold cannot be biased
+both ways. A wrong *no* to the first ends runs — six in a row stops one outright — while a wrong *no* to the
+second burns a whole wait. Both used to be `mean > 3` over the 2304-cell fingerprint, and typing fifteen
+characters measures a mean of **0.049**: a text edit is a few cells changing a lot, not many changing a
+little. So `gridStirred` counts cells that changed strongly (level 8, one cell — measured against an idle
+screen at zero) and `gridQuiet` keeps the mean. The table those numbers come from is in `api/_brain.mjs`.
+Neither can see a *single* character; nothing on a 64x36 grid can.
+
 **An action can answer with a fact, not just with "done".** From agent 0.10.0 `/do` may return an `output`
 string — where a capture was saved, what the clipboard held — and both drivers pass it to the model through
 `actionSaid` in the brain. Nothing new on the wire: the cloud path had always forwarded a non-`done` output

@@ -32,6 +32,10 @@ These are not bugs and no amount of work inside the current design removes them.
   different from "no such action": a model told an action does not exist looks for a way round — in the run
   this came from, that meant opening a terminal and writing a screen-capture tool — and a model told the
   platform lacks it stops and reports.
+- **A single character typed is invisible to the change detector.** The screen fingerprint is 64x36 grey
+  cells, so each one is a 30x30 average: fifteen characters move four cells and one character moves none.
+  An action that types one character can therefore be reported as having changed nothing. Nothing on this
+  grid can fix that; a finer grid would cost what the fingerprint exists to avoid.
 - **A short name that is content cannot be told from a label.** From 0.13.0 a control name longer than 60
   characters is not recorded — measured: the longest name on anything a person presses was 43, and everything
   above 60 in a three-application sample was content. What the rule cannot catch is content that is SHORT: a

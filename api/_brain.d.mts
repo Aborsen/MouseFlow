@@ -20,6 +20,8 @@ export interface WindowLike {
   process?: string;
   active?: boolean;
   minimized?: boolean;
+  /** Owned by another window - which is what a modal dialog is. From agent 0.14.0. */
+  dialog?: boolean;
   /** Экранный прямоугольник окна. `/windows` присылает его всегда; openList печатает - кроме свёрнутых. */
   x?: number;
   y?: number;
@@ -70,6 +72,11 @@ export function screenMessage(frame: ShotLike, open: string | null): Message;
 export function forgetOldPictures<T extends { content?: unknown }>(messages: T[]): T[];
 /** What one action did, in the words both drivers use. `moved === false` means the screen stood still. */
 export function actionReport(moved: boolean | undefined, streak?: number): string;
+export const STIR_LEVEL: number;
+export const STIR_CELLS: number;
+export const QUIET_MEAN: number;
+export function gridStirred(a: Uint8Array | null, b: Uint8Array | null): boolean;
+export function gridQuiet(a: Uint8Array | null, b: Uint8Array | null): boolean;
 export const OUTPUT_MAX: number;
 export function actionSaid(
   output: string | null | undefined,
