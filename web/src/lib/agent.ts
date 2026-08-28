@@ -304,7 +304,25 @@ export const autostartEnable = (port: number) =>
 /* ------------------------------------------------------------------ what the app expects of it */
 
 /** The build this app needs on the other end. Compared with what answers; see olderThan. */
-/* 0.17.0 is the build that will tell you what is in a field, so nothing has to be typed twice to be sure.
+/* 0.18.0 is the build that stops offering a save panel as a window to activate.
+ *
+ * From a watched run: `activate_window {title: "Открыть"}` came back "macOS refused to bring Open and Save
+ * Panel Service (Pages) forward", which reads as a fault in macOS and is not one. Measured on a real Mac
+ * with a save panel on screen, the window list looks like this:
+ *
+ *   panel                        title='Save'                        active, on screen   <- the real sheet
+ *   Open and Save Panel Service  title='Save'                        minimised           <- scaffolding
+ *   Open and Save Panel Service  title='Open and Save Panel Service' minimised           <- scaffolding
+ *
+ * The visible panel belongs to the APPLICATION; the separate service keeps windows of its own, none of them
+ * on screen. The scaffolding's title carries the same word AND COMES FIRST in the list, so that is what
+ * matched - and an XPC service is something macOS will never bring forward. Off-screen windows of that
+ * service are dropped now, so the title finds the real sheet and activating its owner works. Only
+ * off-screen ones: a panel shown as its own window rather than as a sheet is real and has to stay aimable.
+ *
+ * Windows itself is unchanged; it carries the number because the app compares one number.
+ *
+ * The previous note, kept because the reason still holds. 0.17.0 is the build that will tell you what is in a field, so nothing has to be typed twice to be sure.
  *
  * MEASURED, on a 198-second run: the model typed one file name FOUR TIMES by three different mechanisms -
  * typed it, typed it again, then wrote it to the clipboard and pasted - because it had no way to check that
@@ -527,7 +545,7 @@ export const autostartEnable = (port: number) =>
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
  * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.17.0';
+export const AGENT_WANTS = '0.18.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

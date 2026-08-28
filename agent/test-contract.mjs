@@ -1263,6 +1263,13 @@ group('на застрявшем ходу окно читается само, о
   check('условие живёт в мозге и одно на двоих',
     /export const shouldPeek = \(still\) => Number\(still\) >= 1;/.test(brain)
       && /shouldPeek\(loop\.still\)/.test(cloud) && /shouldPeek\(still\)/.test(local));
+  /* Кадр обязан доехать до openList у ОБОИХ: без него список печатает экранные числа рядом с картинкой, в
+   * которой модель кликает, - две системы координат в одном сообщении. Локальную половину regex поймал бы
+   * только здесь: у неё нет исполняемого набора, который прошёл бы этот путь. */
+  check('кадр доезжает до списка окон у обоих драйверов',
+    /openList\(windows, shot\)/.test(cloud) && /openWindows\(machine, frame\)/.test(local)
+      && /openList\(\(await machine\.windows\(\)\)\.windows, frame\)/.test(local));
+
   check('и провод для него строит тоже мозг',
     /export const peekBody = \(frame\) =>/.test(brain)
       && /peekBody\(shot\)/.test(cloud) && /peekBody\(frame\)/.test(local));
@@ -1285,7 +1292,7 @@ group('на застрявшем ходу окно читается само, о
 
   /* Это НЕ ответ на вызов инструмента: под него нет tool_use, а API отвергает результат без вызова. */
   check('и оно не выдаётся за ответ на вызов инструмента',
-    !/loop\.pending\.push\(\{ id: PEEK_ID/.test(cloud) && /screenMessage\(shot, openList\(windows\), saw\)/.test(cloud));
+    !/loop\.pending\.push\(\{ id: PEEK_ID/.test(cloud) && /screenMessage\(shot, openList\(windows, shot\), saw\)/.test(cloud));
   /* И не становится шагом: человек читает в журнале СВОИ намерения, а этого он не заказывал. */
   check('и не попадает в журнал прогона отдельной строкой',
     !/loop\.steps\.push\(\{ tool: 'read_window'/.test(cloud));
@@ -1303,6 +1310,38 @@ group('на застрявшем ходу окно читается само, о
   /* И тип для TS-половины - иначе локальный драйвер просто не соберётся. */
   check('и TypeScript-половина объявлена',
     /export function shouldPeek\(still: number\): boolean;/.test(read('api/_brain.d.mts')));
+}
+
+/* ПАНЕЛЬ СОХРАНЕНИЯ - НЕ ОКНО, КОТОРОЕ МОЖНО ПОДНЯТЬ, и стоило это живого хода.
+ *
+ * Из прогона: `activate_window {title: "Открыть"}` → «macOS refused to bring Open and Save Panel Service
+ * (Pages) forward». Читается как поломка macOS. Измерено на этой машине, при живой панели на экране, -
+ * список окон агента выглядит так:
+ *
+ *   panel                       title='Save'                        active  on screen   ← настоящий лист
+ *   Open and Save Panel Service title='Save'                        minimised           ← леса
+ *   Open and Save Panel Service title='Open and Save Panel Service'  minimised           ← леса
+ *
+ * Видимая панель принадлежит ПРИЛОЖЕНИЮ, а у отдельного процесса-службы остаются свои окна, ни одного на
+ * экране. Заголовок лесов содержит то же слово и стоит В СПИСКЕ РАНЬШЕ, поэтому совпадало с ними - а поднять
+ * XPC-службу macOS не даёт никогда. */
+group('панель сохранения не подсовывается как окно, которое можно активировать');
+{
+  check('леса службы отфильтрованы - и только пока они вне экрана',
+    /if !onscreenNow && owner\.hasPrefix\("Open and Save Panel Service"\) \{ continue \}/.test(swift));
+  /* Панель, показанная отдельным окном (runModal, не begin), на экране будет - и прятать её нельзя, в неё
+   * придётся целиться. Поэтому условие двойное, и вторая половина проверяется отдельно. */
+  check('и видимую панель фильтр не трогает',
+    /let onscreenNow = \(entry\[kCGWindowIsOnscreen as String\] as\? Bool\) \?\? false/.test(swift));
+  /* Второй замок: даже если такое окно совпадёт, отказ должен объяснять, а не сообщать о поломке. */
+  check('а совпавший служебный процесс объясняется, а не отвергается',
+    /if app\.activationPolicy != \.regular \{/.test(swift)
+      && /which macOS will not bring forward on its/.test(swift));
+  check('и говорит, что с этим делать',
+    /already in front of that window\. Aim at it directly/.test(swift));
+  /* «Не нашли» - неверный ответ для окна, которое на экране: модель пойдёт открывать заново то, что открыто. */
+  check('и это отдельная ветка, до «ничего не совпало»',
+    swift.indexOf('which macOS will not bring forward on its') < swift.indexOf('nothing open matches that title or process'));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

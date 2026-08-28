@@ -67,7 +67,7 @@ export function actionBody(
   input: Record<string, any>,
   frame: ShotFrame,
 ): string | null;
-export function openList(windows: WindowLike[] | null | undefined): string | null;
+export function openList(windows: WindowLike[] | null | undefined, frame?: ShotFrame): string | null;
 /** Чтение переднего окна, подложенное к ходу после застрявшего. Правило и слова - в _brain.mjs. */
 export const PEEK_ID: string;
 export function shouldPeek(still: number): boolean;

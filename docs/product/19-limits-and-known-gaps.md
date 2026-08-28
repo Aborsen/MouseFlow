@@ -95,6 +95,21 @@ These are not bugs and no amount of work inside the current design removes them.
 - **macOS `/shot` and `/pulse` need macOS 14+.** `CGWindowListCreateImage` is *unavailable* on macOS 15, not
   merely deprecated, and cannot be kept behind an `#available`. `capture_window` is on the same floor and
   says so rather than failing obscurely.
+- **The "already open" list was in screen pixels while everything else was in the picture's.** Fixed in
+  0.18.0. `/windows` reports rectangles in screen pixels and `openList` printed them as such, one paragraph
+  below a screenshot the model clicks in — and on a 1680x1050 Mac the shot goes out 1280 wide, so the two
+  differed by 31%. A watched run said so out loud: *"the reported coordinates are offset from the
+  screenshot"*, and spent two turns on it. The window reading itself was **verified exact** by drawing the
+  agent's reported rectangles onto the real screenshot — every box landed on its element — so the list was
+  the half that disagreed. It is converted now, by the same formula everything else uses.
+- **A save panel is not a window that can be activated, and it was being offered as one.** Measured with a
+  panel on screen: the visible sheet belongs to the *application*, while the separate "Open and Save Panel
+  Service" keeps windows of its own, none on screen, and one of them carries the same title AND SORTS
+  FIRST. So `activate_window {title: "Открыть"}` matched the scaffolding and got "macOS refused to bring
+  Open and Save Panel Service (Pages) forward" — which reads as a fault in macOS and is not one. From
+  0.18.0 the off-screen windows of that service are dropped from the list, so the title reaches the real
+  sheet. Only the off-screen ones: a panel shown as its own window (`runModal` rather than `begin`) is real
+  and must stay aimable.
 - **The model does not call `read_window` on its own, so the driver calls it.** Measured across two runs
   after the tool was written, its description rewritten, and two prompt rules added telling the model to use
   it: `read_window` and `find_element` were called **zero times in both**, and both runs stalled on exactly

@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.17.0"
+let VERSION = "0.18.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -1904,6 +1904,23 @@ enum Windows {
             let owner = (entry[kCGWindowOwnerName as String] as? String) ?? ""
             if owner.isEmpty || shell.contains(owner) { continue }
 
+            let onscreenNow = (entry[kCGWindowIsOnscreen as String] as? Bool) ?? false
+            /* ЛЕСА ПАНЕЛИ СОХРАНЕНИЯ - НЕ ОКНО, КОТОРОЕ КТО-ТО ИМЕЛ В ВИДУ.
+             *
+             * Диалоги «Открыть» и «Сохранить» на macOS рисует отдельный процесс, и в списке окон он
+             * оставляет несколько СВОИХ, ни одно из которых не на экране: видимая панель - это лист на окне
+             * приложения, которое её открыло. Измерено: три записи «Open and Save Panel Service», все
+             * `minimized`, при живой панели на экране.
+             *
+             * Модели они показывались как «свёрнутое окно, которое можно активировать», и в наблюдённом
+             * прогоне она честно попробовала: `activate title=Открыть` совпало с одной из них, а поднять
+             * XPC-службу macOS не даёт - «macOS refused to bring Open and Save Panel Service (Pages)
+             * forward». Ход потрачен на окно, которого нет.
+             *
+             * Отфильтровано ТОЛЬКО когда оно вне экрана: панель, показанная отдельным окном, а не листом
+             * (runModal вместо begin), на экране будет, и её прятать нельзя - в неё придётся целиться. */
+            if !onscreenNow && owner.hasPrefix("Open and Save Panel Service") { continue }
+
             let alpha = entry[kCGWindowAlpha as String] as? Double ?? 1
             if alpha < 0.05 { continue }
 
@@ -1913,7 +1930,7 @@ enum Windows {
             if bounds.width < 40 || bounds.height < 40 { continue }
 
             let pid = pid_t(entry[kCGWindowOwnerPID as String] as? Int ?? 0)
-            let onscreen = (entry[kCGWindowIsOnscreen as String] as? Bool) ?? false
+            let onscreen = onscreenNow
 
             /* The title needs Screen Recording. Without it every window reports an empty name, so the app
              * falls back to the owner - which is a real answer ("Microsoft Outlook") rather than a blank row
@@ -2013,6 +2030,8 @@ enum Windows {
     static func activate(title: String?, process: String?) -> String? {
         let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         let asked = [process, title].compactMap { $0 }.filter { !$0.isEmpty }
+        /* Совпавшее окно, которое принадлежит процессу без собственного места в Dock. См. ниже. */
+        var helper: String?
 
         for wanted in asked {
             let want = squashed(wanted)
@@ -2025,7 +2044,18 @@ enum Windows {
             /* By window title, which is what the model has been reading. The window list carries the owning
              * pid, so the title leads to the application without a second search. */
             for window in list() where squashed(window.title).contains(want) {
-                if let app = NSRunningApplication(processIdentifier: window.pid) { return raise(app) }
+                guard let app = NSRunningApplication(processIdentifier: window.pid) else { continue }
+                /* НЕ ВСЁ, У ЧЕГО ЕСТЬ ОКНО, МОЖНО ВЫВЕСТИ ВПЕРЁД. Служебный процесс - панель сохранения,
+                 * системный диалог - живёт без activation policy `.regular`, и activate() у него всегда
+                 * возвращает false. Отказ «macOS refused to bring … forward» читается как поломка macOS, а
+                 * на деле это окно, которое и так впереди: панель - лист на окне того, кто её открыл.
+                 * Запоминается и пропускается, чтобы шанс достался владельцу, а если владельца не нашлось -
+                 * чтобы сказать об этом словами, из которых видно, что делать. */
+                if app.activationPolicy != .regular {
+                    if helper == nil { helper = app.localizedName ?? window.process }
+                    continue
+                }
+                return raise(app)
             }
         }
 
@@ -2039,6 +2069,15 @@ enum Windows {
                     return raise(app)
                 }
             }
+        }
+
+        /* Совпало, но поднять нечего - и это НЕ «не нашли». Модель, которой сказали «ничего не совпало»,
+         * пойдёт открывать заново то, что уже открыто; ей надо сказать, что это такое и что с этим делать. */
+        if let helper {
+            return "\"\(asked.first ?? "")\" belongs to \(helper), which macOS will not bring forward on its "
+                + "own - a system open/save panel is a sheet on the window that opened it, and it is "
+                + "already in front of that window. Aim at it directly: click it, or read the window to "
+                + "see what it calls things."
         }
 
         /* Says what IS open. "Nothing matches" leaves the caller guessing, and a model's next guess costs a

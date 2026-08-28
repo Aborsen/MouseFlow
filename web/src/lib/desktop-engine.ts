@@ -118,9 +118,10 @@ export interface RunStep {
 }
 
 /** What is already open, in one line each - the mistake a picture cannot prevent. */
-export async function openWindows(machine: Machine): Promise<string | null> {
+export async function openWindows(machine: Machine, frame?: ShotFrame): Promise<string | null> {
   try {
-    return openList((await machine.windows()).windows);
+    /* Кадр - чтобы прямоугольники приехали в пикселях картинки, а не экрана: см. openList. */
+    return openList((await machine.windows()).windows, frame);
   } catch (_) {
     return null;                          // an agent from before /windows runs without the list
   }
@@ -373,7 +374,7 @@ async function runWave(o: {
     }
 
     forgetOldPictures(messages as { content?: unknown }[]);
-    messages.push(screenMessage(frame, await openWindows(machine), saw));
+    messages.push(screenMessage(frame, await openWindows(machine, frame), saw));
     saw = null;
 
     stepNo++;

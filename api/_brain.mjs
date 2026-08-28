@@ -663,10 +663,30 @@ export function actionBody(name, input, frame) {
  *
  * Not for a minimised window. Windows reports a minimised window at -32000,-32000, and a coordinate that
  * looks like a coordinate but means "nowhere" is worse than no coordinate: `state` already says minimised,
- * which is the whole truth about where it is. */
-export function openList(windows) {
+ * which is the whole truth about where it is.
+ *
+ * И В ПИКСЕЛЯХ СКРИНШОТА, а не экрана - с 0.18.0. Прямоугольники приезжают от агента экранными, и до сих
+ * пор такими и печатались, с оговоркой «это экранные пиксели». Оговорка не работает: в одном сообщении с
+ * картинкой оказывались ДВЕ системы координат, а модель кликает в третью - в ту, что у картинки. На
+ * мониторе 1680x1050 снимок уходит шириной 1280, то есть масштаб 0.76, и окно «1680x1050» в списке на
+ * 31% больше того же окна на картинке.
+ *
+ * Ровно та ошибка, о которой пишет actionBody («разговор с двумя системами координат и промах на любом
+ * масштабированном экране»), и наблюдённая: в живом прогоне модель написала «the reported coordinates are
+ * offset from the screenshot» и потратила на это два хода. Проверено рисованием: чтение окна возвращает
+ * координаты ТОЧНО - каждая рамка легла на свой элемент, - так что расходился именно этот список.
+ *
+ * Без кадра ничего не переводится: вызывающий, который его не дал, получает прежние экранные числа, и
+ * подпись под ними это говорит. */
+export function openList(windows, frame) {
   const list = Array.isArray(windows) ? windows : [];
   if (!list.length) return null;
+  const scale = Number(frame && frame.scale) > 0 ? Number(frame.scale) : null;
+  const ox = Number(frame && frame.originX) || 0;
+  const oy = Number(frame && frame.originY) || 0;
+  const toShotX = (v) => (scale === null ? Math.round(v) : Math.round((v - ox) * scale));
+  const toShotY = (v) => (scale === null ? Math.round(v) : Math.round((v - oy) * scale));
+  const toShotSize = (v) => (scale === null ? Math.round(v) : Math.round(v * scale));
   return list.slice(0, 24).map((w) => {
     /* DIALOG SAID OUT LOUD, from agent 0.14.0. Until then an owned window was filtered out of this list
      * entirely, so a model looking at a screen with a modal dialog on it saw no dialog in the list, had no
@@ -675,7 +695,8 @@ export function openList(windows) {
     const state = (w.dialog ? 'dialog, ' : '')
       + (w.active ? 'in front' : w.minimized ? 'minimised' : 'open behind');
     const box = !w.minimized && Number(w.w) > 0 && Number(w.h) > 0
-      ? `, ${Math.round(Number(w.w))}x${Math.round(Number(w.h))} at ${Math.round(Number(w.x) || 0)},${Math.round(Number(w.y) || 0)}`
+      ? `, ${toShotSize(Number(w.w))}x${toShotSize(Number(w.h))} at `
+        + `${toShotX(Number(w.x) || 0)},${toShotY(Number(w.y) || 0)}`
       : '';
     return `- ${w.title}  [${w.process || '?'}, ${state}${box}]`;
   }).join('\n');
@@ -723,8 +744,8 @@ export function screenMessage(frame, open, saw) {
         text: `The screen now, ${frame.w} by ${frame.h} pixels.` +
           (open
             ? '\n\nAlready open - use activate_window rather than opening any of these again, and '
-              + 'capture_window takes any of these titles. Sizes and positions are in screen pixels, so '
-              + `they say what is covering what:\n${open}`
+              + 'capture_window takes any of these titles. Sizes and positions are in the SAME pixels as '
+              + `this picture, so they say what is covering what and can be clicked in:\n${open}`
             : '')
           /* Слова здесь, а не в драйвере: два драйвера, сказавшие это по-разному, научат модель двум
            * разным привычкам - ровно та причина, по которой здесь же живут waitReport и actionSaid. */

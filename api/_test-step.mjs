@@ -745,7 +745,19 @@ group('the window list carries where each window is');
   const sent = JSON.stringify(ask.seen[0].messages);
   /* `/windows` has always sent the rectangle and openList has always thrown it away. Two things a picture
    * cannot answer: what is covering the window you need, and where one is when it is not visible at all. */
-  check('a visible window says its size and position', sent.includes('1920x1032 at 0,0'), sent.slice(-400));
+  /* И В ПИКСЕЛЯХ КАРТИНКИ, а не экрана. SHOT снят с масштабом 0.5, значит окно 1920x1032 на экране - это
+   * 960x516 на том снимке, который лежит в этом же сообщении и в котором модель кликает.
+   *
+   * Наблюдено на живом прогоне: модель написала «the reported coordinates are offset from the screenshot» и
+   * потратила на это два хода. Экранные числа рядом с картинкой - это ровно то, о чём предупреждает
+   * actionBody: разговор с двумя системами координат и промах на любом масштабированном экране. На маке
+   * 1680x1050 снимок уходит шириной 1280, то есть расхождение 31%. */
+  check('a visible window says its size and position, in the picture\'s own pixels',
+    sent.includes('960x516 at 0,0'), sent.slice(-400));
+  check('and the screen\'s own numbers are not also in there',
+    !sent.includes('1920x1032'), sent.slice(-400));
+  check('and the line above them says which pixels they are',
+    sent.includes('SAME pixels as this picture'));
   /* Windows puts a minimised window at -32000,-32000. A coordinate that looks like one and means "nowhere"
    * is worse than none: `minimised` is already the whole truth about where it is. */
   check('and a minimised one says only that it is minimised',
@@ -900,7 +912,10 @@ group('the window list is what capture_window and activate_window are aimed with
   });
   const sent = JSON.stringify(ask.seen[0].messages);
   check('the model is told those titles are what capture takes', sent.includes('capture_window takes any of these titles'));
-  check('and the rectangle is still there for working out what covers what', sent.includes('320x246 at 480,221'));
+  /* Тот же перевод, что и выше: 320x246 в 480,221 на экране при масштабе 0.5 - это 160x123 в 240,111 на
+   * картинке. Прямоугольник никуда не делся, он просто наконец в тех же пикселях, что и всё остальное. */
+  check('and the rectangle is still there for working out what covers what, converted like everything else',
+    sent.includes('160x123 at 240,111'), sent.slice(-300));
 }
 
 group('aiming by name, and the geometry that makes it clickable');

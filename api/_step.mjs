@@ -325,7 +325,7 @@ export async function advance({ loop, shot, windows, results, ask }) {
   }
 
   forgetOldPictures(loop.messages);
-  loop.messages.push(screenMessage(shot, openList(windows), saw));
+  loop.messages.push(screenMessage(shot, openList(windows, shot), saw));
   loop.stepNo += 1;
   loop.turn += 1;
 
