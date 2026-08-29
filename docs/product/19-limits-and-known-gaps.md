@@ -431,8 +431,8 @@ What is still open, measured rather than estimated:
 
 | | desktop | extension |
 |---|---|---|
-| actions the model can ask for | 21 | ~~9~~ 13 |
-| sees the screen | screenshots | DOM only — no `captureVisibleTab` anywhere |
+| actions the model can ask for | 21 | ~~9~~ 16 |
+| sees the screen | screenshots | DOM by default, `capture_page` on request — see below |
 | checkpoints | `reached_checkpoint` plus a gate the loop waits on | ~~none~~ the same tool, plan and gate, answered in the panel |
 | gives up when nothing changes | warns at 3, stops at 6 | ~~no equivalent~~ same two thresholds, measured on the DOM |
 | caps the actions in one turn | `BATCH_MAX` 6, nothing after a terminal action | ~~none~~ the same 6, and nothing after `wait`/`navigate`/`open_tab` |
@@ -555,10 +555,24 @@ is its own piece of work. The queue marks the job `#goal.browser` rather than `#
 only one surface can do has to say so, or the other takes it and answers "I do not understand", and the
 turn is spent.
 
-Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
-`open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and
-`activate_window` are desktop-only by definition; `capture_window` needs the extension to see pixels at
-all, which it deliberately does not.
+**Finding what the snapshot did not show, and looking with eyes when the elements say nothing.** The
+snapshot is capped and admits it — "60 of 840" — and until now there was no way to ask about the other 780
+except to scroll and look again, a turn per attempt. `find_element` searches the whole page, exact name
+first, then the same name in any case, then a part of one, and when several match it returns them all
+rather than choosing: two controls with one name is something to know before clicking, not after. Its refs
+are ADDED to the ones already held rather than replacing them — a fresh snapshot would renumber everything,
+so finding one control would cost every other.
+
+`capture_page` is the browser's answer to `capture_window`, and deliberately not its twin: the desktop one
+saves a file and puts it on the clipboard, this one exists so the model can look. It is the expensive route
+and its description says so — elements carry names and refs you can act on, a picture carries neither — but
+some things are not in the DOM at all, the Excel Online grid being the example this repository already
+names, and a look before an irreversible click is worth its price. Only the visible part of the tab: that
+is what the API captures, and promising more would promise what it does not do. Old pictures are dropped
+from the history whole rather than trimmed, the way `forgetOldPictures` does it on the desktop.
+
+Still missing: `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`, `open_app`, `activate_window` and
+`wait_for_window`. Of those, `open_app` and `activate_window` are desktop-only by definition.
 
 **Not a gap:** the recording format. The extension anchors a step to a selector and a tab, the desktop to a
 coordinate plus `#ctx`. That is a different anchor for a different surface, and the browser's is the better

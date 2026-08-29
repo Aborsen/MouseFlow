@@ -1346,6 +1346,9 @@ const TRACE_MAX_TEXT = 300;
 // read_page returns a whole page snapshot; storing it would swamp the trace and tell you little.
 function summariseResult(name, result) {
   if (result == null) return null;
+  /* Никакого base64 в следе. Он пишется в local storage и читается человеком; картинка на мегабайт
+   * похоронила бы там и себя, и всё вокруг. */
+  if (result.image) return { picture: result.mediaType || 'image/png', url: result.url || null };
   /* An action now carries the page back with it. Recording that whole snapshot in the trace would
    * bury the step it belongs to, so it is reduced the same way read_page's is. */
   if (name !== 'read_page' && result.page) {
@@ -1609,6 +1612,48 @@ async function runAgentTool(name, input) {
       try { await pollComplete(created.id); } catch (_) { /* the next read_page will show it */ }
       return { ok: true, result: { opened: input.url } };
     }
+    /* Спросить про НАЗВАННОЕ, когда снимок его не показал. Идёт в тот же кадр, что и действия: ссылки
+     * что-то значат только там, где их выдали. */
+    case 'find_element': {
+      const tabId = await agentTab();
+      const res = await send(tabId, { mf: 'agent/find', name: input && input.name }, agent.frameId);
+      if (!res || !res.ok) return { ok: false, error: (res && res.error) || 'no response from the page' };
+      const out = res.result;
+      if (!out.matches) {
+        return { ok: false,
+          error: `nothing on this page is called "${out.looked}". Try read_page for what is there, or a `
+            + 'shorter part of the name.' };
+      }
+      /* НЕСКОЛЬКО НЕ СХЛОПЫВАЮТСЯ В ОДНО - см. findNamed. Две кнопки с одним именем это то, что надо
+       * знать ДО клика. */
+      return { ok: true, result: out };
+    }
+
+    /* КАРТИНКА СТРАНИЦЫ - и это дорогой инструмент рядом с дешёвым.
+     *
+     * Расширение видит DOM, а не пиксели, и это осознанно: список элементов с именами точнее снимка и
+     * стоит несравнимо меньше. Но есть то, чего в DOM нет вовсе - сетка Excel Online рисует себя в
+     * canvas, - и есть моменты, когда посмотреть глазами надо перед односторонним действием. Поэтому
+     * инструмент есть, а в его описании сказано, что обычный путь другой.
+     *
+     * Видимая часть вкладки, а не вся страница: захватывать можно только то, что на экране, и обещать
+     * большее значило бы обещать то, чего API не делает. */
+    case 'capture_page': {
+      const tabId = await agentTab();
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (!tab) return { ok: false, error: 'there is no tab to photograph' };
+      let dataUrl;
+      try {
+        dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      } catch (err) {
+        return { ok: false, error: 'the page could not be photographed: ' + err.message };
+      }
+      const comma = String(dataUrl || '').indexOf(',');
+      if (comma < 0) return { ok: false, error: 'the page could not be photographed' };
+      return { ok: true, result: { image: dataUrl.slice(comma + 1), mediaType: 'image/png',
+        url: tab.url || null } };
+    }
+
     case 'click':
     case 'hover':
     case 'type_text':

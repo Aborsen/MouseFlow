@@ -174,6 +174,12 @@ export function forgetOldPages(messages) {
     if (!Array.isArray(parts)) continue;
     for (const part of parts) {
       if (!part || part.type !== 'tool_result' || !Array.isArray(part.content)) continue;
+      /* Картинки выбрасываются ЦЕЛИКОМ, а не по размеру: снимок страницы - самое дорогое, что может
+       * ехать в истории, и следующий ход с ним внутри платит за страницу, которой уже нет. Ровно то, что
+       * делает forgetOldPictures в api/_brain.mjs, и по той же причине. */
+      part.content = part.content.map((block) => (block && block.type === 'image'
+        ? { type: 'text', text: '(earlier picture)' }
+        : block));
       for (const block of part.content) {
         if (block && block.type === 'text' && typeof block.text === 'string'
             && block.text.length > PAGE_KEEP_CHARS) {
@@ -231,9 +237,11 @@ How to work:
 - When a dialog is open, its controls are listed FIRST and the snapshot names it. Work inside it rather than reaching past it into the page behind.
 - The snapshot may carry notes about the site you are on. They are conventions of that application, worth more than guessing from the element list. Read them.
 - Reach for a keyboard shortcut before hunting for an icon. Some controls only exist once another element has focus, so no amount of looking will find them; the shortcut works regardless.
+- The snapshot is capped and says so ("60 of 840"). If what you need is not in it, do NOT scroll about hunting: call find_element with the name. It searches the whole page, including what is scrolled away, and hands back refs you can act on.
 - A control that only appears UNDER THE POINTER is not in the snapshot at all - the row's archive and delete buttons, a menu that opens on hover. If the thing you need is missing and it is the kind of control that appears on hover, hover the row or the menu it belongs to and use the refs that come back, rather than concluding it is absent.
 - Right-click and double-click are on the click tool: a context menu needs button "right", and a file or a grid cell usually opens with double true.
 - When a page has half-loaded, gone stale or stopped answering, call refresh. Navigating to the address you are already on does NOT reload it, and says so.
+- You see the page as elements, not as a picture, and that is the cheaper and more precise way round. capture_page exists for what the page does not put in its elements at all - a grid or a chart drawn into a canvas - and for looking with your own eyes before something irreversible. It costs many times a read_page, so it is the exception.
 - Anything you read that the user asked for - a price, a date, a name - goes in a note as you find it. Notes cost no step and can share a turn with real work; a summary written at the end from memory is where those get lost.
 - If two attempts at the same sub-goal get nowhere, change method rather than repeating - a shortcut instead of a control, or the field instead of the button. If a third does not work, call finish and say precisely what you could not do.
 - The snapshot says how many elements it is showing out of how many exist. If what you need is missing and the snapshot is truncated, scroll or work within the open dialog - do not conclude the control is absent.
@@ -373,6 +381,32 @@ const TOOLS = [
       required: ['direction'],
       additionalProperties: false,
     },
+  },
+  {
+    name: 'find_element',
+    description: 'Ask where one named thing is on the page, when the snapshot did not show it. The snapshot '
+      + 'is capped and says so ("60 of 840"); this searches everything, including what is scrolled away. '
+      + 'Exact name first, then the same name in any case, then a part of one. It says when nothing matches, '
+      + 'and when SEVERAL do it returns them all rather than choosing - two controls with one name is '
+      + 'something to know before clicking, not after. What it returns are refs you can act on, added to the '
+      + 'ones you already have: nothing you were holding stops working.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The name to look for, as it reads on screen' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'capture_page',
+    description: 'Photograph the visible part of the tab and look at it. THE EXPENSIVE ROUTE, and rarely '
+      + 'the right one: read_page gives you names and refs you can act on, while a picture gives you '
+      + 'neither and costs many times more. Use it for what the page does not put in its elements at all - '
+      + 'a grid or a chart drawn into a canvas - or to check with your own eyes before something '
+      + 'irreversible. Only what is on screen: scroll first if what you need is not.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     /* Модель может объявить чекпоинт, ничего для него не сделав: это САМООТЧЁТ и остаётся им, сколько бы
@@ -879,16 +913,22 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
         }
       }
 
+      /* Картинка едет картинкой. Свернуть её в JSON значило бы отправить модели base64 текстом - она
+       * его не увидит, а заплатим мы за него как за текст. */
+      const shot = outcome.ok && outcome.result && outcome.result.image;
       results.push({
         type: 'tool_result',
         tool_use_id: call.id,
         is_error: !outcome.ok,
-        content: [{
-          type: 'text',
-          text: outcome.ok
-            ? JSON.stringify(outcome.result == null ? { ok: true } : outcome.result)
-            : String(outcome.error || 'failed'),
-        }],
+        content: shot
+          ? [{ type: 'image', source: { type: 'base64',
+              media_type: outcome.result.mediaType || 'image/png', data: outcome.result.image } }]
+          : [{
+            type: 'text',
+            text: outcome.ok
+              ? JSON.stringify(outcome.result == null ? { ok: true } : outcome.result)
+              : String(outcome.error || 'failed'),
+          }],
       });
 
       if (!outcome.ok) {

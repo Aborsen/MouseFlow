@@ -1302,6 +1302,59 @@
    * A person looks at the dialog that just opened, not the page behind it. So an open dialog's
    * controls come first, then whatever is actually on screen, then the rest.
    */
+  /* НАЙТИ ОДНО НАЗВАННОЕ, когда снимок его не показал.
+   *
+   * Снимок ограничен - он честно пишет «60 of 840», - и до сих пор у модели не было способа спросить про
+   * то, что в эти 60 не попало. Оставалось прокручивать и смотреть снова, по ходу на попытку.
+   *
+   * ССЫЛКИ ДОБАВЛЯЮТСЯ, А НЕ ЗАМЕНЯЮТСЯ, и это главное решение здесь. Пересъёмка выдала бы новые номера
+   * и обесценила все, которые модель уже держит в голове, - то есть находка одного элемента стоила бы
+   * потери остальных. Найденное дописывается в конец того же списка, snapshotId не меняется, и всё, что
+   * работало до вызова, работает после.
+   *
+   * ТРИ ПОПЫТКИ, ОТ ТОЧНОГО К ШИРОКОМУ, и порядок тот же, что у десктопного find_element: точное имя,
+   * затем без учёта регистра, затем вхождение. И НЕСКОЛЬКО СОВПАДЕНИЙ НЕ СХЛОПЫВАЮТСЯ В ОДНО: две кнопки
+   * с одним именем - это то, что надо знать ДО клика, а не после. */
+  function findNamed(want) {
+    const wanted = String(want || '').trim();
+    if (!wanted) return { ok: false, error: 'what should it look for?' };
+    const lower = wanted.toLowerCase();
+    const dialog = openDialog();
+    const seen = new Set();
+    const candidates = [...document.querySelectorAll(AGENT_SELECTOR)].filter((el) => {
+      if (seen.has(el) || !isVisible(el)) return false;
+      seen.add(el);
+      return true;
+    });
+    const band = (el) => (dialog && dialog.contains(el) ? 0 : onScreen(el) ? 1 : 2);
+    candidates.sort((a, b) => band(a) - band(b));
+
+    const named = candidates.map((el) => ({ el, name: accessibleName(el) }));
+    let hits = named.filter((c) => c.name === wanted);
+    if (!hits.length) hits = named.filter((c) => c.name.toLowerCase() === lower);
+    if (!hits.length) hits = named.filter((c) => c.name.toLowerCase().includes(lower));
+
+    const found = hits.slice(0, 8).map(({ el, name }) => {
+      /* Уже в списке - берём его номер, а не заводим второй на тот же элемент. */
+      let ref = refs.indexOf(el);
+      if (ref < 0) { ref = refs.length; refs.push(el); }
+      const type = (el.getAttribute('type') || '').toLowerCase();
+      const entry = {
+        ref,
+        tag: el.tagName.toLowerCase(),
+        role: el.getAttribute('role') || type || null,
+        name: name.slice(0, 90) || null,
+        onScreen: onScreen(el),
+        inDialog: !!(dialog && dialog.contains(el)),
+      };
+      if (/^(input|textarea|select)$/i.test(el.tagName) && type !== 'password') {
+        entry.value = String(el.value == null ? '' : el.value).slice(0, 90);
+      }
+      return entry;
+    });
+    return { ok: true, result: { looked: wanted, matches: found.length, of: hits.length, found } };
+  }
+
   function snapshot(limit, compact) {
     refs = [];
     snapshotSeq++;
@@ -1611,6 +1664,12 @@
           '[aria-busy="true"],progress,[role="progressbar"],.spinner,.loading,[class*="spinner"],[class*="loading"]'
         ).length,
       });
+      return;
+    }
+
+    if (msg.mf === 'agent/find') {
+      trackOffset(true);
+      respond(findNamed(msg.name));
       return;
     }
 

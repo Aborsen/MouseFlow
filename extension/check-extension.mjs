@@ -1354,5 +1354,108 @@ group('а цель без текста - названный отказ, а не 
     show(posted[0]));
 }
 
+group('find_element: ищет то, чего снимок не показал, и не выбирает за человека');
+{
+  const src = readFileSync(new URL('./content.js', import.meta.url), 'utf8');
+  const at = src.indexOf('function findNamed(');
+  let depth = 0;
+  let body = '';
+  for (let i = src.indexOf('{', at); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) { body = src.slice(at, i + 1); break; }
+  }
+  const el = (name, extra = {}) => Object.assign({
+    tagName: 'BUTTON', getAttribute: () => null, value: null,
+  }, extra, { __name: name });
+  const make = (list, refs) => {
+    // eslint-disable-next-line no-new-func
+    return new Function('document', 'AGENT_SELECTOR', 'isVisible', 'onScreen', 'openDialog',
+      'accessibleName', 'refs', body + '; return findNamed;')(
+      { querySelectorAll: () => list }, 'x', () => true, () => true, () => null,
+      (e) => e.__name, refs);
+  };
+
+  const refs = [];
+  const buttons = [el('Send'), el('Send later'), el('Archive')];
+  let find = make(buttons, refs);
+  const one = find('Archive');
+  check('точное имя находится', one.ok && one.result.matches === 1, show(one));
+  check('и возвращается ссылка, по которой можно действовать',
+    one.result.found[0].ref === 0 && refs[0] === buttons[2], show(one.result.found[0]));
+
+  /* НЕСКОЛЬКО НЕ СХЛОПЫВАЮТСЯ В ОДНО: две кнопки с одним именем - это то, что надо знать ДО клика. */
+  /* Ищем то, чему ТОЧНОГО совпадения нет: с «Send» первая же ступень нашла бы ровно одну кнопку, и
+   * проверка ничего не сказала бы про вхождение. */
+  const many = find('Sen');
+  check('вхождение находит обе, а не первую', many.result.matches === 2,
+    show(many.result.found.map((f) => f.name)));
+  /* Точное имя важнее вхождения: «Send» есть и в «Send later», но точное совпадение одно. */
+  const exact = make([el('Send later'), el('Send')], []) ('Send');
+  check('точное совпадение важнее вхождения',
+    exact.result.matches === 1 && exact.result.found[0].name === 'Send', show(exact.result.found));
+
+  const none = find('Delete forever');
+  check('чего нет - того нет, и это сказано', none.ok && none.result.matches === 0, show(none.result));
+
+  /* ССЫЛКИ ДОБАВЛЯЮТСЯ, А НЕ ЗАМЕНЯЮТСЯ: найденное не должно обесценивать то, что модель уже держит. */
+  const kept = [buttons[0]];
+  find = make(buttons, kept);
+  const added = find('Archive');
+  check('уже известное сохраняет свой номер',
+    kept[0] === buttons[0] && added.result.found[0].ref === 1, show({ refs: kept.length, added: added.result.found[0].ref }));
+  const again = find('Send');
+  check('и найденное дважды не заводит второй ссылки на тот же элемент',
+    again.result.found[0].ref === 0, show(again.result.found[0]));
+}
+
+group('capture_page: картинка едет картинкой и забывается как картинка');
+{
+  const { runGoal, forgetOldPages } = await import('./agent.js');
+  let sent = null;
+  let turn = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    const body = JSON.parse(init.body);
+    turn++;
+    if (turn > 1) {
+      sent = body.messages;
+      return reply({ stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'looked' } }] });
+    }
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 'c', name: 'capture_page', input: {} }] });
+  };
+  await runGoal({
+    goal: 'look at it', apiKey: null, authToken: 'mf_test',
+    execute: async () => ({ ok: true, result: { image: 'AAAA', mediaType: 'image/png', url: 'u' } }),
+    onEvent: () => {}, isAborted: () => false,
+  });
+  const blocks = (sent || []).flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+    .flatMap((p) => (p && Array.isArray(p.content) ? p.content : []));
+  /* Свёрнутая в JSON картинка это base64 текстом: модель его не увидит, а заплатим мы за него как за
+   * текст. */
+  check('снимок доехал до модели картинкой, а не текстом',
+    blocks.some((b) => b.type === 'image' && b.source && b.source.data === 'AAAA'),
+    show(blocks.map((b) => b.type)));
+
+  const page = 'z'.repeat(3000);
+  const msgs = [
+    { role: 'user', content: 'go' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'capture_page', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a',
+      content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: page } }] }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'b', name: 'read_page', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b',
+      content: [{ type: 'text', text: 'fresh' }] }] },
+  ];
+  forgetOldPages(msgs);
+  check('старая картинка выброшена целиком, а не урезана',
+    msgs[2].content[0].content[0].type === 'text'
+      && msgs[2].content[0].content[0].text === '(earlier picture)',
+    show(msgs[2].content[0].content[0]));
+  check('и пара tool_use/tool_result не порвана', msgs[2].content[0].tool_use_id === 'a',
+    show(msgs[2].content[0].tool_use_id));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
