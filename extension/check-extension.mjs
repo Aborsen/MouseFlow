@@ -1275,5 +1275,31 @@ group('и будильник переживает перезагрузку ра�
     show(chrome.alarms.made));
 }
 
+group('и воркер держится с ПЕРВОЙ строки заявки, а не с той, где нашлась работа');
+{
+  /* Наблюдалось живьём: работу забрали и после этого не произошло ничего - ни рамки, ни вкладки, ни
+   * отчёта, - а на аккаунте она осталась висеть «claimed». Обработчик chrome.alarms.onAlarm промисов не
+   * ждёт, так что всё, что идёт после его возврата, живёт ровно до тех пор, пока Chrome не решит
+   * выгрузить воркер. */
+  const src = readFileSync(new URL('./background.js', import.meta.url), 'utf8');
+  const at = src.indexOf('async function claimOnce(');
+  let depth = 0;
+  let body = '';
+  for (let i = src.indexOf('{', at); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) { body = src.slice(at, i + 1); break; }
+  }
+  const bare = body.replace(/\/\*[\s\S]*?\*\//g, '');
+  check('заявка найдена', bare.length > 200, String(bare.length));
+  /* Ни одного await прежде удержания: именно порядок этих двух строк и был отказом. */
+  check('удержание взято раньше первого await',
+    bare.indexOf('holdWorker(true)') > 0
+      && (bare.indexOf('await') === -1 || bare.indexOf('holdWorker(true)') < bare.indexOf('await')),
+    `hold at ${bare.indexOf('holdWorker(true)')}, first await at ${bare.indexOf('await')}`);
+  /* И отпущено в finally - незакрытое удержание это воркер, который не выгрузят никогда. */
+  check('и отпускается в finally, а не на удачном пути',
+    /finally \{\s*holdWorker\(false\);\s*\}/.test(bare), 'not in finally');
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

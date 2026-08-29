@@ -2362,28 +2362,35 @@ async function carryJob(token, job) {
 }
 
 async function claimOnce() {
-  if (!(await takingWork())) return;
-  const token = await syncToken();
-  if (!token) return;
-  const busy = busyWith();
-  if (busy) return;   // молча: работа никуда не денется, а следующий будильник через минуту
-
-  let job = null;
-  try {
-    const res = await fetch(CLAIM_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
-      body: JSON.stringify({ kind: 'browser', worker: 'extension', wait: 0 }),
-    });
-    if (!res.ok) return;
-    const body = await res.json();
-    job = body && body.job;
-  } catch (_) {
-    return;   // сеть, а не работа: следующий будильник попробует снова
-  }
-  if (!job) return;
+  /* УДЕРЖАНИЕ БЕРЁТСЯ ПЕРВОЙ СТРОКОЙ, ДО ЛЮБОГО await, и это не перестраховка.
+   *
+   * Обработчик chrome.alarms.onAlarm промисов не ждёт: он возвращает управление сразу, и с этого момента
+   * Chrome вправе выгрузить сервис-воркер. Удержание стояло ПОСЛЕ заявки - то есть и сам запрос за
+   * работой, и всё, что за ним, шли без него. Наблюдалось живьём: работа была забрана и после этого не
+   * произошло ничего - ни рамки, ни вкладки, ни отчёта; на аккаунте она осталась висеть «claimed».
+   *
+   * Отпускается в finally, потому что незакрытое удержание - это воркер, который не выгрузят никогда. */
   holdWorker(true);
   try {
+    if (!(await takingWork())) return;
+    const token = await syncToken();
+    if (!token) return;
+    if (busyWith()) return;   // молча: работа никуда не денется, а следующий будильник через минуту
+
+    let job = null;
+    try {
+      const res = await fetch(CLAIM_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+        body: JSON.stringify({ kind: 'browser', worker: 'extension', wait: 0 }),
+      });
+      if (!res.ok) return;
+      const body = await res.json();
+      job = body && body.job;
+    } catch (_) {
+      return;   // сеть, а не работа: следующий будильник попробует снова
+    }
+    if (!job) return;
     await carryJob(token, job);
   } finally {
     holdWorker(false);
