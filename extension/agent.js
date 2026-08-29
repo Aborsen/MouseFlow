@@ -138,7 +138,10 @@ const stillStopped = (streak) =>
  * поверхности, а не недосмотр: на десктопе прокрутка уводит из-под прицела координаты, а здесь ссылки
  * указывают на элементы и прокрутку переживают. */
 const BATCH_MAX = 6;
-const TERMINAL = new Set(['wait', 'navigate', 'open_tab']);
+/* hover здесь по той же причине, что и у десктопа, только выраженной прямее: наводят ИМЕННО ПОТОМУ, что
+ * страница сейчас изменится - откроется меню, появится кнопка. Всё, что за наведением в том же ходу,
+ * целилось бы по странице ДО этого. refresh - тем более. */
+const TERMINAL = new Set(['wait', 'navigate', 'open_tab', 'hover', 'refresh']);
 
 /** Почему это действие не выполняется в том же ходу, или null - если выполняется. */
 export function notBatched(sofar, next) {
@@ -228,6 +231,10 @@ How to work:
 - When a dialog is open, its controls are listed FIRST and the snapshot names it. Work inside it rather than reaching past it into the page behind.
 - The snapshot may carry notes about the site you are on. They are conventions of that application, worth more than guessing from the element list. Read them.
 - Reach for a keyboard shortcut before hunting for an icon. Some controls only exist once another element has focus, so no amount of looking will find them; the shortcut works regardless.
+- A control that only appears UNDER THE POINTER is not in the snapshot at all - the row's archive and delete buttons, a menu that opens on hover. If the thing you need is missing and it is the kind of control that appears on hover, hover the row or the menu it belongs to and use the refs that come back, rather than concluding it is absent.
+- Right-click and double-click are on the click tool: a context menu needs button "right", and a file or a grid cell usually opens with double true.
+- When a page has half-loaded, gone stale or stopped answering, call refresh. Navigating to the address you are already on does NOT reload it, and says so.
+- Anything you read that the user asked for - a price, a date, a name - goes in a note as you find it. Notes cost no step and can share a turn with real work; a summary written at the end from memory is where those get lost.
 - If two attempts at the same sub-goal get nowhere, change method rather than repeating - a shortcut instead of a control, or the field instead of the button. If a third does not work, call finish and say precisely what you could not do.
 - The snapshot says how many elements it is showing out of how many exist. If what you need is missing and the snapshot is truncated, scroll or work within the open dialog - do not conclude the control is absent.
 - Use one approach at a time. Do not navigate to a URL that already opens something AND also click the control that opens it; that leaves two of whatever it was.
@@ -275,11 +282,40 @@ const TOOLS = [
   },
   {
     name: 'click',
-    description: 'Click one element from the latest read_page snapshot.',
+    description: 'Click one element from the latest read_page snapshot. `button` and `double` are there for the cases an ordinary click cannot reach: a context menu needs the right button, and a grid cell or a file usually opens on a double click.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'integer', description: 'The ref number from the latest snapshot' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'Which button. Left when omitted. Right opens the context menu.' },
+        double: { type: 'boolean', description: 'True for a double click.' },
+      },
+      required: ['ref'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'hover',
+    description: 'Move the pointer onto an element and leave it there, without clicking. For controls that only exist under the pointer - a row\'s archive and delete buttons, a menu that opens on hover, a tooltip. Those controls are NOT in the snapshot until something hovers, so there is no ref to ask for and no amount of reading will find them. The page as it is afterwards comes back, with whatever appeared in it. This reaches anything the page does in JavaScript on pointerover or mouseover, which is most of them; it does NOT reach a menu drawn purely by the CSS :hover rule, which no synthetic event can trigger. If nothing new appears, that is the case you are in - look for a keyboard route or a click instead of hovering again.',
     input_schema: {
       type: 'object',
       properties: { ref: { type: 'integer', description: 'The ref number from the latest snapshot' } },
       required: ['ref'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'refresh',
+    description: 'Reload the current tab and wait for it to load. The ordinary repair when a page has half-loaded, gone stale or stopped responding. Every ref from before it is stale afterwards, so read_page next.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'note',
+    description: 'Write one line into the record of this run - something you read and the user will want, like a price, a date or a name. Does nothing to the page, costs no action, and may share a turn with real work. Not a message to the user: nobody answers it and the run does not pause.',
+    input_schema: {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'One line. What you found, not what you are about to do.' } },
+      required: ['text'],
       additionalProperties: false,
     },
   },
@@ -613,6 +649,25 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
       if (isAborted()) return { done: false, stepNo };
 
       if (call.name === 'finish') { ended = call; break; }
+
+      /* ЗАМЕТКА НИЧЕГО НЕ ДЕЛАЕТ СО СТРАНИЦЕЙ, поэтому и не считается действием: она не идёт в правило
+       * пачки, не трогает отпечаток и не обрывает ход. Иначе прогон «посмотри пять объявлений и назови
+       * цены» тратил бы на каждую цену целый ход, а сами цены доживали бы только до итогового
+       * предложения. Десктоп поступает ровно так же (note в api/_brain.mjs) и по той же причине. */
+      if (call.name === 'note') {
+        const line = String((call.input && call.input.text) || '').trim().slice(0, 300);
+        if (line) {
+          steps.push({ name: 'note', input: { text: line } });
+          onEvent({ type: 'note', text: line });
+        }
+        results.push({
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: [{ type: 'text',
+            text: 'Recorded. It is in the record of this run for the user to read; nothing waits on it.' }],
+        });
+        continue;
+      }
 
       /* Не помещается в этот ход - ни оно, ни то, что за ним. Каждому всё равно нужен свой ответ. */
       const refused = notBatched(ran, call.name);

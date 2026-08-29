@@ -571,5 +571,56 @@ group('и три реализации согласны, когда сдават�
   }
 }
 
+group('дешёвый словарь: наведение, перезагрузка, заметка и клик, у которого есть кнопка');
+{
+  const { runGoal, notBatched } = await import('./agent.js');
+  const src = readFileSync(new URL('./agent.js', import.meta.url), 'utf8');
+  for (const t of ['hover', 'refresh', 'note']) {
+    check(`модель может попросить ${t}`, new RegExp(`name: '${t}'`).test(src), 'missing');
+  }
+  check('и у click появились кнопка и двойной',
+    /enum: \['left', 'right', 'middle'\]/.test(src) && /double: \{ type: 'boolean'/.test(src), 'missing');
+  /* Наведение делается ИМЕННО ПОТОМУ, что страница сейчас изменится - значит за ним в том же ходу
+   * ничего идти не может, как и за перезагрузкой. */
+  check('за наведением в том же ходу ничего не идёт',
+    /came after hover/.test(String(notBatched(['hover'], 'click'))), String(notBatched(['hover'], 'click')));
+  check('и за перезагрузкой тоже',
+    /came after refresh/.test(String(notBatched(['refresh'], 'click'))), 'allowed');
+
+  /* ЗАМЕТКА - НЕ ДЕЙСТВИЕ. Она не идёт в правило пачки, не обрывает ход и не тратит его: прогон
+   * «посмотри пять объявлений и назови цены» иначе платил бы за каждую цену целым ходом. */
+  const did = [];
+  const noted = [];
+  let turn = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    turn++;
+    if (turn > 1) {
+      return reply({ stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'done' } }] });
+    }
+    /* Восемь заметок и шесть нажатий в одном ходу: если бы заметки считались, до шестого нажатия
+     * дело бы не дошло. */
+    return reply({ stop_reason: 'end_turn', content: [
+      ...Array.from({ length: 8 }, (_, i) => ({
+        type: 'tool_use', id: 'n' + i, name: 'note', input: { text: 'price ' + i } })),
+      ...Array.from({ length: 6 }, (_, i) => ({
+        type: 'tool_use', id: 'k' + i, name: 'press_key', input: { key: 'Tab' } })),
+    ] });
+  };
+  const out = await runGoal({
+    goal: 'read the prices', apiKey: null, authToken: 'mf_test',
+    execute: async (name) => { did.push(name); return { ok: true }; },
+    onEvent: (e) => { if (e.type === 'note') noted.push(e.text); }, isAborted: () => false,
+  });
+  check('восемь заметок записаны', noted.length === 8, noted.join('|').slice(0, 60));
+  check('и ни одна не дошла до страницы', !did.includes('note'), did.join(','));
+  check('и все шесть нажатий всё равно выполнены - заметки потолок не съели',
+    did.length === 6, String(did.length));
+  check('и заметки лежат в шагах прогона, а не только в итоговом предложении',
+    (out.steps || []).filter((st) => st.name === 'note').length === 8,
+    String((out.steps || []).filter((st) => st.name === 'note').length));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

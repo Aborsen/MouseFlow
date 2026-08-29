@@ -169,7 +169,11 @@ invariant across a whole replay rather than just the one event that was wrong.
 
 - **Native apps.** Nothing outside a browser tab. That is the whole trade for losing the install.
 - **`chrome://` and Web Store pages.** Chrome blocks script injection there.
-- **CSS `:hover`.** Synthetic events cannot reach it; see above.
+- **CSS `:hover`.** Synthetic events cannot reach it; see above. The agent's `hover` tool raises
+  `pointerover`/`mouseover` and reaches anything the page does in JavaScript on those - which is most
+  hover menus, including Gmail's per-row buttons - but a menu drawn purely by the `:hover` rule stays
+  shut, and the tool says so rather than letting the model hover twice and conclude the control is
+  absent.
 - **Canvas-rendered app surfaces.** The Excel Online grid draws itself into a canvas, so there
   is no element to anchor a step to. Its ribbon, toolbars and dialogs are ordinary DOM and do
   work. The desktop agent is the honest answer for the grid itself.

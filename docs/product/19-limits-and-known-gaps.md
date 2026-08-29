@@ -431,7 +431,7 @@ What is still open, measured rather than estimated:
 
 | | desktop | extension |
 |---|---|---|
-| actions the model can ask for | 21 | 9 |
+| actions the model can ask for | 21 | ~~9~~ 13 |
 | sees the screen | screenshots | DOM only — no `captureVisibleTab` anywhere |
 | checkpoints | `reached_checkpoint` plus a gate the loop waits on | none, and no plan to gate on |
 | gives up when nothing changes | warns at 3, stops at 6 | ~~no equivalent~~ same two thresholds, measured on the DOM |
@@ -460,12 +460,18 @@ change that shows in nothing else. And `scroll` is terminal on the desktop but n
 aimed at a coordinate that scrolling moves, while a browser action is aimed at an element reference that
 survives it.
 
-The missing tools are `hover`, `note`, `capture_window`, `find_element`, `scroll_to`, `drag`,
-`clipboard_read`, `clipboard_write`, `open_app`, `activate_window`, `refresh_page`, `wait_for_window` and
-`reached_checkpoint`. Two are cheap and worth doing first because the machinery is already in the file:
-`hover` is implemented at `extension/content.js:813` and the model simply cannot reach it, and there is no
-`refresh` — while the obvious workaround is worse than absent, because `goTo` returns early when the URL is
-unchanged and still answers `{navigated: url}`, so a stuck page reads as one that was reloaded.
+`hover`, `refresh` and `note` are now there, and `click` grew `button` and `double` — the replay engine
+had both from the start and the model could ask for neither. `hover` needed almost no machinery: `travelTo`
+in `extension/content.js` already raises `pointerover`/`mouseover` the whole way to its target, so the work
+was done and there was simply no tool reaching it. It says in its own description what it cannot do: a menu
+drawn purely by the CSS `:hover` rule stays shut, because no synthetic event triggers that. And `navigate`
+to the address you are already on no longer claims `{navigated: url}` — `goTo` returns early there, so a
+stuck page read as one that had just been reloaded and was still stuck.
+
+Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
+`open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and
+`activate_window` are desktop-only by definition; `capture_window` needs the extension to see pixels at
+all, which it deliberately does not.
 
 **Not a gap:** the recording format. The extension anchors a step to a selector and a tab, the desktop to a
 coordinate plus `#ctx`. That is a different anchor for a different surface, and the browser's is the better

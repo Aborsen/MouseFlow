@@ -1298,15 +1298,41 @@
     const at = pointAt(el, { rx: 0.5, ry: 0.5 });
     const cursorEnd = await travelTo(toTop(at.clientX, at.clientY), from);
 
+    /* НАВЕДЕНИЕ, И ОНО УЖЕ ПОЧТИ БЫЛО НАПИСАНО. travelTo выше ведёт указатель до цели и по дороге сам
+     * поднимает pointerover/mouseover/mouseout - то есть работа сделана, а дойти до неё было нечем: у
+     * модели не было такого инструмента. Управление, которое существует только под указателем -
+     * «Архивировать» в строке письма, выпадающее меню в шапке, - без этого не нажать вовсе, и провал
+     * тихий: в снимок такие элементы не попадают (фильтр isVisible), так что и ref, о котором спросить,
+     * не появляется. Здесь только settle и снимок ПОСЛЕ: смысл наведения в том, что страница сейчас
+     * изменится. */
+    if (cmd.action === 'hover') {
+      await settle();
+      return { ok: true, cursor: cursorEnd, page: afterState() };
+    }
+
     if (cmd.action === 'click') {
       draw('pulse');
       const point = pointAt(el, { rx: 0.5, ry: 0.5 });
-      fire(el, 'pointerdown', point, { pointerId: 1, isPrimary: true });
-      fire(el, 'mousedown', point);
-      if (el.focus) el.focus({ preventScroll: true });
-      fire(el, 'pointerup', point, { pointerId: 1, isPrimary: true });
-      fire(el, 'mouseup', point);
-      fire(el, 'click', point, { detail: 1 });
+      /* Какая кнопка и сколько раз. Повтор записи это умел с самого начала - у записанного клика есть
+       * `button`, а `dblclick` это отдельное действие, - а модель попросить не могла ни того, ни другого:
+       * инструмент нёс только ref. Правый клик без contextmenu ничего не открывает, а двойной без
+       * detail:2 и dblclick большинство приложений не считают двойным. */
+      const button = cmd.button === 'right' ? 2 : cmd.button === 'middle' ? 1 : 0;
+      const held = button === 2 ? 2 : button === 1 ? 4 : 1;
+      const press = (detail) => {
+        fire(el, 'pointerdown', point, { pointerId: 1, isPrimary: true, button, buttons: held });
+        fire(el, 'mousedown', point, { button, buttons: held });
+        if (el.focus) el.focus({ preventScroll: true });
+        fire(el, 'pointerup', point, { pointerId: 1, isPrimary: true, button, buttons: 0 });
+        fire(el, 'mouseup', point, { button, buttons: 0 });
+        if (button === 0) fire(el, 'click', point, { detail, button, buttons: 0 });
+      };
+      press(1);
+      if (cmd.double) {
+        press(2);
+        fire(el, 'dblclick', point, { detail: 2, button, buttons: 0 });
+      }
+      if (button === 2) fire(el, 'contextmenu', point, { button: 2, buttons: 0 });
       // Let whatever the click started finish before we describe the page again.
       await settle();
       return { ok: true, cursor: cursorEnd, page: afterState() };

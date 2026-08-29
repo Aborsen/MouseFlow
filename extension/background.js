@@ -1480,8 +1480,32 @@ async function runAgentTool(name, input) {
       return { ok: true, result: best.page };
     }
     case 'navigate': {
-      await goTo(await agentTab(), input.url);
+      const tabId = await agentTab();
+      /* «УЖЕ ЗДЕСЬ» - ЭТО НЕ «ПЕРЕШЛИ». goTo возвращается сразу, когда адрес совпадает, а этот ответ
+       * говорил `navigated` в обоих случаях - то есть застрявшая страница читалась моделью как только
+       * что загруженная и застрявшая, и следующий ход строился на этом. Сказано как есть, и названо
+       * действие, которое действительно нужно. */
+      const before = await chrome.tabs.get(tabId).catch(() => null);
+      if (before && before.url === input.url) {
+        return { ok: true, result: { alreadyThere: input.url,
+          note: 'The tab is already on that address, so nothing was loaded. Use refresh to reload it.' } };
+      }
+      await goTo(tabId, input.url);
       return { ok: true, result: { navigated: input.url } };
+    }
+    /* ПЕРЕЗАГРУЗКА - самая частая починка, которую человек делает в браузере, и агент её сделать не мог.
+     * Ждёт загрузки, а не возвращается сразу: смысл перезагрузки в том, что после неё страница другая. */
+    case 'refresh': {
+      const tabId = await agentTab();
+      const loaded = waitForLoad(tabId);
+      await chrome.tabs.reload(tabId);
+      await loaded;
+      /* Ссылки из прежнего снимка после перезагрузки не значат ничего. */
+      agent.frameId = null;
+      agent.snapshotId = null;
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      return { ok: true, result: { reloaded: (tab && tab.url) || null,
+        note: 'The page was reloaded, so every ref from before it is stale. Call read_page next.' } };
     }
     case 'open_tab': {
       const created = await chrome.tabs.create({ url: input.url, active: true });
@@ -1494,6 +1518,7 @@ async function runAgentTool(name, input) {
       return { ok: true, result: { opened: input.url } };
     }
     case 'click':
+    case 'hover':
     case 'type_text':
     case 'press_key':
     case 'scroll': {
