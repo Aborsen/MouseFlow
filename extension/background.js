@@ -2394,6 +2394,27 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm && alarm.name === CLAIM_ALARM) claimOnce().catch(() => {});
 });
 
+/* БУДИЛЬНИК НЕ ПЕРЕЖИВАЕТ ПЕРЕЗАГРУЗКУ РАСШИРЕНИЯ, а переключатель в хранилище переживает.
+ *
+ * Найдено запуском: после Reload в chrome://extensions галочка «брать работу» осталась стоять, а
+ * будильника не стало - и Chrome перестал спрашивать аккаунт о работе, ничего об этом не сказав.
+ * Поставленная в очередь работа просто лежала. Это худший вид отказа для переключателя: он показывает
+ * включённое состояние, которого нет.
+ *
+ * Зовётся при КАЖДОМ старте сервис-воркера, а не только на onStartup/onInstalled: воркер MV3 поднимают
+ * и роняют постоянно, и это единственный момент, который случается во всех трёх случаях - перезагрузка
+ * расширения, перезапуск браузера и обычное пробуждение. Идемпотентно: будильник с тем же именем
+ * создаётся заново, а не вторым. */
+async function ensureClaimAlarm() {
+  try {
+    if (!(await takingWork())) return;
+    const already = await chrome.alarms.get(CLAIM_ALARM);
+    if (!already) chrome.alarms.create(CLAIM_ALARM, { periodInMinutes: 1, delayInMinutes: 0 });
+  } catch (_) { /* нет alarms - нечего чинить */ }
+}
+
+void ensureClaimAlarm();
+
 function route(msg, sender, respond) {
   if (!msg || typeof msg.mf !== 'string') return false;
   if (msg.mf === 'content/ready') return false;

@@ -116,9 +116,10 @@ globalThis.chrome = {
   webNavigation: { onCommitted: listener(), onCompleted: listener() },
   sidePanel: { setPanelBehavior: async () => {}, open: async () => {} },
   alarms: {
-    made: [], cleared: [],
-    create(name, opts) { this.made.push([name, opts]); },
-    clear: async function clear(name) { this.cleared.push(name); return true; },
+    made: [], cleared: [], live: new Set(),
+    create(name, opts) { this.made.push([name, opts]); this.live.add(name); },
+    get: async function get(name) { return this.live.has(name) ? { name } : undefined; },
+    clear: async function clear(name) { this.cleared.push(name); this.live.delete(name); return true; },
     onAlarm: { addListener: (fn) => { listeners.alarm = fn; } },
   },
   windows: { getCurrent: async () => ({ id: 1 }) },
@@ -1234,6 +1235,44 @@ group('шаг focus находит свою вкладку, а не требуе
   check('запуск без адреса вообще случился', noUrl.ok === true, show(noUrl));
   check('без адреса открывать нечего, и об этом говорят',
     /nothing to open/.test(String(st.error)), show(st.error));
+}
+
+group('и будильник переживает перезагрузку расширения, потому что переключатель её переживает');
+{
+  const { ensureClaimAlarm } = await import('./background.js');
+  void ensureClaimAlarm;
+  /* Найдено запуском: после Reload галочка стояла, будильника не было, работа лежала в очереди, и никто
+   * об этом не говорил. Переключатель, показывающий включённое состояние, которого нет, - худший вид
+   * отказа, какой у переключателя бывает. */
+  store.taking = true;
+  chrome.alarms.live.clear();
+  chrome.alarms.made.length = 0;
+  const src = readFileSync(new URL('./background.js', import.meta.url), 'utf8');
+  check('воркер заводит будильник при каждом своём старте, а не только при включении',
+    /^void ensureClaimAlarm\(\);$/m.test(src), 'not called at top level');
+  /* Выполняем ту же функцию, что зовёт верхний уровень. */
+  const at = src.indexOf('async function ensureClaimAlarm(');
+  let depth = 0;
+  let body = '';
+  for (let i = src.indexOf('{', at); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) { body = src.slice(at, i + 1); break; }
+  }
+  // eslint-disable-next-line no-new-func
+  const arm = new Function('chrome', 'takingWork', 'CLAIM_ALARM', body + '; return ensureClaimAlarm;')(
+    globalThis.chrome, async () => store.taking === true, 'mouseflow.claim');
+  await arm();
+  check('включённый переключатель без будильника - будильник заводится',
+    chrome.alarms.made.some(([n]) => n === 'mouseflow.claim'), show(chrome.alarms.made));
+  chrome.alarms.made.length = 0;
+  await arm();
+  check('а второй раз не заводится второй', chrome.alarms.made.length === 0, show(chrome.alarms.made));
+  store.taking = false;
+  chrome.alarms.live.clear();
+  chrome.alarms.made.length = 0;
+  await arm();
+  check('и выключенный переключатель ничего не заводит', chrome.alarms.made.length === 0,
+    show(chrome.alarms.made));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
