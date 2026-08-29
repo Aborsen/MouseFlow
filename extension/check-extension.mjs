@@ -912,5 +912,79 @@ group('и он переезжает за агентом по вкладкам, �
   check('и больше ни одна вкладка не помечена', api.where() === null, String(api.where()));
 }
 
+group('записанный навык теперь может брать значения - а печать по-прежнему не пишется');
+{
+  const { skillFromRecording, flowFor, missingParams } = await import('./skills.js');
+  const rec = {
+    name: 'Search twice', origins: [], tabs: 1,
+    events: [
+      { action: 'click', selector: '#q', tag: 'input' },
+      /* Рекордер шлёт по шагу на нажатие: три знака - три шага в одно поле. */
+      { action: 'blank', selector: '#q', tag: 'input', field: 'Search query', keys: 1 },
+      { action: 'blank', selector: '#q', tag: 'input', field: 'Search query', keys: 2 },
+      { action: 'blank', selector: '#q', tag: 'input', field: 'Search query', keys: 3 },
+      { action: 'blank', selector: '#city', tag: 'input', field: 'City', keys: 1 },
+      { action: 'click', selector: '#go', tag: 'button' },
+    ],
+  };
+  const skill = skillFromRecording(rec, '2026-08-29T10:00:00.000Z');
+  check('два поля - два параметра, а не пять шагов', skill.params.length === 2,
+    JSON.stringify(skill.params.map((p) => p.name)));
+  /* Имя берётся у поля, чтобы человек узнал, что заполняет. */
+  const names = skill.params.map((p) => p.name);
+  check('и названы так, как названы поля',
+    names[0] === 'search_query' && names[1] === 'city', JSON.stringify(names));
+  /* СОДЕРЖИМОГО НЕТ НИГДЕ. Это то же обещание, что даёт PROTOCOL.md про агентов, и его надо охранять
+   * проверкой, а не комментарием. */
+  check('и ни в одном шаге нет того, что печатали',
+    skill.events.every((e) => e.action !== 'blank' || e.value === undefined),
+    JSON.stringify(skill.events.filter((e) => e.action === 'blank')[0]));
+
+  check('без значений навык запускать нечем', missingParams(skill, {}).length === 2,
+    JSON.stringify(missingParams(skill, {})));
+  /* И ЭТО ПРОВЕРЯЕТ ЗАПУСК, А НЕ ТОЛЬКО ФУНКЦИЮ. Правило, которое верно и которое никто не зовёт, - это
+   * то же самое, что правила нет; ровно на этом уже дважды прошла мутация в этом файле. */
+  store.skills = [Object.assign({}, skill, { id: 'sk1' })];
+  const blind = await send({ mf: 'skills/run', id: 'sk1' });
+  check('и запуск это ловит, а не только missingParams',
+    !blind.ok && /needs search_query/.test(String(blind.error)), JSON.stringify(blind).slice(0, 90));
+  const flow = flowFor(skill, { values: { search_query: 'cats', city: 'Kyiv' } });
+  const filled = flow.steps[0].events.filter((e) => e.action === 'blank');
+  check('со значениями они садятся на каждый шаг того поля',
+    filled.filter((e) => e.value === 'cats').length === 3
+      && filled.filter((e) => e.value === 'Kyiv').length === 1,
+    JSON.stringify(filled.map((e) => e.value)));
+  /* САМ НАВЫК НЕ ТРОГАЕТСЯ: он шаблон и один на все прогоны, а значения принадлежат прогону. Второй
+   * запуск с другими данными не должен переписывать первый. */
+  check('а сам навык остаётся пустым шаблоном',
+    skill.events.every((e) => e.action !== 'blank' || e.value === undefined), 'skill was mutated');
+
+  /* И САМ РЕКОРДЕР НЕ ЧИТАЕТ ПОЛЕ. Проверка выше показывает, что содержимого нет в готовом навыке; эта -
+   * что его неоткуда взять: функция, пишущая шаг, не притрагивается к значению элемента. И пароли
+   * пропускаются целиком, включая длину: число нажатий - это подсказка о длине пароля. */
+  const content = readFileSync(new URL('./content.js', import.meta.url), 'utf8');
+  const at = content.indexOf('function onTyped(');
+  let depth = 0;
+  let onTyped = '';
+  for (let i = content.indexOf('{', at); i < content.length; i++) {
+    if (content[i] === '{') depth++;
+    else if (content[i] === '}' && --depth === 0) { onTyped = content.slice(at, i + 1); break; }
+  }
+  const bare = onTyped.replace(/\/\*[\s\S]*?\*\//g, '');
+  check('функция записи найдена', bare.length > 200, String(bare.length));
+  check('и она не читает значение поля',
+    !/\bel\.value\b/.test(bare) && !/\.textContent\b/.test(bare) && !/\.innerText\b/.test(bare),
+    (bare.match(/\bel\.value\b|\.textContent\b|\.innerText\b/) || [''])[0]);
+  check('и пропускает пароли целиком, включая длину',
+    /type === 'password'\) return;/.test(bare), 'password not skipped');
+
+  /* Запись, в которой печатали, «как есть» не играется - играть нечего. */
+  seed([{ id: 'typed', name: 'Typed', created: '2026-08-29T10:00:00.000Z', kind: 'web',
+    origins: [], tabs: 1, events: rec.events }]);
+  const played = await send({ mf: 'record/play', id: 'typed' });
+  check('и такая запись не играется вслепую, а объясняет почему',
+    !played.ok && /deliberately not recorded/.test(String(played.error)), String(played.error).slice(0, 70));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -294,6 +294,42 @@
    * imported .mmmacro files keep working; nothing produces them any more.
    */
 
+  /* ПРОБЕЛ ВМЕСТО ТЕКСТА - та же сделка, что заключил десктоп, и то, что даёт записи параметры.
+   *
+   * Запись без печати воспроизводится буквально: те же клики по тем же полям и ни одного знака в них. А
+   * значение - ровно та часть, которая чаще всего и должна отличаться от прогона к прогону, и без неё
+   * записанный навык это неизменяемый макрос. Поэтому здесь появляется шаг `blank`: селектор поля, его
+   * доступное имя и СКОЛЬКО нажатий в него ушло. Содержимого нет и не будет - PROTOCOL.md говорит про
+   * агентов ровно это, и здесь то же самое, только на другой поверхности.
+   *
+   * Имя нужно, чтобы у параметра было название, которое человек узнает: «Search», а не «поле 2».
+   *
+   * Пароли пропускаются целиком - даже длина. Число нажатий это подсказка о длине пароля, и записи она
+   * не нужна ни для чего. */
+  const typing = new Map();
+
+  function onTyped(ev) {
+    if (!capturing || !generation.live) return;
+    const el = ev && ev.target;
+    if (!el || el.nodeType !== 1) return;
+    const tag = el.tagName ? el.tagName.toLowerCase() : '';
+    const type = (el.getAttribute && (el.getAttribute('type') || '')).toLowerCase();
+    if (type === 'password') return;
+    if (tag !== 'input' && tag !== 'textarea' && !el.isContentEditable) return;
+    flushMoves();
+
+    const key = selectorFor(el);
+    const seen = (typing.get(key) || 0) + 1;
+    typing.set(key, seen);
+    push(Object.assign({
+      action: 'blank',
+      /* Имя поля - для параметра, который человек будет заполнять. */
+      field: (accessibleName(el) || '').slice(0, 60) || null,
+      keys: seen,
+      editable: !!el.isContentEditable,
+    }, describe(el, 0, 0)));
+  }
+
   /* Scroll does not bubble, which is why this listens in the capture phase - but it then recorded
    * the WINDOW's offsets whatever had actually scrolled, so scrolling a pane, a list or a dialog
    * replayed as a no-op. Record the thing that scrolled. */
@@ -326,6 +362,9 @@
     addEventListener('pointerdown', onPointerDown, true);
     addEventListener('pointermove', onPointerMove, { capture: true, passive: true });
     addEventListener('scroll', onScroll, true);
+    /* ЧТО в поле напечатали - НЕ пишется, и это правило не меняется. Пишется только ТО, ЧТО В НЕГО
+     * печатали: какое поле, как оно называется и сколько нажатий было. См. onTyped. */
+    addEventListener('input', onTyped, true);
     // A frame that is not the top one needs to know where it sits before its samples mean
     // anything in the tab's coordinate space.
     trackOffset(true);
@@ -1117,6 +1156,23 @@
             fire(el, 'dblclick', point, Object.assign({ detail: 2 }, withButton));
           }
         }
+        return target;
+      }
+      /* Пробел заполняется тем, что дали этому прогону. Не дали - НИЧЕГО НЕ ПЕЧАТАЕТСЯ, и это
+       * сообщается: повтор, тихо оставивший поле пустым и отчитавшийся успехом, - именно тот отказ,
+       * которого здесь избегают везде. */
+      case 'blank': {
+        if (el.focus) el.focus({ preventScroll: true });
+        const filled = ev.value;
+        /* Бросаем, а не молчим. Значение должно было приехать в flowFor - runSkill не запускает
+         * записанный навык с незаполненным параметром, - так что сюда это доходит только если что-то
+         * сломано, и тихо оставленное пустым поле было бы ровно тем провалом, который здесь везде
+         * закрывают. */
+        if (typeof filled !== 'string' || !filled.length) {
+          throw new Error('nothing was given for the field ' + (ev.field || ev.selector));
+        }
+        if (ev.editable || el.isContentEditable) setEditableText(el, filled);
+        else setValue(el, filled);
         return target;
       }
       case 'fill':

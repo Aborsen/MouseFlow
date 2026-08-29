@@ -685,6 +685,14 @@ async function pendingOne(id) {
 async function pendingPlay(msg) {
   const rec = await pendingOne(msg.id);
   const skill = skillFromRecording(rec, new Date().toISOString());
+  /* Запись, в которой печатали, СЫГРАТЬ КАК ЕСТЬ НЕЛЬЗЯ: содержимое полей не записано и никогда не будет,
+   * так что играть тут нечего - поле осталось бы пустым. Сказано с указанием, что делать, а не отказом в
+   * лицо: превратить в навык и заполнить при запуске - это и есть ответ. */
+  if (skill.params.length) {
+    const what = skill.params.map((p) => p.label || p.name).join(', ');
+    throw new Error(`this recording types into ${what} — and what was typed is deliberately not recorded. `
+      + 'Keep it as a skill, and it will ask you what to type each time you run it.');
+  }
   return replayStart(flowFor(skill, { loop: !!msg.loop }));
 }
 
@@ -806,7 +814,19 @@ async function runSkill(msg) {
   await putSkills(stamped);
 
   if (skill.kind === 'recorded') {
-    return replayStart(flowFor(skill, { loop: !!msg.loop }));
+    /* ТЕПЕРЬ И У ЗАПИСАННОГО НАВЫКА МОГУТ БЫТЬ ПРОБЕЛЫ, поэтому та же проверка, что у созданного: повтор,
+     * начатый без значения, дошёл бы до поля и бросил посреди работы - половина сделана, половина нет. */
+    const short = missingParams(skill, msg.values || {});
+    if (short.length) {
+      return {
+        ok: false,
+        error: short.length === 1
+          ? `This skill needs ${short[0]}. Fill it in and run it again.`
+          : `This skill needs ${short.slice(0, -1).join(', ')} and ${short[short.length - 1]}. `
+            + 'Fill them in and run it again.',
+      };
+    }
+    return replayStart(flowFor(skill, { loop: !!msg.loop, values: msg.values || {} }));
   }
   /* A skill from the gallery carries no example values, so a field left blank has nothing to fall back
    * on. Refuse by name rather than running a goal with a hole in it. */

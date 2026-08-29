@@ -443,7 +443,7 @@ What is still open, measured rather than estimated:
 | narrated transcript | `api/_transcript.js` | none |
 | run from the account | the courier claims jobs | still refused, but the skills are now VISIBLE there — see below |
 | modifiers in a recording | `mods` on the `#ctx` line since 0.21.0 | ~~none~~ `mods` on the click, same four words in the same order |
-| parameters in a recorded skill | derived from typing and the control's name | `params: []`, unconditionally |
+| parameters in a recorded skill | derived from typing and the control's name | ~~`params: []`~~ one per field typed into, named after it |
 
 **How the three implementations are held in step**, since they cannot share a module: `extension/agent.js`
 is copied into the package rather than bundled (see `web/vite.extension.config.ts` on what is built and what
@@ -507,6 +507,14 @@ sample: `read_page` hands the model `document.body.innerText`, so the sign lives
 and its words never reach what the model reads as page content. And it carries `aria-hidden`, because it is
 a statement about the window rather than part of the page, and a screen reader announcing it mid-form is a
 nuisance to exactly the person who can least afford one.
+
+**A recorded browser skill can take values now**, which is the whole difference between a skill and a
+macro. The recorder still does not capture what was typed and never will — it records a `blank`: which
+field, what it is called, how many keystrokes went in, and nothing else. That is the same bargain the
+desktop struck, and it is enough: every field typed into becomes exactly one parameter, named after the
+field, filled in at run time. Password fields are skipped entirely, length included — a keystroke count is
+a hint about how long a password is. A recording that types into something cannot be played back raw, and
+says why rather than filling the field with nothing.
 
 Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
 `open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and

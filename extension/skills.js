@@ -130,6 +130,38 @@ function id() {
   return Math.random().toString(36).slice(2, 10);
 }
 
+/* ПАРАМЕТРЫ ЗАПИСАННОГО НАВЫКА - ИЗ ПОЛЕЙ, В КОТОРЫЕ ПЕЧАТАЛИ.
+ *
+ * `params: []` стояло здесь безусловно, и это означало, что записанный навык - неизменяемый макрос:
+ * весь смысл навыка поверх записи в том, что значение может отличаться от прогона к прогону, а
+ * отличаться было нечему. Меняться могло только созданное по цели.
+ *
+ * Рекордер содержимого полей не пишет и писать не будет - он пишет шаг `blank`: какое поле, как оно
+ * называется, сколько нажатий. Одного этого хватает: каждое поле, в которое печатали, становится ровно
+ * одним параметром, и человек заполняет его при запуске. Имя берётся у поля - «Search», а не «поле 2», -
+ * и повторы схлопываются: печать в одно и то же поле дважды это один параметр, а не два.
+ */
+function blanksOf(events) {
+  const seen = new Map();
+  for (const ev of events) {
+    if (!ev || ev.action !== 'blank' || !ev.selector) continue;
+    if (seen.has(ev.selector)) continue;
+    seen.set(ev.selector, {
+      selector: ev.selector,
+      name: paramName(slug(ev.field || ev.tag || 'field'), new Set([...seen.values()].map((p) => p.name))),
+      label: ev.field || null,
+      type: 'text',
+    });
+  }
+  return [...seen.values()];
+}
+
+/** Имя параметра из подписи поля: «Search query» -> «search_query». */
+function slug(text) {
+  const out = String(text).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return out || 'field';
+}
+
 export function skillFromRecording(rec, now) {
   const events = rec.events || [];
   return {
@@ -142,7 +174,7 @@ export function skillFromRecording(rec, now) {
     origins: rec.origins || [],
     tabs: rec.tabs || 1,
     events,
-    params: [],
+    params: blanksOf(events),
   };
 }
 
@@ -310,11 +342,24 @@ export function publishLink(skill, appUrl) {
 // What a recorded skill needs to become a flow the replay engine understands.
 export function flowFor(skill, options) {
   const opts = options || {};
+  /* Значения садятся на шаги ЗДЕСЬ, а не в самом навыке: навык - это шаблон, и он один на все прогоны, а
+   * значения принадлежат прогону. Записывать их в него значило бы, что второй запуск с другими данными
+   * тихо перезаписал первый. */
+  const values = opts.values || {};
+  const byField = new Map((skill.params || []).map((p) => [p.selector, p]));
+  const events = (skill.events || []).map((ev) => {
+    if (!ev || ev.action !== 'blank') return ev;
+    const param = byField.get(ev.selector);
+    if (!param) return ev;
+    const given = values[param.name];
+    const use = given != null && String(given) !== '' ? String(given) : param.example;
+    return use == null ? ev : Object.assign({}, ev, { value: String(use) });
+  });
   return {
     startDelay: 0,
     flowRepeat: opts.loop ? 0 : 1,
     steps: [{
-      events: skill.events || [],
+      events,
       repeat: 1,
       speed: opts.speed > 0 ? opts.speed : 1,
       delayAfter: opts.loop ? 1000 : 0,
