@@ -694,5 +694,101 @@ group('модификаторы клика: записываются, читаю
     && /Object\.assign\(\{ button \}, mods\)/.test(src), 'not applied');
 }
 
+group('чекпоинты: цикл встаёт и ждёт человека');
+{
+  const { runGoal, toolsFor } = await import('./agent.js');
+  const has = (list) => list.some((t) => t.name === 'reached_checkpoint');
+  /* Модель, которой дали способ остановиться там, где остановку никто не обрабатывает, будет стоять
+   * там вечно. То же правило, что у toolsFor в api/_brain.mjs. */
+  check('без шлюза инструмент НЕ предлагается', !has(toolsFor(false)), 'offered');
+  check('со шлюзом - предлагается', has(toolsFor(true)), 'missing');
+
+  const plan = [{ title: 'Draft ready', detail: 'the reply is written' },
+    { title: 'Sent', detail: 'it has gone' }];
+  const asked = [];
+  const did = [];
+  let sentTools = null;
+  let turn = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    const body = JSON.parse(init.body);
+    sentTools = body.tools.map((t) => t.name);
+    turn++;
+    if (turn === 1) {
+      /* Чекпоинт и клик в одной пачке: клик обязан НЕ случиться - человек смотрел на страницу сколько
+       * хотел, и всё, что за объявлением, целилось по снимку, которого он уже не видит. */
+      return reply({ stop_reason: 'end_turn', content: [
+        { type: 'tool_use', id: 'c1', name: 'reached_checkpoint', input: { n: 1, said: 'draft is written' } },
+        { type: 'tool_use', id: 'x1', name: 'click', input: { ref: 3 } },
+      ] });
+    }
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'sent' } }] });
+  };
+  const out = await runGoal({
+    goal: 'reply to Ann', apiKey: null, authToken: 'mf_test', plan,
+    gate: async (at) => { asked.push(at); return 'go'; },
+    execute: async (name) => { did.push(name); return { ok: true }; },
+    onEvent: () => {}, isAborted: () => false,
+  });
+  check('человека спросили ровно один раз', asked.length === 1, String(asked.length));
+  check('и назвали ему чекпоинт словами из плана',
+    asked[0] && asked[0].n === 1 && asked[0].title === 'Draft ready'
+      && asked[0].said === 'draft is written', JSON.stringify(asked[0]));
+  check('клик, стоявший за объявлением, НЕ случился', !did.includes('click'), did.join(',') || '(none)');
+  check('а после «продолжить» прогон дошёл до конца', out.ok === true, JSON.stringify(out).slice(0, 80));
+  check('и инструмент чекпоинта уезжал модели', !!sentTools && sentTools.includes('reached_checkpoint'),
+    String(sentTools && sentTools.length));
+}
+
+group('а «остановись здесь» - это решение, а не ошибка');
+{
+  const { runGoal } = await import('./agent.js');
+  let turn = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    turn++;
+    return reply({ stop_reason: 'end_turn', content: [{ type: 'tool_use', id: 'c', name: 'reached_checkpoint',
+      input: { n: 2, said: 'about to send it' } }] });
+  };
+  const out = await runGoal({
+    goal: 'send it', apiKey: null, authToken: 'mf_test',
+    plan: [{ title: 'Draft ready', detail: '' }, { title: 'About to send', detail: '' }],
+    gate: async () => 'stop',
+    execute: async () => ({ ok: true }), onEvent: () => {}, isAborted: () => false,
+  });
+  check('прогон остановился на первом же объявлении', turn === 1, String(turn));
+  /* Одним словом «stopped» выбросило бы единственное, что здесь стоит знать: ГДЕ остановились и что
+   * прогон об этом сказал. */
+  check('и назвал место и слова, а не просто «остановлено»',
+    out.ok === false && /Stopped at checkpoint 2 — About to send/.test(String(out.error))
+      && /about to send it/.test(String(out.error)), String(out.error).slice(0, 90));
+}
+
+group('и без плана прогон идёт как раньше');
+{
+  const { runGoal } = await import('./agent.js');
+  let sentTools = null;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    sentTools = JSON.parse(init.body).tools.map((t) => t.name);
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'done' } }] });
+  };
+  await runGoal({
+    goal: 'just do it', apiKey: null, authToken: 'mf_test',
+    execute: async () => ({ ok: true }), onEvent: () => {}, isAborted: () => false,
+  });
+  check('инструмента чекпоинта модели не показали',
+    !!sentTools && !sentTools.includes('reached_checkpoint'), String(sentTools));
+}
+
+group('и ответ, которого никто не ждёт, - отказ, а не тихое ничего');
+{
+  const res = await send({ mf: 'agent/answer', answer: 'go' });
+  check('отвечать нечему - и это сказано', !res.ok && /nothing is waiting/.test(String(res.error)),
+    JSON.stringify(res));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

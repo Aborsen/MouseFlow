@@ -433,7 +433,7 @@ What is still open, measured rather than estimated:
 |---|---|---|
 | actions the model can ask for | 21 | ~~9~~ 13 |
 | sees the screen | screenshots | DOM only — no `captureVisibleTab` anywhere |
-| checkpoints | `reached_checkpoint` plus a gate the loop waits on | none, and no plan to gate on |
+| checkpoints | `reached_checkpoint` plus a gate the loop waits on | ~~none~~ the same tool, plan and gate, answered in the panel |
 | gives up when nothing changes | warns at 3, stops at 6 | ~~no equivalent~~ same two thresholds, measured on the DOM |
 | caps the actions in one turn | `BATCH_MAX` 6, nothing after a terminal action | ~~none~~ the same 6, and nothing after `wait`/`navigate`/`open_tab` |
 | prunes old snapshots | `forgetOldPictures` each turn | ~~none~~ `forgetOldPages`, by size rather than type |
@@ -482,6 +482,18 @@ clicks, and reported as a clean run: the same silently-wrong result the desktop 
 fixing. Written with the same words in the same order as `chordName` in the agents (Cmd, Ctrl, Alt, Shift),
 and the check asserts the order is taken from the agent rather than invented. Scroll carries none: the
 recorder hears the `scroll` event, which has no modifier state, not the wheel.
+
+**Checkpoints work, and the panel is why they can.** A run started with "stop and ask me" asks for a plan
+of three to six checkpoints before the first turn, is offered `reached_checkpoint` only because there is a
+gate to answer it, and stands still on the announcement until somebody presses Carry on or Stop here. The
+announcement cuts the turn: any amount of time passes while a person looks, so an action batched behind it
+was aimed at a page they are no longer seeing. Stopping is reported as *"Stopped at checkpoint 2 — About to
+send. It said: …"* rather than the word `stopped`, because where it stopped is the only thing worth knowing.
+
+The surface is the side panel, not the popup — a popup closes on the first click into the page, and this
+wait lasts as long as the person wants. That is what the panel was built for. The plan is best effort: if
+it cannot be obtained the run goes ahead ungated and says so in the feed, because refusing to work over an
+optional step would be worse.
 
 Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
 `open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and

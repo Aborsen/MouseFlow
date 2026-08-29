@@ -23,12 +23,18 @@ interface Status {
   log?: string[];
   steps?: Step[];
   result?: { ok?: boolean; said?: string } | null;
+  /** Set while the loop is standing still waiting for an answer. Empty means it is running. */
+  gate?: { n: number; title: string; said: string } | null;
+  plan?: string[] | null;
 }
 
 export const CreateScreen = () => {
   const [goal, setGoal] = useState('');
   const [status, setStatus] = useState<Status>({});
   const [note, setNote] = useState<SaidNote | null>(null);
+  /* Opt-in, because a plan costs a call and a pause, and most errands want neither. Remembered across
+   * runs: somebody who wants to be asked once wants to be asked next time. */
+  const [gated, setGated] = useState(() => localStorage.getItem('mf.gate') === '1');
   const bottom = useRef<HTMLDivElement>(null);
 
   const read = useCallback(async () => {
@@ -52,7 +58,7 @@ export const CreateScreen = () => {
     const text = goal.trim();
     if (!text) return;
     setNote(null);
-    const res = await ask('agent/start', { goal: text });
+    const res = await ask('agent/start', { goal: text, checkpoints: gated });
     if (!res.ok) { setNote({ text: res.error ?? 'It would not start.', kind: 'bad' }); return; }
     setGoal('');
     void read();
@@ -64,6 +70,49 @@ export const CreateScreen = () => {
         <Typography variant="h2" weight="semibold" className="text-[1.05rem]">Create</Typography>
         {status.running ? <Pill tone="count">Working</Pill> : <Pill>Idle</Pill>}
       </header>
+
+      {/* THE ONE PLACE THE LOOP WAITS FOR A PERSON. Above everything else on the screen: the pointer has
+          stopped moving and the run is standing still until this is answered, so it must not be
+          something to scroll to. */}
+      {status.gate && (
+        <div className="rounded-lg border border-fb-attention/40 bg-fb-attention/10 px-2.5 py-2">
+          <div className="text-[0.7rem] font-semibold uppercase tracking-wide text-fb-attention">
+            Checkpoint {status.gate.n}
+            {status.plan?.length ? ` of ${status.plan.length}` : ''} — {status.gate.title}
+          </div>
+          <Typography variant="p" className="mt-1 text-ink-primary text-[0.82rem] leading-relaxed">
+            {status.gate.said}
+          </Typography>
+          <div className="mt-2 flex gap-1.5">
+            <Button size="xs" onClick={() => { void ask('agent/answer', { answer: 'go' }).then(read); }}>
+              Carry on
+            </Button>
+            <Button
+              size="xs"
+              variant="destructiveTertiary"
+              onClick={() => { void ask('agent/answer', { answer: 'stop' }).then(read); }}
+            >
+              Stop here
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {!status.running && (
+        /* Ставится ДО начала: план спрашивается один раз, перед первым ходом, и передумать посреди
+         * прогона уже некуда. */
+        <label className="flex items-center gap-2 text-[0.78rem] text-ink-secondary">
+          <input
+            type="checkbox"
+            checked={gated}
+            onChange={(e) => {
+              setGated(e.target.checked);
+              localStorage.setItem('mf.gate', e.target.checked ? '1' : '0');
+            }}
+          />
+          Stop and ask me at each checkpoint
+        </label>
+      )}
 
       {!status.running && !status.log?.length && (
         <Typography variant="p" className="text-ink-inactive text-[0.8rem] leading-relaxed">

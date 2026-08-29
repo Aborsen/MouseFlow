@@ -375,6 +375,30 @@ const TOOLS = [
     },
   },
   {
+    /* Модель может объявить чекпоинт, ничего для него не сделав: это САМООТЧЁТ и остаётся им, сколько бы
+     * кнопок вокруг ни было. Поэтому «reached», а не «completed», и `said` показывается человеку как
+     * заявление, а не как факт. Смысл шлюза не в гарантии, а в МОМЕНТЕ: человек смотрит до следующего
+     * шага, а не после. Слово в слово с api/_brain.mjs - две половины продукта не должны учить модель
+     * двум разным привычкам. */
+    name: 'reached_checkpoint',
+    description:
+      'Say that you have reached one of the checkpoints you were given, and stop until the user answers. '
+      + 'Do not call this before it is true, and do not call it for a checkpoint you have already announced. '
+      + 'It costs a step like anything else.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        n: { type: 'integer', description: 'Which checkpoint, counting from 1.' },
+        said: {
+          type: 'string',
+          description: 'One or two sentences: what you did to reach it, and what you are about to do next.',
+        },
+      },
+      required: ['n', 'said'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'finish',
     description: 'End the run. Call this when the goal is met, when something needs the user to confirm or type it, or when you are blocked.',
     input_schema: {
@@ -389,6 +413,91 @@ const TOOLS = [
     },
   },
 ];
+
+/* ИНСТРУМЕНТ ПРЕДЛАГАЕТСЯ ТОЛЬКО ТОГДА, КОГДА ЕСТЬ КТО ОТВЕЧАТЬ.
+ *
+ * Модель, которой дали способ остановиться там, где остановку никто не обрабатывает, будет стоять там
+ * вечно. То же правило и та же причина, что у toolsFor в api/_brain.mjs. */
+export function toolsFor(gated) {
+  return gated ? TOOLS : TOOLS.filter((t) => t.name !== 'reached_checkpoint');
+}
+
+/* ПЛАН, КОТОРЫЙ ПРОСЯТ ДО ПРОГОНА, А НЕ ВО ВРЕМЯ.
+ *
+ * Чекпоинту нужно имя, которое человек прочитает и поймёт, где остановились, - и придумать его надо
+ * заранее, потому что во время прогона спрашивать уже поздно. Три-шесть: меньше трёх не план, больше
+ * шести - сценарий, а экран так далеко вперёд не известен. Зеркало web/src/lib/plan.ts, ужатое до одного
+ * вызова: у панели нет экрана, на котором план правят, - она его показывает и предлагает начать. */
+const CHECKPOINTS_MAX = 6;
+
+const OUTLINE_TOOL = {
+  name: 'outline',
+  description: 'Break the goal into the points at which a person would want to look before you go on.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Three to six words naming the whole errand.' },
+      checkpoints: {
+        type: 'array',
+        description: `Three to ${CHECKPOINTS_MAX} checkpoints, in order.`,
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Two to five words. What this stage achieves.' },
+            detail: { type: 'string', description: 'One sentence: what the user will be looking at.' },
+          },
+          required: ['title', 'detail'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['title', 'checkpoints'],
+    additionalProperties: false,
+  },
+};
+
+/** Три-шесть чекпоинтов для этой цели, или null - план не обязателен, и прогон без него просто не гейтится. */
+export async function askForPlan({ goal, apiKey, authToken, model }) {
+  const direct = !!apiKey;
+  const headers = { 'content-type': 'application/json' };
+  if (!direct && authToken) headers.authorization = 'Bearer ' + authToken;
+  if (direct) {
+    Object.assign(headers, {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    });
+  }
+  try {
+    const res = await fetchWithBody(direct ? API_URL : SHARED_URL, headers, {
+      model: model || MODEL,
+      max_tokens: 1500,
+      system: 'You are about to drive a real Chrome tab to do what the user asked. Before starting, name '
+        + 'the points at which a careful person would want to look at the screen before you carry on - '
+        + 'typically after something is prepared and before it is sent, bought or deleted. Name what the '
+        + 'user will SEE at each, not what you will do.',
+      tools: [OUTLINE_TOOL],
+      tool_choice: { type: 'tool', name: 'outline' },
+      messages: [{ role: 'user', content: goal }],
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const call = (body.content || []).find((b) => b.type === 'tool_use' && b.name === 'outline');
+    const out = call && call.input;
+    if (!out || !Array.isArray(out.checkpoints) || !out.checkpoints.length) return null;
+    return {
+      title: String(out.title || goal).slice(0, 80),
+      checkpoints: out.checkpoints.slice(0, CHECKPOINTS_MAX).map((c) => ({
+        title: String(c.title || '').slice(0, 60),
+        detail: String(c.detail || '').slice(0, 200),
+      })),
+    };
+  } catch (_) {
+    /* План - удобство, а не условие. Не смогли спросить - прогон идёт без шлюза, и это лучше, чем
+     * отказать в работе из-за необязательного шага. */
+    return null;
+  }
+}
 
 function textOf(content) {
   return (content || [])
@@ -409,7 +518,7 @@ function textOf(content) {
  * @param {function} opts.onEvent   (event) => void - progress for the UI
  * @param {function} opts.isAborted () => boolean
  */
-export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAborted }) {
+export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAborted, plan, gate }) {
   const steps = [];
   let handoff = null;
   let stepNo = 0;
@@ -417,21 +526,33 @@ export async function runGoal({ goal, apiKey, authToken, execute, onEvent, isAbo
   const model = await configuredModel();
   lastRunModel = model;
 
+  /* План уезжает В ЦИКЛ, а не остаётся в интерфейсе: модель обязана объявлять каждый чекпоинт по
+   * достижении, и на объявлении цикл останавливается до ответа человека. Дословно то же, что говорит
+   * десктопный драйвер, чтобы привычка у модели была одна. */
+  const planText = plan && plan.length
+    ? '\n\nYou told the user you would pass through these checkpoints:\n'
+      + plan.map((c, i) => `${i + 1}. ${c.title} — ${c.detail}`).join('\n')
+      + '\n\nCall reached_checkpoint the moment one of them is true, before doing anything that belongs to '
+      + 'the next one. The user is watching and will answer before you continue. If you find you must '
+      + 'depart from the plan, do the right thing and say so in the next reached_checkpoint or in finish - '
+      + 'the plan was your intention, not an instruction you are bound to.'
+    : '';
+
   for (let wave = 1; wave <= MAX_WAVES; wave++) {
     const messages = [{
       role: 'user',
-      content: handoff
+      content: (handoff
         ? goal + '\n\nThis is a continuation of the same goal. The earlier attempt reported:\n' +
           handoff + '\n\nCarry on from there. Call read_page first - do not assume the page is where ' +
           'it was left.'
-        : goal,
+        : goal) + planText,
     }];
     if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
 
     const outcome = await runWave({
       messages, execute, onEvent, isAborted, apiKey, authToken, steps,
       wave, stepFrom: stepNo,
-      model,
+      model, plan, gate,
     });
     stepNo = outcome.stepNo;
     if (outcome.done) return outcome.result;
@@ -461,7 +582,8 @@ const waveDone = (stepNo, result) => ({ done: true, stepNo, result });
 
 /* One wave. Same loop as before; what changed is that running out of turns is a seam rather than the
  * end, and that the step number carries across waves because the user counts steps once. */
-async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToken, steps, wave, stepFrom, model }) {
+async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToken, steps, wave, stepFrom,
+  model, plan, gate }) {
   let stepNo = stepFrom;
   let turns = 0;
   /* Ходов подряд, за которые страница не изменилась. Живёт ЧЕРЕЗ ходы: три неподвижных в одном ходе и три
@@ -517,7 +639,7 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
         model,
         max_tokens: MAX_TOKENS,
         system: SYSTEM,
-        tools: TOOLS,
+        tools: toolsFor(!!gate),
         fallbacks: 'default',
         messages,
       }, isAborted);
@@ -667,6 +789,53 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
             text: 'Recorded. It is in the record of this run for the user to read; nothing waits on it.' }],
         });
         continue;
+      }
+
+      /* ШЛЮЗ. Единственное место, где цикл СТОИТ и ждёт чужого решения.
+       *
+       * Объявление стоит хода - оно и есть ход, - поэтому попадает и в шаги, и в ленту, как всякое другое
+       * действие. И оно ЗАКРЫВАЕТ ход: между объявлением и ответом человека проходит сколько угодно
+       * времени, за которое страница могла стать любой, так что действие, стоявшее в том же ходу за
+       * чекпоинтом, целилось бы по снимку, которого человек уже не видит. */
+      if (call.name === 'reached_checkpoint') {
+        const total = plan && plan.length ? plan.length : 99;
+        const n = Math.max(1, Math.min(total, Number(call.input && call.input.n) || 1));
+        const named = plan && plan[n - 1] ? plan[n - 1].title : `checkpoint ${n}`;
+        const claimed = String((call.input && call.input.said) || '').trim() || 'no words with it';
+
+        steps.push({ name: 'reached_checkpoint', input: { n, said: claimed } });
+        onEvent({ type: 'checkpoint', n, title: named, said: claimed });
+
+        const answer = gate ? await gate({ n, title: named, said: claimed }) : 'go';
+        if (answer === 'stop' || isAborted()) {
+          /* НЕ «ошибка»: остановка на шлюзе - это решение, а прогон дошёл до названного места. Одним
+           * словом «stopped» выбросило бы единственное, что здесь стоит знать. */
+          return waveDone(stepNo, {
+            ok: false,
+            error: `Stopped at checkpoint ${n} — ${named}. It said: ${claimed}`,
+            steps,
+          });
+        }
+
+        results.push({
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: [{ type: 'text',
+            text: 'The user looked and said to carry on. Continue from where you are, and announce the '
+              + 'next checkpoint when it is true.' }],
+        });
+        for (const skipped of calls.slice(i + 1)) {
+          results.push({
+            type: 'tool_result',
+            tool_use_id: skipped.id,
+            is_error: true,
+            content: [{ type: 'text',
+              text: 'not carried out — it came after a checkpoint, and the user was looking at the page '
+                + 'for as long as they liked before answering. Whatever this was aimed at was aimed with '
+                + 'the page from before that. Read the page again and carry on from what it shows.' }],
+          });
+        }
+        break;
       }
 
       /* Не помещается в этот ход - ни оно, ни то, что за ним. Каждому всё равно нужен свой ответ. */

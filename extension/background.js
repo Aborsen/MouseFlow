@@ -15,7 +15,7 @@
  * web app (chrome.runtime.sendMessage(EXTENSION_ID, ...) via externally_connectable).
  */
 
-import { lastRunModel, runGoal } from './agent.js';
+import { askForPlan, lastRunModel, runGoal } from './agent.js';
 import {
   skillFromRecording, skillFromRun, importSkills, exportSkill, exportMany, fillGoal, missingParams, flowFor,
   publishLink,
@@ -1578,6 +1578,39 @@ async function runAgentTool(name, input) {
   }
 }
 
+/* ЧЕЛОВЕК, КОТОРОГО ЖДЁТ ЦИКЛ.
+ *
+ * Шлюз живёт здесь, а не в agent.js, потому что ответ приходит сообщением из панели: цикл ставит вопрос и
+ * встаёт, панель видит его в agent/status и отвечает через agent/answer. Промис разрешается ровно один
+ * раз - вторым нажатием на «Продолжить» ничего не сломать.
+ *
+ * ПАНЕЛЬ, А НЕ ПОПАП: попап закрывается от первого же клика по странице, а ожидание здесь может длиться
+ * сколько человеку угодно. Именно поэтому панель и появилась. */
+let waiting = null;
+
+function askTheUser(at) {
+  return new Promise((resolve) => {
+    waiting = {
+      at,
+      answer(said) {
+        if (!waiting) return;
+        waiting = null;
+        agent.gate = null;
+        resolve(said === 'stop' ? 'stop' : 'go');
+      },
+    };
+    agent.gate = at;
+  });
+}
+
+/* Прогон кончился как угодно - ждать больше некому. Без этого остановка на шлюзе оставляла бы висеть
+ * вопрос, на который уже никто не смотрит. */
+function closeGate() {
+  if (waiting) waiting.answer('stop');
+  waiting = null;
+  agent.gate = null;
+}
+
 async function agentStart(goal, from) {
   if (agent.running) throw new Error('already running');
   if (!goal || !goal.trim()) throw new Error('describe what you want done');
@@ -1594,6 +1627,8 @@ async function agentStart(goal, from) {
     // Null for a goal typed by hand: there is no skill to point at, and inventing one would be worse.
     flowId: (from && from.flowId) || null,
     skillVersion: (from && from.skillVersion) || null,
+    gate: null,
+    plan: null,
   });
   holdWorker(true);
   await chrome.action.setBadgeText({ text: 'AI' });
@@ -1601,13 +1636,28 @@ async function agentStart(goal, from) {
   // Same as replay: while it runs, the icon is the stop button.
   await chrome.action.setPopup({ popup: '' });
 
+  const authToken = await syncToken();
+
+  /* План спрашивается ДО прогона и только когда человек попросил остановки. Не смогли - прогон идёт без
+   * шлюза: план это удобство, а не условие, и отказать в работе из-за необязательного шага было бы хуже
+   * молчания. Сказано в ленте, чтобы «я просил останавливаться, а он не остановился» имело ответ. */
+  if (from && from.checkpoints) {
+    agent.plan = await askForPlan({ goal: agent.goal, apiKey, authToken });
+    agent.log.push(agent.plan
+      ? { type: 'plan', text: 'Stopping at: '
+          + agent.plan.checkpoints.map((c, i) => `${i + 1}. ${c.title}`).join('  ') }
+      : { type: 'error', text: 'Could not work out where to stop, so this run will not pause.' });
+  }
+
   runGoal({
     goal: agent.goal,
     apiKey,
     // Only used on the shared endpoint, which will not spend the demo key for an unknown caller.
-    authToken: await syncToken(),
+    authToken,
     execute: tracedTool,
     isAborted: () => agent.abort,
+    plan: agent.plan ? agent.plan.checkpoints : null,
+    gate: agent.plan ? askTheUser : null,
     onEvent: (event) => {
       agent.log.push(event);
       console.log('[MouseFlow agent]', event);
@@ -1617,6 +1667,7 @@ async function agentStart(goal, from) {
     .catch((err) => { agent.result = { ok: false, error: err.message, steps: [] }; })
     .finally(async () => {
       agent.running = false;
+      closeGate();
       holdWorker(false);
       // The agent roams across tabs, so clear the cursor from every one that still has it.
       try {
@@ -1648,6 +1699,9 @@ function agentStatus() {
       moved: !!s.wentTo,
     })),
     result: agent.result,
+    /* На чём стоим и куда собирались. Панель по этому рисует вопрос; пусто - значит цикл идёт. */
+    gate: agent.gate || null,
+    plan: agent.plan ? agent.plan.checkpoints.map((c) => c.title) : null,
   };
 }
 
@@ -2102,7 +2156,13 @@ const ROUTES = {
   },
   'agent/start': (msg) => agentStart(msg.goal),
   'agent/status': async () => agentStatus(),
-  'agent/abort': async () => { agent.abort = true; return { ok: true }; },
+  'agent/abort': async () => { agent.abort = true; closeGate(); return { ok: true }; },
+  /* Ответ человека на чекпоинт. Приходит из панели, разрешает промис, на котором стоит цикл. */
+  'agent/answer': async (msg) => {
+    if (!waiting) return { ok: false, error: 'nothing is waiting for an answer' };
+    waiting.answer(msg.answer === 'stop' ? 'stop' : 'go');
+    return { ok: true };
+  },
 };
 
 function route(msg, sender, respond) {
