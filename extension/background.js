@@ -889,6 +889,9 @@ async function syncUnpair() {
 
 /* A local skill as the account stores a flow. Everything from here is `web`: these steps point at
  * page elements, so only the extension can replay them. */
+/** Тот же штамп, что пишет api/_flow-role.mjs. Дублируется по необходимости - см. flowFromSkill. */
+const SKILL_ROLE = 'skill';
+
 function flowFromSkill(skill) {
   return {
     id: skill.id,
@@ -901,7 +904,19 @@ function flowFromSkill(skill) {
     /* Насколько свежа ЭТА копия. Пусто у скиллов, записанных до того, как это поле появилось - и такие
      * ведут себя ровно как раньше, последний пишет: это не ослабление, раньше так вели себя все. */
     updated: skill.updated || null,
-    payload: skill,
+    /* ШТАМП РОЛИ, БЕЗ КОТОРОГО СКИЛЛА ДЛЯ АККАУНТА НЕ СУЩЕСТВУЕТ.
+     *
+     * roleOf в api/_flow-role.mjs читает payload.role, и всё, что уезжало отсюда, было без него - то есть
+     * ни mouseflow_recordings его не называл, ни mouseflow_run до него не добирался. Даже аккуратно
+     * написанный отказ («aims at elements in a web page, so the extension is the half that can replay
+     * it») до этих скиллов не доходил: их для той стороны просто не было.
+     *
+     * Всегда 'skill': сюда попадает только библиотека навыков. Запись остаётся записью и живёт в
+     * pending - см. record/list.
+     *
+     * Написание продублировано, а не импортировано: этот файл копируется в пакет, а не собирается
+     * сборщиком, так что api/_flow-role.mjs ему недоступен. В шаге держит check-extension.mjs. */
+    payload: Object.assign({}, skill, { role: SKILL_ROLE }),
   };
 }
 

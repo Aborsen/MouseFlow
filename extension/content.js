@@ -205,6 +205,7 @@
     push(Object.assign({
       action: isDouble ? 'dblclick' : 'click',
       button: ev.button,
+      mods: modsOf(ev),
     }, describe(el, ev.clientX, ev.clientY)));
   }
 
@@ -389,6 +390,38 @@
    * `pressure` follows the same rule: a real mouse reports 0.5 while a button is down and 0
    * otherwise, and an ink surface reads pressure 0 as "not drawing".
    */
+  /* МОДИФИКАТОРЫ КЛИКА - ЧЕТЫРЕ БУЛЕВА, КОТОРЫЕ БРАУЗЕР УЖЕ ПРИНЁС.
+   *
+   * Shift-клик выделяет диапазон, Cmd/Ctrl-клик добавляет к выделению или открывает в новой вкладке -
+   * обычные веб-жесты. Записывались они голым кликом и воспроизводились голым кликом, а отчёт о повторе
+   * при этом был чистым: тот же молчаливо-неверный результат, который десктопная половина чинила тремя
+   * коммитами подряд.
+   *
+   * ТЕ ЖЕ СЛОВА И ТОТ ЖЕ ПОРЯДОК, что у chordName в агентах (Cmd, Ctrl, Alt, Shift) - человек, читающий
+   * запись с Mac и запись из браузера, не должен встречать два написания одного жеста.
+   *
+   * Пусто - значит поля нет вовсе: запись без модификаторов остаётся ровно такой, какой была, и старые
+   * записи читаются без изменений. */
+  function modsOf(ev) {
+    const parts = [];
+    if (ev.metaKey) parts.push('Cmd');
+    if (ev.ctrlKey) parts.push('Ctrl');
+    if (ev.altKey) parts.push('Alt');
+    if (ev.shiftKey) parts.push('Shift');
+    return parts.length ? parts.join('+') : undefined;
+  }
+
+  /** Обратно в то, что понимает MouseEvent. Неизвестное имя пропускается, а не ломает повтор. */
+  function modKeys(mods) {
+    const set = new Set(String(mods || '').split('+').filter(Boolean));
+    return {
+      metaKey: set.has('Cmd'),
+      ctrlKey: set.has('Ctrl'),
+      altKey: set.has('Alt'),
+      shiftKey: set.has('Shift'),
+    };
+  }
+
   function fire(el, type, point, extra) {
     const down = type === 'pointerdown' || type === 'mousedown';
     const init = Object.assign({
@@ -993,11 +1026,15 @@
          * `buttons` encodes the same thing differently: a bitmask, left 1, right 2, middle 4. */
         const button = ev.button === 1 || ev.button === 2 ? ev.button : 0;
         const held = button === 2 ? 2 : button === 1 ? 4 : 1;
-        const withButton = { button };
-        const whileDown = { button, buttons: held };
+        /* Модификаторы едут на КАЖДОМ событии клика, включая pointerover и mouseover: приложение,
+         * решающее, что делает Shift-клик, читает их с того события, которое обрабатывает, и разные
+         * приложения обрабатывают разные. */
+        const mods = modKeys(ev.mods);
+        const withButton = Object.assign({ button }, mods);
+        const whileDown = Object.assign({ button, buttons: held }, mods);
 
-        fire(el, 'pointerover', point, { pointerId: 1, isPrimary: true });
-        fire(el, 'mouseover', point);
+        fire(el, 'pointerover', point, Object.assign({ pointerId: 1, isPrimary: true }, mods));
+        fire(el, 'mouseover', point, mods);
         fire(el, 'pointerdown', point, Object.assign({ pointerId: 1, isPrimary: true }, whileDown));
         fire(el, 'mousedown', point, whileDown);
         if (el.focus) el.focus({ preventScroll: true });

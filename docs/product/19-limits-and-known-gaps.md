@@ -441,8 +441,8 @@ What is still open, measured rather than estimated:
 | one failed action ends the turn | `notBatched` says so to the model | ~~no~~ yes, with the same sentence to each dropped call |
 | `finish` in a batch | acted on in order | ~~found first, discarding the turn's real work~~ in order |
 | narrated transcript | `api/_transcript.js` | none |
-| run from the account | the courier claims jobs | refused: `api/mcp.js` tells the user to run it themselves |
-| modifiers in a recording | `mods` on the `#ctx` line since 0.21.0 | none — every Shift-click replays as a plain click |
+| run from the account | the courier claims jobs | still refused, but the skills are now VISIBLE there — see below |
+| modifiers in a recording | `mods` on the `#ctx` line since 0.21.0 | ~~none~~ `mods` on the click, same four words in the same order |
 | parameters in a recorded skill | derived from typing and the control's name | `params: []`, unconditionally |
 
 **How the three implementations are held in step**, since they cannot share a module: `extension/agent.js`
@@ -467,6 +467,21 @@ was done and there was simply no tool reaching it. It says in its own descriptio
 drawn purely by the CSS `:hover` rule stays shut, because no synthetic event triggers that. And `navigate`
 to the address you are already on no longer claims `{navigated: url}` — `goTo` returns early there, so a
 stuck page read as one that had just been reloaded and was still stuck.
+
+**Extension skills reach the account's own surfaces now.** `flowFromSkill` pushed every row without a
+`role`, and `roleOf` in `api/_flow-role.mjs` reads exactly that — so `mouseflow_recordings` never named an
+extension skill and `mouseflow_run` never reached one. Even the carefully written refusal ("aims at elements
+in a web page, so the extension is the half that can replay it") was unreachable for them: as far as that
+side was concerned they did not exist. They are stamped `skill` now, and `check-extension.mjs` holds the
+spelling in step with the server's. What is still missing is the claimer — a browser skill remains something
+only a person sitting in Chrome can start.
+
+**Modifiers are recorded and replayed.** Four booleans the DOM event already carried. Shift-click for a
+range, Cmd/Ctrl-click to add to a selection or open in a new tab — recorded as bare clicks, replayed as bare
+clicks, and reported as a clean run: the same silently-wrong result the desktop half spent three commits
+fixing. Written with the same words in the same order as `chordName` in the agents (Cmd, Ctrl, Alt, Shift),
+and the check asserts the order is taken from the agent rather than invented. Scroll carries none: the
+recorder hears the `scroll` event, which has no modifier state, not the wheel.
 
 Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
 `open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and

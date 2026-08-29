@@ -161,6 +161,31 @@ group('и сохранить как навык - вместе с отправк�
     JSON.stringify(store.pending));
 }
 
+group('и то, что уезжает на аккаунт, проштамповано - иначе для MCP этих скиллов не существует');
+{
+  seed([recording('rrr', 3)]);
+  store.skills = [];
+  let pushed = null;
+  netHandler = async (url, init) => {
+    if (!String(url).includes('/api/sync')) throw new Error('unexpected ' + url);
+    if (init && init.body) pushed = JSON.parse(init.body);
+    return reply({ flows: [], runs: [] });
+  };
+  await send({ mf: 'record/keep', id: 'rrr', name: 'Stamped' });
+  const flow = pushed && (pushed.flows || [])[0];
+  check('скилл уехал', !!flow, JSON.stringify(pushed && Object.keys(pushed)));
+  /* roleOf в api/_flow-role.mjs читает ИМЕННО payload.role. Без него скилл не назовёт
+   * mouseflow_recordings и не запустит mouseflow_run - он для той стороны просто отсутствует. */
+  check('и у него есть роль в payload', !!flow && flow.payload && flow.payload.role === 'skill',
+    JSON.stringify(flow && flow.payload && flow.payload.role));
+  const role = readFileSync(new URL('../api/_flow-role.mjs', import.meta.url), 'utf8');
+  const spelling = (role.match(/SKILL_ROLE = '([a-z]+)'/) || [])[1];
+  const mine = readFileSync(new URL('./background.js', import.meta.url), 'utf8')
+    .match(/const SKILL_ROLE = '([a-z]+)'/);
+  check('и написание совпадает с тем, что пишет сервер', !!mine && mine[1] === spelling,
+    `${mine && mine[1]} vs ${spelling}`);
+}
+
 group('а когда аккаунт недостижим - навык всё равно сохранён, и это сказано отдельно');
 {
   seed([recording('ccc', 4)]);
@@ -620,6 +645,53 @@ group('дешёвый словарь: наведение, перезагрузк
   check('и заметки лежат в шагах прогона, а не только в итоговом предложении',
     (out.steps || []).filter((st) => st.name === 'note').length === 8,
     String((out.steps || []).filter((st) => st.name === 'note').length));
+}
+
+group('модификаторы клика: записываются, читаются обратно и пишутся так же, как на десктопе');
+{
+  /* content.js - это IIFE поверх DOM, целиком его в Node не поднять. Поэтому две чистые функции
+   * ВЫРЕЗАЮТСЯ из файла и ИСПОЛНЯЮТСЯ - тот же приём, которым agent/check-swift.mjs проверяет правила
+   * свифтового агента. Расходиться нечему: это та же строка, прочитанная с диска. */
+  const src = readFileSync(new URL('./content.js', import.meta.url), 'utf8');
+  const cut = (name) => {
+    const at = src.indexOf('function ' + name + '(');
+    let depth = 0;
+    for (let i = src.indexOf('{', at); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) return src.slice(at, i + 1);
+    }
+    return '';
+  };
+  const body = cut('modsOf') + '\n' + cut('modKeys');
+  check('обе функции вырезаны', /function modsOf/.test(body) && /function modKeys/.test(body),
+    String(body.length));
+  // eslint-disable-next-line no-new-func
+  const { modsOf, modKeys } = new Function(body + '; return { modsOf, modKeys };')();
+
+  check('без модификаторов поля нет вовсе - старые записи не меняются',
+    modsOf({}) === undefined, String(modsOf({})));
+  check('Shift-клик записан', modsOf({ shiftKey: true }) === 'Shift', String(modsOf({ shiftKey: true })));
+  /* ТОТ ЖЕ ПОРЯДОК, что у chordName в агентах: человек, читающий запись с Mac и запись из браузера, не
+   * должен встречать два написания одного жеста. */
+  const all = modsOf({ metaKey: true, ctrlKey: true, altKey: true, shiftKey: true });
+  check('четыре сразу - в порядке Cmd, Ctrl, Alt, Shift', all === 'Cmd+Ctrl+Alt+Shift', String(all));
+  const swift = readFileSync(new URL('../agent/mouseflow-agent.swift', import.meta.url), 'utf8');
+  const chord = swift.slice(swift.indexOf('func chordName('));
+  const order = (chord.slice(0, 400).match(/parts\.append\("(\w+)"\)/g) || [])
+    .map((m) => m.replace(/.*"(\w+)".*/, '$1')).join('+');
+  check('и этот порядок взят у агента, а не придуман', all === order, `${all} vs ${order}`);
+
+  /* Круг замыкается: то, что записали, обязано прочитаться обратно теми же четырьмя булевыми. */
+  const back = modKeys(modsOf({ metaKey: true, shiftKey: true }));
+  check('записанное читается обратно', back.metaKey && back.shiftKey && !back.altKey && !back.ctrlKey,
+    JSON.stringify(back));
+  check('и мусор не ломает повтор, а просто не совпадает',
+    Object.values(modKeys('Meta+Windows')).every((v) => v === false), JSON.stringify(modKeys('Meta+Windows')));
+
+  /* Структурно: чистые функции могут быть верны и не быть позваны. */
+  check('запись клика несёт mods', /action: isDouble \? 'dblclick' : 'click',\s*\n\s*button: ev\.button,\s*\n\s*mods: modsOf\(ev\),/.test(src), 'not wired');
+  check('и повтор их применяет', /const mods = modKeys\(ev\.mods\);/.test(src)
+    && /Object\.assign\(\{ button \}, mods\)/.test(src), 'not applied');
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
