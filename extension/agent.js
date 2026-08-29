@@ -382,9 +382,23 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
     const say = textOf(reply.content);
     if (say) onEvent({ type: 'say', text: say });
 
+    /* A TURN THAT CALLED NOTHING HAS NOT SUCCEEDED, and this line said it had.
+     *
+     * The two desktop drivers already say so, in the same place and under the same reasoning
+     * (web/src/lib/desktop-engine.ts and api/_step.mjs): a model that ends a turn without calling anything
+     * has stalled, has asked the user a question, or thought it was done and forgot to say so - and all
+     * three used to close the run GREEN. A false red is visible and can be argued with; a false green is
+     * neither. This file had already taken the two neighbouring fixes from that work - the truncated turn
+     * above, and `finish` having to CLAIM success below - and missed the one between them.
+     *
+     * What it cost here is worse than a wrong colour, because more hangs off ok on this side:
+     * background.js maps result.ok straight to the run's outcome, runsToPush sends that to the account,
+     * and the panel offers a successful run as the basis for a reusable skill. So a run that did nothing
+     * became a saved skill that does nothing. */
     const calls = (reply.content || []).filter((b) => b.type === 'tool_use');
     if (!calls.length) {
-      return waveDone(stepNo, { ok: true, summary: say || 'Finished without a summary.', steps });
+      const why = say || 'it stopped without doing anything or saying why';
+      return waveDone(stepNo, { ok: false, error: why, steps });
     }
 
     messages.push({ role: 'assistant', content: reply.content });

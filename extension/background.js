@@ -612,6 +612,98 @@ async function recordStop() {
   return { ok: true, events, saved, tabs: tabCount, origins };
 }
 
+
+/* ------------------------------------------------- what becomes of a recording after Stop
+ *
+ * WHY THESE FOUR HAD TO EXIST. recordStop wrote the recording into `pending` and returned, and after that
+ * the key was read by exactly two things: saveSkill, which takes whichever one was LAST, and the
+ * hand-written popup this side panel replaced. The panel sends nine messages and none of them was about a
+ * recording it had just made. So pressing Stop produced something that could not be listed, played, named,
+ * kept, exported or deleted - while the screen said "Saved. It is on the Record page in the app", which was
+ * not true and could not become true: sync pushes `flows` and `runs`, never `pending`.
+ *
+ * The replay engine and the whole of skills.js were already written and already correct. What was missing
+ * was a caller. So these four are wiring, not machinery: list, play, keep, forget - and every one of them
+ * goes through the code the old popup used, rather than growing a second way to do the same thing.
+ */
+
+/* The list, deliberately WITHOUT the events.
+ *
+ * A recording of a few minutes is megabytes of events, this answer crosses a message boundary, and a list
+ * exists to say what each recording IS - how long, how many tabs, which sites - not to carry it. The count
+ * is what the screen shows; the events stay where they are until something asks to play them. */
+async function pendingList() {
+  const { pending = [] } = await chrome.storage.local.get('pending');
+  return {
+    ok: true,
+    recordings: pending.map((rec) => ({
+      id: rec.id,
+      name: rec.name,
+      created: rec.created,
+      origins: rec.origins || [],
+      tabs: rec.tabs || 1,
+      events: (rec.events || []).length,
+    })).reverse(),   // newest first: the one just made is the one being looked for
+  };
+}
+
+/* One recording by id, or the newest when no id is given - the same fallback saveSkill has always used, so
+ * a caller that knows there is only one does not have to find out its id first. */
+async function pendingOne(id) {
+  const { pending = [] } = await chrome.storage.local.get('pending');
+  const rec = id ? pending.find((r) => r.id === id) : pending[pending.length - 1];
+  if (!rec) throw new Error('that recording is no longer here');
+  return rec;
+}
+
+/* Playing one WITHOUT keeping it, which is the thing a person does first: they want to see whether what
+ * they just recorded actually repeats. Through skillFromRecording and flowFor - the same two steps
+ * runSkill takes for a saved recorded skill - so a recording plays exactly as it will once it is kept, and
+ * there is no second replay path to keep in step with the first. */
+async function pendingPlay(msg) {
+  const rec = await pendingOne(msg.id);
+  const skill = skillFromRecording(rec, new Date().toISOString());
+  return replayStart(flowFor(skill, { loop: !!msg.loop }));
+}
+
+/* Keeping it: name it, save it, and PUT IT WHERE THE SCREEN SAYS IT IS.
+ *
+ * The push is the half that was missing from the promise. A skill saved here lives in chrome.storage.local
+ * and reaches the account only through syncNow - which the panel never calls, and which otherwise runs only
+ * when somebody pairs. So the skill existed, and the Skills list the panel shows is the ACCOUNT's, and the
+ * two never met. Failing to push is not failing to keep: the skill is saved either way, and `synced` says
+ * which of the two happened rather than leaving the screen to guess.
+ *
+ * Dropped from `pending` afterwards, because it is no longer pending - it is a skill, and a list offering
+ * to keep something that has already been kept is a list that invites doing it twice. */
+async function pendingKeep(msg) {
+  const rec = await pendingOne(msg.id);
+  const saved = await saveSkill({ from: 'recording', id: rec.id, name: msg.name });
+  let synced = null;
+  let syncError = null;
+  try {
+    synced = await syncNow();
+  } catch (err) {
+    syncError = err.message;
+  }
+  /* Уборка, а не суть, поэтому она не имеет права провалить сохранение. Два нажатия Keep подряд по одной
+   * записи - и второй pendingForget не нашёл бы её и бросил, превратив УДАВШЕЕСЯ сохранение в отказ на
+   * экране. Не убралось - запись останется в списке, что видно, в отличие от ложной ошибки. */
+  await pendingForget({ id: rec.id }).catch(() => {});
+  return { ok: true, skill: saved.skill, synced: !!synced, syncError };
+}
+
+/* Forgetting one. The only way a recording ever left this list before was the browser's storage being
+ * cleared, so a mistaken recording sat in it for ever. */
+async function pendingForget(msg) {
+  const { pending = [] } = await chrome.storage.local.get('pending');
+  const id = String((msg && msg.id) || '');
+  const left = pending.filter((rec) => rec.id !== id);
+  if (left.length === pending.length) throw new Error('that recording is no longer here');
+  await chrome.storage.local.set({ pending: left });
+  return { ok: true, left: left.length };
+}
+
 /* ---------------------------------------------------------------------- skills */
 
 /* A finished flow, kept and named. See skills.js for the format and why the two kinds differ.
@@ -1616,6 +1708,12 @@ const ROUTES = {
   'record/start': (msg) => recordStart(msg.tabId),
   'record/status': () => recordStatus(),
   'record/stop': () => recordStop(),
+  /* What a recording can have done to it once it exists - see the block above pendingList for why these
+   * had to be added rather than merely used. */
+  'record/list': () => pendingList(),
+  'record/play': (msg) => pendingPlay(msg),
+  'record/keep': (msg) => pendingKeep(msg),
+  'record/forget': (msg) => pendingForget(msg),
   replay: (msg) => replayStart(msg.flow || {}),
   'replay/status': async () => replayStatus(),
   'replay/abort': async () => { play.abort = true; return { ok: true }; },

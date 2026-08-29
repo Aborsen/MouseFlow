@@ -400,6 +400,54 @@ a worse problem than a border in a screenshot.
 
 ---
 
+## The browser extension against the desktop agents
+
+The extension is a second product driving a second surface, and it has its own brain: `extension/agent.js`
+carries its own `SYSTEM`, its own `TOOLS` and its own wave loop rather than reading `api/_brain.mjs`, which
+the two desktop drivers share. Everything below follows from that split — improvements to the shared brain
+have been landing on the desktop side only.
+
+Two of these were not gaps but faults, and both are fixed:
+
+- **A turn that called no tool was filed as a success.** Both desktop drivers treat it as a failure and
+  carry the model's own prose into the reason; this side returned `ok: true`. It mattered more here than
+  there, because `background.js` maps `result.ok` straight to the run's outcome, pushes that to the account,
+  and the panel offers a successful run as the basis for a reusable skill — so a run that did nothing became
+  a saved skill that does nothing.
+- **A recording made in the panel could not be reached.** Stop wrote it into the worker's storage and the
+  screen said it was on the Record page in the app, which was not true and could not become true — sync
+  pushes skills and runs, never recordings. The panel sent nine messages and none was about a recording;
+  the replay engine and `skills.js` were written, correct, and had no caller from this UI. There is now a
+  **Recorded here** list with play, keep-as-skill (which also pushes it to the account) and delete.
+
+What is still open, measured rather than estimated:
+
+| | desktop | extension |
+|---|---|---|
+| actions the model can ask for | 21 | 9 |
+| sees the screen | screenshots | DOM only — no `captureVisibleTab` anywhere |
+| checkpoints | `reached_checkpoint` plus a gate the loop waits on | none, and no plan to gate on |
+| gives up when nothing changes | warns at 3, stops at 6 | no equivalent |
+| prunes old snapshots | `forgetOldPictures` each turn | none — turn 24 pays for 24 DOM dumps |
+| model timeout, cancellable | yes | no; Stop cannot cancel an in-flight request |
+| narrated transcript | `api/_transcript.js` | none |
+| run from the account | the courier claims jobs | refused: `api/mcp.js` tells the user to run it themselves |
+| modifiers in a recording | `mods` on the `#ctx` line since 0.21.0 | none — every Shift-click replays as a plain click |
+| parameters in a recorded skill | derived from typing and the control's name | `params: []`, unconditionally |
+
+The missing tools are `hover`, `note`, `capture_window`, `find_element`, `scroll_to`, `drag`,
+`clipboard_read`, `clipboard_write`, `open_app`, `activate_window`, `refresh_page`, `wait_for_window` and
+`reached_checkpoint`. Two are cheap and worth doing first because the machinery is already in the file:
+`hover` is implemented at `extension/content.js:813` and the model simply cannot reach it, and there is no
+`refresh` — while the obvious workaround is worse than absent, because `goTo` returns early when the URL is
+unchanged and still answers `{navigated: url}`, so a stuck page reads as one that was reloaded.
+
+**Not a gap:** the recording format. The extension anchors a step to a selector and a tab, the desktop to a
+coordinate plus `#ctx`. That is a different anchor for a different surface, and the browser's is the better
+one there; `api/_macro.mjs` has no notion of a selector and should not grow one.
+
+---
+
 ## Where this would go next
 
 Carried over from the project's own notes, and still current:

@@ -300,11 +300,20 @@ web app swaps transports rather than growing a second control flow:
 | `{mf:'record/start', tabId?}` | `{ok, tabId}` |
 | `{mf:'record/status'}` | `{ok, recording, count, motion, tabs, elapsedMs}` |
 | `{mf:'record/stop'}` | `{ok, events, saved, tabs, origins}` |
-| `{mf:'replay', flow}` | `{ok, tabId}` |
+| `{mf:'record/list'}` | `{ok, recordings:[{id, name, created, origins, tabs, events}]}` — newest first, `events` is a COUNT |
+| `{mf:'record/play', id?, loop?}` | `{ok, tabId}` — plays one without keeping it; newest when no id |
+| `{mf:'record/keep', id?, name?}` | `{ok, skill, synced, syncError}` — saves it, pushes it, drops it from the list |
+| `{mf:'record/forget', id}` | `{ok, left}` |
+| `{mf:'skills/run', id, loop?, values?}` | `{ok, tabId}` — this is how a saved recording is replayed |
 | `{mf:'replay/status'}` | `{ok, playing, step, steps, pass, passes, flowPass, flowPasses, index, total, error}` |
 | `{mf:'replay/abort'}` | `{ok}` |
 | `{mf:'settings/get'}` | `{ok, settings:{pointer, trail}}` |
 | `{mf:'settings/set', settings}` | `{ok, settings}` — merges; non-boolean and unknown keys ignored |
+
+This table is the part the app's transports care about, not the whole vocabulary: `ROUTES` in
+`background.js` has thirty-three entries, including the whole of skills and the gallery. `route()` is
+the authority — and everything not listed in `OPEN_WITHOUT_ACCOUNT` answers `{ok:false, signedOut:true}`
+until this browser is paired.
 
 `flow` is `{startDelay, flowRepeat, steps:[{events, repeat, speed, delayAfter}], tabId?}` —
 the same shape the agent's text protocol encodes. `flowRepeat: 0` means *until stopped*.
@@ -325,20 +334,42 @@ An event is one of:
 
 plus `tab`, `delay` and an optional `frame` on every one.
 
+## What happens to a recording after Stop
+
+Stop writes the recording into the worker's own storage, and the panel's **Recorded here** list is
+what reaches it: play it back, keep it as a skill, or throw it away. Keeping it also pushes it to
+the account, which is where the Skills list in the panel reads from — without that push the skill
+existed on this browser and the list that was meant to show it never could.
+
+That list is newer than most of this file, and the reason it exists is worth writing down. For a
+while the panel could start and stop a recording and do nothing else with it: the four commands
+(`record/list`, `record/play`, `record/keep`, `record/forget`) did not exist, the replay engine and
+`skills.js` had no caller from this UI, and the screen said *"Saved. It is on the Record page in the
+app"* — which was not true and could not become true, because sync pushes skills and runs and never
+recordings. The engine was already written and already right. What was missing was a caller.
+
 ## Still to wire
 
-The app at `mouse-agent.vercel.app` cannot talk to this yet. `externally_connectable` is
-declared, but calling it needs the extension's ID, and an unpacked extension's ID is derived
-from its folder path — different on every machine.
+Nothing about reaching the app: the bridge is built. `bridge.js` is a content script matched to the
+app's own origin and turns `window.postMessage` ↔ `chrome.runtime.sendMessage`, so the page posts a
+message and waits for a reply with no extension ID anywhere — which is what Create's browser mode
+runs on. (Pinning the ID with a manifest `key` is still worth doing before publishing; that is a
+distribution job, not a wiring one.)
 
-The fix is **not** to make users paste an ID: add a content script matched to the app's own
-origin that bridges `window.postMessage` ↔ `chrome.runtime.sendMessage`. The page then just
-posts a message and waits for a reply, with no ID anywhere. Pinning the ID with a manifest
-`key` is the alternative, and is worth doing anyway before publishing.
+What IS still to wire is measured in `docs/product/19-limits-and-known-gaps.md`: this half has nine
+tools where the desktop brain has twenty-one, no checkpoints, no stillness rule, no pruning of old
+page snapshots, and nothing on the account can start a run in here — `api/mcp.js` refuses a browser
+skill outright and tells the user to run it from the extension themselves.
 
 ## Testing without loading it
 
-Both halves run under Node against stubs, which is how the motion work was verified:
+`node extension/check-extension.mjs`, which runs as part of `npm test`. It imports `background.js`
+whole with a stub in place of `chrome`, and sends messages through the REAL `route()` — the same one
+the panel's messages arrive at, account gate included — so what is checked is the path rather than
+the presence of a function. It also runs `runGoal` against a stubbed model to prove that a turn
+calling no tool is reported as a failure, which is the rule this side had backwards.
+
+Both halves also run under Node against stubs, which is how the motion work was verified:
 
 - **The worker** imports with a `chrome` stub, exposing `captureMoves` / `simplifyPath` /
   `chunkPath` / `compact` for direct assertions — back-dating, batch joining, the frame and
