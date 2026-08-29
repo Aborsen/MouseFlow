@@ -76,6 +76,88 @@ async function askModel(url, headers, body, isAborted) {
  *
  * Последнее пользовательское сообщение не трогается никогда: в нём та самая страница, по которой
  * принимается решение. */
+/* ЧТО ЗНАЧИТ «СТРАНИЦА НЕ ИЗМЕНИЛАСЬ», КОГДА ПИКСЕЛЕЙ НЕТ.
+ *
+ * У десктопа это отпечаток экрана 64x36: два подряд идущих кадра, средняя разница ниже порога. Здесь
+ * кадров нет и быть не может - расширение видит DOM, а не картинку, - поэтому отпечаток берётся с того,
+ * что действие И ТАК приносит назад: адрес, заголовок, имя открытого диалога, сколько элементов показано
+ * из скольких, и сам список - ref, роль, имя, значение поля. Значение здесь не лишнее: набранный в поле
+ * текст это изменение страницы, которого не видно ни в адресе, ни в счётчиках.
+ *
+ * NULL - ЭТО «НЕ СМОГ ОПРЕДЕЛИТЬ», А НЕ «НЕ ИЗМЕНИЛОСЬ», и разница ровно та же, что на десктопе: ход, про
+ * который ничего не известно, счёт не трогает. Иначе действие, которое просто ничего не возвращает,
+ * копило бы счёт до остановки живого прогона.
+ *
+ * СМЕЩЕНО В БЕЗОПАСНУЮ СТОРОНУ. Страница с часами, счётчиком или спиннером меняет отпечаток на каждом
+ * ходу, и правило на ней не сработает никогда. Это осознанный перекос: не заметить застревание - потерять
+ * несколько ходов, а оборвать работающий прогон - потерять его весь. */
+export function pageMark(result) {
+  const page = result && typeof result === 'object' && result.page ? result.page : result;
+  if (!page || typeof page !== 'object') return null;
+  if (page.url == null && page.title == null && !Array.isArray(page.elements)
+      && page.shown == null) {
+    return null;
+  }
+  const bits = [page.url || '', page.title || '', page.dialog || '',
+    String(page.shown), String(page.total)];
+  for (const el of Array.isArray(page.elements) ? page.elements : []) {
+    bits.push([el.ref, el.role || el.tag || '', el.name || '', el.value == null ? '' : el.value].join(':'));
+  }
+  return bits.join('\u0001');
+}
+
+/* СКОЛЬКО РАЗ ПОДРЯД НИЧЕГО НЕ ПРОИСХОДИЛО - те же два порога, что у десктопа, и check-extension.mjs
+ * держит их в шаге. Рассуждение переносится целиком, потому что оно не про пиксели: одно действие, не
+ * изменившее ничего, - обычное дело; три РЕШЕНИЯ подряд, после которых страница та же, - уже нет. На
+ * третьем сказать сильнее, потому что модель ещё может выпутаться; на шестом закончить, потому что если
+ * пять предыдущих слов не помогли, шестое не поможет, а стоит каждое из них целый ход.
+ *
+ * СЧИТАЮТСЯ ХОДЫ, А НЕ ДЕЙСТВИЯ. Ход неподвижен, только если НИ ОДНО его действие ничего не сдвинуло. */
+const STILL_WARN = 3;
+const STILL_GIVE_UP = 6;
+
+const stillNote = (streak) =>
+  `Nothing on the page has changed through ${streak} decisions in a row - not the address, not the `
+  + 'elements, not what is typed in them. Whatever is being aimed at is not receiving this. Try a '
+  + 'different way in - a keyboard shortcut, a different field, or read_page to see what is actually '
+  + 'there - rather than repeating what has not worked.';
+
+const stillStopped = (streak) =>
+  `Nothing on the page has changed through ${streak} decisions in a row. Stopping rather than going on: `
+  + 'whatever is being aimed at is not receiving this, and repeating it costs a step each time without '
+  + 'getting closer. What was reached before this is unchanged.';
+
+/* СКОЛЬКО ДЕЙСТВИЙ ОДИН ХОД МОЖЕТ УНЕСТИ.
+ *
+ * Промпт здесь говорит «одно действие за раз» - в отличие от десктопного, который пачки поощряет, - так
+ * что это страховка, а не правило. Но модель кладёт в пачку и то, что просили по одному: finish в общей
+ * пачке был именно этим, и он молча съедал работу хода, пока это не починили.
+ *
+ * НИЧТО НЕ СЛЕДУЕТ за wait, navigate и open_tab: каждое из них заканчивается страницей, на которую никто
+ * не смотрел, и всё, что за ними, целилось бы по прежней. Прокрутка сюда НЕ входит, и это отличие
+ * поверхности, а не недосмотр: на десктопе прокрутка уводит из-под прицела координаты, а здесь ссылки
+ * указывают на элементы и прокрутку переживают. */
+const BATCH_MAX = 6;
+const TERMINAL = new Set(['wait', 'navigate', 'open_tab']);
+
+/** Почему это действие не выполняется в том же ходу, или null - если выполняется. */
+export function notBatched(sofar, next) {
+  const done = Array.isArray(sofar) ? sofar : [];
+  if (!done.length) return null;              // первое нацелено по снимку и разрешено всегда
+  if (done.length >= BATCH_MAX) {
+    return `not carried out — ${BATCH_MAX} actions is as much as one turn carries, and this was past `
+      + 'that. The rest of the turn was dropped with it; read the page again and carry on from there.';
+  }
+  const last = done[done.length - 1];
+  if (TERMINAL.has(last)) {
+    return `not carried out — it came after ${last}, which ends with the page in a state nobody has `
+      + 'looked at yet. Anything after it was aimed using the page from before. The rest of the turn was '
+      + 'dropped with it; read the page again and carry on from what it shows.';
+  }
+  void next;
+  return null;
+}
+
 const PAGE_KEEP_CHARS = 400;
 
 export function forgetOldPages(messages) {
@@ -346,9 +428,23 @@ const waveDone = (stepNo, result) => ({ done: true, stepNo, result });
 async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToken, steps, wave, stepFrom, model }) {
   let stepNo = stepFrom;
   let turns = 0;
+  /* Ходов подряд, за которые страница не изменилась. Живёт ЧЕРЕЗ ходы: три неподвижных в одном ходе и три
+   * в следующем - это шесть подряд, и человек, глядящий на это, считал бы именно так. */
+  let still = 0;
+  /* Отпечаток страницы после последнего действия, с которым сравнивается следующий. */
+  let mark = null;
 
   while (turns < WAVE_TURNS) {
     if (isAborted()) return { done: false, stepNo };
+
+    /* НИЧЕГО НЕ МЕНЯЕТСЯ ШЕСТЬ РЕШЕНИЙ ПОДРЯД - следующее не покупается. Проверяется ДО запроса к модели:
+     * ход, который не будет полезен, не должен стоить ещё одного ответа. */
+    if (still >= STILL_GIVE_UP) {
+      const why = stillStopped(still);
+      onEvent({ type: 'say', text: why });
+      return waveDone(stepNo, { ok: false, error: why, steps });
+    }
+
     turns++;
     stepNo++;
     onEvent({ type: 'turn', n: stepNo, wave, inWave: turns, of: WAVE_TURNS });
@@ -505,12 +601,32 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
      * какого-то tool_use нет пары. Поэтому «не выполнено» - это ответ, а не молчание. */
     const results = [];
     let ended = null;
+    /* Что этот ход уже выполнил, по порядку - вход для правила пачки. */
+    const ran = [];
+    /* Сдвинулось ли хоть что-нибудь, и можно ли было вообще определить. Два разных вопроса: ход, про
+     * который нечем судить, счёт неподвижности не трогает. */
+    let movedThisTurn = false;
+    let couldTell = false;
 
     for (let i = 0; i < calls.length; i++) {
       const call = calls[i];
       if (isAborted()) return { done: false, stepNo };
 
       if (call.name === 'finish') { ended = call; break; }
+
+      /* Не помещается в этот ход - ни оно, ни то, что за ним. Каждому всё равно нужен свой ответ. */
+      const refused = notBatched(ran, call.name);
+      if (refused) {
+        for (const skipped of calls.slice(i)) {
+          results.push({
+            type: 'tool_result',
+            tool_use_id: skipped.id,
+            is_error: true,
+            content: [{ type: 'text', text: refused }],
+          });
+        }
+        break;
+      }
 
       onEvent({ type: 'act', name: call.name, input: call.input });
       let outcome;
@@ -520,8 +636,23 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
         outcome = { ok: false, error: err.message };
       }
 
+      ran.push(call.name);
+
       if (outcome.ok && call.name !== 'read_page') {
         steps.push({ name: call.name, input: call.input });
+      }
+
+      /* Сдвинулась ли страница. Сравнивается с отпечатком ПРЕДЫДУЩЕГО действия, поэтому у самого первого
+       * сравнивать не с чем - и он не считается ни за движение, ни за его отсутствие. */
+      if (outcome.ok) {
+        const now = pageMark(outcome.result);
+        if (now != null) {
+          if (mark != null) {
+            couldTell = true;
+            if (now !== mark) movedThisTurn = true;
+          }
+          mark = now;
+        }
       }
 
       results.push({
@@ -568,6 +699,13 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
         needsUser: !!ended.input.needs_user,
         steps,
       });
+    }
+
+    /* Счёт неподвижности - раз на ход, а не раз на действие. Ход, где ни одно действие ничего не сдвинуло,
+     * это одно застрявшее решение, а не три. */
+    if (couldTell) still = movedThisTurn ? 0 : still + 1;
+    if (still >= STILL_WARN && still < STILL_GIVE_UP) {
+      results.push({ type: 'text', text: stillNote(still) });
     }
 
     /* Warn before the seam rather than at it.

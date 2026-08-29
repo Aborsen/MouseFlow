@@ -413,5 +413,163 @@ group('и три реализации согласны, сколько ждат�
     !!num(ext) && num(ext) === num(desk), `${num(ext)} vs ${num(desk)}`);
 }
 
+group('«страница не изменилась» - без пикселей, по тому, что действие и так приносит назад');
+{
+  const { pageMark } = await import('./agent.js');
+  const page = (over) => Object.assign({
+    url: 'https://example.com/a', title: 'A', dialog: null, shown: 2, total: 9,
+    elements: [
+      { ref: 0, tag: 'input', role: 'textbox', name: 'Search', value: '' },
+      { ref: 1, tag: 'button', role: 'button', name: 'Go' },
+    ],
+  }, over);
+  check('одна и та же страница даёт один и тот же отпечаток',
+    pageMark(page()) === pageMark(page()), 'differs');
+  check('другой адрес - другой отпечаток',
+    pageMark(page()) !== pageMark(page({ url: 'https://example.com/b' })), 'same');
+  /* НАБРАННЫЙ ТЕКСТ - ТОЖЕ ИЗМЕНЕНИЕ, и его не видно ни в адресе, ни в счётчиках. Без значения поля
+   * ход «кликнуть в поле, напечатать адрес» считался бы неподвижным. */
+  const typed = page();
+  typed.elements = [Object.assign({}, typed.elements[0], { value: 'cats' }), typed.elements[1]];
+  check('напечатанное в поле меняет отпечаток', pageMark(page()) !== pageMark(typed), 'same');
+  check('открывшийся диалог тоже',
+    pageMark(page()) !== pageMark(page({ dialog: 'Confirm' })), 'same');
+  /* Действие возвращает страницу вложенной в .page, read_page - напрямую. Оба обязаны читаться. */
+  check('снимок действия и снимок read_page дают одно и то же',
+    pageMark({ done: true, page: page() }) === pageMark(page()), 'differ');
+  /* NULL - это «не смог определить», а не «не изменилось». */
+  check('результат без страницы - это null, а не пустой отпечаток',
+    pageMark({ ok: true }) === null && pageMark(null) === null, String(pageMark({ ok: true })));
+}
+
+group('и застрявший прогон останавливается сам - шесть решений подряд без изменений');
+{
+  const { runGoal } = await import('./agent.js');
+  const frozen = { url: 'https://example.com', title: 'A', dialog: null, shown: 1, total: 1,
+    elements: [{ ref: 0, tag: 'button', role: 'button', name: 'Go' }] };
+  let turns = 0;
+  let warned = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    const body = JSON.parse(init.body);
+    warned = JSON.stringify(body.messages).split('Nothing on the page has changed').length - 1;
+    turns++;
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 't' + turns, name: 'click', input: { ref: 0 } }] });
+  };
+  const out = await runGoal({
+    goal: 'press it', apiKey: null, authToken: 'mf_test',
+    execute: async () => ({ ok: true, result: { done: true, page: frozen } }),
+    onEvent: () => {}, isAborted: () => false,
+  });
+  check('прогон остановился сам, а не выгреб все 24 хода волны', turns < 12, String(turns));
+  check('и отчитался неуспехом с причиной', out.ok === false
+    && /Nothing on the page has changed/.test(String(out.error)), String(out.error).slice(0, 70));
+  /* ПРЕДУПРЕЖДЕНИЕ РАНЬШЕ СТЕНЫ: на третьем модель ещё может выпутаться сама. */
+  check('и предупреждение дошло до модели до остановки', warned > 0, String(warned));
+}
+
+group('а прогон, в котором страница меняется, не трогается');
+{
+  const { runGoal } = await import('./agent.js');
+  let turns = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    turns++;
+    if (turns > 8) {
+      return reply({ stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'done' } }] });
+    }
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 't' + turns, name: 'click', input: { ref: 0 } }] });
+  };
+  const out = await runGoal({
+    goal: 'keep going', apiKey: null, authToken: 'mf_test',
+    execute: async () => ({ ok: true, result: { page: {
+      url: 'https://example.com/' + turns, title: 'T' + turns, dialog: null, shown: 1, total: 1,
+      elements: [{ ref: 0, tag: 'button', role: 'button', name: 'Go' }] } } }),
+    onEvent: () => {}, isAborted: () => false,
+  });
+  check('девять ходов подряд прошли без остановки', turns === 9, String(turns));
+  check('и прогон закончился по finish, а не по неподвижности', out.ok === true,
+    JSON.stringify(out).slice(0, 80));
+}
+
+group('а ход, про который нечем судить, счёт неподвижности не трогает');
+{
+  /* ВАЖНАЯ ПОЛОВИНА ПРАВИЛА. Действие, которое не возвращает страницу, - это «не смог определить», а не
+   * «не изменилось»; считай его вторым, и живой прогон, чьи действия просто молчат, останавливался бы
+   * сам собой через шесть ходов. Проверяется тем, что таких ходов делается БОЛЬШЕ шести. */
+  const { runGoal } = await import('./agent.js');
+  let turns = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    turns++;
+    if (turns > 10) {
+      return reply({ stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'done' } }] });
+    }
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 't' + turns, name: 'press_key', input: { key: 'Tab' } }] });
+  };
+  const out = await runGoal({
+    goal: 'press keys', apiKey: null, authToken: 'mf_test',
+    /* Ни страницы, ни .page - ровно то, что возвращает действие, которому нечего показать. */
+    execute: async () => ({ ok: true }),
+    onEvent: () => {}, isAborted: () => false,
+  });
+  check('одиннадцать молчащих ходов не остановлены правилом неподвижности', turns === 11, String(turns));
+  check('и прогон закончился по finish', out.ok === true, JSON.stringify(out).slice(0, 80));
+}
+
+group('пачка ограничена - и после действия, за которым нельзя ничего, остаток отбрасывается');
+{
+  const { runGoal, notBatched } = await import('./agent.js');
+  check('первое разрешено всегда', notBatched([], 'click') === null, String(notBatched([], 'click')));
+  check('седьмое - нет', /as much as one turn carries/.test(String(notBatched(
+    ['click', 'type_text', 'press_key', 'click', 'type_text', 'press_key'], 'click'))), 'allowed');
+  check('и ничто не следует за wait', /came after wait/.test(String(notBatched(['wait'], 'click'))),
+    String(notBatched(['wait'], 'click')));
+  check('ни за navigate', /came after navigate/.test(String(notBatched(['navigate'], 'click'))), 'allowed');
+  /* ПРОКРУТКА - НЕ ТЕРМИНАЛ, и это отличие поверхности: ссылки указывают на элементы, а не на точки. */
+  check('но прокрутка терминалом НЕ является - ссылки её переживают',
+    notBatched(['scroll'], 'click') === null, String(notBatched(['scroll'], 'click')));
+
+  const did = [];
+  let sent = null;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    const body = JSON.parse(init.body);
+    const last = body.messages[body.messages.length - 1];
+    if (Array.isArray(last.content) && last.content.some((p) => p.type === 'tool_result')) {
+      sent = last.content;
+      return reply({ stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'done' } }] });
+    }
+    return reply({ stop_reason: 'end_turn',
+      content: Array.from({ length: 8 }, (_, i) => ({
+        type: 'tool_use', id: 'b' + i, name: 'press_key', input: { key: 'Tab' } })) });
+  };
+  await runGoal({
+    goal: 'tab a lot', apiKey: null, authToken: 'mf_test',
+    execute: async (name) => { did.push(name); return { ok: true }; },
+    onEvent: () => {}, isAborted: () => false,
+  });
+  check('из восьми действий выполнены шесть', did.length === 6, String(did.length));
+  check('и все восемь получили ответ', !!sent && sent.length === 8, String(sent && sent.length));
+}
+
+group('и три реализации согласны, когда сдаваться и сколько нести за ход');
+{
+  const ext = readFileSync(new URL('./agent.js', import.meta.url), 'utf8');
+  const brain = readFileSync(new URL('../api/_brain.mjs', import.meta.url), 'utf8');
+  const num = (text, name) => (text.match(new RegExp(name + ' = (\\d+)')) || [])[1];
+  for (const name of ['STILL_WARN', 'STILL_GIVE_UP', 'BATCH_MAX']) {
+    check(name + ' одинаков у расширения и у общего мозга',
+      !!num(ext, name) && num(ext, name) === num(brain, name),
+      `${num(ext, name)} vs ${num(brain, name)}`);
+  }
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

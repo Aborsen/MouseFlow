@@ -434,7 +434,8 @@ What is still open, measured rather than estimated:
 | actions the model can ask for | 21 | 9 |
 | sees the screen | screenshots | DOM only — no `captureVisibleTab` anywhere |
 | checkpoints | `reached_checkpoint` plus a gate the loop waits on | none, and no plan to gate on |
-| gives up when nothing changes | warns at 3, stops at 6 | no equivalent |
+| gives up when nothing changes | warns at 3, stops at 6 | ~~no equivalent~~ same two thresholds, measured on the DOM |
+| caps the actions in one turn | `BATCH_MAX` 6, nothing after a terminal action | ~~none~~ the same 6, and nothing after `wait`/`navigate`/`open_tab` |
 | prunes old snapshots | `forgetOldPictures` each turn | ~~none~~ `forgetOldPages`, by size rather than type |
 | model timeout, cancellable | yes | ~~no~~ same 75s, and Stop now cancels the request in flight |
 | one failed action ends the turn | `notBatched` says so to the model | ~~no~~ yes, with the same sentence to each dropped call |
@@ -443,6 +444,21 @@ What is still open, measured rather than estimated:
 | run from the account | the courier claims jobs | refused: `api/mcp.js` tells the user to run it themselves |
 | modifiers in a recording | `mods` on the `#ctx` line since 0.21.0 | none — every Shift-click replays as a plain click |
 | parameters in a recorded skill | derived from typing and the control's name | `params: []`, unconditionally |
+
+**How the three implementations are held in step**, since they cannot share a module: `extension/agent.js`
+is copied into the package rather than bundled (see `web/vite.extension.config.ts` on what is built and what
+is copied), so it cannot import `api/_brain.mjs`. `extension/check-extension.mjs` therefore holds them in
+step the way `agent/test-contract.mjs` holds the two desktop agents — by executing both sides and asserting
+they agree. `MODEL_TIMEOUT_MS`, `STILL_WARN`, `STILL_GIVE_UP` and `BATCH_MAX` are checked against the
+desktop's on every run.
+
+**Where the two surfaces genuinely differ, and why it is not a translation error.** The desktop decides "the
+screen moved" from a 64×36 pixel fingerprint; there are no pixels here, so the extension fingerprints what
+an action hands back anyway — address, title, the name of any open dialog, how many elements are shown of
+how many, and the element list itself including the value of each field, because text typed into a box is a
+change that shows in nothing else. And `scroll` is terminal on the desktop but not here: a desktop action is
+aimed at a coordinate that scrolling moves, while a browser action is aimed at an element reference that
+survives it.
 
 The missing tools are `hover`, `note`, `capture_window`, `find_element`, `scroll_to`, `drag`,
 `clipboard_read`, `clipboard_write`, `open_app`, `activate_window`, `refresh_page`, `wait_for_window` and
