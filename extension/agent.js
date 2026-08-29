@@ -26,8 +26,78 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 const SHARED_URL = 'https://mouseflowapp.vercel.app/api/claude';
 
 // Kept separate so the call site reads as one thing that can fail, rather than a nested literal.
-function fetchWithBody(url, headers, body) {
-  return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+function fetchWithBody(url, headers, body, signal) {
+  return fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+}
+
+/* СКОЛЬКО ЖДАТЬ ОТВЕТА МОДЕЛИ. То же число, что у десктопного драйвера (MODEL_TIMEOUT_MS в
+ * web/src/lib/desktop-engine.ts), и check-extension.mjs держит их в шаге: ход в восемь-пятьдесят секунд -
+ * обычное дело, а дольше семидесяти пяти - это уже не «думает». */
+const MODEL_TIMEOUT_MS = 75000;
+/* Как часто спрашивать, не нажали ли Стоп, пока запрос в полёте. Раньше не спрашивали вовсе: isAborted
+ * проверялся между ходами и между действиями, а сам запрос отменить было нечем - то есть Стоп во время
+ * хода модели не останавливал ничего до следующего хода, а его могло и не быть. */
+const ABORT_POLL_MS = 250;
+
+/* Один запрос к модели, который можно оборвать - и по времени, и по кнопке.
+ *
+ * Обе причины обрыва названы отдельно, потому что человеку они означают разное: «Стоп» - это он сам, а
+ * таймаут - это то, что случилось без него. Один AbortError без этого различения читается как поломка. */
+async function askModel(url, headers, body, isAborted) {
+  const cutoff = new AbortController();
+  let why = null;
+  const timer = setTimeout(() => { why = 'timeout'; cutoff.abort(); }, MODEL_TIMEOUT_MS);
+  const watch = setInterval(() => {
+    if (isAborted()) { why = 'stopped'; cutoff.abort(); }
+  }, ABORT_POLL_MS);
+  try {
+    return { res: await fetchWithBody(url, headers, body, cutoff.signal) };
+  } catch (err) {
+    if (why) return { stopped: why };
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    clearInterval(watch);
+  }
+}
+
+/* ЧТО ЗАБЫВАЕТСЯ МЕЖДУ ХОДАМИ, и почему без этого волна дорожала квадратично.
+ *
+ * Каждый результат действия несёт назад целый снимок страницы - шестьдесят элементов с именами, - и эта
+ * история только росла: двадцать четвёртый ход платил за двадцать четыре дампа DOM, чтобы принять одно
+ * решение, и каждый из них описывал страницу, которой уже нет. Комментарий в этом файле при этом обещал
+ * обратное - «десятая волна стоит столько же, сколько первая», - и это было верно ПРО ВОЛНЫ (передача
+ * идёт запиской, а не историей) и неверно внутри одной.
+ *
+ * Десктоп решает то же самое forgetOldPictures в api/_brain.mjs: картинки выбрасываются из истории,
+ * остаётся «(earlier screen)». Здесь картинок нет, есть текст - поэтому режется по РАЗМЕРУ, а не по типу:
+ * снимок страницы это тысячи символов, а «ok» или «that element is gone» - десятки. Короткие остаются
+ * целиком нарочно: неудача прошлого хода это ровно то, что модель обязана помнить, и стоит она ничего.
+ *
+ * Последнее пользовательское сообщение не трогается никогда: в нём та самая страница, по которой
+ * принимается решение. */
+const PAGE_KEEP_CHARS = 400;
+
+export function forgetOldPages(messages) {
+  let newest = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && messages[i].role === 'user') { newest = i; break; }
+  }
+  for (let i = 0; i < messages.length; i++) {
+    if (i === newest) continue;
+    const parts = messages[i] && messages[i].content;
+    if (!Array.isArray(parts)) continue;
+    for (const part of parts) {
+      if (!part || part.type !== 'tool_result' || !Array.isArray(part.content)) continue;
+      for (const block of part.content) {
+        if (block && block.type === 'text' && typeof block.text === 'string'
+            && block.text.length > PAGE_KEEP_CHARS) {
+          block.text = '(earlier page)';
+        }
+      }
+    }
+  }
+  return messages;
 }
 /** What the LAST run actually drove - background.js records it into the run row, so the log never lies
  *  about which model did the work when the admin changes the setting between runs. */
@@ -306,16 +376,32 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
 
     /* A transport failure - offline, DNS, a blocked request - rejects rather than returning a
      * status, and "Failed to fetch" on its own tells the user nothing they can act on. */
+    /* Забыть старые страницы ПЕРЕД отправкой, а не после: обрезается то, что вот-вот поедет. */
+    forgetOldPages(messages);
+
     let res;
     try {
-      res = await fetchWithBody(direct ? API_URL : SHARED_URL, headers, {
+      const attempt = await askModel(direct ? API_URL : SHARED_URL, headers, {
         model,
         max_tokens: MAX_TOKENS,
         system: SYSTEM,
         tools: TOOLS,
         fallbacks: 'default',
         messages,
-      });
+      }, isAborted);
+      /* Остановлено - не сломалось. Стоп это решение человека, и наверху он уже отчитан как 'stopped';
+       * таймаут - событие, о котором человек не знает, и ему говорится, что именно истекло. */
+      if (attempt.stopped === 'stopped') return { done: false, stepNo };
+      if (attempt.stopped === 'timeout') {
+        return waveDone(stepNo, {
+          ok: false,
+          error: `Step ${stepNo} waited ${Math.round(MODEL_TIMEOUT_MS / 1000)}s for an answer and did not `
+            + 'get one. The page may be very crowded; closing tabs or scrolling to the part that matters '
+            + 'makes each step smaller.',
+          steps,
+        });
+      }
+      res = attempt.res;
     } catch (err) {
       return waveDone(stepNo, {
         ok: false,
@@ -403,27 +489,28 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
 
     messages.push({ role: 'assistant', content: reply.content });
 
-    const finished = calls.find((c) => c.name === 'finish');
-    if (finished) {
-      onEvent({ type: 'done', text: finished.input.summary });
-      /* Success has to be claimed. The tool's own description invites this call "when you are blocked", and
-       * for as long as there was nothing to say otherwise, a run that failed and explained why in its
-       * summary was stored as a success - and offered as the basis for a reusable skill. */
-      const claimed = finished.input.ok === true;
-      return waveDone(stepNo, {
-        ok: claimed,
-        summary: claimed ? finished.input.summary : undefined,
-        error: claimed ? undefined : finished.input.summary || 'It stopped without saying why.',
-        needsUser: !!finished.input.needs_user,
-        steps,
-      });
-    }
-
-    // Every tool_result for this turn goes back in ONE user message - splitting them
-    // teaches the model to stop calling tools in parallel.
+    /* ДЕЙСТВИЯ ХОДА - ПО ПОРЯДКУ, И ЭТОТ ПОРЯДОК ТЕПЕРЬ ЧТО-ТО ЗНАЧИТ.
+     *
+     * Раньше здесь стояло calls.find(c => c.name === 'finish') ПЕРЕД выполнением - то есть ход
+     * «нажать Отправить, затем finish» заканчивался, не нажав ничего, и отчитывался выполненным. Модель
+     * складывает finish в ту же пачку постоянно, потому что так дешевле на один ход; find превращал это в
+     * молча потерянную работу. Теперь finish - это место в очереди: всё, что стояло до него, выполняется,
+     * а то, что после, смысла не имеет.
+     *
+     * И ОДИН ОТКАЗ ОБРЫВАЕТ ОСТАТОК. Действия пачки нацелены по одному снимку страницы: если второе не
+     * прошло, третье целилось по странице, которой уже нет, а четвёртое - тем более. Десктоп говорит это
+     * теми же словами (notBatched в api/_brain.mjs): остаток хода отброшен, сейчас будет свежий взгляд.
+     *
+     * Каждому невыполненному всё равно нужен свой tool_result: API отвергает следующий запрос, если у
+     * какого-то tool_use нет пары. Поэтому «не выполнено» - это ответ, а не молчание. */
     const results = [];
-    for (const call of calls) {
+    let ended = null;
+
+    for (let i = 0; i < calls.length; i++) {
+      const call = calls[i];
       if (isAborted()) return { done: false, stepNo };
+
+      if (call.name === 'finish') { ended = call; break; }
 
       onEvent({ type: 'act', name: call.name, input: call.input });
       let outcome;
@@ -448,13 +535,41 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
             : String(outcome.error || 'failed'),
         }],
       });
+
+      if (!outcome.ok) {
+        for (const skipped of calls.slice(i + 1)) {
+          results.push({
+            type: 'tool_result',
+            tool_use_id: skipped.id,
+            is_error: true,
+            content: [{
+              type: 'text',
+              text: 'not carried out — the action before it in this turn failed, and everything after was '
+                + 'aimed using the page as it was before that. The rest of the turn was dropped with it; '
+                + 'read the page again and carry on from what it shows.',
+            }],
+          });
+        }
+        break;
+      }
     }
 
-    /* Warn before the wall rather than at it.
-     *
-     * A run that hits the limit is cut off mid-task with whatever it had half-done - a saved draft,
-     * an open dialog - and no summary of where it got to. Given a few steps' notice it can finish
-     * cleanly or say plainly what is left. */
+    /* finish, встреченный по дороге. Всё, что стояло до него, уже выполнено - в этом и была починка. */
+    if (ended) {
+      onEvent({ type: 'done', text: ended.input.summary });
+      /* Success has to be claimed. The tool's own description invites this call "when you are blocked", and
+       * for as long as there was nothing to say otherwise, a run that failed and explained why in its
+       * summary was stored as a success - and offered as the basis for a reusable skill. */
+      const claimed = ended.input.ok === true;
+      return waveDone(stepNo, {
+        ok: claimed,
+        summary: claimed ? ended.input.summary : undefined,
+        error: claimed ? undefined : ended.input.summary || 'It stopped without saying why.',
+        needsUser: !!ended.input.needs_user,
+        steps,
+      });
+    }
+
     /* Warn before the seam rather than at it.
      *
      * A wave that ends mid-task hands over, which is survivable - but finishing cleanly is better than

@@ -13,6 +13,8 @@
  * Запуск: node extension/check-extension.mjs
  */
 
+import { readFileSync } from 'node:fs';
+
 let pass = 0;
 let fail = 0;
 const check = (name, cond, detail) => {
@@ -229,6 +231,186 @@ group('ход, не вызвавший ни одного инструмента,
   check('прогон отчитался НЕуспехом', out.ok === false, JSON.stringify(out).slice(0, 140));
   check('и причиной стало то, что модель написала',
     typeof out.error === 'string' && out.error.includes('not sure which button'), out.error);
+}
+
+group('история хода не растёт бесконечно - иначе волна дорожает квадратично');
+{
+  const { forgetOldPages } = await import('./agent.js');
+  const page = 'x'.repeat(3000);
+  const result = (id, text) => ({ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text }] });
+  const messages = [
+    { role: 'user', content: 'do a thing' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'read_page', input: {} }] },
+    { role: 'user', content: [result('a', page), result('b', 'that element is gone')] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'c', name: 'read_page', input: {} }] },
+    { role: 'user', content: [result('c', page)] },
+  ];
+  forgetOldPages(messages);
+  const text = (i, k) => messages[i].content[k].content[0].text;
+  check('старый снимок страницы забыт', text(2, 0) === '(earlier page)', text(2, 0).slice(0, 40));
+  /* КОРОТКОЕ ОСТАЁТСЯ ЦЕЛИКОМ. Неудача прошлого хода - ровно то, что модель обязана помнить, и стоит она
+   * ничего; резать по типу, а не по размеру, стёрло бы и её. */
+  check('но короткий ответ - нет, он и есть память о неудаче',
+    text(2, 1) === 'that element is gone', text(2, 1));
+  check('и последняя страница цела - по ней и принимается решение', text(4, 0).length === 3000,
+    String(text(4, 0).length));
+  /* Пары tool_use/tool_result нельзя рвать: API отвергает следующий запрос, если у вызова нет ответа. */
+  check('и ни один tool_result не исчез',
+    messages[2].content.length === 2 && messages[4].content.length === 1,
+    messages.map((m) => (Array.isArray(m.content) ? m.content.length : 1)).join(','));
+}
+
+group('и цикл действительно её зовёт - проверка самой функции этого не доказывает');
+{
+  /* ПЕРВАЯ ВЕРСИЯ ЭТОГО НАБОРА ПРОВЕРЯЛА ТОЛЬКО forgetOldPages САМУ ПО СЕБЕ, и удаление её вызова из
+   * хода прошло мутацию насквозь: функция работала, звать её перестали. Здесь смотрят на то, что реально
+   * уехало во ВТОРОМ запросе - то есть на историю, за которую платят. */
+  const { runGoal } = await import('./agent.js');
+  const page = 'y'.repeat(3000);
+  const bodies = [];
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    bodies.push(JSON.parse(init.body));
+    if (bodies.length >= 3) {
+      return reply({ stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'done' } }] });
+    }
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 'r' + bodies.length, name: 'read_page', input: {} }] });
+  };
+  await runGoal({
+    goal: 'look twice', apiKey: null, authToken: 'mf_test',
+    execute: async () => ({ ok: true, result: { page } }),
+    onEvent: () => {}, isAborted: () => false,
+  });
+  /* Считаются ЦЕЛЫЕ страницы, а не куски: первая версия делила на десятисимвольный кусок и получала 300
+   * там, где страница была одна. Проверка, чья арифметика врёт, зелёной не бывает - она бывает красной по
+   * неверной причине, что не лучше. */
+  const pages = (body) => JSON.stringify(body.messages).split(page).length - 1;
+  const forgotten = (body) => JSON.stringify(body.messages).split('(earlier page)').length - 1;
+  check('три хода дошли до модели', bodies.length === 3, String(bodies.length));
+  check('во втором запросе страница есть - иначе считать было бы нечего', pages(bodies[1]) === 1,
+    String(pages(bodies[1])));
+  /* В ТРЕТЬЕМ ЗАПРОСЕ страниц по-прежнему одна, хотя их прочитали две: старая заменена меткой. Без
+   * обрезки здесь было бы две, и на двадцать четвёртом ходу - двадцать четыре. */
+  check('в третьем - по-прежнему одна, хотя прочитано две', pages(bodies[2]) === 1,
+    `${pages(bodies[0])}, ${pages(bodies[1])}, ${pages(bodies[2])}`);
+  check('и на месте забытой стоит метка', forgotten(bodies[2]) === 1, String(forgotten(bodies[2])));
+}
+
+group('ход выполняется по порядку, и finish больше не съедает то, что было до него');
+{
+  const { runGoal } = await import('./agent.js');
+  const did = [];
+  let turn = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    turn++;
+    /* Клик И finish в одной пачке - модель складывает их вместе постоянно, потому что так дешевле на
+     * один ход. Раньше find('finish') срабатывал первым и клик не случался вовсе. */
+    return reply({
+      stop_reason: 'end_turn',
+      content: [
+        { type: 'tool_use', id: 't1', name: 'click', input: { ref: 3 } },
+        { type: 'tool_use', id: 't2', name: 'finish', input: { ok: true, summary: 'sent' } },
+      ],
+    });
+  };
+  const out = await runGoal({
+    goal: 'send it', apiKey: null, authToken: 'mf_test',
+    execute: async (name, input) => { did.push(name); void input; return { ok: true }; },
+    onEvent: () => {}, isAborted: () => false,
+  });
+  check('клик, стоявший перед finish, выполнен', did.includes('click'), did.join(',') || '(nothing)');
+  check('и прогон закончился одним ходом', turn === 1, String(turn));
+  check('и отчитался успехом, который заявили', out.ok === true, JSON.stringify(out).slice(0, 90));
+}
+
+group('отказ действия обрывает остаток хода - и объясняется каждому оборванному');
+{
+  const { runGoal } = await import('./agent.js');
+  const did = [];
+  let sent = null;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    const body = JSON.parse(init.body);
+    const last = body.messages[body.messages.length - 1];
+    if (Array.isArray(last.content) && last.content.some((p) => p.type === 'tool_result')) {
+      sent = last.content;
+      return reply({
+        stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'z', name: 'finish', input: { ok: false, summary: 'gave up' } }],
+      });
+    }
+    return reply({
+      stop_reason: 'end_turn',
+      content: [
+        { type: 'tool_use', id: 'a1', name: 'click', input: { ref: 1 } },
+        { type: 'tool_use', id: 'a2', name: 'type_text', input: { ref: 2, text: 'x' } },
+        { type: 'tool_use', id: 'a3', name: 'press_key', input: { key: 'Enter' } },
+      ],
+    });
+  };
+  await runGoal({
+    goal: 'try it', apiKey: null, authToken: 'mf_test',
+    execute: async (name) => { did.push(name); return name === 'click' ? { ok: false, error: 'no such element' } : { ok: true }; },
+    onEvent: () => {}, isAborted: () => false,
+  });
+  check('после отказа остальное НЕ выполнялось', did.join(',') === 'click', did.join(',') || '(nothing)');
+  check('но ответ есть у каждого вызова - иначе API отвергнет следующий запрос',
+    !!sent && sent.filter((p) => p.type === 'tool_result').length === 3,
+    String(sent && sent.length));
+  /* Подробность собирается защищённо. Первая версия читала sent[1].content[0].text прямо, и когда
+   * предыдущая проверка краснела - то есть ровно тогда, когда подробность и нужна, - тест ПАДАЛ на ней,
+   * унося с собой все следующие группы. Тест, который валится вместо того чтобы покраснеть, прячет
+   * больше, чем показывает. */
+  const said = (list, i) => {
+    const part = Array.isArray(list) ? list[i] : null;
+    const block = part && Array.isArray(part.content) ? part.content[0] : null;
+    return (block && block.text) || '(nothing)';
+  };
+  check('и оборванным сказано, почему их не выполнили',
+    Array.isArray(sent) && sent.length > 1
+      && sent.slice(1).every((p) => /not carried out/.test(said([p], 0))),
+    said(sent, 1).slice(0, 80));
+}
+
+group('Стоп во время хода модели останавливает ход модели, а не только следующий');
+{
+  const { runGoal } = await import('./agent.js');
+  let stopped = false;
+  netHandler = (url, init) => {
+    if (!init || init.method === 'GET') return Promise.resolve(reply({ extensionModel: 'claude-opus-5' }));
+    /* Запрос, который не отвечает никогда - ровно то, во что упирался Стоп до этой правки. Отменяется
+     * ТОЛЬКО через signal, поэтому если сигнал не доехал до fetch, тест повиснет и это увидят. */
+    return new Promise((resolve, reject) => {
+      if (!init.signal) return reject(new Error('no abort signal reached fetch'));
+      init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      void resolve;
+    });
+  };
+  setTimeout(() => { stopped = true; }, 400);
+  const out = await runGoal({
+    goal: 'wait forever', apiKey: null, authToken: 'mf_test',
+    execute: async () => ({ ok: true }), onEvent: () => {}, isAborted: () => stopped,
+  });
+  check('прогон закончился, а не завис', !!out, JSON.stringify(out).slice(0, 80));
+  /* Остановка - решение человека, а не поломка, и это РАЗНЫЕ исходы. Признак 'stopped' - тот самый, по
+   * которому background.js отличает остановленный прогон от провалившегося, когда пишет его на аккаунт;
+   * произвольный текст ошибки уехал бы туда как 'failed'. */
+  check('и записан как остановленный, а не как провалившийся',
+    out.ok === false && out.error === 'stopped', JSON.stringify(out).slice(0, 90));
+}
+
+group('и три реализации согласны, сколько ждать модель');
+{
+  const ext = readFileSync(new URL('./agent.js', import.meta.url), 'utf8');
+  const desk = readFileSync(new URL('../web/src/lib/desktop-engine.ts', import.meta.url), 'utf8');
+  const num = (text) => (text.match(/MODEL_TIMEOUT_MS = (\d+)/) || [])[1];
+  /* Держится в шаге тем же способом, каким agent/test-contract.mjs держит два агента: код у них общим
+   * быть не может - сервис-воркер нарочно не собирается сборщиком, - поэтому в шаге держит проверка. */
+  check('таймаут ожидания модели одинаков у расширения и у десктопного драйвера',
+    !!num(ext) && num(ext) === num(desk), `${num(ext)} vs ${num(desk)}`);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

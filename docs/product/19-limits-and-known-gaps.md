@@ -407,7 +407,8 @@ carries its own `SYSTEM`, its own `TOOLS` and its own wave loop rather than read
 the two desktop drivers share. Everything below follows from that split — improvements to the shared brain
 have been landing on the desktop side only.
 
-Two of these were not gaps but faults, and both are fixed:
+Four of these were not gaps but faults, and all four are fixed. The first two are struck through in the
+table below; these two had no row because nobody had thought to look for them:
 
 - **A turn that called no tool was filed as a success.** Both desktop drivers treat it as a failure and
   carry the model's own prose into the reason; this side returned `ok: true`. It mattered more here than
@@ -419,6 +420,12 @@ Two of these were not gaps but faults, and both are fixed:
   pushes skills and runs, never recordings. The panel sent nine messages and none was about a recording;
   the replay engine and `skills.js` were written, correct, and had no caller from this UI. There is now a
   **Recorded here** list with play, keep-as-skill (which also pushes it to the account) and delete.
+- **`finish` in the same batch as real work discarded the work.** The turn looked for `finish` among the
+  calls before carrying any of them out, so "click Send, then finish" finished without clicking and reported
+  the errand done. The model batches `finish` constantly, because it saves a turn.
+- **Stop could not stop a turn.** `isAborted` was checked between turns and between actions, and the request
+  to the model carried no abort signal — so pressing Stop during the eight-to-fifty seconds a turn takes did
+  nothing until the next turn, and there might not be one. There was no timeout either.
 
 What is still open, measured rather than estimated:
 
@@ -428,8 +435,10 @@ What is still open, measured rather than estimated:
 | sees the screen | screenshots | DOM only — no `captureVisibleTab` anywhere |
 | checkpoints | `reached_checkpoint` plus a gate the loop waits on | none, and no plan to gate on |
 | gives up when nothing changes | warns at 3, stops at 6 | no equivalent |
-| prunes old snapshots | `forgetOldPictures` each turn | none — turn 24 pays for 24 DOM dumps |
-| model timeout, cancellable | yes | no; Stop cannot cancel an in-flight request |
+| prunes old snapshots | `forgetOldPictures` each turn | ~~none~~ `forgetOldPages`, by size rather than type |
+| model timeout, cancellable | yes | ~~no~~ same 75s, and Stop now cancels the request in flight |
+| one failed action ends the turn | `notBatched` says so to the model | ~~no~~ yes, with the same sentence to each dropped call |
+| `finish` in a batch | acted on in order | ~~found first, discarding the turn's real work~~ in order |
 | narrated transcript | `api/_transcript.js` | none |
 | run from the account | the courier claims jobs | refused: `api/mcp.js` tells the user to run it themselves |
 | modifiers in a recording | `mods` on the `#ctx` line since 0.21.0 | none — every Shift-click replays as a plain click |
