@@ -131,6 +131,14 @@ export const MCP_TOOLS: McpTool[] = [
       + 'each one takes.',
     args: 'skill: its id (required) · arguments: what it asks for',
   },
+  {
+    name: 'mouseflow_do',
+    group: 'control',
+    what: 'Carries out something described in plain language in your own Chrome, through the browser '
+      + 'extension, when no saved skill covers it. Needs "Let my AI run skills in this browser" switched '
+      + 'on in the panel. There is no desktop equivalent yet: the desktop agent carries no model of its own.',
+    args: 'goal: what should be done, in a sentence (required)',
+  },
 ];
 
 export interface ConnectWay {

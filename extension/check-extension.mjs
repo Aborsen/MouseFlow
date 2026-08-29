@@ -1301,5 +1301,58 @@ group('и воркер держится с ПЕРВОЙ строки заявк�
     /finally \{\s*holdWorker\(false\);\s*\}/.test(bare), 'not in finally');
 }
 
+group('и свободную цель - предложение, а не навык');
+{
+  store.taking = true;
+  store.syncToken = 'mf_test';
+  const posted = [];
+  let seenGoal = null;
+  netHandler = async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(url).includes('worker=claim')) {
+      posted.push(['claim', body]);
+      /* Работа без навыка: только предложение и пометка поверхности. */
+      return reply({ ok: true, job: { id: 'g1', toolName: 'mouseflow_do',
+        args: { goal: 'open the docs' }, command: '#goal.browser', flow: null } });
+    }
+    if (String(url).includes('worker=report')) { posted.push(['report', body]); return reply({ ok: true }); }
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    /* Модель отвечает сразу: цель проверяется тем, что она ДОШЛА до цикла, а не тем, как он думает. */
+    seenGoal = JSON.stringify(body.messages || []);
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'opened' } }] });
+  };
+  await listeners.alarm({ name: 'mouseflow.claim' });
+  for (let i = 0; i < 80 && !posted.some(([k]) => k === 'report'); i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  check('предложение доехало до цикла как цель', /open the docs/.test(String(seenGoal)),
+    show(seenGoal && seenGoal.slice(0, 80)));
+  const rep = posted.find(([k]) => k === 'report');
+  check('и исход отчитан обратно', !!rep && rep[1].id === 'g1' && rep[1].ok === true, show(rep && rep[1]));
+  check('и в отчёте слова прогона, а не наши', !!rep && /opened/.test(String(rep[1].said)),
+    show(rep && rep[1].said));
+}
+
+group('а цель без текста - названный отказ, а не тихий прогон ни о чём');
+{
+  store.taking = true;
+  const posted = [];
+  netHandler = async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    if (String(url).includes('worker=claim')) {
+      return reply({ ok: true, job: { id: 'g2', toolName: 'mouseflow_do', args: {},
+        command: '#goal.browser', flow: null } });
+    }
+    if (String(url).includes('worker=report')) { posted.push(body); return reply({ ok: true }); }
+    return reply({ ok: true });
+  };
+  await listeners.alarm({ name: 'mouseflow.claim' });
+  for (let i = 0; i < 40 && !posted.length; i++) await new Promise((r) => setTimeout(r, 100));
+  check('пустая цель отчитана неуспехом с причиной',
+    !!posted[0] && posted[0].ok === false && /nothing in it/.test(String(posted[0].said)),
+    show(posted[0]));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -602,8 +602,12 @@ group('a goal can be carried out by an agent with no worker behind it');
    * time made a three-minute run read as eleven seconds, and the Hours screen is built on these stamps. */
   check('and dates it from when the run began, not from its last step',
     /\$\{state\.startedAt \|\| job\.claimed_at \|\| null\}/.test(route));
+  /* Имя в запросе стало goalCapable, когда забирающих стало трое: claimerSteps по-прежнему решает спор
+   * воркера и агента за одну мышь, а в САМ запрос уезжает объединение с браузером, который несёт свою
+   * модель. Проверяется и то, и другое - иначе переименование прошло бы за починку. */
   check('only a claimer that says it can step is given a goal',
-    /req\.body\.steps === true/.test(route) && /\$\{claimerSteps\}/.test(route));
+    /req\.body\.steps === true/.test(route) && /\$\{goalCapable\}/.test(route)
+      && /const goalCapable = claimerSteps \|\| browserDoesGoals;/.test(route));
 
   /* The column is `loop` because `state` was taken - by this table's own queued/claimed/done. Naming it
    * `state`, which is what the plan said, would have been two meanings on one row. */
@@ -684,7 +688,7 @@ const missing = [...served].filter((n) => !described.has(n));
 const invented = [...described].filter((n) => !served.has(n));
 check('every tool the server offers is described on the page', missing.length === 0, missing.join(', '));
 check('and nothing is described that the server does not offer', invented.length === 0, invented.join(', '));
-check('ten of them, so a count in prose can be trusted', served.size === 10, String(served.size));
+check('eleven of them, so a count in prose can be trusted', served.size === 11, String(served.size));
 check('and the page no longer promises one tool per skill',
   !/plus one for each skill/.test(readFileSync(fileURLToPath(new URL('../web/src/features/mcp/McpView.tsx', import.meta.url)), 'utf8')));
 check('the page names the endpoint the server actually answers on',
@@ -2481,7 +2485,7 @@ check('the claim asks what the claimer is',
  * worker go on not being given goal jobs, which is the whole reason the declaration is on the claimer. */
 check('and a created skill goes only to something that declared it has the model path',
   /and f\.deleted_at is null and f\.kind = 'created'/.test(mcpApi)
-    && /\$\{claimerSteps\}/.test(mcpApi)
+    && /\$\{goalCapable\}/.test(mcpApi)
     && /claimerSaysSteps = !!\(req\.body && req\.body\.steps === true\)/.test(mcpApi));
 /* There is one mouse, and both claimers long-poll the same endpoint: whichever asked first used to take
  * the job. The agent wins now - a reversal of the plan, on the grounds that the worker is the install step
@@ -2489,6 +2493,16 @@ check('and a created skill goes only to something that declared it has the model
  * one. A worker alone is unaffected, and takes goals again by itself if the agent stops asking. */
 check('when both are listening, the worker is not offered a goal',
   /const claimerSteps = claimerIsWorker \? !stepperListening : claimerSaysSteps/.test(mcpApi));
+/* ТРЕТИЙ ЗАБИРАЮЩИЙ НЕ УЧАСТВУЕТ В ЭТОМ СТАРШИНСТВЕ: расширение на своей поверхности одно, и правило
+ * «когда слушают оба, воркеру цель не дают» про мышь, которая у него общая с агентом. Отдельной строкой
+ * именно поэтому - слить их значило бы, что браузер начнёт отбирать работу у десктопа или наоборот. */
+check('и браузер умеет цели сам, потому что несёт свою модель',
+  /const goalCapable = claimerSteps \|\| browserDoesGoals;/.test(mcpApi)
+    && /const browserDoesGoals = claimerIsBrowser;/.test(mcpApi));
+check('и свободная цель уезжает только на ту поверхность, которая её выполнит',
+  /flowId: BROWSER_GOAL/.test(mcpApi)
+    && /then q\.flow_id = \$\{BROWSER_GOAL\}/.test(mcpApi)
+    && /else q\.flow_id <> \$\{BROWSER_GOAL\}/.test(mcpApi));
 check('and "listening" means it asked recently, not that it once existed',
   /AGENT_LISTENING_MS = 90_000/.test(mcpApi)
     && /Date\.now\(\) - new Date\(rows\[0\]\.value\)\.getTime\(\) < AGENT_LISTENING_MS/.test(mcpApi));

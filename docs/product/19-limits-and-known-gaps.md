@@ -543,6 +543,18 @@ last, because that is the only step which creates something and doing it earlier
 are already open. The old error ended with the words "open it first" — opening is exactly that, done for a
 person who may not be there.
 
+**A sentence, rather than the id of something already saved.** Ten MCP tools, and every one of them was
+about what had already been recorded: `mouseflow_run` takes a `skill`. There was no way to say "open the
+mail and find the message from Ann" through MCP on EITHER surface — a goal reached the queue only as a
+saved *created* skill, which somebody had to make first. `mouseflow_do` takes the errand itself.
+
+It is browser-only, and that is not small print. The extension carries its own model (`runGoal`): it looks
+at the page and decides one action at a time by itself. The desktop agent carries none — it steps through
+`?worker=step` — so giving it a free errand means changing a compiled binary on somebody's machine, which
+is its own piece of work. The queue marks the job `#goal.browser` rather than `#goal` for that reason: work
+only one surface can do has to say so, or the other takes it and answers "I do not understand", and the
+turn is spent.
+
 Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
 `open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and
 `activate_window` are desktop-only by definition; `capture_window` needs the extension to see pixels at

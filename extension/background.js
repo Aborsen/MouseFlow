@@ -2306,7 +2306,37 @@ async function untilIdle(limitMs) {
   return false;
 }
 
+/* Чем кончился прогон, словами - одними и теми же, чем бы он ни был начат. */
+async function tellOutcome(token, id, what) {
+  const r = agent.result || {};
+  await reportJob(token, id, r.ok === true,
+    r.ok ? (r.summary || 'Done.') : (r.error || `${what} did not finish.`));
+}
+
 async function carryJob(token, job) {
+  /* СВОБОДНАЯ ЦЕЛЬ - НЕ НАВЫК, и приходит она без него: у такой работы нет строки в библиотеке, только
+   * предложение. Помечена идентификатором на '#', как и остальные команды, и на '.browser', потому что
+   * выполнить её может только эта поверхность - у десктопного агента своей модели нет вовсе. */
+  if (job.command === '#goal.browser') {
+    const goal = String((job.args && job.args.goal) || '').trim();
+    if (!goal) {
+      await reportJob(token, job.id, false, 'the errand arrived with nothing in it');
+      return;
+    }
+    try {
+      await agentStart(goal);
+    } catch (err) {
+      await reportJob(token, job.id, false, err.message);
+      return;
+    }
+    if (!(await untilIdle(20 * 60 * 1000))) {
+      await reportJob(token, job.id, false, 'it was still going after twenty minutes, so nothing is reported');
+      return;
+    }
+    await tellOutcome(token, job.id, 'The errand');
+    return;
+  }
+
   const payload = job.flow && job.flow.payload;
   if (!payload) {
     await reportJob(token, job.id, false, 'the skill arrived with nothing in it');
@@ -2356,8 +2386,7 @@ async function carryJob(token, job) {
   if (skill.kind === 'recorded') {
     await reportJob(token, job.id, !play.error, play.error || `Replayed "${skill.name}".`);
   } else {
-    const r = agent.result || {};
-    await reportJob(token, job.id, r.ok === true, r.ok ? (r.summary || 'Done.') : (r.error || 'It did not finish.'));
+    await tellOutcome(token, job.id, `"${skill.name}"`);
   }
 }
 

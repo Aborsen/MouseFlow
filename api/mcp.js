@@ -266,6 +266,46 @@ const STOP_RECORDING_TOOL = {
   inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
 };
 
+/* ОДНО ПРЕДЛОЖЕНИЕ ВМЕСТО ID НАВЫКА, и до сих пор такого не было НИ НА ОДНОЙ поверхности.
+ *
+ * Десять инструментов, и все про то, что уже записано: mouseflow_run берёт `skill`. Сказать «открой почту
+ * и найди письмо от Ани» через MCP было нечем - цель попадала в очередь только как СОХРАНЁННЫЙ созданный
+ * навык, то есть сначала её надо было где-то создать руками.
+ *
+ * ПОКА ТОЛЬКО БРАУЗЕР, и это не оговорка мелким шрифтом. Модель в цикле есть у расширения (runGoal в
+ * extension/agent.js) - оно само решает один шаг за раз и само смотрит на страницу. У десктопного агента
+ * своей модели нет вовсе: он ходит по шагам через ?worker=step, и чтобы дать ему свободную цель, менять
+ * надо скомпилированный бинарник на чужой машине. Это отдельная работа, а не строчка здесь.
+ *
+ * Отдельным `#goal.browser`, а не общим `#goal`: очередь развозит работу по поверхностям, и команда,
+ * которую может выполнить только одна из них, обязана это о себе говорить - иначе её заберёт тот, кто
+ * ответит «не понимаю», и ход будет потрачен. */
+const DO_TOOL = {
+  name: 'mouseflow_do',
+  description: 'Have the MouseFlow browser extension carry out something described in plain language, in '
+    + "the user's own Chrome, with their sessions already signed in. Use this when there is no saved skill "
+    + 'for what is wanted. It looks at the page and decides one action at a time, so say what should be '
+    + 'true at the end rather than which buttons to press. This acts on a real logged-in browser and the '
+    + 'actions cannot be undone from here: an errand that sends, buys or deletes should be the one the user '
+    + 'actually asked for. It needs "Let my AI run skills in this browser" switched on in the panel. For a '
+    + 'DESKTOP errand there is no equivalent yet - the desktop agent carries no model of its own - so use '
+    + 'mouseflow_run with a saved skill there.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      goal: {
+        type: 'string',
+        description: 'What should be done, in a sentence or two, as the user would say it. Name the things '
+          + 'that matter - which account, which item, which recipient - because the run has only this.',
+      },
+    },
+    required: ['goal'],
+    additionalProperties: false,
+  },
+};
+
+const BROWSER_GOAL = '#goal.browser';
+
 /* A queue job that is an instruction to the agent rather than a skill. Marked by the flow id, so the claim
  * path can tell at a glance that there is no flow to look up. */
 const AGENT_JOBS = {
@@ -646,6 +686,14 @@ async function callTool(sql, who, params, req) {
 
   /* The timer, and skills. Both are the same thing from here: something only a machine can do, so it goes
    * on the queue and this waits for the answer. */
+  if (asked === DO_TOOL.name) {
+    const goal = String((args && args.goal) || '').trim();
+    if (!goal) return say('What should it do? Pass the errand as `goal`, in a sentence.', true);
+    return queueAndWait(sql, who, {
+      flowId: BROWSER_GOAL, toolName: asked, args: { goal: goal.slice(0, 2000) },
+    });
+  }
+
   if (AGENT_JOBS[asked]) {
     return queueAndWait(sql, who, { flowId: AGENT_JOBS[asked], toolName: asked, args });
   }
@@ -876,6 +924,10 @@ async function workerRoute(action, req, res, sql, who) {
      * источника, а все остальные - только то, что не браузерный навык, включая команды на '#'. Ни один
      * забирающий не может получить работу, для которой у него нет ни рук, ни системы координат. */
     const claimerIsBrowser = String((req.body && req.body.kind) || '') === 'browser';
+    /* И ОНО УМЕЕТ ЦЕЛИ, в отличие от агента. Расширение несёт свою модель (runGoal в
+     * extension/agent.js): оно смотрит на страницу и решает один шаг за раз само, ничего не спрашивая у
+     * этой стороны. Поэтому объявлять `steps` ему не надо - это просто правда о том, что оно такое. */
+    const browserDoesGoals = claimerIsBrowser;
     if (claimerIsBrowser) await stampWorker(sql, who.id, 'extension.claim.seen');
     if (claimerSaysSteps && !claimerIsWorker) await stampWorker(sql, who.id, 'agent.steps.seen');
 
@@ -893,6 +945,9 @@ async function workerRoute(action, req, res, sql, who) {
      * unaffected. */
     const stepperListening = claimerIsWorker ? await agentIsListening(sql, who.id) : false;
     const claimerSteps = claimerIsWorker ? !stepperListening : claimerSaysSteps;
+    /* И третий забирающий, отдельной строкой, чтобы правило старшинства между воркером и агентом выше
+     * осталось ровно тем, чем было: браузер в нём не участвует - он на своей поверхности один. */
+    const goalCapable = claimerSteps || browserDoesGoals;
     const wait = Math.min(CLAIM_WAIT_MAX_MS, Math.max(0, Number((req.body && req.body.wait) || 0) * 1000));
     const until = Date.now() + wait;
 
@@ -909,7 +964,7 @@ async function workerRoute(action, req, res, sql, who) {
              * not-a-goal, so a stale job still gets claimed and fails with a reason rather than sitting in
              * the queue forever waiting for a claimer that will never be allowed to take it. */
             and (
-              ${claimerSteps}
+              ${goalCapable}
               or q.flow_id like '#%'
               or not exists (
                 select 1 from user_flow f
@@ -921,12 +976,12 @@ async function workerRoute(action, req, res, sql, who) {
              * всё, кроме браузерного. */
             and (
               case when ${claimerIsBrowser}
-                then exists (
+                then q.flow_id = ${BROWSER_GOAL} or exists (
                   select 1 from user_flow f
                   where f.user_id = q.user_id and f.client_id = q.flow_id
                     and f.deleted_at is null and f.source <> 'desktop'
                 )
-                else not exists (
+                else q.flow_id <> ${BROWSER_GOAL} and not exists (
                   select 1 from user_flow f
                   where f.user_id = q.user_id and f.client_id = q.flow_id
                     and f.deleted_at is null and f.source <> 'desktop'
@@ -1436,7 +1491,7 @@ async function handler(req, res) {
         tools: [
           ...READ_TOOLS,
           START_TOOL, STOP_RECORDING_TOOL,
-          STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL, RUN_TOOL,
+          STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL, RUN_TOOL, DO_TOOL,
         ],
       }));
       return;
