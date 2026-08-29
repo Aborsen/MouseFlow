@@ -682,11 +682,11 @@ async function callTool(sql, who, params, req) {
     return say(`There is no skill "${wanted}" on this account. Ask mouseflow_recordings for what there is; `
       + 'it names each skill\'s id and the inputs it takes.', true);
   }
-  if (entry.structure.runner !== 'agent') {
-    return say(`"${entry.flow.name}" aims at elements in a web page, so the MouseFlow browser extension is `
-      + 'the half that can replay it. A worker drives the desktop agent, which has no page to aim at. Ask '
-      + 'the user to run it from the extension.', true);
-  }
+  /* Раньше здесь стоял отказ: «спросите пользователя запустить это в расширении». Он был верен, пока
+   * расширение не умело брать работу с аккаунта, - а теперь умеет, и очередь развозит по поверхностям
+   * (см. claimerIsBrowser в workerRoute). Отказывать стало нечему: строка встанет в очередь и её заберёт
+   * тот Chrome, в котором это включено, а если такого нет - ожидание кончится и об этом скажут прямо,
+   * что и есть разница между «никто не подобрал» и «мы не стали и пробовать». */
   /* The tool name on the row stays the SKILL's, not `mouseflow_run` - it is what "MouseFlow is already busy
    * on that machine (…)" names, and "busy on mouseflow_run" would tell nobody which errand is in progress. */
   return queueAndWait(sql, who, {
@@ -864,6 +864,19 @@ async function workerRoute(action, req, res, sql, who) {
      * It DECLARES it, exactly as the worker does, and for the same reason: the ones that cannot must go on
      * not being given them, and no deploy here can tell an old binary apart from a new one. */
     const claimerSaysSteps = !!(req.body && req.body.steps === true);
+    /* ТРЕТИЙ ВИД ЗАБИРАЮЩЕГО, И ОН РАЗДЕЛЯЕТ ОЧЕРЕДЬ НАДВОЕ ПО ПОВЕРХНОСТИ.
+     *
+     * Браузерное расширение шагает по элементам страницы, десктопный агент - по координатам экрана, и это
+     * не два диалекта одного, а две несовместимые вещи: `flowBody` ниже строит пятиколоночное тело из
+     * payload.events, а у браузерного навыка в событиях селекторы и никаких x/y. Пока mouseflow_run
+     * браузерные навыки ОТКАЗЫВАЛСЯ ставить в очередь, это не могло случиться - отказ и был защитой. Раз
+     * он их теперь ставит, защита обязана переехать сюда, в выбор строки.
+     *
+     * Поэтому условие ровно симметричное: браузерный забирающий берёт ТОЛЬКО навыки не-десктопного
+     * источника, а все остальные - только то, что не браузерный навык, включая команды на '#'. Ни один
+     * забирающий не может получить работу, для которой у него нет ни рук, ни системы координат. */
+    const claimerIsBrowser = String((req.body && req.body.kind) || '') === 'browser';
+    if (claimerIsBrowser) await stampWorker(sql, who.id, 'extension.claim.seen');
     if (claimerSaysSteps && !claimerIsWorker) await stampWorker(sql, who.id, 'agent.steps.seen');
 
     /* WHEN BOTH ARE LISTENING, THE AGENT WINS - and this is a reversal, so it is worth the paragraph.
@@ -903,6 +916,22 @@ async function workerRoute(action, req, res, sql, who) {
                 where f.user_id = q.user_id and f.client_id = q.flow_id
                   and f.deleted_at is null and f.kind = 'created'
               )
+            )
+            /* Поверхность. См. claimerIsBrowser выше: браузерному - только браузерное, всем остальным -
+             * всё, кроме браузерного. */
+            and (
+              case when ${claimerIsBrowser}
+                then exists (
+                  select 1 from user_flow f
+                  where f.user_id = q.user_id and f.client_id = q.flow_id
+                    and f.deleted_at is null and f.source <> 'desktop'
+                )
+                else not exists (
+                  select 1 from user_flow f
+                  where f.user_id = q.user_id and f.client_id = q.flow_id
+                    and f.deleted_at is null and f.source <> 'desktop'
+                )
+              end
             )
           order by q.created_at limit 1
         )
@@ -945,6 +974,26 @@ async function workerRoute(action, req, res, sql, who) {
          * not something the agent has. The worker still handles those, and says so when it cannot. */
         let body = null;
         let activate = null;
+        /* Браузерному забирающему тело не строится вовсе: он получает payload навыка как есть и знает, что
+         * с ним делать - это его собственный формат. Строить ему пятиколоночное тело было бы переводом
+         * между двумя системами координат, одна из которых у него отсутствует. */
+        if (row.source !== 'desktop') {
+          return res.status(200).json({
+            ok: true,
+            job: {
+              id: job.id,
+              toolName: job.tool_name,
+              args,
+              body: null,
+              activate: null,
+              goal: row.kind === 'created',
+              flow: {
+                id: row.client_id, source: row.source, kind: row.kind, name: row.name,
+                description: row.description, payload, origins: row.origins || [],
+              },
+            },
+          });
+        }
         if (row.kind !== 'created' && Array.isArray(payload.events) && payload.events.length) {
           const allowed = [0.5, 1, 1.5, 2, 4];
           const asked = Number(args.speed);

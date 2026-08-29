@@ -22,6 +22,10 @@ const check = (name, cond, detail) => {
   else { fail++; console.log('  FAIL ' + name + (detail ? '  -> ' + detail : '')); }
 };
 const group = (title) => console.log('\n' + title);
+/* Подробность, которая не роняет набор. JSON.stringify(undefined) возвращает undefined, а не строку, и
+ * .slice по нему падает - ровно в тот момент, когда подробность и нужна, унося с собой всё, что ниже.
+ * Это третий раз в этом файле, поэтому теперь она одна на всех. */
+const show = (v, n = 120) => String(JSON.stringify(v) === undefined ? v : JSON.stringify(v)).slice(0, n);
 
 /* ------------------------------------------------------------------ стенд вместо chrome */
 
@@ -52,11 +56,24 @@ globalThis.chrome = {
         for (const k of (Array.isArray(keys) ? keys : [keys])) delete store[k];
       },
     },
+    /* Живёт до закрытия браузера, а не до перезапуска воркера. Повтор и прогон дописывают сюда исход в
+     * своём finally - без этой половины заглушки они падали НА УБОРКЕ и отчитывались провалом. */
+    session: { set: async () => {}, get: async () => ({}), remove: async () => {} },
   },
   tabs: {
-    onActivated: listener(), onUpdated: listener(), onRemoved: listener(),
-    query: async () => [], get: async () => ({ id: 1, url: 'https://example.com' }),
-    create: async () => ({ id: 2 }), remove: async () => {}, update: async () => ({ id: 1 }),
+    onActivated: listener(),
+    /* Переходы в заглушке обязаны ЗАВЕРШАТЬСЯ: waitForLoad ждёт события 'complete', и без него повтор,
+     * начинающийся с navigate, висит до таймаута, а тест видит «отчёта нет» и обвиняет код. */
+    onUpdated: { addListener: (fn) => { listeners.updated = fn; } },
+    onRemoved: listener(),
+    /* Одна настоящая вкладка: без неё не стартует ни запись, ни прогон, и половина путей не проверяется. */
+    query: async () => [{ id: 1, url: 'https://example.com', active: true }],
+    get: async () => ({ id: 1, url: 'https://example.com' }),
+    create: async () => ({ id: 2 }), remove: async () => {},
+    update: async (id) => {
+      if (listeners.updated) setTimeout(() => listeners.updated(id, { status: 'complete' }, { id }), 0);
+      return { id };
+    },
     sendMessage: async () => ({ ok: true }),
   },
   action: {
@@ -67,7 +84,12 @@ globalThis.chrome = {
   scripting: { executeScript: async () => [{ result: null }] },
   webNavigation: { onCommitted: listener(), onCompleted: listener() },
   sidePanel: { setPanelBehavior: async () => {}, open: async () => {} },
-  alarms: { create: noop, onAlarm: listener(), clear: async () => {} },
+  alarms: {
+    made: [], cleared: [],
+    create(name, opts) { this.made.push([name, opts]); },
+    clear: async function clear(name) { this.cleared.push(name); return true; },
+    onAlarm: { addListener: (fn) => { listeners.alarm = fn; } },
+  },
   windows: { getCurrent: async () => ({ id: 1 }) },
 };
 
@@ -984,6 +1006,111 @@ group('записанный навык теперь может брать зна
   const played = await send({ mf: 'record/play', id: 'typed' });
   check('и такая запись не играется вслепую, а объясняет почему',
     !played.ok && /deliberately not recorded/.test(String(played.error)), String(played.error).slice(0, 70));
+}
+
+group('браузер берёт работу с аккаунта - выключено, пока не включат');
+{
+  delete store.taking;
+  const off = await send({ mf: 'taking/get' });
+  check('по умолчанию выключено', off.ok && off.taking === false, JSON.stringify(off));
+
+  chrome.alarms.made.length = 0;
+  const on = await send({ mf: 'taking/set', on: true });
+  check('включается', on.ok && on.taking === true, JSON.stringify(on));
+  /* БУДИЛЬНИК, А НЕ УДЕРЖАННЫЙ ЗАПРОС: удержанный держал бы сервис-воркер резидентным весь день. */
+  check('и заводится будильник, а не долгий запрос',
+    chrome.alarms.made.some(([n]) => n === 'mouseflow.claim'), JSON.stringify(chrome.alarms.made));
+  check('и состояние помнится', store.taking === true, String(store.taking));
+
+  chrome.alarms.cleared.length = 0;
+  await send({ mf: 'taking/set', on: false });
+  check('выключается - и будильник снимается',
+    store.taking === false && chrome.alarms.cleared.includes('mouseflow.claim'),
+    JSON.stringify(chrome.alarms.cleared));
+}
+
+group('и пока выключено, наружу не уходит ни одного запроса за работой');
+{
+  delete store.taking;
+  store.syncToken = 'mf_test';
+  let asked = 0;
+  netHandler = async (url) => { if (String(url).includes('worker=claim')) asked++; throw new Error('no'); };
+  /* Будильник срабатывает - и не делает ничего. «Расширение, которое не берёт работу, наружу не звонит
+   * вовсе» это обещание, и его надо охранять проверкой. */
+  await listeners.alarm({ name: 'mouseflow.claim' });
+  await new Promise((r) => setTimeout(r, 30));
+  check('запросов за работой не было', asked === 0, String(asked));
+}
+
+group('а когда включено - забирает, выполняет и отчитывается');
+{
+  store.taking = true;
+  store.syncToken = 'mf_test';
+  store.skills = [];
+  const posted = [];
+  const skill = {
+    format: 'mouseflow.skill/1', id: 'sk9', kind: 'recorded', name: 'Open docs', description: 'x',
+    created: '2026-08-29T10:00:00.000Z', origins: [], tabs: 1, params: [],
+    events: [{ action: 'navigate', url: 'https://example.com', tab: 0 }],
+  };
+  netHandler = async (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : {};
+    posted.push([String(url).replace(/^.*worker=/, ''), body]);
+    if (String(url).includes('worker=claim')) {
+      /* Расширение обязано НАЗВАТЬ СЕБЯ: очередь развозит работу по поверхностям именно по этому полю. */
+      if (body.kind !== 'browser') return reply({ ok: true, job: null });
+      return reply({ ok: true, job: { id: 'job1', toolName: 'open_docs', args: {},
+        flow: { id: 'sk9', source: 'web', kind: 'recorded', name: 'Open docs', payload: skill } } });
+    }
+    return reply({ ok: true });
+  };
+  await listeners.alarm({ name: 'mouseflow.claim' });
+  /* Повтор идёт по-настоящему: заявка, подъём вкладки, событие, отчёт. Ждём его конца, а не угадываем. */
+  for (let i = 0; i < 60 && !posted.some(([k]) => k === 'report'); i++) await new Promise((r) => setTimeout(r, 100));
+  const claim = posted.find(([k]) => k === 'claim');
+  check('назвался браузерным забирающим', !!claim && claim[1].kind === 'browser',
+    JSON.stringify(claim && claim[1]));
+  const report = posted.find(([k]) => k === 'report');
+  /* И ОТЧЁТ ДОЛЖЕН БЫТЬ ОБ УСПЕХЕ. Первая версия проверяла только id - и проходила, когда навык вообще
+   * не разбирался: отказ импорта тоже отчитывается, по тому же id. Проверка, которую устраивает любой
+   * из двух исходов, не проверяет ничего. */
+  check('и отчитался по тому же id, и об успехе',
+    !!report && report[1].id === 'job1' && report[1].ok === true,
+    show(report && report[1]));
+
+  /* А непонятный навык - отдельный, названный исход, а не тишина. */
+  posted.length = 0;
+  netHandler = async (url, init) => {
+    const b = init && init.body ? JSON.parse(init.body) : {};
+    posted.push([String(url).replace(/^.*worker=/, ''), b]);
+    if (!String(url).includes('worker=claim')) return reply({ ok: true });
+    return reply({ ok: true, job: { id: 'job2', toolName: 'x', args: {},
+      flow: { id: 'bad', source: 'web', kind: 'recorded', name: 'Bad', payload: { format: 'nope' } } } });
+  };
+  await listeners.alarm({ name: 'mouseflow.claim' });
+  await new Promise((r) => setTimeout(r, 300));
+  const bad = posted.find(([k]) => k === 'report');
+  check('нечитаемый навык отчитан неуспехом и с причиной',
+    !!bad && bad[1].ok === false && /could not be read/.test(String(bad[1].said)),
+    show(bad && bad[1]));
+}
+
+group('и не берёт вторую работу, пока занят первой');
+{
+  store.taking = true;
+  let asked = 0;
+  netHandler = async (url) => { if (String(url).includes('worker=claim')) asked++; return reply({ ok: true, job: null }); };
+  /* ОДИН БРАУЗЕР, ОДНО ДЕЛО. Два цикла на одном наборе вкладок хуже, чем работа, которая подождёт
+   * минуту. */
+  const started = await send({ mf: 'record/start' });
+  const live = await send({ mf: 'record/status' });
+  check('запись действительно идёт - иначе проверять нечего', live.ok && live.recording === true,
+    JSON.stringify({ started, live }).slice(0, 120));
+  asked = 0;
+  await listeners.alarm({ name: 'mouseflow.claim' });
+  await new Promise((r) => setTimeout(r, 30));
+  check('во время записи за работой не ходит', asked === 0, String(asked));
+  await send({ mf: 'record/stop' });
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

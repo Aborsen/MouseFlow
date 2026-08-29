@@ -441,7 +441,7 @@ What is still open, measured rather than estimated:
 | one failed action ends the turn | `notBatched` says so to the model | ~~no~~ yes, with the same sentence to each dropped call |
 | `finish` in a batch | acted on in order | ~~found first, discarding the turn's real work~~ in order |
 | narrated transcript | `api/_transcript.js` | none |
-| run from the account | the courier claims jobs | still refused, but the skills are now VISIBLE there — see below |
+| run from the account | the courier claims jobs | ~~refused~~ a claimer of its own, off until switched on |
 | modifiers in a recording | `mods` on the `#ctx` line since 0.21.0 | ~~none~~ `mods` on the click, same four words in the same order |
 | parameters in a recorded skill | derived from typing and the control's name | ~~`params: []`~~ one per field typed into, named after it |
 
@@ -515,6 +515,20 @@ desktop struck, and it is enough: every field typed into becomes exactly one par
 field, filled in at run time. Password fields are skipped entirely, length included — a keystroke count is
 a hint about how long a password is. A recording that types into something cannot be played back raw, and
 says why rather than filling the field with nothing.
+
+**The account can start a skill in Chrome now.** `mouseflow_run` used to refuse a browser skill outright
+and tell the user to run it themselves; the queue routes by surface instead. A claimer declaring
+`kind: "browser"` is offered only skills whose source is not `desktop`, and every other claimer is offered
+only what is not one — which also closes a latent bug the refusal had been hiding, since `flowBody` builds a
+five-column body out of `payload.events` and a browser skill's events carry selectors and no coordinates.
+
+The extension's claimer is off until somebody switches it on in the panel, and says while it is on that it
+asks the account for work and that nothing reaches in — the same stance and nearly the same words as the
+agents' menu-bar switch. It is an ALARM rather than a held request: a long poll keeps an MV3 service worker
+resident all day, and `chrome.alarms` is the sanctioned way to be woken instead. The cost is stated rather
+than hidden: one minute is the shortest period MV3 allows, so a queued job waits up to a minute here where
+the desktop agent takes it in about three seconds. A claim is refused outright while a recording, a replay
+or a run is already going — one browser, one thing at a time.
 
 Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
 `open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and

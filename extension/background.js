@@ -1132,13 +1132,13 @@ async function performEvent(ev, ctx, speed) {
       await goTo(tabId, ev.url).catch(() => {});
     }
     ctx.current = tabId;
-    sign();
+    signOn(tabId, 'MouseFlow is replaying a recording here');
     return;
   }
 
   // Old single-tab recordings carry no focus events; fall back to the active tab.
   if (ctx.current == null) ctx.current = (await activeTab()).id;
-  sign();
+  signOn(ctx.current, 'MouseFlow is replaying a recording here');
 
   if (ev.action === 'navigate') {
     await goTo(ctx.current, ev.url);
@@ -1171,10 +1171,6 @@ async function runFlow(steps, flow) {
    * every other tab it had visited. */
   const touched = new Set();
   const ctx = { map: {}, current: null, cursor: null, opts: DEFAULT_SETTINGS, touched };
-  /* Повтор ведёт браузер ровно так же, как прогон, и человеку это надо сказать теми же словами - но
-   * НЕ теми же: «is working» скрывало бы, что происходит, а повтор это его собственная запись,
-   * которую он сам и запустил. */
-  const sign = () => { if (ctx.current != null) signOn(ctx.current, 'MouseFlow is replaying a recording here'); };
   try {
     // Read once, so a long run keeps the appearance it started with.
     ctx.opts = await loadSettings();
@@ -2003,6 +1999,9 @@ const ROUTES = {
   'sync/pair': (msg) => syncPair(msg.token),
   'sync/unpair': () => syncUnpair(),
   'sync/now': () => syncNow(),
+  /* Переключатель «брать работу с аккаунта» и его состояние. Выключено, пока не включат. */
+  'taking/get': async () => ({ ok: true, taking: await takingWork() }),
+  'taking/set': (msg) => setTaking(msg.on === true),
   'skills/save': (msg) => saveSkill(msg),
   'skills/run': (msg) => runSkill(msg),
   'skills/rename': async (msg) => {
@@ -2218,6 +2217,154 @@ const ROUTES = {
     return { ok: true };
   },
 };
+
+/* ------------------------------------------------- taking work from the account
+ *
+ * WHAT THIS SOLVES IS A DIRECTION. Everything else this worker does happens because something in this
+ * browser asked. This is the one thing it does because a service said so - so it is OFF until somebody
+ * switches it on, it says so while it is on, and the switch is in the panel where a person can see it.
+ * The desktop agents have the same loop under the same rule, and this is deliberately the same shape.
+ *
+ * AN ALARM, NOT A LONG POLL, and that is MV3 rather than taste. A held request keeps the service worker
+ * resident for its whole length; Chrome tears the worker down when idle, and a keepalive that never lets
+ * it happens is a browser extension quietly holding a process open all day. `chrome.alarms` is the
+ * sanctioned way to be woken instead. The cost is real and worth stating: one minute is the shortest
+ * period MV3 allows, so a queued job waits up to a minute here where the desktop agent picks it up in
+ * about three seconds.
+ *
+ * ONE BROWSER, ONE THING AT A TIME. A claim is refused while a recording, a replay or a run is already
+ * going: two loops driving one set of tabs is worse than a job that waits.
+ */
+const CLAIM_ALARM = 'mouseflow.claim';
+const CLAIM_URL = APP_URL + '/api/mcp?worker=claim';
+const REPORT_URL = APP_URL + '/api/mcp?worker=report';
+
+async function takingWork() {
+  const { taking } = await chrome.storage.local.get('taking');
+  return taking === true;
+}
+
+async function setTaking(on) {
+  const want = on === true;
+  await chrome.storage.local.set({ taking: want });
+  if (want) chrome.alarms.create(CLAIM_ALARM, { periodInMinutes: 1, delayInMinutes: 0 });
+  else await chrome.alarms.clear(CLAIM_ALARM).catch(() => {});
+  return { ok: true, taking: want };
+}
+
+/** Whether this browser is free to take a job at all. */
+function busyWith() {
+  if (rec.active) return 'a recording is running';
+  if (play.active) return 'a replay is running';
+  if (agent.running) return 'a run is already going';
+  return null;
+}
+
+async function reportJob(token, id, ok, said) {
+  await fetch(REPORT_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+    body: JSON.stringify({ id, ok, said: String(said || '').slice(0, 4000) }),
+  }).catch(() => {});
+}
+
+/** Waits for whatever was started to stop. Bounded: a job that never ends must not hold the loop for ever. */
+async function untilIdle(limitMs) {
+  const until = Date.now() + limitMs;
+  while (Date.now() < until) {
+    if (!play.active && !agent.running) return true;
+    await sleep(500);
+  }
+  return false;
+}
+
+async function carryJob(token, job) {
+  const payload = job.flow && job.flow.payload;
+  if (!payload) {
+    await reportJob(token, job.id, false, 'the skill arrived with nothing in it');
+    return;
+  }
+  /* Через ту же дверь, что и вставленный руками навык: importSkills проверяет и пересобирает поле за
+   * полем. Пришедшее с аккаунта доверия не больше, чем пришедшее от коллеги, - и оно сейчас поведёт
+   * браузер. */
+  let skill;
+  try {
+    [skill] = importSkills(JSON.stringify(payload));
+  } catch (err) {
+    await reportJob(token, job.id, false, 'that skill could not be read: ' + err.message);
+    return;
+  }
+  if (!skill) {
+    await reportJob(token, job.id, false, 'that skill could not be read');
+    return;
+  }
+
+  const values = job.args || {};
+  const short = missingParams(skill, values);
+  if (short.length) {
+    await reportJob(token, job.id, false,
+      `"${skill.name}" needs ${short.join(', ')}, and the ask did not carry ${short.length === 1 ? 'it' : 'them'}.`);
+    return;
+  }
+
+  try {
+    if (skill.kind === 'recorded') {
+      await replayStart(flowFor(skill, { values }));
+    } else {
+      await agentStart(fillGoal(skill, values), { flowId: skill.id, skillVersion: skill.updated || null });
+    }
+  } catch (err) {
+    await reportJob(token, job.id, false, err.message);
+    return;
+  }
+
+  const finished = await untilIdle(20 * 60 * 1000);
+  if (!finished) {
+    await reportJob(token, job.id, false, 'it was still going after twenty minutes, so nothing is reported');
+    return;
+  }
+  /* Что именно вышло, зависит от того, чем это было. Прогон отчитывается сам; у повтора отчёт - это
+   * отсутствие ошибки. */
+  if (skill.kind === 'recorded') {
+    await reportJob(token, job.id, !play.error, play.error || `Replayed "${skill.name}".`);
+  } else {
+    const r = agent.result || {};
+    await reportJob(token, job.id, r.ok === true, r.ok ? (r.summary || 'Done.') : (r.error || 'It did not finish.'));
+  }
+}
+
+async function claimOnce() {
+  if (!(await takingWork())) return;
+  const token = await syncToken();
+  if (!token) return;
+  const busy = busyWith();
+  if (busy) return;   // молча: работа никуда не денется, а следующий будильник через минуту
+
+  let job = null;
+  try {
+    const res = await fetch(CLAIM_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: JSON.stringify({ kind: 'browser', worker: 'extension', wait: 0 }),
+    });
+    if (!res.ok) return;
+    const body = await res.json();
+    job = body && body.job;
+  } catch (_) {
+    return;   // сеть, а не работа: следующий будильник попробует снова
+  }
+  if (!job) return;
+  holdWorker(true);
+  try {
+    await carryJob(token, job);
+  } finally {
+    holdWorker(false);
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm && alarm.name === CLAIM_ALARM) claimOnce().catch(() => {});
+});
 
 function route(msg, sender, respond) {
   if (!msg || typeof msg.mf !== 'string') return false;

@@ -35,6 +35,10 @@ export const CreateScreen = () => {
   /* Opt-in, because a plan costs a call and a pause, and most errands want neither. Remembered across
    * runs: somebody who wants to be asked once wants to be asked next time. */
   const [gated, setGated] = useState(() => localStorage.getItem('mf.gate') === '1');
+  /* СТОЯЧЕЕ СОСТОЯНИЕ ЭТОГО БРАУЗЕРА, а не настройка прогона - поэтому читается у воркера, а не из
+   * localStorage: воркер берёт работу и когда панель закрыта, и правда о том, включено ли это, живёт
+   * там. Десктопные агенты держат тот же переключатель в строке состояния, по той же причине. */
+  const [taking, setTaking] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
 
   const read = useCallback(async () => {
@@ -47,6 +51,10 @@ export const CreateScreen = () => {
     const timer = setInterval(read, 800);
     return () => clearInterval(timer);
   }, [read]);
+
+  useEffect(() => {
+    void ask('taking/get').then((res) => { if (res.ok) setTaking(res.taking === true); });
+  }, []);
 
   /* Follows the log down, which is what somebody watching a run wants and what somebody reading back
    * through it does not - so only while it is running. */
@@ -112,6 +120,31 @@ export const CreateScreen = () => {
           />
           Stop and ask me at each checkpoint
         </label>
+      )}
+
+      {/* ЕДИНСТВЕННОЕ, ЧТО ЭТОТ БРАУЗЕР ДЕЛАЕТ НЕ ПОТОМУ, ЧТО ЕГО ПОПРОСИЛИ ОТСЮДА - и потому это
+          отдельная рамка с собственной подписью, а не ещё одна галочка в ряду. Выключено, пока не
+          включат; пока включено, здесь написано, что именно происходит. */}
+      {!status.running && (
+        <div className="rounded-lg border border-stroke/45 bg-surface-card2 px-2.5 py-2">
+          <label className="flex items-center gap-2 text-[0.78rem] text-ink-primary">
+            <input
+              type="checkbox"
+              checked={taking}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setTaking(on);
+                void ask('taking/set', { on });
+              }}
+            />
+            Let my AI run skills in this browser
+          </label>
+          <div className="mt-1 text-[0.7rem] text-ink-inactive">
+            {taking
+              ? 'It asks your account for work about once a minute — nothing reaches in.'
+              : 'Off. This browser makes no outbound call for work.'}
+          </div>
+        </div>
       )}
 
       {!status.running && !status.log?.length && (
