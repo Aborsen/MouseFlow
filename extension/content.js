@@ -672,6 +672,72 @@
     if (typeof opts.trail === 'boolean') showTrail = opts.trail;
   }
 
+  /* ЗНАК «ЭТОЙ ВКЛАДКОЙ УПРАВЛЯЮТ», и это та же задача, что рамка у десктопных агентов.
+   *
+   * Прогон начинается беззвучно: указатель едет сам, поля заполняются, кнопки нажимаются. Человек узнавал
+   * об этом по тому, что страница живёт без него. У десктопа для этого лаймовая рамка по краю экрана; здесь
+   * - по краю области просмотра, тем же цветом и по тем же правилам.
+   *
+   * ЧЕТЫРЕ СПОСОБА ИСПОРТИТЬ ЭТИМ ПРОДУКТ, и каждый закрыт:
+   *
+   *   клики        pointer-events: none. Без этого знак съедал бы каждый клик на странице - и человека,
+   *                и агента, - то есть ломал бы ровно то, ради чего расширение существует.
+   *   снимок       модель читает элементы (a, button, input, [role]…) и ОБРАЗЕЦ ТЕКСТА страницы через
+   *                document.body.innerText. Поэтому знак живёт в теневом корне: innerText обходит
+   *                светлое дерево и внутрь тени не заходит, так что слова «MouseFlow is running this
+   *                tab» не окажутся в том, что модель читает как содержимое страницы. Роли у него нет,
+   *                и в список элементов он не попадает по той же причине.
+   *   вложенность  только в верхнем кадре. Иначе каждый iframe нарисовал бы свою рамку, и страница из
+   *                четырёх фреймов получила бы четыре.
+   *   движение     не мигает и не дышит. Здесь нет отпечатка экрана, который это ломало бы, - но
+   *                правило то же, что у агентов: движущийся знак спорит за внимание с указателем, за
+   *                которым человек и следит.
+   */
+  const SIGN_LIME = '#bdff7a';
+  let sign = null;
+
+  function showSign(text) {
+    if (!IS_TOP) return;
+    if (sign && sign.host.isConnected) {
+      sign.label.textContent = text;
+      return;
+    }
+    const host = document.createElement('div');
+    host.setAttribute('data-mouseflow', 'driving');
+    /* Скрыт от вспомогательных технологий: это сообщение о состоянии окна, а не часть страницы, и
+     * читалка, объявляющая его посреди формы, мешает ровно тому человеку, которому труднее всего. */
+    host.setAttribute('aria-hidden', 'true');
+    Object.assign(host.style, {
+      position: 'fixed', inset: '0', zIndex: '2147483645', pointerEvents: 'none',
+    });
+    const root = host.attachShadow({ mode: 'closed' });
+    const frame = document.createElement('div');
+    Object.assign(frame.style, {
+      position: 'fixed', inset: '0', pointerEvents: 'none',
+      /* Тёмная линия снаружи лайма: лайм на белой странице сам по себе почти не виден, а страница
+       * может быть любой. */
+      boxShadow: 'inset 0 0 0 4px ' + SIGN_LIME + ', inset 0 0 0 5px rgba(10,17,38,.55)',
+    });
+    const label = document.createElement('div');
+    Object.assign(label.style, {
+      position: 'fixed', top: '0', left: '50%', transform: 'translateX(-50%)',
+      background: '#0a1126', color: SIGN_LIME, pointerEvents: 'none',
+      font: '500 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+      padding: '5px 10px 6px', borderRadius: '0 0 6px 6px', letterSpacing: '.01em',
+      border: '1px solid ' + SIGN_LIME, borderTop: 'none', whiteSpace: 'nowrap',
+    });
+    label.textContent = text;
+    root.appendChild(frame);
+    root.appendChild(label);
+    (document.body || document.documentElement).appendChild(host);
+    sign = { host, label };
+  }
+
+  function hideSign() {
+    if (sign && sign.host.isConnected) sign.host.remove();
+    sign = null;
+  }
+
   function ensureCursor() {
     if (cursor && cursor.root.isConnected) return cursor;
 
@@ -1427,6 +1493,8 @@
       return true;
     }
 
+    if (msg.mf === 'sign/on') { showSign(msg.text || 'MouseFlow is working in this tab'); respond({ ok: true }); return; }
+    if (msg.mf === 'sign/off') { hideSign(); respond({ ok: true }); return; }
     if (msg.mf === 'cursor/hide') {
       cursorHide();
       trackOffset(false);

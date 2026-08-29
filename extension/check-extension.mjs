@@ -790,5 +790,127 @@ group('и ответ, которого никто не ждёт, - отказ, �
     JSON.stringify(res));
 }
 
+group('знак «этой вкладкой управляют» - в странице, и не мешает ни человеку, ни модели');
+{
+  /* content.js DOM-зависим целиком, поэтому две функции вырезаются и исполняются против крошечной
+   * заглушки - тот же приём, что с модификаторами. */
+  const src = readFileSync(new URL('./content.js', import.meta.url), 'utf8');
+  const cut = (name) => {
+    const at = src.indexOf('function ' + name + '(');
+    let depth = 0;
+    for (let i = src.indexOf('{', at); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) return src.slice(at, i + 1);
+    }
+    return '';
+  };
+  const node = () => {
+    const el = {
+      attrs: {}, style: {}, kids: [], shadow: null, textContent: '', isConnected: false,
+      setAttribute(k, v) { this.attrs[k] = v; },
+      appendChild(c) { this.kids.push(c); c.isConnected = true; return c; },
+      attachShadow(opts) { this.shadow = { mode: opts.mode, kids: [], appendChild(c) { this.kids.push(c); } };
+        return this.shadow; },
+      remove() { this.isConnected = false; },
+    };
+    return el;
+  };
+  const body = node();
+  const harness = `
+    const SIGN_LIME = '#bdff7a';
+    let IS_TOP = true;
+    let sign = null;
+    const document = { createElement: () => makeNode(), body };
+    ${cut('showSign')}
+    ${cut('hideSign')}
+    return { showSign, hideSign, setTop: (v) => { IS_TOP = v; }, current: () => sign };
+  `;
+  // eslint-disable-next-line no-new-func
+  // eslint-disable-next-line no-new-func
+  const api = new Function('makeNode', 'body', harness)(node, body);
+
+  api.showSign('MouseFlow is working in this tab');
+  const host = body.kids[0];
+  check('знак поставлен', !!host, 'nothing appended');
+  /* СКВОЗНОЙ. Без этого он съедал бы каждый клик на странице - и человека, и агента. */
+  check('и он сквозной для мыши', host.style.pointerEvents === 'none', String(host.style.pointerEvents));
+  check('и помечен как наш, чтобы старую сборку было чем вымести',
+    host.attrs['data-mouseflow'] === 'driving', String(host.attrs['data-mouseflow']));
+  check('и спрятан от читалок - это состояние окна, а не часть страницы',
+    host.attrs['aria-hidden'] === 'true', String(host.attrs['aria-hidden']));
+  /* ЗАКРЫТАЯ ТЕНЬ - вот чем слова знака не попадают в document.body.innerText, который модель читает
+   * как образец текста страницы. Открытая тень их бы туда тоже не пустила, но закрытая заодно
+   * закрывает их и от скриптов самой страницы. */
+  check('и живёт в ЗАКРЫТОМ теневом корне, а не в самой странице',
+    host.shadow && host.shadow.mode === 'closed', JSON.stringify(host.shadow && host.shadow.mode));
+  /* Через защищённый доступ: мутация, кладущая знак прямо в страницу, оставляет shadow пустым, и
+   * прямое обращение уронило бы тест вместо того, чтобы покрасить его. */
+  const inShadow = (i) => (host.shadow && host.shadow.kids[i]) || null;
+  check('и в тени лежат рамка и подпись', !!host.shadow && host.shadow.kids.length === 2,
+    String(host.shadow && host.shadow.kids.length));
+  check('и подпись говорит, что происходит',
+    !!inShadow(1) && inShadow(1).textContent === 'MouseFlow is working in this tab',
+    String(inShadow(1) && inShadow(1).textContent));
+
+  /* Второй вызов НЕ городит второй знак: агент действует много раз подряд в одной вкладке. */
+  api.showSign('MouseFlow is replaying a recording here');
+  check('второй вызов не ставит второй знак', body.kids.length === 1, String(body.kids.length));
+  check('а только меняет подпись',
+    !!inShadow(1) && inShadow(1).textContent === 'MouseFlow is replaying a recording here',
+    String(inShadow(1) && inShadow(1).textContent));
+
+  api.hideSign();
+  check('и снимается', !host.isConnected, 'still connected');
+
+  /* ТОЛЬКО ВЕРХНИЙ КАДР: иначе страница из четырёх iframe получила бы четыре рамки. */
+  const body2 = node();
+  const api2 = new Function('makeNode', 'body', harness)(node, body2);
+  api2.setTop(false);
+  api2.showSign('x');
+  check('во вложенном кадре знака нет', body2.kids.length === 0, String(body2.kids.length));
+}
+
+group('и он переезжает за агентом по вкладкам, не оставляя следов позади');
+{
+  const bg = readFileSync(new URL('./background.js', import.meta.url), 'utf8');
+  const cut = (name) => {
+    const at = bg.indexOf('function ' + name + '(');
+    let depth = 0;
+    for (let i = bg.indexOf('{', at); i < bg.length; i++) {
+      if (bg[i] === '{') depth++;
+      else if (bg[i] === '}' && --depth === 0) return bg.slice(at, i + 1);
+    }
+    return '';
+  };
+  const sent = [];
+  const stub = { tabs: { sendMessage: (id, m) => { sent.push([id, m.mf]); return Promise.resolve(); } } };
+  // eslint-disable-next-line no-new-func
+  const api = new Function('chrome', `
+    let signedTab = null;
+    ${cut('signOn')}
+    ${cut('signsOff')}
+    return { signOn, signsOff, where: () => signedTab };
+  `)(stub);
+
+  api.signOn(1, 'working');
+  check('знак поставлен на рабочую вкладку', api.where() === 1, String(api.where()));
+  /* Повторный вызов на ту же вкладку молчит: агент действует много раз подряд в одной, и сообщение на
+   * каждое действие было бы платой ни за что. */
+  sent.length = 0;
+  api.signOn(1, 'working');
+  check('и на ту же вкладку второй раз ничего не шлётся', sent.length === 0, JSON.stringify(sent));
+  /* СО СТАРОЙ СНИМАЕТСЯ СРАЗУ. Иначе оставленная позади страница продолжала бы утверждать, что ею
+   * управляют, - а ею уже нет. */
+  api.signOn(2, 'working');
+  check('переехал на новую', api.where() === 2, String(api.where()));
+  check('и со старой снят', sent.some(([id, mf]) => id === 1 && mf === 'sign/off'), JSON.stringify(sent));
+
+  sent.length = 0;
+  api.signsOff([1, 2, 3, null, 2]);
+  check('в конце снимается со ВСЕХ, по разу на вкладку',
+    sent.filter(([, mf]) => mf === 'sign/off').length === 3, JSON.stringify(sent));
+  check('и больше ни одна вкладка не помечена', api.where() === null, String(api.where()));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

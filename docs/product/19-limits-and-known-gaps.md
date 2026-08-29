@@ -495,6 +495,19 @@ wait lasts as long as the person wants. That is what the panel was built for. Th
 it cannot be obtained the run goes ahead ungated and says so in the feed, because refusing to work over an
 optional step would be worse.
 
+**The page says when it is being driven.** The desktop agents draw a lime border round every screen while
+something is driving the computer; the extension now draws the same border round the viewport, with a small
+pill naming which of the two is happening — a run, or a replay of a recording. It moves with the agent from
+tab to tab and comes off every tab the run touched, the way the drawn cursor already did.
+
+Two of the desktop's four traps apply here and are closed the same way: it is `pointer-events: none`, or it
+would swallow every click on the page, and it is drawn only in the top frame, or a page of four iframes
+would get four borders. Two are different. There are no screenshots to keep it out of — but there IS a text
+sample: `read_page` hands the model `document.body.innerText`, so the sign lives in a **closed shadow root**
+and its words never reach what the model reads as page content. And it carries `aria-hidden`, because it is
+a statement about the window rather than part of the page, and a screen reader announcing it mid-form is a
+nuisance to exactly the person who can least afford one.
+
 Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
 `open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and
 `activate_window` are desktop-only by definition; `capture_window` needs the extension to see pixels at

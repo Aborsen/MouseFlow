@@ -188,6 +188,28 @@ async function send(tabId, message, frameId) {
   return chrome.tabs.sendMessage(tabId, message, options);
 }
 
+/* ЗНАК «ЭТОЙ ВКЛАДКОЙ УПРАВЛЯЮТ» - на той вкладке, в которой сейчас работают.
+ *
+ * Помнится, какая это вкладка, чтобы не слать сообщение на каждое действие: агент ходит по вкладкам, и
+ * знак должен переезжать за ним, но между действиями в одной вкладке говорить нечего. Со старой вкладки
+ * снимается сразу - иначе оставленная позади страница продолжала бы утверждать, что ею управляют. */
+let signedTab = null;
+
+function signOn(tabId, text) {
+  if (tabId == null || tabId === signedTab) return;
+  if (signedTab != null) chrome.tabs.sendMessage(signedTab, { mf: 'sign/off' }).catch(() => {});
+  signedTab = tabId;
+  chrome.tabs.sendMessage(tabId, { mf: 'sign/on', text }).catch(() => {});
+}
+
+/* Со ВСЕХ вкладок, а не только с последней - по той же причине, что и курсор: прогон ходил по ним. */
+function signsOff(tabIds) {
+  signedTab = null;
+  for (const id of new Set((tabIds || []).filter((v) => v != null))) {
+    chrome.tabs.sendMessage(id, { mf: 'sign/off' }).catch(() => {});
+  }
+}
+
 // The drawn cursor lives in the page, so it has to be told to go away when a run ends -
 // in every tab the run touched, not just the last one.
 function hideCursors(tabIds) {
@@ -1090,11 +1112,13 @@ async function performEvent(ev, ctx, speed) {
       await goTo(tabId, ev.url).catch(() => {});
     }
     ctx.current = tabId;
+    sign();
     return;
   }
 
   // Old single-tab recordings carry no focus events; fall back to the active tab.
   if (ctx.current == null) ctx.current = (await activeTab()).id;
+  sign();
 
   if (ev.action === 'navigate') {
     await goTo(ctx.current, ev.url);
@@ -1127,6 +1151,10 @@ async function runFlow(steps, flow) {
    * every other tab it had visited. */
   const touched = new Set();
   const ctx = { map: {}, current: null, cursor: null, opts: DEFAULT_SETTINGS, touched };
+  /* Повтор ведёт браузер ровно так же, как прогон, и человеку это надо сказать теми же словами - но
+   * НЕ теми же: «is working» скрывало бы, что происходит, а повтор это его собственная запись,
+   * которую он сам и запустил. */
+  const sign = () => { if (ctx.current != null) signOn(ctx.current, 'MouseFlow is replaying a recording here'); };
   try {
     // Read once, so a long run keeps the appearance it started with.
     ctx.opts = await loadSettings();
@@ -1199,6 +1227,7 @@ async function runFlow(steps, flow) {
     play.active = false;
     holdWorker(false);
     hideCursors([...touched, ctx.current]);
+    signsOff([...touched, ctx.current]);
     chrome.action.setBadgeText({ text: '' });
     chrome.action.setPopup({ popup: 'popup.html' });
     chrome.storage.session.set({
@@ -1341,6 +1370,10 @@ async function tracedTool(name, input) {
       : input,
     url: await currentUrl(),
   };
+
+  /* Поднимается ЗДЕСЬ, перед действием: это первое место, где известно, в какой вкладке будут работать,
+   * и оно же переживает переходы агента между вкладками. */
+  try { signOn(await agentTab(), 'MouseFlow is working in this tab'); } catch (_) { /* нет вкладки - нечего метить */ }
 
   const started = Date.now();
   let outcome;
@@ -1673,6 +1706,7 @@ async function agentStart(goal, from) {
       try {
         const tabs = await chrome.tabs.query({});
         hideCursors(tabs.map((t) => t.id));
+        signsOff(tabs.map((t) => t.id));
       } catch (_) {}
       await chrome.action.setBadgeText({ text: '' });
       await chrome.action.setPopup({ popup: 'popup.html' });
