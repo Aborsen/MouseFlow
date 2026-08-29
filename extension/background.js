@@ -1108,15 +1108,43 @@ async function performEvent(ev, ctx, speed) {
     let tabId = ctx.map[key];
 
     if (tabId == null) {
+      /* КАК ЭТОТ ШАГ НАХОДИТ СВОЮ ВКЛАДКУ - ТРИ ПОПЫТКИ, И ТРЕТЬЯ ПОЯВИЛАСЬ НЕ ОТ ХОРОШЕЙ ЖИЗНИ.
+       *
+       * Раньше была одна: вкладка на той позиции, что при записи, и «никогда не открывает». Для запуска
+       * рукой это разумно - человек сам расставил вкладки перед тем, как нажать Play. Для запуска С
+       * АККАУНТА это не работает вовсе: там некому расставлять, и любая запись, сделанная не в первой
+       * вкладке, обречена. Замерено на живом прогоне: запись с example.com, сделанная одиннадцатой
+       * вкладкой, запущенная из чата в окне с одной, вернула «нужна вкладка на позиции 11» - то есть
+       * забирающий работал, а пользоваться им было нечем.
+       *
+       * ПОРЯДОК ИМЕЕТ ЗНАЧЕНИЕ. Позиция первой, потому что она сохраняет расстановку, которую человек
+       * держал в голове, когда записывал. Адрес вторым: та же страница, переехавшая на другое место, -
+       * это она же. Открыть третьим и последним, потому что это единственный шаг, создающий что-то
+       * новое, и делать его раньше значило бы плодить вкладки там, где нужная уже открыта.
+       *
+       * Старая ошибка кончалась словами «open it first». Открыть - ровно это и есть, только сделанное
+       * вместо человека, которого на этом пути может не быть. */
       const index = ev.tabIndex == null ? key : ev.tabIndex;
       const tabs = await chrome.tabs.query({ currentWindow: true });
-      const match = tabs.find((t) => t.index === index) || tabs[index];
+      const wanted = ev.url && !isRestricted(ev.url) ? bareUrl(ev.url) : null;
+
+      let match = tabs.find((t) => t.index === index) || tabs[index];
+      /* Позиция подошла, но там ЧУЖАЯ страница, а нужная открыта где-то ещё - берём нужную. Без этого
+       * запись играла бы по адресу, который просто оказался на том же месте. */
+      if (wanted && (!match || bareUrl(match.url) !== wanted)) {
+        match = tabs.find((t) => bareUrl(t.url) === wanted) || match;
+      }
+      if (match && isRestricted(match.url)) match = null;
+
+      if (!match && wanted) {
+        const made = await chrome.tabs.create({ url: ev.url, active: true });
+        try { await pollComplete(made.id); } catch (_) { /* дальше шаг всё равно ждёт страницу */ }
+        match = made;
+      }
       if (!match) {
         throw new Error('this step needs the tab at position ' + (index + 1) +
-          ', and this window only has ' + tabs.length + ' - open it first');
-      }
-      if (isRestricted(match.url)) {
-        throw new Error('the tab at position ' + (index + 1) + ' is a browser page, which cannot be automated');
+          ', and this window only has ' + tabs.length
+          + ' - the recording carries no address for it, so there is nothing to open');
       }
       tabId = match.id;
       ctx.map[key] = tabId;

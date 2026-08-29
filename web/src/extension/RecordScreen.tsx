@@ -133,10 +133,15 @@ export const RecordScreen = () => {
        * rule this screen was just fixed under - a false red is visible and can be argued with, a false
        * green is neither - and the sentence leads with the half that DID happen so nobody thinks the
        * recording was lost. */
+      /* НАЗЫВАЕТ ОБА ФАКТА, и второй важнее первого. Строка исчезает из списка выше - она больше не
+       * запись, - и человек, увидевший пустой список, читает это как потерю быстрее, чем успевает
+       * прочесть похвалу. Поэтому предложение начинается с того, ГДЕ она теперь. */
       setNote(res.synced
-        ? { text: 'Kept as a skill and pushed to your account. Rename it in Skills.', kind: 'good' }
+        ? { text: `"${rec.name}" is now a skill on your account — look in Skills. It has left this list `
+            + 'because it is no longer a recording.', kind: 'good' }
         : {
-            text: 'Kept as a skill on this browser, but it has not reached your account'
+            text: `"${rec.name}" is now a skill on this browser and has left this list, but it has not `
+              + 'reached your account'
               + (res.syncError ? ` — ${String(res.syncError)}` : '') + '. It is safe here; sync again later.',
             kind: 'bad',
           });

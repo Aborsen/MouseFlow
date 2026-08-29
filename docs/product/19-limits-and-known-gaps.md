@@ -530,6 +530,19 @@ than hidden: one minute is the shortest period MV3 allows, so a queued job waits
 the desktop agent takes it in about three seconds. A claim is refused outright while a recording, a replay
 or a run is already going — one browser, one thing at a time.
 
+**A replayed recording finds its tab, and opens it when it is not there.** The `focus` step matched the tab
+sitting at the position it was recorded in, and never opened one. For a person pressing Play that is right —
+they arranged their own tabs. For a run started from the account it is fatal: nobody is there to arrange
+anything, and a recording made in anything but the first tab cannot run. Measured on a live run: a recording
+of example.com made as the eleventh tab, started from a chat into a window with one, came back with "this
+step needs the tab at position 11". The claimer worked and there was nothing it could usefully do.
+
+Three tries now, in this order: the recorded position first, because it preserves the arrangement the person
+had in mind; the address second, because the same page moved elsewhere is still that page; and opening it
+last, because that is the only step which creates something and doing it earlier would multiply tabs that
+are already open. The old error ended with the words "open it first" — opening is exactly that, done for a
+person who may not be there.
+
 Still missing: `capture_window`, `find_element`, `scroll_to`, `drag`, `clipboard_read`, `clipboard_write`,
 `open_app`, `activate_window`, `wait_for_window` and `reached_checkpoint`. Of those, `open_app` and
 `activate_window` are desktop-only by definition; `capture_window` needs the extension to see pixels at

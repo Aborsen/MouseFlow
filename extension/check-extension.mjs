@@ -42,6 +42,9 @@ globalThis.chrome = {
     onStartup: listener(),
     onInstalled: listener(),
     getURL: (p) => 'chrome-extension://test/' + p,
+    /* holdWorker трогает этот вызов на таймере, чтобы MV3-воркер не выгружали. Без него набор падал не
+     * там, где смотрит, а в чужом таймере через секунду после конца проверки. */
+    getPlatformInfo: async () => ({ os: 'mac', arch: 'arm64' }),
   },
   storage: {
     local: {
@@ -63,15 +66,43 @@ globalThis.chrome = {
   tabs: {
     onActivated: listener(),
     /* Переходы в заглушке обязаны ЗАВЕРШАТЬСЯ: waitForLoad ждёт события 'complete', и без него повтор,
-     * начинающийся с navigate, висит до таймаута, а тест видит «отчёта нет» и обвиняет код. */
-    onUpdated: { addListener: (fn) => { listeners.updated = fn; } },
+     * начинающийся с navigate, висит до таймаута, а тест видит «отчёта нет» и обвиняет код.
+     *
+     * НАСТОЯЩИЙ НАБОР слушателей, а не один: waitForLoad подписывается и отписывается на каждый переход,
+     * и заглушка с одним слотом теряла постоянного слушателя записи, а removeListener у неё не было
+     * вовсе - падало это в чужом таймере через секунду после конца проверки. */
+    onUpdated: {
+      set: new Set(),
+      addListener(fn) { this.set.add(fn); },
+      removeListener(fn) { this.set.delete(fn); },
+      fire(id, info, tab) { for (const fn of [...this.set]) fn(id, info, tab); },
+    },
     onRemoved: listener(),
-    /* Одна настоящая вкладка: без неё не стартует ни запись, ни прогон, и половина путей не проверяется. */
-    query: async () => [{ id: 1, url: 'https://example.com', active: true }],
-    get: async () => ({ id: 1, url: 'https://example.com' }),
-    create: async () => ({ id: 2 }), remove: async () => {},
-    update: async (id) => {
-      if (listeners.updated) setTimeout(() => listeners.updated(id, { status: 'complete' }, { id }), 0);
+    /* Окно, которое тесты расставляют сами. Без хотя бы одной вкладки не стартует ни запись, ни прогон,
+     * и половина путей не проверяется; а шаг focus ищет ИМЕННО в этом списке. */
+    open: [{ id: 1, index: 0, status: 'complete', url: 'https://example.com', active: true }],
+    made: [],
+    query: async function query() { return this.open.slice(); },
+    get: async function get(id) { return this.open.find((t) => t.id === id) || this.open[0]; },
+    create: async function create(opts) {
+      /* status: 'complete' - потому что pollComplete СПРАШИВАЕТ вкладку, а не ждёт события. Без него
+       * созданная вкладка «грузилась» двадцать секунд, следующий случай получал «already playing» и
+       * проверял чужое состояние. Полдня тестовой возни на одно недостающее поле заглушки. */
+      const tab = { id: 100 + this.made.length, index: this.open.length, status: 'complete',
+        url: (opts && opts.url) || '', active: true };
+      this.made.push(tab.url);
+      this.open.push(tab);
+      setTimeout(() => globalThis.chrome.tabs.onUpdated.fire(tab.id, { status: 'complete' }, tab), 0);
+      return tab;
+    },
+    remove: async () => {},
+    /* КАКУЮ вкладку подняли - это и есть ответ шага focus, и без записи этого проверки могли лишь
+     * сказать, что новую не открыли. Мутация, подсовывавшая чужую страницу с того же места, проходила
+     * ровно поэтому. */
+    activated: [],
+    update: async function update(id, opts) {
+      if (opts && opts.active) this.activated.push(id);
+      setTimeout(() => globalThis.chrome.tabs.onUpdated.fire(id, { status: 'complete' }, { id }), 0);
       return { id };
     },
     sendMessage: async () => ({ ok: true }),
@@ -1111,6 +1142,98 @@ group('и не берёт вторую работу, пока занят пер�
   await new Promise((r) => setTimeout(r, 30));
   check('во время записи за работой не ходит', asked === 0, String(asked));
   await send({ mf: 'record/stop' });
+}
+
+group('шаг focus находит свою вкладку, а не требует, чтобы её расставили');
+{
+  /* Замерено на живом прогоне: запись с example.com, сделанная одиннадцатой вкладкой и запущенная из
+   * чата в окне с одной, возвращала «нужна вкладка на позиции 11». Забирающий работал, пользоваться им
+   * было нечем. */
+  /* Каждый случай начинается с чистого листа: повтор предыдущего мог ещё идти, и тогда следующий
+   * получал «already playing», а тест читал СТАРУЮ ошибку и делал вывод не о том. */
+  const idle = async () => {
+    await send({ mf: 'replay/abort' });
+    for (let i = 0; i < 100; i++) {
+      const st = await send({ mf: 'replay/status' });
+      if (!st.playing) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    /* И ЕЩЁ НЕМНОГО ПОСЛЕ. play.active опускается в finally, а хвост прошлого случая - создание вкладки,
+     * ожидание её загрузки, подъём - дорабатывает уже за ним. Без этой паузы он дописывал в счётчики,
+     * которые следующий случай только что обнулил, и обвинялся код. */
+    await new Promise((r) => setTimeout(r, 300));
+  };
+  const run = async (events, tabs) => {
+    await idle();
+    chrome.tabs.open = tabs;
+    chrome.tabs.made = [];
+    chrome.tabs.activated = [];
+    store.skills = [{
+      format: 'mouseflow.skill/1', id: 'f1', kind: 'recorded', name: 'Focus', description: '',
+      created: '2026-08-29T10:00:00.000Z', origins: [], tabs: 1, params: [], events,
+    }];
+    const res = await send({ mf: 'skills/run', id: 'f1' });
+    /* ЗАПУСК ОБЯЗАН СЛУЧИТЬСЯ. Без этой строки «already playing» от недоигранного предыдущего случая
+     * проходил молча, а следующая проверка читала чужое состояние и делала вывод не о том - именно так
+     * два промаха ниже и притворились попаданиями. */
+    check('  (запуск начался)', res.ok === true, show(res));
+    /* И ДОИГРАТЬ ДО КОНЦА, а не до первого взгляда: play.active выставляется раньше, чем повтор доходит
+     * до своего первого события. */
+    let ran = false;
+    for (let i = 0; i < 200; i++) {
+      const st = await send({ mf: 'replay/status' });
+      if (st.playing) ran = true;
+      else if (ran || i > 4) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return res;
+  };
+  const focus = (index, url) => ({ action: 'focus', tab: 0, tabIndex: index, url });
+
+  /* 1. Вкладка на записанном месте, и это она - берём её, ничего не открываем. */
+  await run([focus(0, 'https://example.com/')],
+    [{ id: 1, index: 0, status: 'complete', url: 'https://example.com/', active: true }]);
+  check('вкладка на своём месте берётся как есть', chrome.tabs.made.length === 0,
+    show(chrome.tabs.made));
+
+  /* 2. Записана одиннадцатой, а открыта одна - и это ОНА. Позиция не совпала, адрес совпал. */
+  await run([focus(10, 'https://example.com/')],
+    [{ id: 1, index: 0, status: 'complete', url: 'https://example.com/', active: true }]);
+  check('уехавшая на другое место находится по адресу, а не открывается заново',
+    chrome.tabs.made.length === 0, show(chrome.tabs.made));
+
+  /* 3. Ни там, ни там - открываем. Это и есть то, что раньше было текстом ошибки «open it first». */
+  await run([focus(10, 'https://example.com/')],
+    [{ id: 1, index: 0, status: 'complete', url: 'https://other.test/', active: true }]);
+  check('которой нет вовсе - открывается', chrome.tabs.made.includes('https://example.com/'),
+    show(chrome.tabs.made));
+
+  /* 4. На записанном месте стоит ЧУЖАЯ страница, а нужная открыта рядом - берём нужную, а не соседа. */
+  await run([focus(0, 'https://example.com/')], [
+    { id: 1, index: 0, status: 'complete', url: 'https://other.test/', active: true },
+    { id: 2, index: 1, status: 'complete', url: 'https://example.com/', active: false },
+  ]);
+  check('чужая страница на том же месте не подменяет собой нужную',
+    chrome.tabs.made.length === 0 && chrome.tabs.activated.includes(2),
+    show({ made: chrome.tabs.made, activated: chrome.tabs.activated }));
+
+  /* 4b. ДВЕ ОДИНАКОВЫЕ страницы - позиция и решает, какая из них та. Без первой попытки поиск по адресу
+   * взял бы первую попавшуюся. */
+  await run([focus(1, 'https://example.com/')], [
+    { id: 1, index: 0, status: 'complete', url: 'https://example.com/', active: true },
+    { id: 2, index: 1, status: 'complete', url: 'https://example.com/', active: false },
+  ]);
+  check('из двух одинаковых берётся та, что на записанном месте',
+    chrome.tabs.activated.includes(2) && !chrome.tabs.activated.includes(1),
+    show({ activated: chrome.tabs.activated }));
+
+  /* 5. Адреса в записи нет - открывать нечего, и это сказано, а не угадано. */
+  const noUrl = await run([focus(10, null)],
+    [{ id: 1, index: 0, status: 'complete', url: 'https://example.com/', active: true }]);
+  const st = await send({ mf: 'replay/status' });
+  check('запуск без адреса вообще случился', noUrl.ok === true, show(noUrl));
+  check('без адреса открывать нечего, и об этом говорят',
+    /nothing to open/.test(String(st.error)), show(st.error));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
