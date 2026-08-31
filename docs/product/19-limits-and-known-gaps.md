@@ -290,6 +290,26 @@ These are not bugs and no amount of work inside the current design removes them.
 
 ---
 
+### The site is in the transcript and not yet in the time split
+
+A desktop recording of a browser carries `context.url` on the clicks the agent could resolve — measured on
+one live recording: **18 of 23 clicks**, giving `secure.2checkout.com`, `desk.zoho.com`,
+`salesiq.zoho.com`. Until this was found, nothing read it: every reader looked for `url` on the event
+itself, which is where the extension writes it and where the desktop agent does not. So a window titled
+`Dashboard - Google Chrome` was all anybody saw of an hour on 2Checkout.
+
+The **transcript** now names the site on every stretch, and the **search index** now finds recordings by it.
+Both work because they need the site as a *name*: the transcript keeps the last address seen in that window
+and carries it forward, since the page did not change between two clicks or an event would have said so.
+
+**The per-application time split still says `chrome`,** and that is deliberate rather than unfinished. It
+attributes *duration*, and the address is on 18 events out of 1598 — the other 1580 are pointer movement. A
+per-event rule would give `secure.2checkout.com` a few seconds and leave `chrome` with the hours: a row that
+is worse than its absence. The pattern would flicker the same way, `chrome -> secure.2checkout.com -> chrome`
+on every click. Doing it properly needs the sticky derivation the transcript uses, expressed as a
+last-non-null window function over each recording's events — real work, and worth doing, and not worth
+half-doing.
+
 ### One application, two names, and only half of it is fixable here
 
 An application is named by whatever the platform reports, and the two halves report differently: the Windows

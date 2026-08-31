@@ -124,8 +124,13 @@ async function namesFor(sql, clientIds) {
           ('near',      ev.event->'context'->>'near'),
           /* The origin only, not the path: a query string is where an identifier ends up, and this table is
              for finding a recording rather than for keeping addresses. */
-          ('page',      case when ev.event->>'url' ~ '^https?://'
-                              then regexp_replace(ev.event->>'url', '^(https?://[^/?#]+).*$', '\\1') end)
+          /* Из ОБОИХ мест: расширение пишет адрес на самом событии, десктопный агент - в контексте, и до
+             этой правки читалось только первое. Значит индекс не знал ни одного сайта десктопной записи, и
+             «zoho» находилось лишь через заголовки окон, а «2checkout» - никак. */
+          ('page',      case when coalesce(ev.event->>'url', ev.event->'context'->>'url') ~ '^https?://'
+                              then regexp_replace(
+                                     coalesce(ev.event->>'url', ev.event->'context'->>'url'),
+                                     '^(https?://[^/?#]+).*$', '\\1') end)
         ) as v(kind, said)
       where nullif(trim(said), '') is not null
     )

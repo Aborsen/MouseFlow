@@ -680,6 +680,20 @@ function ctxOf(raw) {
   /* МОДИФИКАТОРЫ ЖЕСТА - `Shift`, `Cmd+Shift`, `Alt`. Токен печатается ДОСЛОВНО: перевести `Alt` в
    * `Option` можно, только зная, какая система это записала, а тело записи об этом надёжно не говорит. */
   const modifiers = oneLine(src.modifiers, 40);
+  /* АДРЕС СТРАНИЦЫ, который десктопный агент читает из браузера и который до этой правки не читал никто.
+   *
+   * Замерено на живой записи: 18 из 23 нажатий его несут - secure.2checkout.com, desk.zoho.com,
+   * salesiq.zoho.com, - и всё это время расшифровка называла место одним заголовком окна. «Dashboard -
+   * Google Chrome» и «#230117 - Devart» ничего не говорят о том, ГДЕ человек был, а именно это первое, что
+   * нужно знать, читая чужую работу.
+   *
+   * Только ХОСТ, без пути и без строки запроса. Путь - это идентификатор заказа или тикета, то есть данные
+   * той работы, а не место, где она шла; и стретч, названный полным адресом, распадался бы на новый на
+   * каждой странице списка. Тот же выбор уже сделан у origins в дайджесте и на дашборде. */
+  const url = typeof src.url === 'string' ? src.url.trim() : '';
+  const host = /^https?:\/\//i.test(url)
+    ? oneLine((url.match(/^https?:\/\/([^/?#]+)/i) || [])[1], 120).toLowerCase()
+    : '';
   /* A type on its own is not context: "a button" with no name and no application says nothing a reader
    * could act on, and keeping it would make a step look resolved when it was not. */
   /* И модификатор ТОЖЕ держит строку живой. `#ctx`, несущий одни модификаторы, - обычное дело: Cmd+прокрутка
@@ -703,6 +717,7 @@ function ctxOf(raw) {
     container: container || null,
     containerName: containerName || null,
     modifiers: modifiers || null,
+    host: host || null,
   };
 }
 
@@ -718,6 +733,19 @@ function ctxWhere(ctx) {
    * icon arrives as a named `button`, empty taskbar as an unnamed `pane`. */
   if (ctx.control && ctx.type === 'button' && inShell(ctx.app, ctx.window)) {
     return { kind: 'app', label: 'the taskbar', detail: ctx.app };
+  }
+  /* САЙТ, КОГДА ОН ИЗВЕСТЕН, вместо имени процесса. «Order search - Google Chrome / chrome» повторяет
+   * слово «chrome» дважды и не говорит ничего; «Order search - Google Chrome / secure.2checkout.com»
+   * отвечает на первый вопрос, который задают, читая чужую работу.
+   *
+   * Имя приложения при этом не теряется - оно уходит в скобки, потому что «в каком приложении» остаётся
+   * настоящим вопросом там, где сайта нет вовсе (проводник, терминал, само приложение). */
+  if (ctx.host) {
+    return {
+      kind: 'page',
+      label: ctx.window || ctx.app,
+      detail: ctx.app ? ctx.host + ' (' + ctx.app + ')' : ctx.host,
+    };
   }
   return {
     kind: 'app',
@@ -1400,7 +1428,49 @@ function deriveDesktop(events, seen) {
   let place = null;
   let placeName = null;
   let firstPlace = true;
-  const enter = (ctx) => {
+
+  /* КАКОЙ САЙТ БЫЛ ОТКРЫТ В ЭТОМ ОКНЕ, последний известный.
+   *
+   * Агент читает адрес не на каждом событии, а на тех, где ему есть что прочитать: замерено - 18 нажатий
+   * из 23 несут его, а полторы тысячи движений указателя между ними не несут ничего. Читать его строго по
+   * событию значило бы, что стретч называется сайтом только когда клик случайно попал на элемент, у
+   * которого адрес разрешился, - то есть через раз.
+   *
+   * Прилипает к ОКНУ, а не к записи: два окна браузера - это два сайта одновременно, и один общий
+   * «последний адрес» приписал бы работу в одном окну другого.
+   *
+   * ЧЕГО ЭТО НЕ ДЕЛАЕТ, и это сказано, чтобы не искали: сегментация не меняется. Хост в ключ места НЕ
+   * входит - иначе первый клик на странице (с адресом) и всё, что было в том же окне до него (без адреса),
+   * разошлись бы по разным стретчам, и запись рассыпалась бы на осколки. Цена: если в одном окне под одним
+   * заголовком успели побывать два сайта, стретч назовётся последним из них. */
+  const hostOf = new Map();
+  const stickHost = (ctx) => {
+    const key = (ctx.app || '?') + '\u0000' + (ctx.window || '?');
+    if (ctx.host) hostOf.set(key, ctx.host);
+    else if (hostOf.has(key)) ctx.host = hostOf.get(key);
+    return ctx;
+  };
+
+  /* И ДОПИСЫВАЕТСЯ В УЖЕ ОТКРЫТЫЙ СТРЕТЧ, потому что порядок событий именно такой.
+   *
+   * Стретч открывается на СМЕНЕ ОКНА - по Focus или клику по вкладке, - а адрес приходит позже, с первым
+   * нажатием внутри новой страницы: Focus его не несёт (замерено: ни одно из десяти), нажатия несут
+   * восемнадцать из двадцати трёх. Без этой дописки сайт появлялся бы только там, где смена места и первое
+   * нажатие случайно совпали - первый прогон правки дал ноль сайтов на двенадцать стретчей.
+   *
+   * Дописывается ОДИН РАЗ и только если адреса ещё нет: второй адрес внутри одного стретча - это переход,
+   * о котором сегментация не знает, и перезапись заголовка приписала бы началу стретча место, куда пришли к
+   * его концу. */
+  const tellHost = (ctx) => {
+    if (!ctx || !ctx.host || !state.current || !state.current.where) return;
+    const where = state.current.where;
+    if (where.kind !== 'app' || String(where.detail || '').includes(ctx.host)) return;
+    where.kind = 'page';
+    where.detail = ctx.app ? ctx.host + ' (' + ctx.app + ')' : ctx.host;
+  };
+
+  const enter = (rawCtx) => {
+    const ctx = rawCtx ? stickHost(rawCtx) : rawCtx;
     if (!placed(ctx)) return;
     if (ctx.app) apps.add(ctx.app);
     const key = placeKey(ctx);
@@ -1501,6 +1571,8 @@ function deriveDesktop(events, seen) {
 
       if (!release) {
         enter(event.ctx);
+      tellHost(event.ctx);
+        tellHost(event.ctx);
         /* The moves stay with the press: they happened while the button was down, and calling them a
          * separate movement step would imply it was not. */
         emit(state, {
@@ -1520,6 +1592,8 @@ function deriveDesktop(events, seen) {
       if (straight >= DRAG_MIN_PX) {
         counts.drags++;
         enter(event.ctx);
+      tellHost(event.ctx);
+        tellHost(event.ctx);
         /* The context belongs to the press, so it says what was picked UP. Where it was dropped is not
          * resolved - the release is not hit-tested - so this never claims a destination it cannot see. */
         const grabbed = event.ctx && event.ctx.control
@@ -1555,6 +1629,7 @@ function deriveDesktop(events, seen) {
        * title is stale at this moment, and the accessibility type is not. */
       const tab = isTabMove(event.ctx);
       enter(tab ? tabPlace(event.ctx) : event.ctx);
+      tellHost(event.ctx);
 
       const verb = event.button === 'left' ? 'clicked' : event.button + '-clicked';
       const step = emit(state, {
@@ -1714,6 +1789,7 @@ function deriveDesktop(events, seen) {
     if (event.kind === 'press') {
       counts.keys += 1;
       enter(event.ctx);
+      tellHost(event.ctx);
       const into = event.ctx && event.ctx.control
         ? ' in the "' + event.ctx.control + '"'
           + (event.ctx.type && !CTX_VAGUE.has(event.ctx.type.toLowerCase()) ? ' ' + event.ctx.type : '')
@@ -1751,6 +1827,7 @@ function deriveDesktop(events, seen) {
       counts.typedMs += own;
       counts.typeRuns++;
       enter(event.ctx);
+      tellHost(event.ctx);
 
       /* Where it went, when the resolver could read it: what had FOCUS, not what was under the pointer -
        * the pointer is wherever it was last left and has nothing to do with the typing. */
@@ -1785,6 +1862,7 @@ function deriveDesktop(events, seen) {
     if (event.kind === 'focus') {
       counts.focuses++;
       enter(event.ctx);
+      tellHost(event.ctx);
       state.carryEvents.push(i);
       i++;
       continue;
