@@ -76,7 +76,21 @@ interface Summary {
   drags?: number;
   keys?: number;
   typedSeconds?: number;
+  /* ТРИ ЧИСЛА О ВРЕМЕНИ, а не одно, и это исправление подписи, а не добавление данных.
+   *
+   * `seconds` - то, что движок МОЖЕТ РАЗМЕСТИТЬ по стретчам ниже: пауза длиннее двух минут обрезается,
+   * иначе запись, забытая на ночь, объявила бы восемь часов работы в приложении. Панель печатала именно
+   * его - под подписью «in all», то есть «всё», чем оно как раз не является.
+   *
+   * `spanSeconds` - от первого события до последнего; ровно то, что показывает строка в списке записей.
+   * `droppedSeconds` + `seconds` = `spanSeconds`, по построению.
+   *
+   * Все три необязательны: ответ старого развёртывания несёт только `seconds`, и тогда длина падает
+   * обратно на него - два числа совпадают, второй значок не рисуется, и это правда о таком ответе. */
   seconds?: number;
+  droppedSeconds?: number;
+  droppedPauses?: number;
+  spanSeconds?: number;
   applications?: unknown;
   pages?: unknown;
   captured?: unknown;
@@ -295,8 +309,24 @@ const Quiet = ({ children }: { children: ReactNode }) => (
   </Typography>
 );
 
-const Chip = ({ value, label }: { value: string; label: string }) => (
-  <span className="inline-flex items-baseline gap-1 rounded-md bg-surface-chips px-1.5 py-0.5">
+/* `title` необязателен и есть у одного значка из семи - у того, чья подпись без определения читается как
+ * объективная: «placed below» осмысленно только когда сказано, что не поместилось и почему. */
+/* ОДНА строка на два места: её ставят при взведении и по ней же узнают, что стирать по таймеру. Две копии
+ * этого текста означали бы, что через полгода таймер перестанет узнавать своё предупреждение и оставит его
+ * на экране - ровно та ошибка, которую он и чинит.
+ *
+ * «Press the bin again», а не «Press again»: кнопка не меняет ни размера, ни подписи, поэтому фраза обязана
+ * сама указать, что нажимать - «ещё раз» рядом с неизменившейся иконкой это указание без адресата. И про
+ * снятие сказано словами, потому что крестик в конце строки иначе читается как «закрыть сообщение», а он
+ * здесь отменяет удаление. */
+const ARMED_WARNING = 'This deletes the recording and this transcript with it. Press the bin again to go '
+  + 'ahead, or dismiss this line to leave it alone.';
+
+const Chip = ({ value, label, title }: { value: string; label: string; title?: string }) => (
+  <span
+    className="inline-flex items-baseline gap-1 rounded-md bg-surface-chips px-1.5 py-0.5"
+    title={title}
+  >
     <strong className="font-semibold text-[0.8rem] text-ink-primary tabular-nums">{value}</strong>
     <span className="text-[0.72rem] text-ink-inactive">{label}</span>
   </span>
@@ -580,17 +610,45 @@ export const TranscriptPanel = ({
     return () => stop.abort();
   }, [flowId, attempt, sending]);
 
-  // Armed only briefly: a destructive button left cocked is one stray click away from being pressed.
+  /* Armed only briefly: a destructive button left cocked is one stray click away from being pressed.
+   *
+   * И ПРЕДУПРЕЖДЕНИЕ СНИМАЕТСЯ ВМЕСТЕ СО СОСТОЯНИЕМ, которое оно описывает. Таймер снимал только `armed`,
+   * а красная строка оставалась - то есть экран продолжал говорить «нажмите ещё раз, чтобы удалить», когда
+   * нажатие уже просто взводило заново. Раньше это отчасти скрывалось тем, что кнопка возвращала себе
+   * узкий вид; теперь кнопка не меняет размера вовсе, и слова остались единственным указанием на
+   * состояние - то есть единственным, что врало.
+   *
+   * Снимается ТОЛЬКО своя строка: следом мог прийти отчёт «Nothing was deleted: …», и его стирать нельзя.
+   * Сравнение по тексту, а не по kind: «bad» бывает и у отказа. */
   useEffect(() => {
     if (!armed) return;
-    const timer = setTimeout(() => setArmed(false), 6000);
+    const timer = setTimeout(() => {
+      setArmed(false);
+      setNote((was) => (was && was.text === ARMED_WARNING ? null : was));
+    }, 6000);
     return () => clearTimeout(timer);
   }, [armed]);
 
   const summary = data?.summary;
   const flow = data?.flow;
   const segments = useMemo(() => list(data?.segments), [data]);
+  /* ТРИ ЧИСЛА, А НЕ ОДНО, и до этого наружу шло только среднее из них - под подписью «in all».
+   *
+   * `seconds` - время, которое движок МОЖЕТ РАЗМЕСТИТЬ по стретчам ниже: пауза длиннее двух минут
+   * обрезается, иначе запись, забытая на ночь, объявила бы восемь часов работы в приложении.
+   * `spanSeconds` - от первого события до последнего, то самое, что печатает строка в списке записей.
+   * `droppedSeconds` - разница, и она НЕ потеряна.
+   *
+   * Измерено на живой записи: 3ч19м40с против 4ч54м10с, разница 1ч34м29с в 14 паузах. Список печатал
+   * четыре часа, панель три с половиной и называла их «в целом», и ни одно из двух чисел не говорило, чем
+   * оно является. Оба верны - неверна была подпись.
+   *
+   * Старое развёртывание новых полей не пришлёт, поэтому длина падает обратно на размещённое время: тогда
+   * два числа совпадают и второй значок не рисуется, что и есть правда о таком ответе. */
   const totalSeconds = count(summary?.seconds);
+  const droppedSeconds = count(summary?.droppedSeconds) ?? 0;
+  const droppedPauses = count(summary?.droppedPauses) ?? 0;
+  const spanSeconds = count(summary?.spanSeconds) ?? totalSeconds;
   /* The time of day, built once for the whole panel - see clockFrom. Depends on the flow head and on the
    * measured span, because the reckoned base is one minus the other. */
   const clock = useMemo(
@@ -639,10 +697,7 @@ export const TranscriptPanel = ({
      * consequence is not. */
     if (!armed) {
       setArmed(true);
-      setNote({
-        text: 'This deletes the recording and this transcript with it. Press again to go ahead.',
-        kind: 'bad',
-      });
+      setNote({ text: ARMED_WARNING, kind: 'bad' });
       return;
     }
     setRemoving(true);
@@ -708,25 +763,27 @@ export const TranscriptPanel = ({
               </Button>
             )}
 
-            {/* The way out of a cocked delete. `armed` has no timer, so without this the only ways back were
-              * pressing the destructive button again or closing the panel. */}
-            {armed && (
-              <Button variant="secondary" size="sm" onClick={() => setArmed(false)}>
-                Cancel
-              </Button>
-            )}
-
+            {/* THE SAME SIZE ARMED OR NOT, and that is the fix rather than the styling.
+              *
+              * Arming it used to grow this button into "Remove — press again" and add a Cancel beside it -
+              * some 200px more in a row that cannot shrink, next to a title column that can. In the panel's
+              * own width the title was squeezed to about sixty pixels and came out one word per line: the
+              * header rearranged itself at the exact moment somebody was being asked a yes-or-no question.
+              *
+              * So the confirmation lives in the red line under the header instead, where there is a whole
+              * width for it, and the way out is that line's own dismiss - see the note below. Colour still
+              * changes, because a cocked destructive control has to look different from a resting one;
+              * width does not. */}
             <Button
               variant={armed ? 'destructive' : 'destructiveOutline'}
               size="sm"
-              className={cn(!armed && '!size-8 !p-0')}
-              aria-label={armed ? 'Remove this recording — press again' : 'Remove this recording'}
-              title={armed ? undefined : 'Remove this recording'}
-              leftSlot={armed ? <Trash2 className="size-4" /> : undefined}
+              className="!size-8 !p-0"
+              aria-label={armed ? 'Remove this recording — press again to confirm' : 'Remove this recording'}
+              title={armed ? 'Press again to remove it' : 'Remove this recording'}
               isLoading={removing}
               onClick={() => void remove()}
             >
-              {armed ? 'Remove — press again' : <Trash2 className="size-4" />}
+              <Trash2 className="size-4" />
             </Button>
 
             <Button
@@ -746,13 +803,34 @@ export const TranscriptPanel = ({
           * the exact moment it appeared. Transient, so it may change the header's height - which a header can
           * afford and a footer over a scrolling body cannot. */}
         {/* Inline rather than a box: this sits inside a panel whose footer cannot afford one. Announced
-            all the same - see the note in Said. */}
-        <Said note={note} variant="inline" className="mt-1.5" />
+            all the same - see the note in Said.
+            И ЭТО ЖЕ - ВЫХОД ИЗ ВЗВЕДЁННОГО УДАЛЕНИЯ. `armed` без таймера, поэтому путь назад обязателен;
+            он здесь, а не кнопкой в шапке, потому что кнопка в шапке и была тем, что ломало заголовок.
+            Только когда взведено: у обычного сообщения об исходе снимать нечего, и крестик рядом с
+            «Removed» предлагал бы отменить то, что уже случилось. */}
+        <Said
+          note={note}
+          variant="inline"
+          className="mt-1.5"
+          onDismiss={armed ? () => { setArmed(false); setNote(null); } : undefined}
+        />
 
         {data && (
           <>
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-              <Chip value={fmtSeconds(totalSeconds)} label="in all" />
+              {/* ДЛИНА ЗАПИСИ первой, потому что это то, о чём спрашивают «сколько она шла», и то, что
+                * стоит в списке записей. «in all» здесь стояло над обрезанным временем, то есть над
+                * числом, которое как раз НЕ всё. */}
+              <Chip value={fmtSeconds(spanSeconds)} label="long" />
+              {/* И размещённая часть - только когда она меньше, иначе значок сообщал бы то же самое
+                * дважды. Разница названа на наведении: доля без своего знаменателя нечитаема. */}
+              {droppedSeconds > 0 && (
+                <Chip
+                  value={fmtSeconds(totalSeconds)}
+                  label="placed below"
+                  title={`${fmtSeconds(droppedSeconds)} fell in ${droppedPauses} pause${droppedPauses === 1 ? '' : 's'} longer than two minutes — somebody away from the machine rather than time in an application, so it is not attributed to any step.`}
+                />
+              )}
               <Chip value={String(stepCount)} label={stepCount === 1 ? 'step' : 'steps'} />
               {clicks != null && <Chip value={String(clicks)} label={clicks === 1 ? 'click' : 'clicks'} />}
               {!!drags && <Chip value={String(drags)} label={drags === 1 ? 'drag' : 'drags'} />}

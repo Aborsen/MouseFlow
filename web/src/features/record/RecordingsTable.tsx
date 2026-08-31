@@ -502,7 +502,18 @@ export const RecordingsTable = ({
                             'focus:border-input-focus focus:outline-none',
                           )}
                         />
-                        <span className="px-1 text-[0.76rem] text-ink-inactive">
+                        {/* ЧТО ИМЕННО ЗДЕСЬ ЗА ЧИСЛА, на наведении - потому что рядом, в панели расшифровки,
+                            стоят другие, и оба верны.
+                            Измерено на живой записи: здесь 1017 щелчков и 4ч54м, в панели 922 щелчка и
+                            3ч19м. Эта строка считает СЫРОЕ: каждое нажатие кнопки мыши и сумму всех пауз.
+                            Панель считает ЖЕСТЫ - двойной щелчок это один, протягивание не щелчок вовсе - и
+                            обрезает паузу длиннее двух минут, потому что размещает время по шагам.
+                            Расхождение было на экране и не было названо нигде; называть его должна та
+                            сторона, которая считает грубее. */}
+                        <span
+                          className="px-1 text-[0.76rem] text-ink-inactive"
+                          title={`${s.count} recorded events, ${s.clicks} presses of a mouse button, and ${fmtMs(s.durationMs)} from the first event to the last. The transcript counts gestures instead — a double click is one, a drag is not a click — and it leaves out pauses longer than two minutes, so its figures are smaller and both are right.`}
+                        >
                           {s.count} events · {s.clicks} clicks · {fmtMs(s.durationMs)}
                           {where ? ` · ${where.slice(0, 48)}` : ''}
                         </span>

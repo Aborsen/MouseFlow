@@ -2131,7 +2131,10 @@ function placeStory(segment) {
 
 const capitalise = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
 
-function tellStory(segments, counts, totalMs, source) {
+/* `dropped` - ПАРАМЕТРОМ, потому что `state` принадлежит transcribe и здесь его нет: первая версия этой
+ * правки читала его из области видимости, и весь набор упал на ReferenceError, не дойдя ни до одного
+ * утверждения. Форма та же, что у totalMs - величина о времени, посчитанная выше и переданная сюда. */
+function tellStory(segments, counts, totalMs, source, dropped = { ms: 0, pauses: 0 }) {
   /* No steps, no story. An empty recording used to get an opening line about running 0.0s in a place it
    * could not name, which is a paragraph about nothing - and `summary.captured` already says what happened
    * in one sentence. */
@@ -2142,7 +2145,16 @@ function tellStory(segments, counts, totalMs, source) {
   const named = places.map((segment) => segment.where.label).filter(Boolean);
 
   /* --------------------------------------------------------------- the overview */
-  let opening = 'This recording runs ' + spanText(totalMs) + '.';
+  /* «runs 199m 40s» было верным числом под неверным словом: запись ИДЁТ 4ч54м, а 3ч19м - это то, что
+     ниже удалось разместить. Разница - паузы длиннее двух минут, и она называется здесь, а не только в
+     примечании, потому что первую фразу читают все, а примечания - нет. */
+  let opening = dropped.ms > 0
+    ? 'This recording spans ' + spanText(totalMs + dropped.ms) + ', of which '
+      + spanText(totalMs) + ' is placed in the stretches below: '
+      + spanText(dropped.ms) + ' fell in ' + dropped.pauses + ' pause'
+      + (dropped.pauses === 1 ? '' : 's') + ' longer than two minutes, which is somebody away from '
+      + 'the machine rather than time in an application.'
+    : 'This recording runs ' + spanText(totalMs) + '.';
   const distinct = named.filter((label, i) => named.indexOf(label) === i);
   if (distinct.length > 1) {
     /* Stretches and places are counted separately on purpose: going Outlook, Excel, Outlook is three
@@ -2418,6 +2430,7 @@ export function transcribe(flow) {
     counts,
     totalMs,
     source,
+    { ms: state.droppedMs || 0, pauses: state.droppedPauses || 0 },
   );
 
   return {
@@ -2437,7 +2450,21 @@ export function transcribe(flow) {
       keys: counts.keys,
       // How much of the recording went on typing, which is the question this was added to answer.
       typedSeconds: secondsOf(counts.typedMs || 0),
+      /* ВРЕМЯ, КОТОРОЕ ЭТОТ ФАЙЛ МОЖЕТ РАЗМЕСТИТЬ по стретчам ниже - не длина записи.
+       *
+       * Пауза длиннее двух минут обрезается: считать её работой в приложении значило бы, что забытая на
+       * ночь запись объявляет восемь часов работы в CRM. Обрезанная часть НЕ выброшена, она в `droppedSeconds`
+       * ниже, и сумма двух равна `spanSeconds`. До этого наружу уходило только первое из трёх, под именем
+       * `seconds`, а панель печатала его как «in all» - то есть как всё. Измерено на живой записи: 3ч19м40с
+       * против 4ч54м10с, и разница в 1ч34м29с не была названа нигде, кроме примечания в gaps. */
       seconds: secondsOf(totalMs),
+      /* Отброшенное за потолком, и сколько было таких пауз. */
+      droppedSeconds: secondsOf(state.droppedMs || 0),
+      droppedPauses: state.droppedPauses || 0,
+      /* ОТ ПЕРВОГО СОБЫТИЯ ДО ПОСЛЕДНЕГО - то, что в списке записей называется её длиной, и то, чему
+         должно равняться seconds + droppedSeconds. Одно число вместо молчаливого расхождения между двумя
+         экранами. */
+      spanSeconds: secondsOf((totalMs || 0) + (state.droppedMs || 0)),
       /* Which half fills which, and nought rather than one for the other: a browser recording knows
        * pages and nothing about applications, a desktop recording knows applications and nothing
        * about pages. Reporting "1 application" for a browser recording would be this file inventing
