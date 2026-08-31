@@ -28,16 +28,32 @@ export type On = 'windows' | 'macos' | undefined;
 export function describe(did: Did, on: On = undefined): string {
   const input = (did.input ?? {}) as Record<string, any>;
   const at = Number.isFinite(input.x) && Number.isFinite(input.y) ? ` at ${input.x},${input.y}` : '';
+
+  /* WHAT THE GESTURE WAS MADE WITH, as a prefix - `Shift-click at 481,179`. A person reading a bare
+   * "click" for a Shift-click reads a step that did something else, and the transcript already writes
+   * `Shift-clicked "Report.pdf"` for the recorded half: without this, the two halves of the same product
+   * would describe the same gesture differently.
+   *
+   * Capitalised the way a chord is written, and in the order the format fixes rather than the order the
+   * model happened to list them, so the same gesture always reads the same way. */
+  const CHORD: Record<string, string> = { cmd: 'Cmd', ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift' };
+  const held = Array.isArray(input.modifiers)
+    ? ['cmd', 'ctrl', 'alt', 'shift']
+      .filter((key) => (input.modifiers as unknown[]).some((one) => String(one).toLowerCase() === key))
+      .map((key) => CHORD[key])
+    : [];
+  const with_ = held.length ? `${held.join('+')}-` : '';
+
   switch (did.name) {
     case 'click':
-      return `${input.double ? 'double-click' : input.button === 'right' ? 'right-click' : 'click'}${at}`;
+      return `${with_}${input.double ? 'double-click' : input.button === 'right' ? 'right-click' : 'click'}${at}`;
     case 'hover':
       return `hover${at}`;
     case 'scroll': {
       const way = ['up', 'down', 'left', 'right'].includes(String(input.direction))
         ? String(input.direction)
         : (Number(input.amount) < 0 ? 'down' : 'up');
-      return `scroll ${way}${at}`;
+      return `${with_}scroll ${way}${at}`;
     }
     case 'refresh_page':
       return `reload ${input.title ?? input.process ?? 'the window in front'}`;
@@ -82,7 +98,7 @@ export function describe(did: Did, on: On = undefined): string {
     case 'scroll_to':
       return `scroll to ${input.to ?? '?'}`;
     case 'drag':
-      return `drag ${at.trim() || 'from somewhere'} to ${input.toX},${input.toY}`;
+      return `${with_}drag ${at.trim() || 'from somewhere'} to ${input.toX},${input.toY}`;
     case 'clipboard_read':
       return 'read the clipboard';
     case 'clipboard_write': {

@@ -176,6 +176,10 @@ const RUNS = [
       { tool: 'find_element', input: { name: 'Send' }, ms: { model: 2200, act: 340 } },
       { tool: 'scroll_to', input: { to: 'end', x: 640, y: 400 }, ms: { model: 2500, act: 720 } },
       { tool: 'drag', input: { x: 200, y: 300, toX: 200, toY: 480 }, ms: { model: 2600, act: 610 } },
+      /* A modified gesture, so the preview can reach the prefix describe.ts builds - the run log
+       * reads `Shift-click at 260,300` for this one rather than a bare click. */
+      { tool: 'click', input: { x: 260, y: 300, label: 'Report Q4.pdf', modifiers: ['shift'] },
+        ms: { model: 1800, act: 300 } },
       /* Wave 04. `direction` is the one that could not be recorded, replayed or commanded before. */
       { tool: 'scroll', input: { x: 640, y: 400, amount: 4, direction: 'right' }, ms: { model: 2100, act: 180 } },
       { tool: 'refresh_page', input: { process: 'chrome' }, ms: { model: 2300, act: 1540 } },

@@ -170,7 +170,7 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 
 | Tool | Arguments | Notes |
 |---|---|---|
-| `click` | `x`, `y`, `button`, `double`, `label` | `label` is the visible text it believes it is clicking; the agent hit-tests the point and, if something else is there, looks for that name among the neighbours |
+| `click` | `x`, `y`, `button`, `double`, `label`, `modifiers` | `label` is the visible text it believes it is clicking; the agent hit-tests the point and, if something else is there, looks for that name among the neighbours. **0.23.0.** `modifiers` are PHYSICAL keys — `shift` extends a selection, `ctrl` adds to one, `alt` copies, `cmd` is Command on macOS and Win on Windows — and deliberately not `press_key`'s `ctrl`, which means the command modifier. A Ctrl-click and a Command-click are different gestures, so there is no portable reading for one |
 | `hover` | `x`, `y` | Moves the pointer and presses nothing — a menu that opens on hover, a button that appears on a row, a tooltip spelling out a short label. Goes out as the agent's `move`, which has existed since 0.7.0. **Terminal:** nothing follows it, because hovering is done precisely because the screen is about to change |
 | `type_text` | `text`, `newline: enter \| shift-enter` | Sent base64 so line breaks survive |
 | `press_key` | `key`, `ctrl`, `shift`, `alt`, `win` | `ctrl` means Command on macOS. **0.12.0** filled the table in: F7-F10, PrintScreen/Snapshot, Insert, Menu, and `win` as a MODIFIER — it had been in the table as a key since 0.7.0 with no way to hold it, so Win+D, Win+E and Win+arrow were unreachable. For a screenshot, `capture_window` is still the better route than any key |
@@ -179,12 +179,12 @@ those at -32000,-32000, and a coordinate that looks like one but means "nowhere"
 | `read_window` | `title`, `process` | **0.11.0.** What a window calls the things on it — name, kind, position, enabled — in **the same pixels as the screenshot**, so they can be clicked directly. Capped at 40 entries and 1500 characters, and says how many were left out |
 | `find_element` | `name`, `process` | **0.11.0.** Where one named thing is, with its centre. Exact name, then a case-insensitive part of one. Reports ambiguity instead of resolving it: several matches is something the model needs to know before clicking |
 | `scroll_to` | `to`, `x`, `y` | **0.11.0.** `end`/`start` scrolls until the screen stops changing; anything else is a name to stop at. Says how far it got and whether it arrived |
-| `drag` | `x`, `y`, `toX`, `toY` | **0.11.0.** Press, move in steps, release. Could not be composed: `click` always sent the press and the release together |
+| `drag` | `x`, `y`, `toX`, `toY`, `modifiers` | **0.11.0.** Press, move in steps, release. Could not be composed: `click` always sent the press and the release together. **0.23.0.** A modifier is held from the press through every movement to the release, which is the difference between an alt-drag (copy) and an alt-press followed by an ordinary drag (move) |
 | `clipboard_read` | — | **0.10.0.** The reliable way to get text out of an application: select, Control+C, read it here rather than making out small text in a screenshot |
 | `clipboard_write` | `text` | **0.10.0.** Faster than `type_text` for anything long, and independent of the keyboard layout. May share a turn with the Control+V that pastes it |
 | `open_url` | `url` | **0.10.0.** http and https only — a scheme is a choice of program, which is a different question. `https://docs.new` is a new Google Doc in one action instead of four |
 | `open_app` | `name` | **0.10.0.** A name, never a path or a command line; the agent refuses both. Read the "Already open" list first |
-| `scroll` | `x`, `y`, `amount`, `direction` | Negative amount scrolls down; `direction` gives sideways, which is how a wide grid, a plan, a timeline or a board is reached. **0.12.0.** Says so when it delivered fewer notches than were asked for — it used to clamp at twenty and answer `{"ok":true}` |
+| `scroll` | `x`, `y`, `amount`, `direction`, `modifiers` | Negative amount scrolls down; `direction` gives sideways, which is how a wide grid, a plan, a timeline or a board is reached. **0.12.0.** Says so when it delivered fewer notches than were asked for — it used to clamp at twenty and answer `{"ok":true}`. **0.23.0.** `modifiers: ["ctrl"]` is zoom in most applications; it is held once around the whole run rather than per notch, because a zoom that restarts a hundred times is not the one that was asked for |
 | `refresh_page` | `title`, `process` | **0.12.0.** Activate, F5, and wait for the screen to settle, in one step instead of three turns. F5 was always reachable; the waiting is the point |
 | `wait_for_window` | `title`, `process`, `until`, `ms` | **0.12.0.** Waits for a named window to appear or to be gone — sharper than waiting for the whole screen to go quiet, and it replaces the "sleep twenty seconds and hope" the failed run had to invent. Not appearing is an answer, not an error |
 | `wait` | `ms` (to 120 s), `reason` | **Blocks until the screen stops changing and does not cost a step** |
@@ -203,6 +203,14 @@ reached the hook's switch; a recording carrying one could not be **replayed**, b
 no action could **command** one. Meanwhile `api/_transcript.js` had been parsing "Scroll Left" and "Scroll
 Right" the whole time — the reading side was ready for something no part of the writing side could produce.
 A wide result grid, a query plan, a timeline, a kanban board: none of them was reachable.
+
+**A gesture could be replayed but not asked for** (fixed in 0.23.0), and the shape is worth keeping in
+mind because every part but one was already built. Shift-click to extend a selection, Ctrl-click to add to
+it, Alt-drag to copy instead of move, Ctrl+scroll to zoom: the transcript narrated them, both recorders
+wrote them, both replays performed them — and the action grammar had no field, so a model could reproduce a
+person's Shift-click and could not make one of its own. Four ordinary things, unreachable because of one
+missing property on three tool schemas. The fix put the value on the event the action builds, which is the
+same code the replay uses, so the two cannot come apart.
 
 **Aiming by name rather than by pixel** (0.11.0). `/shot` scales the screenshot down and reports the
 `scale`, so every coordinate the model produces from a picture is approximate — and `label` on a click could

@@ -1475,10 +1475,19 @@ check('and a scroll that ran out of bursts says so',
 
 /* A drag could not be composed: click always sent the press and the release together. Interpolated because
  * an application reads the movement in between to decide what is happening. */
+/* Подпись больше не цитируется целиком: их две - четырёхаргументная делегирует пятиаргументной, чтобы ни
+ * одному вызывающему не пришлось меняться, - а нажатие несёт модификатор. Утверждение то же: нажимает,
+ * идёт шагами, отпускает. */
 check('a drag presses, moves in steps, and releases',
-  /static string Drag\(int x1, int y1, int x2, int y2\)/.test(winAgent3)
-    && /Emit\(At\(x1, y1, "Left Click Down"\)\)/.test(winAgent3)
+  /static string Drag\(int x1, int y1, int x2, int y2, string mods\)/.test(winAgent3)
+    && /Emit\(At\(x1, y1, "Left Click Down", mods\)\)/.test(winAgent3)
+    && /Emit\(At\(ix, iy, "Mouse Movement"\)\)/.test(winAgent3)
     && /Emit\(At\(x2, y2, "Left Click Release"\)\)/.test(winAgent3));
+/* И старая подпись жива, потому что у неё есть вызывающие - повтор и courier зовут перетаскивание без
+ * модификатора, и их не пришлось трогать. */
+check('and the plain four-argument call still exists for everything that had it',
+  /static string Drag\(int x1, int y1, int x2, int y2\) \{ return Drag\(x1, y1, x2, y2, null\); \}/
+    .test(winAgent3));
 check('and the guard covers both of its ends',
   /string minedTarget = Mine\(Native\.WindowFromPoint\(new POINT \{ X = tx, Y = ty \}\)\)/.test(winAgent3));
 
@@ -4065,6 +4074,35 @@ for (const file of readdirSync(docsDir).filter((f) => f.endsWith('.md'))) {
 }
 check('every screenshot referenced is in docs/img', broken.length === 0, broken.join(', '));
 check('and there are pictures at all', images >= 20, String(images));
+
+group('the run log says what the gesture was made with');
+{
+  /* Проверяется по тексту, а не выполнением: describe.ts - это TypeScript внутри приложения, и запускать
+   * его в этом наборе нечем. Поэтому утверждается ФОРМА правила, а не результат: префикс строится один раз
+   * и применяется всеми тремя ветвями. */
+  check('the prefix is built once, not three times',
+    /const with_ = held\.length \? `\$\{held\.join\('\+'\)\}-` : '';/.test(describer)
+      && (describer.match(/\$\{with_\}/g) || []).length === 3);
+  /* Порядок ФИКСИРОВАН, а не тот, в котором модель перечислила: один и тот же жест обязан читаться
+   * одинаково в двух прогонах, иначе журнал сравнивать нельзя. */
+  check('and the order is fixed rather than as-listed',
+    /\['cmd', 'ctrl', 'alt', 'shift'\]/.test(describer));
+  /* Три ветви, и это те же три инструмента, у которых поле есть. Пропустить одну - значит получить журнал,
+   * который для одного из трёх жестов молчит о модификаторе. */
+  check('click, scroll and drag all carry it',
+    /\$\{with_\}\$\{input\.double \? 'double-click'/.test(describer)
+      && /\$\{with_\}scroll \$\{way\}/.test(describer)
+      && /\$\{with_\}drag /.test(describer));
+  /* И поле у инструментов есть - все три, потому что схема без описания к ней это поле, о котором модель не
+   * узнает. */
+  check('and all three tools declare the field',
+    (brain.match(/modifiers: MODIFIERS,/g) || []).length === 3);
+  /* Одно объяснение на три инструмента, а не три копии: разница с `press_key` - самое лёгкое место, где
+   * ошибиться, и написанное трижды оно разошлось бы. */
+  check('with one description shared by them, not three copies',
+    /const MODIFIERS = \{/.test(brain)
+      && /NOT press_key\\'s ctrl/.test(brain));
+}
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by

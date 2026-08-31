@@ -1145,5 +1145,80 @@ group('на застрявшем ходу окно читается само, и
     !afterRefusal.includes('the window in front was read for you'));
 }
 
+group('the model can ASK for a modified gesture, not only replay one');
+{
+  /* До этого просить было нечем: читатели, оба рекордера и оба повтора умели `mods`, а в грамматике
+   * действий поля не было вовсе - то есть модель могла воспроизвести Shift-клик человека и не могла
+   * сделать свой. Shift-клик расширяет выделение, Ctrl-клик добавляет к нему, Alt-перетаскивание копирует
+   * вместо перемещения, Ctrl+прокрутка это масштаб: четыре обыкновенных вещи, недостижимые целиком. */
+  const ask = scripted([answer([use('click', { x: 100, y: 200, modifiers: ['shift'] }, 'c1')])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a Shift-click reaches the agent as one',
+    out.actions[0]?.body === 'action=click x=200 y=400 button=left double=0 mods=Shift',
+    out.actions[0]?.body);
+}
+{
+  /* `mods=` ПЕРЕД `name=`, и это не вкусовщина: `name=` забирает остаток строки, потому что подпись
+   * содержит пробелы. Поле, написанное после него, становится частью подписи - и модификатор уехал бы в
+   * имя, а жест ушёл бы без него. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10, modifiers: ['ctrl'], label: 'Report Q4.pdf' }, 'c1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('and it is written BEFORE the label, which takes the rest of the line',
+    out.actions[0]?.body === 'action=click x=20 y=20 button=left double=0 mods=Ctrl name=Report Q4.pdf',
+    out.actions[0]?.body);
+}
+{
+  /* Порядок ФИКСИРОВАН форматом - Cmd, Ctrl, Alt, Shift - а не тот, в котором модель их перечислила:
+   * рекордеры пишут в этом порядке, и круговой путь обязан вернуться неизменным. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10, modifiers: ['shift', 'cmd', 'alt'] }, 'c1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the order is the one the format fixes, not the one it was asked in',
+    out.actions[0]?.body?.includes('mods=Cmd+Alt+Shift'), out.actions[0]?.body);
+}
+{
+  /* Пустой список - это отсутствие поля, а не `mods=`: формат говорит, что отсутствие значит «ничего не
+   * держали», и пустое значение было бы третьим состоянием, которого у него нет. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10, modifiers: [] }, 'c1'),
+    use('scroll', { x: 1, y: 1, amount: -3, modifiers: [] }, 's1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('an empty list writes no field at all',
+    !out.actions.some((one) => one.body.includes('mods=')),
+    JSON.stringify(out.actions.map((one) => one.body)));
+}
+{
+  const ask = scripted([answer([
+    use('scroll', { x: 100, y: 200, amount: 3, direction: 'up', modifiers: ['ctrl'] }, 's1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a Ctrl+scroll - which is zoom almost everywhere - reaches it too',
+    out.actions[0]?.body === 'action=scroll x=200 y=400 amount=3 dir=up mods=Ctrl', out.actions[0]?.body);
+}
+{
+  const ask = scripted([answer([
+    use('drag', { x: 10, y: 10, toX: 90, toY: 90, modifiers: ['alt'] }, 'd1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('and an Alt-drag, which copies where a plain one moves',
+    out.actions[0]?.body === 'action=drag x=20 y=20 tx=180 ty=180 mods=Alt', out.actions[0]?.body);
+}
+{
+  /* Опечатка гасится ЗДЕСЬ, а не у агента: провод говорит, что незнакомый токен - данные, так что агент
+   * молча его проигнорирует, и жест уйдёт без модификатора с ответом «сделано». Схема перечисляет четыре
+   * значения; это второй забор, для случая, когда модель прислала что-то помимо них. */
+  const ask = scripted([answer([
+    use('click', { x: 10, y: 10, modifiers: ['hyper', 'shift'] }, 'c1'),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('an unrecognised name is dropped here rather than travelling',
+    out.actions[0]?.body === 'action=click x=20 y=20 button=left double=0 mods=Shift',
+    out.actions[0]?.body);
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

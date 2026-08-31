@@ -83,6 +83,7 @@ export function gridStirred(a: Uint8Array | null, b: Uint8Array | null): boolean
 export function gridQuiet(a: Uint8Array | null, b: Uint8Array | null): boolean;
 export const EARLIER_RUNS: number;
 export function earlierRuns(runs: unknown[] | null | undefined, now?: number): string | null;
+export function modsWire(asked: unknown): string;
 export const OUTPUT_MAX: number;
 export function actionSaid(
   output: string | null | undefined,

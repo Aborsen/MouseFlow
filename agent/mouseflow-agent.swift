@@ -393,6 +393,27 @@ func releaseSteps(_ held: CGEventFlags) -> [(code: CGKeyCode, down: Bool, flags:
  * ЧЕТЫРЕ МАСКИ И НИ ОДНОЙ БОЛЬШЕ. Ни caps lock, ни Fn: у ноутбучных стрелок стоит `.maskSecondaryFn`, и
  * стоит начать его читать, как каждое нажатие стрелки станет «Fn+Down». Фильтр через четыре маски - это же
  * и то, что не пускает сюда `.maskAlphaShift`. */
+/* Токены `mods` во флаги - ОДНО место, и оно вынесено сюда именно потому, что теперь у него два
+ * вызывающих: повтор записи и грамматика действий. Скопированная таблица разошлась бы, и разошлась бы
+ * невидимо - одна из двух молча делала бы жест без модификатора.
+ *
+ * Незнакомый токен - данные, а не ошибка: так формат говорит про каждое своё значение (см. PROTOCOL.md), и
+ * так другой агент может добавить новый, не ломая этого. */
+func MouseFlowModFlags(_ mods: String?) -> CGEventFlags {
+    guard let mods, !mods.isEmpty else { return [] }
+    var out: CGEventFlags = []
+    for token in mods.split(separator: "+") {
+        switch token.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "cmd", "command", "win": out.insert(.maskCommand)
+        case "shift": out.insert(.maskShift)
+        case "alt", "option": out.insert(.maskAlternate)
+        case "ctrl", "control": out.insert(.maskControl)
+        default: break
+        }
+    }
+    return out
+}
+
 func chordName(_ flags: CGEventFlags) -> String {
     var parts: [String] = []
     if flags.contains(.maskCommand) { parts.append("Cmd") }
@@ -2812,7 +2833,8 @@ enum Input {
                      mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left), flags: flags)
     }
 
-    static func click(x: Double, y: Double, button: String, double: Bool) {
+    static func click(x: Double, y: Double, button: String, double: Bool,
+                      flags: CGEventFlags = []) {
         let point = CGPoint(x: x, y: y)
         let (down, up, which): (CGEventType, CGEventType, CGMouseButton) = {
             switch button.lowercased() {
@@ -2832,26 +2854,45 @@ enum Input {
                     /* clickState is what makes two clicks a double click rather than two clicks. Without it
                      * a "double" opens nothing, which looks like the coordinates being wrong. */
                     event.setIntegerValueField(.mouseEventClickState, value: Int64(pass))
-                    send(event)
+                    /* НА ОБЕИХ ПОЛОВИНКАХ, нажатии и отпускании. Измерено при разборе повтора: флаги на
+                     * посланном событии ДОСТАТОЧНЫ - окно сообщило одинаковый modifierFlags для события с
+                     * флагом и для события с физически зажатой клавишей, - поэтому клавиша здесь не
+                     * нажимается вовсе. Но они и ЗАЩЁЛКИВАЮТСЯ в состоянии сессии, ровно как аккорд на
+                     * клавиатуре, поэтому ниже стоит снятие.
+                     *
+                     * ЧЕРЕЗ send, А НЕ ПРИСВОЕНИЕМ ДО НЕГО: send ставит `event.flags = flags`
+                     * БЕЗУСЛОВНО, и по умолчанию это []. Присвоить флаги и позвать send(event) - значит
+                     * поставить их и тут же снять, отправив жест без модификатора, пока код выше выглядит
+                     * правильным. send при этом единственное место, ставящее метку впрыска, так что это и
+                     * есть верная единственная дверь. */
+                    send(event, flags: flags)
                 }
             }
             if double && pass == 1 { usleep(60_000) }
         }
+        /* Жест закрылся - модификатор отпускается. Не отпустить значит отдать следующему клику чужой
+         * Option, а человеку за клавиатурой - зажатую клавишу; это тот самый дефект, который 0.19.0 нашёл
+         * измерением, а не чтением. */
+        if !flags.isEmpty { releaseModifiers() }
     }
 
     /* Половинки щелчка, порознь - для перетаскивания, которое click составить не может: он посылает
      * нажатие и отпускание вместе. */
-    static func press(x: Double, y: Double, down: Bool) {
+    static func press(x: Double, y: Double, down: Bool, flags: CGEventFlags = []) {
         if down { move(x: x, y: y); usleep(40_000) }
         send(CGEvent(mouseEventSource: source(), mouseType: down ? .leftMouseDown : .leftMouseUp,
-                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left))
+                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left), flags: flags)
     }
 
     /// Движение С ЗАЖАТОЙ КНОПКОЙ - на macOS это отдельный тип события, и приложение, слушающее
     /// перетаскивание, .mouseMoved не увидит вовсе.
-    static func dragTo(x: Double, y: Double) {
+    static func dragTo(x: Double, y: Double, flags: CGEventFlags = []) {
+        /* И НА ДВИЖЕНИЯХ ТОЖЕ, а не только на нажатии - иначе Option-перетаскивание распадается на
+         * Option-нажатие и обычное перетаскивание, что в Finder есть разница между копированием и
+         * перемещением. Проверено на живой машине при разборе повтора: флаг стоял на нажатии, на движении
+         * и на отпускании. */
         send(CGEvent(mouseEventSource: source(), mouseType: .leftMouseDragged,
-                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left))
+                     mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left), flags: flags)
     }
 
     /* `dir` - up, down, left or right. Пусто значит по-старому: сторону выбирает знак `amount`, так что
@@ -2897,6 +2938,11 @@ enum Input {
             Output.say("scrolled \(steps) notches, not \(wanted) - 120 is as much as one scroll does. "
                 + "Call it again, or use scroll_to")
         }
+        /* У ПРОКРУТКИ ПАРЫ НЕТ, поэтому снимает она за собой сама - здесь, внутри, а не у вызывающего.
+         * Повтор снимал у себя, и пока вызывающий был один, этого хватало; со вторым (грамматика действий)
+         * второй вызывающий унаследовал бы защёлкнутый Command на всю машину. Повторное снятие у повтора
+         * безвредно, а функция теперь безопасна для любого, кто её позовёт. */
+        if !flags.isEmpty { releaseModifiers() }
         return nil
     }
 
@@ -3395,18 +3441,20 @@ func doWaitWindow(_ fields: [String: String]) -> String? {
  *
  * .leftMouseDragged, а не .mouseMoved: на macOS движение с зажатой кнопкой - отдельный тип события, и
  * приложение, слушающее перетаскивание, движения другого типа не увидит вовсе. */
-func doDrag(x: Double, y: Double, tx: Double, ty: Double) -> String? {
-    Input.press(x: x, y: y, down: true)
+func doDrag(x: Double, y: Double, tx: Double, ty: Double, flags: CGEventFlags = []) -> String? {
+    Input.press(x: x, y: y, down: true, flags: flags)
     Thread.sleep(forTimeInterval: 0.08)
     let steps = 12
     for i in 1...steps {
         let ix = x + (tx - x) * Double(i) / Double(steps)
         let iy = y + (ty - y) * Double(i) / Double(steps)
-        Input.dragTo(x: ix, y: iy)
+        Input.dragTo(x: ix, y: iy, flags: flags)
         Thread.sleep(forTimeInterval: 0.016)
     }
     Thread.sleep(forTimeInterval: 0.08)
-    Input.press(x: tx, y: ty, down: false)
+    Input.press(x: tx, y: ty, down: false, flags: flags)
+    /* Флаг защёлкивается в состоянии сессии - измерено, - поэтому закрытый жест его снимает. */
+    if !flags.isEmpty { Input.releaseModifiers() }
     return nil
 }
 
@@ -3608,15 +3656,21 @@ func doAction(_ body: String) -> String? {
            let better = Accessibility.aim(at: at, expecting: label, kind: nil) {
             at = better
         }
+        /* `mods` ЗДЕСЬ - ФИЗИЧЕСКИЕ КЛАВИШИ, и это сознательно не то же, что `ctrl=` у `action=key`, где
+         * поле значит КОМАНДНЫЙ модификатор (Command здесь, Ctrl на Windows), потому что там речь о
+         * сочетании клавиш. Control-клик и Command-клик - разные жесты: один открывает контекстное меню,
+         * другой открывает ссылку в фоновой вкладке. Переносимого «командного» чтения для жеста не
+         * существует, поэтому его тут и нет. То же значение и то же написание, что в записи. */
         Input.click(x: at.x, y: at.y, button: fields["button"] ?? "left",
-                    double: (fields["double"] ?? "0") == "1")
+                    double: (fields["double"] ?? "0") == "1",
+                    flags: MouseFlowModFlags(fields["mods"]))
         return nil
     case "move":
         Input.move(x: x, y: y)
         return nil
     case "scroll":
         return Input.scroll(x: x, y: y, amount: Int(fields["amount"] ?? "") ?? -3,
-                            dir: fields["dir"] ?? "")
+                            dir: fields["dir"] ?? "", flags: MouseFlowModFlags(fields["mods"]))
     case "type":
         var text = fields["text"] ?? ""
         if (fields["enc"] ?? "") == "b64" {
@@ -3731,7 +3785,7 @@ func doAction(_ body: String) -> String? {
                 + "(\(Int(r.minX)),\(Int(r.minY)) to \(Int(r.maxX)),\(Int(r.maxY)))"
         }
         if let mine = Own.refusal(pid: Windows.at(x: tx, y: ty)?.pid ?? 0) { return mine }
-        return doDrag(x: x, y: y, tx: tx, ty: ty)
+        return doDrag(x: x, y: y, tx: tx, ty: ty, flags: MouseFlowModFlags(fields["mods"]))
 
     // ---------------------------------------------------------------- 0.12.0
 
@@ -3773,20 +3827,9 @@ struct ReplayCtx {
      * выбор), воспроизведётся на маке как Control-клик, то есть контекстное меню. Верного перевода без
      * знания платформы записи не существует, а тело записи её не несёт. Дешёвое будущее решение - токен
      * платформы в заголовке `#part`; в эту волну он не входит. */
-    var modFlags: CGEventFlags {
-        guard let mods, !mods.isEmpty else { return [] }
-        var out: CGEventFlags = []
-        for token in mods.split(separator: "+") {
-            switch token.lowercased() {
-            case "cmd", "command": out.insert(.maskCommand)
-            case "shift": out.insert(.maskShift)
-            case "alt", "option": out.insert(.maskAlternate)
-            case "ctrl", "control": out.insert(.maskControl)
-            default: break   // незнакомый токен - это данные, а не ошибка. См. PROTOCOL.md.
-            }
-        }
-        return out
-    }
+    /* Разбор живёт в modFlags(_:) - там же, где его читает грамматика действий. Раньше он был здесь, и
+     * пока читатель был один, это было верно; со вторым читателем копия стала бы расхождением. */
+    var modFlags: CGEventFlags { return MouseFlowModFlags(mods) }
 }
 
 struct ReplayStep {

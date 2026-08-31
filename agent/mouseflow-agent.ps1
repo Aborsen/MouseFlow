@@ -2200,6 +2200,34 @@ namespace MouseFlow
             return e;
         }
 
+        /* THE SAME EVENT, CARRYING A MODIFIER - which is the whole of the action grammar's half.
+         *
+         * Emit() already holds whatever an event's `Mods` names and lets go when the gesture closes; it was
+         * written for a recording being replayed. An action asking for a Shift-click therefore needs no
+         * mechanism of its own, only this: put the value on the event. That is deliberate rather than
+         * merely short. Two code paths for "make this click a Shift-click" would drift, and the way they
+         * would drift is invisible - one of them quietly performing the plain gesture.
+         *
+         * `mods` IS THE SAME VALUE AS IN A RECORDING, spelled the same way, and it means the same thing:
+         * the physical keys. That differs from `ctrl=` on `action=key`, where the field means the COMMAND
+         * modifier (Ctrl here, Command on macOS) because a shortcut is what that path is for. A Ctrl-click
+         * is not a Command-click - one multi-selects and the other opens a link in a background tab - so a
+         * gesture cannot use the portable-shortcut reading. PROTOCOL.md says this at length. */
+        static Ev At(int x, int y, string action, string mods)
+        {
+            Ev e = At(x, y, action);
+            if (!string.IsNullOrEmpty(mods)) e.Mods = mods;
+            return e;
+        }
+
+        /* What the caller asked to hold, or null. Empty and whitespace both mean nothing, so a caller that
+         * builds `mods=` out of an empty list is answered the same as one that omitted it. */
+        static string AskedMods(Dictionary<string, string> a)
+        {
+            string said = Get(a, "mods", "").Trim();
+            return said.Length > 0 ? said : null;
+        }
+
         /* WHAT AN ACTION HAS TO SAY FOR ITSELF, when "done" is not the whole answer.
          *
          * Every action until 0.10.0 answered with nothing or with a problem, and `{"ok":true}` was the whole
@@ -2619,11 +2647,23 @@ namespace MouseFlow
                 int wanted = Math.Abs(amount);
                 int steps = Math.Min(120, wanted);
                 Emit(At(x, y, "Mouse Movement"));
-                for (int i = 0; i < steps; i++)
+                /* HELD ONCE AROUND THE WHOLE RUN, not per notch - and this is the one action where the
+                 * value is not simply put on the event. A scroll has no pair, so Emit holds and releases
+                 * around each notch it sees; for a hundred notches that is a hundred presses and releases
+                 * of Ctrl, which is both wasteful and a different gesture from what was asked - a zoom that
+                 * restarts is not a zoom that continues. try/finally because Thread.Sleep sits inside the
+                 * loop: an abort thrown into that window would leave the key down for the whole machine. */
+                string scrollMods = AskedMods(a);
+                if (scrollMods != null) HoldMods(scrollMods);
+                try
                 {
-                    Emit(At(x, y, which));
-                    Thread.Sleep(25);
+                    for (int i = 0; i < steps; i++)
+                    {
+                        Emit(At(x, y, which));
+                        Thread.Sleep(25);
+                    }
                 }
+                finally { if (scrollMods != null) DropMods(); }
                 if (steps != wanted)
                 {
                     Say("scrolled " + steps.ToString(CultureInfo.InvariantCulture) + " notches, not "
@@ -2643,27 +2683,35 @@ namespace MouseFlow
                 }
                 string minedTarget = Mine(Native.WindowFromPoint(new POINT { X = tx, Y = ty }));
                 if (minedTarget != null) return minedTarget;
-                return Drag(x, y, tx, ty);
+                return Drag(x, y, tx, ty, AskedMods(a));
             }
 
             if (action == "click")
             {
                 string button = Get(a, "button", "left");
                 bool twice = Get(a, "double", "0") == "1";
+                string mods = AskedMods(a);
                 string down = button == "right" ? "Right Click Down" : (button == "middle" ? "Middle Click Down" : "Left Click Down");
                 string up = button == "right" ? "Right Click Release" : (button == "middle" ? "Middle Click Release" : "Left Click Release");
 
                 /* Moved first and given a moment to land. Clicking at a position the pointer has not
-                   reached yet is how a click ends up on whatever was under the old position. */
+                   reached yet is how a click ends up on whatever was under the old position.
+                   The MOVE carries no modifier: a hover under Shift is not a thing anyone asks for, and
+                   holding it across the settle only widens the window in which it is held for the whole
+                   machine. */
                 Emit(At(x, y, "Mouse Movement"));
                 Thread.Sleep(40);
-                Emit(At(x, y, down));
+                Emit(At(x, y, down, mods));
                 Thread.Sleep(30);
                 Emit(At(x, y, up));
                 if (twice)
                 {
                     Thread.Sleep(60);
-                    Emit(At(x, y, down));
+                    /* The SECOND press needs it too. Emit lets go at a release, which is right for a
+                       gesture and means the second half of a double-click starts from nothing held. Miss
+                       this and a Shift-double-click is a Shift-click followed by a plain one - two
+                       different things, and the second would deselect what the first selected. */
+                    Emit(At(x, y, down, mods));
                     Thread.Sleep(30);
                     Emit(At(x, y, up));
                 }
@@ -3536,11 +3584,17 @@ namespace MouseFlow
          * the moves in between, and a press followed by a release somewhere else is not a drag to a list
          * that wants to see the row travel. Twelve steps is enough for that and short enough not to be a
          * performance. */
-        static string Drag(int x1, int y1, int x2, int y2)
+        static string Drag(int x1, int y1, int x2, int y2) { return Drag(x1, y1, x2, y2, null); }
+
+        static string Drag(int x1, int y1, int x2, int y2, string mods)
         {
             Emit(At(x1, y1, "Mouse Movement"));
             Thread.Sleep(40);
-            Emit(At(x1, y1, "Left Click Down"));
+            /* ONLY THE PRESS carries it, and the release is what lets go - so the modifier is held across
+               every movement in between. That is the difference between an Alt-drag (copy) and an Alt-press
+               followed by an ordinary drag (move), and it is decided here by NOT repeating the value on the
+               movements rather than by any code that reads it. */
+            Emit(At(x1, y1, "Left Click Down", mods));
             Thread.Sleep(80);
             const int Steps = 12;
             for (int i = 1; i <= Steps; i++)

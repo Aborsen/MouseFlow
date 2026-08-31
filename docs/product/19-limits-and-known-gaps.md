@@ -158,9 +158,25 @@ These are not bugs and no amount of work inside the current design removes them.
   survived a compile, a 431-test suite and a code read, and fell out of the first round trip that was
   actually executed.
 
-  **Still open:** the action grammar — the model still cannot ASK for a Shift-click, only replay one a
-  person made. And a modifier pressed or released **mid-drag** is recorded on neither platform, so copying
-  in File Explorer by starting a drag and then pressing Ctrl records as a plain drag, which is a move.
+  **The action grammar caught up in the same release.** `click`, `drag` and `scroll` take `modifiers`, a
+  list of physical keys, and the agent runs an asked-for gesture through the same code as a replayed one -
+  on Windows by putting the value on the event `Emit` already knows how to hold. Verified on this machine
+  against a watcher window in a separate process (the agent correctly refuses to drive its own): a plain
+  click arrived `down -, up -`, `mods=Shift` arrived `down Shift, up Shift`, a Shift-double-click carried it
+  on **both** presses, all three notches of a Ctrl+scroll arrived `wheel Ctrl`, and an Alt-drag held Alt to
+  the release with nothing left held afterwards.
+
+  Two things that had to be right and are only visible by reading. `mods=` is written **before** `name=` on
+  the click wire, because `name=` takes the rest of the line and a field after it becomes part of the label.
+  And on macOS the flags travel **through** `send(_:flags:)` rather than being assigned to the event before
+  it: that function sets `event.flags = flags` unconditionally, defaulting to `[]`, so assigning and then
+  calling `send(event)` would set the modifier and immediately clear it - sending the plain gesture while
+  the code above looked correct.
+
+  **Still open:** a modifier pressed or released **mid-drag** is recorded on neither platform, so copying in
+  File Explorer by starting a drag and then pressing Ctrl records as a plain drag, which is a move. And the
+  macOS half of the action grammar is **written, not run** - swiftc is absent on the Windows machine this
+  was written on, and `check-swift.mjs` skips itself silently there.
 - **Modified pointer gestures could be neither performed nor recorded before 0.21.0, on either platform.** Shift-click to extend a
   selection, Command-click to open a link in a background tab, Option-drag to copy, Command+scroll to zoom:
   `click` reads only `button`, `double` and `name`; `drag` and `scroll` have no modifier field; and the bare
