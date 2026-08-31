@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { DOC_EFFORT, DOC_MODEL, DOC_SYSTEM, DOC_TOKENS, citedSteps, docPrompt, newDocId, titleOf } from './_docs.mjs';
-import { MODELS, WRITER_MODELS, providerFor } from './_provider.js';
+import { MODELS, WRITER_MODELS, ask, providerFor } from './_provider.js';
 import { recordingTools } from './_recording-tools.js';
 import { toolsFor } from './chat.js';
 
@@ -59,6 +59,47 @@ group('модель документов пришпилена и НЕ попал
   check('но позвать её можно - providerFor её знает',
     providerFor(DOC_MODEL) === 'openai' && WRITER_MODELS.openai.includes(DOC_MODEL));
   check('и потолок ответа объявлен', DOC_TOKENS >= 2000);
+}
+
+group('сообщение уходит в той форме, которую читают мапперы');
+{
+  /* ЖИВОЙ ОТЧЁТ. `{ role, content }` вместо `{ role, text }`: api/_provider.js читает `m.text`, поэтому
+   * сообщение молча выпадало, запрос уходил с пустым input, и OpenAI отвечал «One of input or
+   * previous_response_id or prompt or conversation must be provided» - точное сообщение совершенно не про
+   * ту ошибку. 7277 токенов и один непонятный отчёт.
+   *
+   * Форма нигде не объявлена типом: api/chat.js её строит, мапперы читают. Значит проверять её - здесь. */
+  check('writeDoc посылает { role, text }, а не { role, content }',
+    /messages: \[\{ role: 'user', text: docPrompt\(/.test(docs)
+      && !/role: 'user', content: docPrompt/.test(docs), 'message shape');
+
+  /* И ask() больше не даёт этой ошибке доехать до платного круга - проверяется ИСПОЛНЕНИЕМ, а не поиском
+   * по тексту: именно текстовые проверки и пропустили исходную ошибку, потому что в исходнике было
+   * написано ровно то, что задумано, а неверен был тип значения. */
+  const refusal = async (messages) => {
+    try {
+      await ask({ model: DOC_MODEL, messages, maxTokens: 500 });
+      return 'no refusal';
+    } catch (err) {
+      return String(err && err.message);
+    }
+  };
+  for (const [what, messages] of [
+    ['{ role, content } - та самая ошибка', [{ role: 'user', content: 'hello' }]],
+    ['пустой массив', []],
+    ['messages не передали вовсе', undefined],
+  ]) {
+    check('ask() отказывает локально: ' + what,
+      /nothing to send: a message here is \{ role, text \}/.test(await refusal(messages)),
+      await refusal(messages));
+  }
+  /* И ДО проверки ключа: неверная форма - ошибка кода, а не состояние развёртывания, и на машине без ключа
+   * защита, стоящая после него, недостижима вовсе - вызывающий услышал бы «нет ключа». */
+  check('и это происходит до проверки ключа',
+    !/has no OpenAI key/.test(await refusal([{ role: 'user', content: 'x' }])));
+  /* А верная форма проходит дальше - иначе защита просто запрещала бы работу. */
+  check('а { role, text } проходит дальше',
+    !/nothing to send/.test(await refusal([{ role: 'user', text: 'hello' }])));
 }
 
 group('промпт запрещает то, чем такая проза ломается');

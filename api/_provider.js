@@ -320,6 +320,32 @@ export async function ask(opts) {
   const provider = providerFor(opts.model);
   if (!provider) throw new ProviderError(`unknown model ${opts.model}`, 400, null);
 
+  /* НИ ОДНОГО СООБЩЕНИЯ, КОТОРОЕ ЭТА ФУНКЦИЯ УМЕЕТ ПРОЧИТАТЬ - и проверяется это ДО ключа.
+   *
+   * Неверная форма - ошибка кода, а не состояние развёртывания. Стоя после проверки ключа, эта защита на
+   * машине без ключа недостижима вовсе, а вызывающий с неверной формой слышит «нет ключа» - то есть
+   * сообщение не про то, что он сделал. Отказ здесь, и до платного круга наружу.
+   *
+   * Форма сообщения `{ role, text }`, и она нигде не была объявлена: api/chat.js её строит, эти мапперы её
+   * читают, и вызывающий, написавший `{ role, content }`, терял сообщение молча. Дальше запрос уходил с
+   * пустым input, OpenAI отвечал «One of input or previous_response_id or prompt or conversation must be
+   * provided», и это сообщение - точное и совершенно не про ту ошибку, которая была сделана. Стоило это
+   * 7277 токенов и одного непонятного отчёта.
+   *
+   * Проверяется не «массив непуст», а «есть хоть одно сообщение, которое мапперы возьмут»: массив из
+   * десяти сообщений неверной формы - это тот же пустой input, только выглядящий как работа. */
+  const usable = (opts.messages || []).some((m) => m
+    && (m.text || (m.calls && m.calls.length) || (m.results && m.results.length)));
+  if (!usable) {
+    throw new ProviderError(
+      'nothing to send: a message here is { role, text } - see buildTranscript in api/chat.js - and none of '
+      + (opts.messages || []).length + ' message(s) carried a `text`, a tool call or a tool result. A '
+      + '`content` field is not read by either mapper and the request would have gone up empty.',
+      400,
+      provider,
+    );
+  }
+
   const key = keyFor(provider);
   if (!key) {
     throw new ProviderError(

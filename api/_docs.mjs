@@ -97,7 +97,11 @@ export async function writeDoc({ transcript, name, focus }) {
     model: DOC_MODEL,
     effort: DOC_EFFORT,
     system: DOC_SYSTEM,
-    messages: [{ role: 'user', content: docPrompt({ transcript, name, focus }) }],
+    /* `text`, НЕ `content`. Это форма, которую читает api/_provider.js - см. buildTranscript в
+     * api/chat.js, который её и строит. С `content` сообщение молча выпадало, input уходил пустым, и
+     * OpenAI отвечал «One of input or previous_response_id or prompt or conversation must be provided»:
+     * сообщение точное и совершенно не про то, что было не так. ask() теперь такой массив не пропустит. */
+    messages: [{ role: 'user', text: docPrompt({ transcript, name, focus }) }],
     maxTokens: DOC_TOKENS,
   });
 
