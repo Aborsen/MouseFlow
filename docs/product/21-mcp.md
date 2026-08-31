@@ -146,7 +146,8 @@ connector where half the tools work looks like an intermittent fault rather than
 
 ## What you can ask for
 
-Nine built-in tools, plus one for every skill on the account.
+Twelve built-in tools. (There used to be one more for every skill on the account; that is gone - see
+**Skills as tools** below.)
 
 ![The tools, on the product page](../img/mcp-tools.png)
 
@@ -166,6 +167,39 @@ tool that hands over raw events.**
 the model is not given a different account of what happened than you are:
 
 ![The transcript panel](../img/record-transcript.png)
+
+### The documentation itself
+
+The first question anybody asks an assistant that has just been given these tools is not *"run my skill"*.
+It is *"what is this, and what does it record?"* — and until `mouseflow_help` existed, there was nothing on
+this list to answer it with. A model asked that question answers it anyway, out of the tool names and out of
+whatever it read in training, and it goes wrong in the places where being wrong is expensive: that keystroke
+**content** is never captured, that a recorded skill and a goal skill fail differently, that a browser skill
+is only replayable by the extension. Those are the answers that become a support ticket or a privacy
+complaint.
+
+| Tool | Arguments | What comes back |
+|---|---|---|
+| `mouseflow_help` | `question`: what the person wants to know · `page`: a page id, to read one whole | The sections of the documentation that answer it, each with the page it is on and that page's address. With neither argument, the list of pages. |
+
+**It reads mouseflow.ai, it does not carry a copy.** The site emits every documentation page as markdown at
+[`/docs/llms.json`](https://mouseflow.ai/docs/llms.json) — `scripts/prerender.mjs` in the `MouseLanding`
+repository — and `api/_help.mjs` fetches that, caching it for ten minutes. The convenient alternative was a
+copy of the same prose in this repository, and the reason against it is the reason the whole product argues
+for evidence: a copy drifts, and two texts disagreeing about what MouseFlow records is worse than one text
+that is sometimes unreachable.
+
+When it *is* unreachable, the answer says so and gives the address, and volunteers nothing about the product
+from memory. An answer that was not read out of the documentation is a guess, and the first question is
+usually the one where a guess costs the most.
+
+It needs no account data, no agent and no database — which is why it is in this group rather than in
+*Doing*: it can be called the moment the connector is added, while somebody is still deciding whether to
+attach a computer at all.
+
+**Both transports offer it**, out of the same module: `mcp/server.mjs` lists it alongside its own
+`mouseflow_status` and `mouseflow_stop`, and answers it before the account is touched — a question about how
+the product works should not depend on whether the device token still works.
 
 ### Doing — your computer has to be listening
 

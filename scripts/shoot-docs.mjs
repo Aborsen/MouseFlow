@@ -31,17 +31,36 @@
  * because a picture of a consent screen that is not the consent screen is the one picture nobody should
  * draw.
  *
- * Needs: Google Chrome, and `sips` (macOS) for the downscale at the end. The account data is the dev
- * fixture (MOCK_API=1); nothing here touches a real account or a real agent.
+ * Needs: Google Chrome, and openssl on the PATH. The account data is the dev fixture (MOCK_API=1);
+ * nothing here touches a real account or a real agent.
+ *
+ * IT RUNS ON WINDOWS TOO, and that is not a nicety - the product's Windows agent is developed there, so the
+ * machine holding the newest app is often not a Mac. Two things used to make this Mac-only: the hardcoded
+ * path to Chrome, and `sips` for the downscale. Chrome is now looked for in the places each platform keeps
+ * it, and the downscale is done by the browser that is already open (see `downscale`), which removes the
+ * dependency rather than adding a second one.
  */
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+/* Where each platform keeps it. The first one that exists wins, and if none do the error names every path
+ * that was tried - "This needs Google Chrome" with no list is a message somebody has to read this file to
+ * act on. */
+const CHROME_PATHS = {
+  darwin: ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
+  win32: [
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe') : '',
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  ].filter(Boolean),
+  linux: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium'],
+};
+const TRIED = CHROME_PATHS[process.platform] || [];
+const CHROME = TRIED.find((one) => existsSync(one)) || '';
 const HOST = 'mouseflowapp.vercel.app';
 const PORT = 4443;
 const SITE = `https://${HOST}`;
@@ -80,7 +99,9 @@ async function serve() {
   process.env.MOCK_API = '1';
   // See the header: Tailwind resolves its content globs against the working directory.
   process.chdir(WEB);
-  const { createServer } = await import(join(WEB, 'node_modules/vite/dist/node/index.js'));
+  /* pathToFileURL, not the path: Node's ESM loader reads a bare Windows path as a URL and refuses it -
+   * "Received protocol 'd:'". The Mac never sees this, and the Windows machine cannot get past it. */
+  const { createServer } = await import(pathToFileURL(join(WEB, 'node_modules/vite/dist/node/index.js')).href);
   const server = await createServer({
     root: WEB,
     configFile: join(WEB, 'vite.config.ts'),
@@ -229,6 +250,17 @@ window.__mf = {
     const el = document.querySelector('[' + attr + '^="' + value + '"]');
     if (!el) return false; el.click(); return true;
   },
+  /* Typing into a React-controlled input. Setting .value directly changes the DOM and not the state, so
+     the field reverts on the next render and the picture shows an empty box; the native setter plus a
+     bubbling 'input' event is what React listens for. */
+  fill(placeholder, text) {
+    const el = document.querySelector('input[placeholder=\"' + placeholder + '\"], textarea[placeholder=\"' + placeholder + '\"]');
+    if (!el) return false;
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  },
   mark(text, selector, name) {
     const all = [...document.querySelectorAll(selector || 'div')].filter((d) => (d.textContent || '').includes(text));
     const el = all[all.length - 1];
@@ -281,7 +313,10 @@ async function openSettings(page, screen) {
 }
 
 async function main() {
-  if (!existsSync(CHROME)) throw new Error('This needs Google Chrome at ' + CHROME);
+  if (!CHROME) {
+    throw new Error('This needs Google Chrome. Looked for it at:\n  ' + (TRIED.join('\n  ') || '(nowhere - '
+      + process.platform + ' is not one of the three platforms this knows)'));
+  }
   mkdirSync(OUT, { recursive: true });
 
   console.log('starting the dev server…');
@@ -332,6 +367,29 @@ async function main() {
       } else {
         await wait(600);
         await page.shot('record-skill-wizard.png');
+
+        /* THE STEP THAT ASKS WHAT WAS PICKED, answered - because the empty popover is the less useful of
+         * the two states. A click that opens a filter, a menu or a date picker is followed by clicks that
+         * land on the page itself, so the recording holds no name for what was chosen; the panel takes it
+         * in words and shows the sentence the step will become. Typed here through the native setter (see
+         * __mf.fill) so React keeps it. */
+        if (!await page.eval("window.__mf.clickText('what did you pick')")) {
+          console.log('  SKIPPED record-skill-wizard-picked.png - no "what did you pick?" chip on step 1');
+        } else {
+          await wait(500);
+          await page.eval(`window.__mf.fill('pick the product filter',
+            'choose the Product filter and pick the product')`);
+          await wait(500);
+          if (!await page.until("document.body.innerText.includes('The step becomes')", 10)) {
+            console.log('  SKIPPED record-skill-wizard-picked.png - the panel never showed the sentence');
+          } else {
+            await page.shot('record-skill-wizard-picked.png');
+          }
+          /* Shut again, or the panel is still open over the list in the next picture. */
+          await page.eval("document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))");
+          await wait(400);
+        }
+
         if (!await page.eval("window.__mf.clickExact('Next')")) {
           console.log('  SKIPPED record-skill-wizard-2.png - no Next button');
         } else {
@@ -510,7 +568,7 @@ async function main() {
     }
 
     /* The consent page, from the function the server sends rather than from a mock-up. */
-    const { consentPage } = await import(join(ROOT, 'api', 'oauth.js'));
+    const { consentPage } = await import(pathToFileURL(join(ROOT, 'api', 'oauth.js')).href);
     const html = join(work, 'consent.html');
     writeFileSync(html, consentPage({
       origin: SITE,
@@ -543,11 +601,49 @@ async function main() {
   }
 
   /* Down to 1x. A retina capture is four times the bytes for a picture a document renders at container
-   * width anyway, and this repository does not need eleven megabytes of PNG. */
-  for (const file of readdirSync(OUT).filter((f) => f.endsWith('.png'))) {
-    execFileSync('sips', ['--resampleWidth', String(FINAL_WIDTH), join(OUT, file), '--out', join(OUT, file)],
-      { stdio: 'ignore' });
-    taken.push(file);
+   * width anyway, and this repository does not need eleven megabytes of PNG.
+   *
+   * DONE BY CHROME, not by `sips`. It was sips, which exists on exactly one of the three platforms this
+   * runs on, and the Windows machine is where the newest app usually is. A canvas in the browser that is
+   * already being launched here is not a new dependency, and halving before the last step is what keeps a
+   * 3360-wide capture from arriving as mush - a single 0.42x draw resamples with far fewer taps than two
+   * whole halvings and one small one. */
+  const shrink = await browser({ port: 9404 });
+  try {
+    await shrink.goto('about:blank', 200);
+    for (const file of readdirSync(OUT).filter((f) => f.endsWith('.png'))) {
+      const at = join(OUT, file);
+      const bytes = readFileSync(at);
+      /* PNG says its own width in bytes 16-19, so an already-1x picture is left alone rather than run
+       * through a resample that would only soften it. */
+      const wide = bytes.readUInt32BE(16);
+      if (wide <= FINAL_WIDTH) { taken.push(file); continue; }
+      const smaller = await shrink.eval(`(async () => {
+        const img = new Image();
+        img.src = 'data:image/png;base64,' + ${JSON.stringify(bytes.toString('base64'))};
+        await img.decode();
+        let w = img.width, h = img.height, from = img;
+        while (w / 2 > ${FINAL_WIDTH}) {
+          const half = document.createElement('canvas');
+          half.width = Math.round(w / 2); half.height = Math.round(h / 2);
+          const g = half.getContext('2d');
+          g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+          g.drawImage(from, 0, 0, half.width, half.height);
+          from = half; w = half.width; h = half.height;
+        }
+        const out = document.createElement('canvas');
+        out.width = ${FINAL_WIDTH};
+        out.height = Math.max(1, Math.round(h * ${FINAL_WIDTH} / w));
+        const g = out.getContext('2d');
+        g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+        g.drawImage(from, 0, 0, out.width, out.height);
+        return out.toDataURL('image/png').split(',')[1];
+      })()`);
+      writeFileSync(at, Buffer.from(smaller, 'base64'));
+      taken.push(file);
+    }
+  } finally {
+    shrink.close();
   }
   console.log(`\n${taken.length} pictures in docs/img. Check them before committing - a screenshot is a `
     + 'claim, and this script cannot tell a rendered page from a rendered error.');

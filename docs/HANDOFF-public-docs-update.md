@@ -56,6 +56,13 @@ The others still need re-shooting for the sidebar, exactly as the previous order
 
 ## Part 2 — The skill wizard, which is now a different screen
 
+> **DONE on 1 September 2026.** `skills.md` now carries the whole wizard - three steps, the fold and what is
+> in it, the typing chip, and the step that asks what was picked (added since this order was written, so it
+> is not described below). `record-a-flow.md` says that pressing stop is never carried into a skill. The
+> screenshots below were re-taken the same day by `node scripts/shoot-docs.mjs`, which now runs on Windows
+> too; four of them are on the site at `public/docs/`. **Everything else in this file is still outstanding**,
+> including the pages in Part 5 and Part 6 and the remaining images.
+
 This is the biggest single documentation job. `skills.md` and `record-a-flow.md` describe a wizard that no
 longer exists.
 

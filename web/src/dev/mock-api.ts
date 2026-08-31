@@ -773,6 +773,13 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           startMs: 41000, seconds: 33,
           steps: [
             { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null, control: 'B4', controlType: 'cell', role: 'AXCell', keys: 0 },
+            /* ГДЕ ЗАПИСЬ НЕ ВИДЕЛА ВЫБОРА: названная кнопка, а сразу за ней клики, попавшие в сам
+             * документ. Так выглядит любой фильтр, меню или календарь, у которого нет имени в дереве
+             * доступности, - имя, которое приезжает, это имя СТРАНИЦЫ, а не того, что выбрали. Здесь для
+             * того, чтобы вопрос «что вы тут выбрали?» был достижим в dev и попадал на скриншот. */
+            { n: 11, at: 42000, ms: 200, action: 'click', what: 'clicked the "Add filter" button in EXCEL', target: '640,208', note: null, control: 'Add filter', controlType: 'button', role: 'AXButton', keys: 0 },
+            { n: 12, at: 42600, ms: 180, action: 'click', what: 'clicked at 712,286 in EXCEL', target: '712,286', note: 'the click landed on the page itself - what opened had no name the agent could read', control: 'Book1 - Excel', controlType: 'document', role: 'AXWebArea', keys: 0 },
+            { n: 13, at: 43300, ms: 160, action: 'click', what: 'clicked at 731,344 in EXCEL', target: '731,344', note: 'the click landed on the page itself - what opened had no name the agent could read', control: 'Book1 - Excel', controlType: 'document', role: 'AXWebArea', keys: 0 },
             /* A SECOND run into the same box as step 4. Real recordings are full of these - one measured
              * recording typed into a single "Prompt" nine times - and without one here the wizard's
              * "2 of 2" counter and its prompt1/prompt2 naming are unreachable in dev. */

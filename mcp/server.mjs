@@ -36,6 +36,7 @@
 import { createInterface } from 'node:readline';
 import { load, installFetch } from './shared.mjs';
 import { makeRunner } from './run.mjs';
+import { help } from '../api/_help.mjs';
 
 const NAME = 'mouseflow';
 const VERSION = '0.1.0';
@@ -134,6 +135,42 @@ const STOP_TOOL = {
   inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
 };
 
+/* The documentation, on this transport too.
+ *
+ * Duplicated as a definition and shared as an implementation, which is how STATUS and STOP are already
+ * arranged here: the wording differs because what is true differs (there, the agent is a machine somewhere;
+ * here it is this one), but nobody wants two answers to "what does MouseFlow record". The text comes from
+ * api/_help.mjs, which fetches the site - see the note at the top of that file for why it is not a copy.
+ *
+ * WHY IT IS WORTH A TOOL ON THE STDIO SIDE AS WELL. Everything else on this list is about the account and
+ * this machine, and the first question anybody asks is neither: it is what this is and what it captures. An
+ * assistant with no way to look that up answers anyway, and gets the load-bearing parts wrong. */
+const HELP_TOOL = {
+  name: 'mouseflow_help',
+  description: 'The MouseFlow documentation itself, fetched from mouseflow.ai/docs. Use it to answer any '
+    + 'question about how MouseFlow works - what the recorder captures and what it never captures, skills '
+    + 'and how they differ, the agent, the extension, privacy, limits - INSTEAD of answering from memory. '
+    + 'Ask a question to get the sections that answer it, name a page to read it whole, or call it with '
+    + 'nothing to see the list of pages.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      question: {
+        type: 'string',
+        description: 'What the person wants to know, in their own words. Keep their nouns - the words the '
+          + 'documentation uses are the ones that find it.',
+      },
+      page: {
+        type: 'string',
+        description: 'A page id from an earlier answer (for example "record-a-flow" or "privacy-and-data") '
+          + 'to read that page whole.',
+      },
+    },
+    required: [],
+    additionalProperties: false,
+  },
+};
+
 /* ------------------------------------------------------------------------------- running things */
 
 /* One at a time. The agent refuses a second replay with a 409 and the decision loop would be interleaving
@@ -158,7 +195,7 @@ let announced = null;
 async function toolList(lib) {
   const { skills, unstamped } = await skillsNow(lib);
   const table = tableOf(lib, skills);
-  const tools = [STATUS_TOOL, STOP_TOOL];
+  const tools = [HELP_TOOL, STATUS_TOOL, STOP_TOOL];
   for (const [name, entry] of table) {
     /* wireFor('mcp') is the app's own answer for this exact shape - { name, description, inputSchema } -
      * and the name is overridden only in the collision case tableOf handles. */
@@ -171,6 +208,12 @@ async function toolList(lib) {
 async function handleCall(lib, params) {
   const asked = params && params.name;
   const args = (params && params.arguments) || {};
+
+  /* Before the account is touched: the documentation is public, and a question about how the product
+   * works should be answerable whether or not the token works. */
+  if (asked === HELP_TOOL.name) {
+    return text(await help({ question: String(args.question || ''), page: String(args.page || '') }));
+  }
 
   if (asked === STATUS_TOOL.name) {
     const h = await runner.health();

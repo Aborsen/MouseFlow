@@ -63,6 +63,17 @@ export const TOOL_GROUPS: Record<ToolGroup, { title: string; note: string }> = {
  * (Historic:) The per-skill tools were not here because they are yours, and there was one for each
  * skill on the account — `mouseflow_recordings` is how you see them. */
 export const MCP_TOOLS: McpTool[] = [
+  /* FIRST, because it is the first thing asked. Every other tool answers a question about YOUR account;
+   * this one answers "what is this, and what does it record" - and an assistant with no way to look that up
+   * answers it anyway, from the tool names and from training, wrongly in the places that matter most. */
+  {
+    name: 'mouseflow_help',
+    group: 'read',
+    what: 'The documentation itself, fetched from mouseflow.ai/docs, so an assistant answers "what does '
+      + 'MouseFlow record?" out of the page rather than out of memory. Needs no account, no agent and no '
+      + 'data of yours.',
+    args: 'question: what you want to know · page: a page id, to read one whole',
+  },
   {
     name: 'mouseflow_recordings',
     group: 'read',

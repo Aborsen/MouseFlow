@@ -54,6 +54,8 @@ truncation acceptable.
 
 ![The wizard, step two](../img/record-skill-wizard-2.png)
 
+![Where the recording could not see what was picked, answered](../img/record-skill-wizard-picked.png)
+
 There were two. **Repeat it exactly** copied the recording's events and replayed them by screen position:
 free, fast, literal — and unable to type, because keystroke content is never stored
 ([17 — Privacy](17-privacy-security.md)), so a recording that typed replayed without the typing and reported
@@ -69,12 +71,25 @@ invites the same work twice.
 deliberately never watched. Three screens:
 
 1. **What it did** — the recording's steps, from `GET /api/transcript`, which is the one place that turns a
-   payload into steps. Anything can be left out. A step whose target had no name the resolver could read is
-   switched off with the reason, because a goal made of coordinates would put back the fragility this path
-   exists to escape.
-2. **What to type** — one card per typing run, naming the field it went into and how many keystrokes it was.
-   Each is *ask each time* (a parameter, name and type prefilled from the field), *always the same* (a fixed
-   string), or *type nothing*.
+   payload into steps. Anything can be left out, and three kinds are left out for you, counted in one line
+   rather than silently: pointer moves, waits and scrolls; clicks on something the resolver could not name
+   (a goal made of coordinates would put back the fragility this path exists to escape); and **MouseFlow's
+   own recorder controls** — the click that started or stopped this very recording. The last of those is
+   bookkeeping about the recording rather than part of the work, and it is unexecutable besides: the agent
+   refuses to drive its own windows, so a skill told to press *Stop and Save Recording* stops there. It is
+   matched by containment and not by equality, because Windows names that button in the taskbar as the
+   application plus the window title — `"MouseFlow agent MouseFlow agent - recording"`.
+2. **Instructions** — free text first (*"Anything else it should know"*), then one card per typing run,
+   naming the field it went into and how many keystrokes it was. Each is *ask each time* (a parameter, name
+   and type prefilled from the field), *always the same* (a fixed string), or *type nothing*.
+   **And one card per place the recording could not see a choice**: where a named click is followed by
+   clicks that land on a container — `document`, `pane`, `group` — the accessibility layer reports the name
+   of the *page*, so what was picked in the filter, the menu or the date picker is nowhere in the recording.
+   That step carries a quiet chip on screen one and a row here; what somebody writes is appended to the step
+   (*"click \"Add filter\", then choose dates from the 1st to today"*). It is an offer, not a question: empty
+   means the step stays as it was, and nothing waits on it. `api/_choices.mjs` holds both rules, and requires
+   the named opener immediately before the run — without that, a 6,705-step recording produced 144 of these,
+   almost all of them clicks on empty space.
 3. **Name it** — the assembled goal, editable. It stops following the choices the moment somebody edits it.
 
 What comes out is a **created** skill: `goalTemplate` plus `params`, under `gs_<recording id>`. Which means

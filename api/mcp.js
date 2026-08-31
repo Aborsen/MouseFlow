@@ -58,6 +58,7 @@ import { fillGoal, missingParams } from '../extension/skills.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, reportSaid, wrap } from './_report.js';
+import { help } from './_help.mjs';
 /* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
 import { overSpend, spentWhy } from './_spend.mjs';
 /* Потолок на вес записи - тот же, что у api/sync.js: два писателя одной колонки не могут иметь два. */
@@ -300,6 +301,41 @@ const DO_TOOL = {
       },
     },
     required: ['goal'],
+    additionalProperties: false,
+  },
+};
+
+/* ------------------------------------------------------------------------------- the documentation
+ *
+ * THE FIRST QUESTION ANYBODY ASKS is not "run my skill", it is "what is this and what does it record". An
+ * assistant with the tools above and no documentation answers that one anyway, out of the tool names and
+ * whatever it read in training, and gets the load-bearing parts wrong: that keystroke CONTENT is never
+ * captured, that a recorded skill and a goal skill fail in different ways, that only one half can replay a
+ * browser skill. Those are the answers that turn into a support ticket or a privacy complaint.
+ *
+ * It reads the site's own pages - see api/_help.mjs for why it is fetched rather than copied in here. */
+const HELP_TOOL = {
+  name: 'mouseflow_help',
+  description: 'The MouseFlow documentation itself, fetched from mouseflow.ai/docs. Use it to answer any '
+    + 'question about how MouseFlow works - what the recorder captures and what it never captures, skills '
+    + 'and how they differ, the agent, the extension, teams, privacy, limits - INSTEAD of answering from '
+    + 'memory. Ask a question to get the sections that answer it, name a page to read it whole, or call it '
+    + 'with nothing to see the list of pages.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      question: {
+        type: 'string',
+        description: 'What the person wants to know, in their own words. Keep their nouns - the words the '
+          + 'documentation uses are the ones that find it.',
+      },
+      page: {
+        type: 'string',
+        description: 'A page id from an earlier answer (for example "record-a-flow" or "privacy-and-data") '
+          + 'to read that page whole.',
+      },
+    },
+    required: [],
     additionalProperties: false,
   },
 };
@@ -621,6 +657,12 @@ async function callTool(sql, who, params, req) {
   if (asked === TRANSCRIPT_TOOL.name) return readTranscript(sql, who, args);
   if (asked === RUNS_TOOL.name) return readRuns(sql, who, args);
   if (asked === ACTIVITY_TOOL.name) return readActivity(sql, who, args);
+
+  /* No account, no database and no machine: the documentation is public, and a question about how the
+   * product works should be answerable while a person is still deciding whether to attach a computer. */
+  if (asked === HELP_TOOL.name) {
+    return say(await help({ question: String(args.question || ''), page: String(args.page || '') }));
+  }
 
   if (asked === STATUS_TOOL.name) {
     const { skills, unstamped } = await skillsOf(sql, who.id);
@@ -1490,6 +1532,7 @@ async function handler(req, res) {
       res.status(200).json(rpc(id, {
         tools: [
           ...READ_TOOLS,
+          HELP_TOOL,
           START_TOOL, STOP_RECORDING_TOOL,
           STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL, RUN_TOOL, DO_TOOL,
         ],

@@ -247,15 +247,16 @@ check('ping is answered', !!pong.result && !pong.error);
 group('the tool list is the account');
 const list = await client.send('tools/list', {});
 const names = (list.result.tools || []).map((t) => t.name);
-check('the two fixed tools are there',
-  names.includes('mouseflow_status') && names.includes('mouseflow_stop'), names.join(', '));
+check('the three fixed tools are there',
+  names.includes('mouseflow_status') && names.includes('mouseflow_stop')
+    && names.includes('mouseflow_help'), names.join(', '));
 check('a recorded desktop skill is offered', names.some((n) => n.startsWith('open_the_inbox')), names.join(', '));
 check('a goal skill is offered', names.some((n) => n.startsWith('send_the_weekly_note')), names.join(', '));
 check('an extension skill is offered too, so nothing is silently missing',
   names.some((n) => n.startsWith('fill_the_timesheet')), names.join(', '));
 check('a recording is NOT offered', !names.some((n) => n.startsWith('just_a_recording')), names.join(', '));
 check('and neither is an unstamped row', !names.some((n) => n.startsWith('something_old')), names.join(', '));
-check('nothing else crept in', names.length === 5, String(names.length));
+check('nothing else crept in', names.length === 6, String(names.length));
 
 const inbox = list.result.tools.find((t) => t.name.startsWith('open_the_inbox'));
 check('a recorded skill takes the replay knobs and nothing else',
@@ -688,7 +689,11 @@ const missing = [...served].filter((n) => !described.has(n));
 const invented = [...described].filter((n) => !served.has(n));
 check('every tool the server offers is described on the page', missing.length === 0, missing.join(', '));
 check('and nothing is described that the server does not offer', invented.length === 0, invented.join(', '));
-check('eleven of them, so a count in prose can be trusted', served.size === 11, String(served.size));
+check('twelve of them, so a count in prose can be trusted', served.size === 12, String(served.size));
+/* Число на странице считается по таблице. Стояло «Ten tools» при одиннадцати - слово расходится с
+ * таблицей под ним при первом же добавленном инструменте, и уже расходилось. */
+check('и количество инструментов на странице берётся из таблицы, а не набрано словом',
+  /\$\{MCP_TOOLS\.length\} tools/.test(readFileSync(fileURLToPath(new URL('../web/src/features/mcp/McpView.tsx', import.meta.url)), 'utf8')));
 check('and the page no longer promises one tool per skill',
   !/plus one for each skill/.test(readFileSync(fileURLToPath(new URL('../web/src/features/mcp/McpView.tsx', import.meta.url)), 'utf8')));
 check('the page names the endpoint the server actually answers on',
@@ -4334,6 +4339,157 @@ group('клик, попавший в саму страницу, - это мес�
     wizard.includes('<WhatWasChosen blank={blank}') && wizard.includes('{choices.length > 0 && ('));
   check('а сложенные клики названы там, где названо всё сложенное',
     wizard.includes('clicks that landed on the page itself'));
+}
+
+/* ---------------------------------------------------------------------------- ДОКУМЕНТАЦИЯ КАК ИНСТРУМЕНТ
+ *
+ * «Как это работает?» и «что оно записывает?» - первое, что спрашивают у ассистента, подключённого к
+ * аккаунту. Без инструмента он отвечает всё равно: из названий тулов, из имени продукта, из того, что читал
+ * когда-то, - и ошибается ровно там, где ошибка стоит дороже всего (содержимое нажатий не записывается
+ * никогда; записанный скилл и целевой ломаются по-разному; браузерный скилл повторяет только расширение).
+ *
+ * Поэтому проверяется не «есть ли тул», а три свойства ответа: он собран из НАСТОЯЩЕГО текста страниц, он
+ * несёт адрес страницы, и когда текст недоступен - он это ГОВОРИТ, а не досочиняет. Последнее важнее
+ * остальных: пришпиленной копии доки в этом репозитории нет нарочно, и молчаливый переход к памяти модели
+ * вернул бы ту самую уверенную неправду, против которой инструмент и написан. */
+group('вопрос о продукте отвечается страницей документации, а не памятью');
+{
+  const helpMod = await import('../api/_help.mjs');
+
+  /* Форма ровно та, которую сайт печатает в dist/docs/llms.json - см. scripts/prerender.mjs в MouseLanding.
+   * Фикстура, которая лишь похожа на настоящий ответ, проверяет фикстуру. */
+  const CORPUS = {
+    site: 'https://mouseflow.ai',
+    pages: [
+      {
+        id: 'record-a-flow', slug: 'record-a-flow', path: '/docs/record-a-flow',
+        url: 'https://mouseflow.ai/docs/record-a-flow', title: 'Record a flow',
+        description: 'What the recorder captures, and what it never captures.',
+        markdown: '---\ntitle: Record a flow\n---\n\nThe lead-in, before any heading.\n\n'
+          + '## What is captured\n\nEvery click, drag and scroll. What is never captured: which key you '
+          + 'pressed. There is no setting for this.\n\n'
+          + '## Where a recording goes\n\nInto this browser as a draft and straight onto your account.\n',
+      },
+      {
+        id: 'skills', slug: 'skills', path: '/docs/skills', url: 'https://mouseflow.ai/docs/skills',
+        title: 'Skills', description: 'A recording you keep becomes a skill.',
+        markdown: '## Making one\n\nPress Skill on a row and the wizard opens. It asks what was typed and '
+          + 'what was picked.\n\n## The library\n\nEvery skill on your account, from both halves.\n',
+      },
+    ],
+  };
+
+  /** A deployment that answers once and counts how often it was asked. */
+  const site = (body, ok = true) => {
+    const it = {
+      calls: 0,
+      fetchImpl: async () => {
+        it.calls++;
+        if (!ok) throw new Error('getaddrinfo ENOTFOUND');
+        return { ok: true, json: async () => body };
+      },
+    };
+    return it;
+  };
+
+  /* ---- страницы разбираются на разделы, а не отдаются целиком ---- */
+  const sections = helpMod.sectionsOf(CORPUS.pages[0]);
+  check('вступление до первого заголовка не теряется',
+    sections.length === 3 && sections[0].heading === '' && sections[0].text.includes('The lead-in'));
+  check('а frontmatter в ответ не уезжает',
+    !sections.map((one) => one.text).join(' ').includes('title: Record a flow'));
+  check('заголовки - в порядке страницы',
+    sections[1].heading === 'What is captured' && sections[2].heading === 'Where a recording goes');
+  /* Раздел берётся самый мелкий, какой есть. «Making one» - это весь визард целиком; отданная одним куском,
+   * она обрезается по потолку раньше, чем дойдёт до абзаца, из которого был вопрос. */
+  const deep = helpMod.sectionsOf({ markdown: '## Making one\n\nA lead.\n\n### Step 1\n\nThe steps that '
+    + 'can become instructions.\n\n### Step 2\n\nInstructions.\n' });
+  check('и подзаголовок - это отдельный раздел, названный вместе с родителем',
+    deep.some((one) => one.heading === 'Making one - Step 1'
+      && one.text.includes('can become instructions')),
+    deep.map((one) => one.heading).join(' | '));
+
+  /* ---- что считается словом вопроса ---- */
+  const terms = helpMod.termsOf('How does MouseFlow record what I type?');
+  check('слова вопроса - это его существительные, а не «how» и «does»',
+    terms.includes('record') && terms.includes('type') && !terms.includes('does') && !terms.includes('how'));
+  check('и название продукта словом не считается - оно есть в каждом вопросе',
+    !terms.includes('mouseflow'));
+
+  /* ---- находится то, что отвечает, а не то, где чаще встретилось слово ---- */
+  const hits = helpMod.findHelp(CORPUS, 'what is captured when I record?');
+  check('раздел с этим заголовком идёт первым',
+    hits.length > 0 && hits[0].section.heading === 'What is captured',
+    hits.length ? hits[0].section.heading : 'ничего не найдено');
+
+  const answer = helpMod.answerText(CORPUS, 'does it record which key I pressed?');
+  check('в ответе - настоящий текст страницы, дословно',
+    answer.includes('What is never captured: which key you pressed'));
+  check('и адрес страницы, чтобы ответ можно было проверить, а не только прочитать',
+    answer.includes('https://mouseflow.ai/docs/record-a-flow'));
+
+  /* ---- страница целиком, по id и по slug ---- */
+  check('страницу можно прочитать целиком по её id',
+    helpMod.pageText(CORPUS, 'skills').text.includes('Every skill on your account'));
+  check('и по slug тоже, потому что именно его видно в адресе',
+    helpMod.pageText(CORPUS, 'record-a-flow').ok);
+  const nope = helpMod.pageText(CORPUS, 'billing');
+  check('несуществующая страница отвечает списком страниц, а не пустотой',
+    !nope.ok && nope.text.includes('record-a-flow') && nope.text.includes('skills'));
+
+  /* ---- сам инструмент ---- */
+  helpMod.forgetDocs();
+  const listing = site(CORPUS);
+  const list = await helpMod.help({}, { fetchImpl: listing.fetchImpl, now: 1000 });
+  check('без аргументов - перечень страниц с адресами',
+    list.includes('Record a flow') && list.includes('/docs/skills') && list.includes('2 pages'));
+
+  const asked = await helpMod.help({ question: 'which key was pressed?' },
+    { fetchImpl: listing.fetchImpl, now: 1200 });
+  check('вопрос отвечается разделом',
+    asked.includes('which key you pressed'));
+  check('и корпус за два вопроса скачан один раз', listing.calls === 1, String(listing.calls));
+
+  /* ---- когда сайт недоступен ---- */
+  helpMod.forgetDocs();
+  const down = site(null, false);
+  const said = await helpMod.help({ question: 'what is captured?' },
+    { fetchImpl: down.fetchImpl, now: 5000 });
+  check('недоступная дока - это сказанная причина, а не молчание',
+    said.includes('could not be read'));
+  check('и адрес, по которому её прочитает человек',
+    said.includes('https://mouseflow.ai/docs'));
+  /* САМОЕ ВАЖНОЕ ЗДЕСЬ: не пересказать по памяти. Ответ, не прочитанный из доки, - это догадка, и первым
+   * же вопросом бывает «что оно записывает», где догадка стоит дороже отсутствия ответа. */
+  check('и ни одного утверждения о продукте из головы',
+    !said.includes('What is never captured') && said.includes('not read out of the documentation'));
+
+  /* ---- а если однажды прочитали, а потом сайт упал ---- */
+  helpMod.forgetDocs();
+  const once = site(CORPUS);
+  await helpMod.help({}, { fetchImpl: once.fetchImpl, now: 1000 });
+  const stale = await helpMod.help({ question: 'which key was pressed?' },
+    { fetchImpl: down.fetchImpl, now: 1000 + helpMod.DOCS_TTL_MS + 1 });
+  check('прочитанное раньше отвечает и дальше - но со сказанным «это прошлая копия»',
+    stale.includes('which key you pressed') && stale.includes('last copy that was read'));
+
+  /* ---- и то, что делает всё это достижимым для модели ---- */
+  const helpSrc = readFileSync(fileURLToPath(new URL('../api/_help.mjs', import.meta.url)), 'utf8');
+  check('текст берётся с сайта, а не из копии в этом репозитории',
+    helpSrc.includes("'/docs/llms.json'") || helpSrc.includes('/docs/llms.json'));
+  check('mouseflow_help в списке инструментов', /HELP_TOOL,/.test(mcpRoute));
+  /* И на stdio тоже: там ровно те же вопросы задают, а список инструментов у того сервера свой. */
+  const stdio = readFileSync(fileURLToPath(new URL('server.mjs', import.meta.url)), 'utf8');
+  check('и на stdio-транспорте тоже, из того же модуля',
+    stdio.includes("import { help } from '../api/_help.mjs'")
+      && stdio.includes('const tools = [HELP_TOOL, STATUS_TOOL, STOP_TOOL]'));
+  check('и отвечает без базы, аккаунта и машины',
+    mcpRoute.includes("import { help } from './_help.mjs'")
+      && mcpRoute.includes('return say(await help({ question:'));
+  /* Описание тула - единственное, что модель читает ДО того, как решит его позвать. «Документация» без
+   * «вместо памяти» оставляет выбор случаю, а по умолчанию модель отвечает сама. */
+  check('а его описание велит предпочесть страницу собственной памяти',
+    /INSTEAD of answering from\s+'\s*\+\s*'memory/.test(mcpRoute) || /INSTEAD of answering from/.test(mcpRoute));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

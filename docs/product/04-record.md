@@ -175,13 +175,13 @@ A list you can work through, following the Insightis Chats Library. Columns: che
 
 ![Making a skill from a recording](../img/record-skill-wizard.png)
 
-*Skill opens the wizard — see [06 — Skills](06-skills.md#two-outcomes-and-the-wizard).*
+*Skill opens the wizard — see [06 — Skills](06-skills.md#one-outcome-and-the-wizard).*
 
 | Control | Does |
 |---|---|
 | Play (icon) | Replay now with this recording's own repeat / speed / loop |
 | **View** | Open the transcript panel |
-| **Skill** | Save as skill (prompts for a name) |
+| **Skill** | Open the wizard: what it did, the instructions, the name |
 | **Export** | Download `<name>.mmmacro` |
 | **More** (ellipsis) | The replay settings, and Delete |
 

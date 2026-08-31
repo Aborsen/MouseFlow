@@ -179,11 +179,13 @@ export const McpView = () => {
         <Section
           id="tools"
           title="What it can do"
-          lead="Ten tools, and the list does not grow with your library — skills are found with
-            mouseflow_recordings and run with mouseflow_run. They fall into groups that
-                fail in completely different ways, which is why the groups are named rather than left to be
-                discovered: one half answers from the account, the other needs your computer to be awake and
-                listening."
+          /* СЧИТАЕТСЯ, А НЕ ВПИСЫВАЕТСЯ. Здесь стояло «Ten tools», а их было одиннадцать: число, набранное
+             словом, расходится с таблицей под ним при первом же добавленном инструменте - и расходилось. */
+          lead={`${MCP_TOOLS.length} tools, and the list does not grow with your library — skills are found `
+            + 'with mouseflow_recordings and run with mouseflow_run. They fall into groups that fail in '
+            + 'completely different ways, which is why the groups are named rather than left to be '
+            + 'discovered: one half answers from the account, the other needs your computer to be awake '
+            + 'and listening.'}
         >
           <div className="grid gap-4">
             {GROUP_ORDER.map((group) => (
