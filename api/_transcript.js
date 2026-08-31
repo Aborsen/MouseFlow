@@ -2075,16 +2075,21 @@ function unnamedClicks(count, ctx, points) {
 
 /* One place's paragraph, walked in order. Consecutive clicks with names merge into one clause, because
  * "clicked New mail, then To, then Send" is the sentence a person would say and three clauses is not. */
-/* Номер шага в тексте: «[11]». Пусто, когда номера нет - у шага без номера его нельзя ни назвать, ни
- * передать в remove_steps, и придумывать позицию значило бы дать читателю число, которое никуда не ведёт. */
-const stepTag = (n) => (Number.isFinite(n) ? ' [' + n + ']' : '');
-const tagAll = (ns) => (ns.length ? ' [' + ns.join(', ') + ']' : '');
-
 function placeStory(segment) {
   /* ФРАЗЫ - ОБЪЕКТЫ, а не строки, и причина ниже, в свёртке одинаковых: она сравнивает текст, и номера,
    * вписанные в него, сделали бы любые две фразы разными. `key` - то, по чему сравнивают; `ns` - номера,
    * которые дописываются при показе. */
   const clauses = [];
+  /* `ns` СОБИРАЮТСЯ И НЕ ПЕЧАТАЮТСЯ, и это решение, а не забытый код.
+   *
+   * Номера шагов в рассказе были и убраны по просьбе вместе с её условием: «должны идти по порядку, а если
+   * невозможно - лучше уберём». Последовательными они быть не могут: это ССЫЛКИ на настоящие шаги, а
+   * рассказ выбрасывает движения указателя и короткие паузы - отсюда 4, 6, 11, 13, и пропуски между ними
+   * не сбой нумерации, а её отсутствие. Пронумеровать 1, 2, 3 значило бы завести вторую нумерацию, не
+   * совпадающую ни с расшифровкой, ни с той, которую принимает remove_steps.
+   *
+   * Собираются они потому, что на них стоит свёртка одинаковых фраз: слитая фраза обязана помнить, сколько
+   * шагов в неё вошло. Печатать их - отдельное решение, и оно отрицательное. */
   const say = (text, ns, key) => clauses.push({
     text,
     key: key == null ? text : key,
@@ -2116,15 +2121,10 @@ function placeStory(segment) {
 
   const flushNamed = () => {
     if (namedRun.length) {
-      /* НОМЕР У КАЖДОГО ИМЕНИ, а не у фразы: слитый прогон - это и есть несколько нажатий, и «clicked
-       * "Order search" [15], "Order search" [23] then "Order search" [25]» отвечает на вопрос, который
-       * возник у читателя, - три одинаковых имени подряд это три разных нажатия, а не сбой.
-       * Ключ - имена без номеров, чтобы свёртка ниже по-прежнему видела одинаковые фразы. */
-      say(
-        'clicked ' + joinWords(namedRun.map((one) => quoted(one.name) + stepTag(one.n)), 'then'),
-        namedRun.map((one) => one.n),
-        'clicked ' + joinWords(namedRun.map((one) => quoted(one.name)), 'then'),
-      );
+      /* БЕЗ НОМЕРОВ - см. заметку у `say`: последовательными они быть не могут, а ссылками с пропусками
+       * читались как испорченная нумерация. */
+      say('clicked ' + joinWords(namedRun.map((one) => quoted(one.name)), 'then'),
+        namedRun.map((one) => one.n));
       namedRun = [];
     }
     /* А здесь - после: сюда попадают безымянные, пришедшие ПОСЛЕ именованных, и для них этот порядок и
@@ -2265,11 +2265,9 @@ function placeStory(segment) {
     ? 'Only pointer movement and pauses here — nothing was clicked or typed.'
     : 'Nothing happened here.';
 
-  /* НОМЕРА ДОПИСЫВАЮТСЯ ПРИ ПОКАЗЕ, и не дважды: у слитого прогона нажатий они уже стоят внутри текста, у
-   * каждого имени, - потому что там они и нужны, - и признак этого в том, что текст их уже содержит. */
-  const said = clauses.map((one) => (one.ns.length && !one.text.includes('[')
-    ? one.text + tagAll(one.ns)
-    : one.text));
+  /* ПОКАЗЫВАЕТСЯ ТОЛЬКО ТЕКСТ - см. заметку у `say`. Номера собираются и не печатаются: они у шагов в
+   * списке ниже, где идут подряд и без дыр. */
+  const said = clauses.map((one) => one.text);
 
   return (said.length ? capitalise(joinWords(said, 'and then')) + '.' : nothing)
     + (shape.length ? ' ' + shape.join('. ') + '.' : '');
@@ -2316,11 +2314,6 @@ function tellStory(segments, counts, totalMs, source, dropped = { ms: 0, pauses:
     opening += ' Nothing in it names where it happened, so the story below is what was done rather than '
       + 'where.';
   }
-  /* ЧТО ЗНАЧАТ ЧИСЛА В СКОБКАХ - один раз, и последним: без этой фразы «[11]» читается как сноска в никуда,
-   * а посреди вступления она разрывала мысль между длительностью и местами. С ней рассказ становится
-   * проверяемым - каждое утверждение сопоставляется со шагом ниже, и это те же номера, которые принимает
-   * удаление шагов. */
-  opening += ' A number in brackets is the step it came from, in the list below.';
   story.push({ kind: 'overview', title: null, text: oneLine(opening, 480) });
 
   /* --------------------------------------------------------------- one paragraph per place */
