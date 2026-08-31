@@ -712,17 +712,21 @@ export function recordingTools({ sql, userId }) {
             focus: text(input.focus, 400),
           });
         } catch (err) {
-          /* Причина словами, а не «не получилось»: отсутствующий ключ, отказ модели и обрыв на середине -
-           * три разных положения, и человеку с ними делать разное. */
-          return {
-            data: {
-              written: false,
-              error: 'the document was not written: '
-                + (err && err.message ? String(err.message).slice(0, 300) : 'unknown error')
-                + '. Nothing was saved.',
-            },
-            runIds: [],
-          };
+          /* БРОСОК, А НЕ ВОЗВРАТ, и это исправление по живому отчёту.
+           *
+           * Отказ возвращался как успешный результат инструмента: used[] писал ok:true, а причина - точное
+           * сообщение OpenAI, которое api/_provider.js передаёт дословно - существовала только внутри
+           * данных, то есть жила лишь в пересказе модели. Модель пересказала её как «the document service
+           * returned an error», и человек остался без единственного, что можно было сделать.
+           *
+           * Бросок включает то, что уже написано в runOneTool: настоящее сообщение попадает в used[], где
+           * его видно на экране, а модели передаётся «That lookup failed: <причина>. Do not answer as
+           * though it returned no rows» - то есть запрет замазывать. Ничего не сохранено и без этого:
+           * вставка стоит ниже. */
+          throw new Error('the process document was not written and nothing was saved. The reason, in the '
+            + 'provider own words: '
+            + (err && err.message ? String(err.message).slice(0, 400) : 'unknown error')
+            + '. Quote that reason to the person - it is the only thing they can act on.');
         }
 
         const id = newDocId(randomBytes(8).toString('hex'));

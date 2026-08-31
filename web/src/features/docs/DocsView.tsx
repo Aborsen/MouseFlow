@@ -39,6 +39,7 @@ import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import { Said, type SaidNote } from '@/components/Said';
 import { usePageChrome } from '@/shell/Surface';
+import { docxFromMarkdown, docxName } from './docx';
 
 /* ------------------------------------------------------------------ what the endpoint sends */
 
@@ -259,7 +260,12 @@ const DocsList = ({ docs, onOpen }: { docs: DocRow[]; onOpen: (id: string) => vo
 
 /* ------------------------------------------------------------------ the screen */
 
-export const DocsView = () => {
+/* ВЛОЖЕННЫЙ ВИД - для вкладки внутри Галереи, где заголовок и отступы страницы уже чужие.
+ *
+ * Один компонент, а не два: список и один документ делят всё состояние, которое имеет значение - что
+ * загружено, что отказало, что сказано, - и разделение продублировало бы это ради одного условия. Признак
+ * `embedded` снимает только оболочку, потому что оболочка и есть единственное, что у вкладки своё. */
+export const DocsView = ({ embedded = false }: { embedded?: boolean } = {}) => {
   const page = usePageChrome();
   const navigate = useNavigate();
   /* The route declares an optional param, so this screen is both the list and one document. One component
@@ -421,19 +427,37 @@ export const DocsView = () => {
     void navigate({ to: '/record', search: { flow, step } as never });
   }, [doc, navigate]);
 
-  const download = useCallback(() => {
-    if (!doc) return;
-    /* Markdown как есть - это и есть исходник документа, а не его экспорт: то, что лежит в строке, и то,
-       что скачивается, обязаны быть одним текстом, иначе «отправил коллеге» и «открыл у себя» показывают
-       разное. DOCX - следующим шагом. */
-    const blob = new Blob([doc.body], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
+  /* ОДНА выгрузка на два формата: браузерная половина у них одна и та же, и две копии этих шести строк
+     разошлись бы в имени файла или в отзыве URL. */
+  const sendFile = useCallback((bytes: BlobPart, type: string, name: string) => {
+    const url = URL.createObjectURL(new Blob([bytes], { type }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${(doc.title || 'process').replace(/[^\w \-.]+/g, '').slice(0, 60) || 'process'}.md`;
+    a.download = name;
     a.click();
-    URL.revokeObjectURL(url);
-  }, [doc]);
+    /* Отзывается в следующем такте, а не сразу: Safari успевает отменить ещё не начавшуюся загрузку, если
+       адрес освободить в том же. */
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }, []);
+
+  const downloadMarkdown = useCallback(() => {
+    if (!doc) return;
+    /* Markdown как есть - это ИСХОДНИК документа, а не его экспорт: то, что лежит в строке, и то, что
+       скачивается, обязаны быть одним текстом, иначе «отправил коллеге» и «открыл у себя» показывают
+       разное. */
+    sendFile(doc.body, 'text/markdown;charset=utf-8',
+      (docxName(doc.title).replace(/\.docx$/, '') || 'process') + '.md');
+  }, [doc, sendFile]);
+
+  const downloadDocx = useCallback(() => {
+    if (!doc) return;
+    /* Собирается ЗДЕСЬ, без маршрута и без зависимости - см. features/docs/docx.ts. Тело уже на экране,
+       результат - несколько килобайт, и обратный круг к серверу добавил бы двоичный ответ ради того, что
+       и так лежит в памяти. */
+    sendFile(docxFromMarkdown(doc.body, { title: doc.title }),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      docxName(doc.title));
+  }, [doc, sendFile]);
 
   /* ------------------------------------------------------------------ one document */
 
@@ -446,7 +470,9 @@ export const DocsView = () => {
             variant="ghost"
             size="sm"
             leftSlot={<ArrowLeft className="size-4" />}
-            onClick={() => void navigate({ to: '/docs' })}
+            /* В ВКЛАДКУ, а не в /docs: список документов живёт в Галерее, и «все документы» обязано
+               приводить туда, где он действительно есть. */
+            onClick={() => void navigate({ to: '/gallery', search: { tab: 'documents' } as never })}
           >
             All documents
           </Button>
@@ -478,14 +504,25 @@ export const DocsView = () => {
                 >
                   {versions.length} version{versions.length === 1 ? '' : 's'}
                 </Button>
+                {/* Два формата, и порядок не случаен: Word - то, что отправляют коллеге, Markdown - то,
+                    что лежит в строке. Первым стоит тот, за которым приходят чаще. */}
                 <Button
                   variant="ghost"
                   size="sm"
                   leftSlot={<Download className="size-4" />}
                   disabled={!doc}
-                  onClick={download}
+                  onClick={downloadDocx}
                 >
-                  Markdown
+                  Word
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!doc}
+                  title="The Markdown this document is stored as — the same text, not a conversion of it"
+                  onClick={downloadMarkdown}
+                >
+                  .md
                 </Button>
                 {/* Тот же размер взведённой и невзведённой - см. панель расшифровки: рост кнопки в ряду,
                     который не сжимается, сжимает заголовок рядом с ней. */}
@@ -624,14 +661,21 @@ export const DocsView = () => {
   /* ------------------------------------------------------------------ the list */
 
   return (
-    <div className={cn('min-w-0', page.scroll, page.gutter)}>
+    <div className={cn('min-w-0', embedded ? '' : cn(page.scroll, page.gutter))}>
+      {/* Заголовок только у самостоятельной страницы: во вкладке он уже есть у Галереи, и второй под
+          первым - это два заголовка об одном. Объяснение при этом остаётся в обоих видах: то, что
+          сгенерированную процедуру надо править, - не украшение шапки, а условие пользования ею. */}
       <header className="mb-4">
-        <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
-          Written processes
-        </Typography>
-        <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.5rem] leading-tight tracking-tight">
-          What the work actually is, written down
-        </Typography>
+        {!embedded && (
+          <>
+            <Typography variant="span" className="block text-[0.7rem] uppercase tracking-wide text-ink-inactive">
+              Written processes
+            </Typography>
+            <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.5rem] leading-tight tracking-tight">
+              What the work actually is, written down
+            </Typography>
+          </>
+        )}
         <Typography variant="p" className="mt-1 max-w-[76ch] text-ink-inactive text-[0.86rem]">
           Each of these was written from a recording, and every line cites the step it came from. A generated
           procedure is wrong somewhere — that is the normal case — so they are meant to be corrected by

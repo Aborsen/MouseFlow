@@ -10,7 +10,9 @@
  * A diagnostic, not part of the product. It exists because "gpt-5.6-luna or gpt-5.6 or 5.6-luna?" is not a
  * question to answer by trying one in production.
  */
-import { keyFor, MODELS, PROVIDERS } from './_provider.js';
+/* WRITER_MODELS тоже: это модели, которые развёртывание ЗОВЁТ, не предлагая в меню (сейчас - писатель
+ * документов). Без них проверка досягаемости молчала ровно про то, из-за чего документ мог не написаться. */
+import { keyFor, MODELS, PROVIDERS, WRITER_MODELS } from './_provider.js';
 import { whoIsCalling } from './_session.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -46,7 +48,8 @@ async function handler(req, res) {
   for (const provider of PROVIDERS) {
     const key = keyFor(provider);
     if (!key) {
-      out[provider] = { hasKey: false, allowlisted: MODELS[provider], upstream: null, note: 'no key on this deployment' };
+      out[provider] = { hasKey: false, allowlisted: MODELS[provider], writers: WRITER_MODELS[provider] || [],
+        upstream: null, note: 'no key on this deployment' };
       continue;
     }
     const spec = UPSTREAM[provider];
@@ -70,6 +73,14 @@ async function handler(req, res) {
         likely: ids.filter((id) => /^(gpt-[5-9]|o[1-9]|claude-)/.test(id) && !/audio|realtime|image|tts|whisper|embedding|moderation/.test(id)).sort(),
         reachable: MODELS[provider].filter((id) => ids.includes(id)),
         missing: MODELS[provider].filter((id) => !ids.includes(id)),
+        /* НЕ В МЕНЮ, НО ЗОВЁТСЯ - и потому проверяется отдельно и называется отдельно. Живой отчёт:
+         * документ не написался, ответ модели пересказал причину общими словами, и первое, что нужно было
+         * знать, - есть ли эта модель на ключе вообще. Теперь это видно здесь. */
+        writers: (WRITER_MODELS[provider] || []).map((id) => ({
+          id,
+          reachable: ids.includes(id),
+          usedFor: 'process documents',
+        })),
       };
     } catch (err) {
       out[provider] = { hasKey: true, allowlisted: MODELS[provider], upstream: null, note: String(err && err.message) };
