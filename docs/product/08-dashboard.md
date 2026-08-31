@@ -160,7 +160,8 @@ that begin alike are counted as one.
 yet, and then "46% doing" is the truth about *some* of the window, which looks identical on screen to the
 truth about all of it. So the count of recordings still to be summarised is **on the page**, once, saying it
 covers all three blocks; and if deriving fails outright the blocks say so in the endpoint's own words while
-the rest of the page carries on.
+the rest of the page carries on — see [14 — HTTP API](14-http-api.md#apiinsights) for how that survives the
+transaction being indivisible, which it did not at first.
 
 ![Activity, the work worth automating, and what went wrong](../img/dashboard-sections.png)
 

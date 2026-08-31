@@ -77,7 +77,11 @@ export async function staleCount(sql, ids) {
  * either the old digest or the new one, never neither. Returns what it derived, so a caller can say so
  * instead of guessing whether anything happened.
  */
-export async function topUp(sql, ids, limit = TOP_UP_MAX) {
+/* Also a plain function, for the same reason and to make the rule visible rather than remembered: in this
+ * file, a name that RETURNS a query is not async, and a name that READS ROWS (staleCount) is. `await
+ * topUp(...)` keeps working either way - the query object is thenable - but the two shapes no longer differ
+ * for no reason, which is what let the bug above look normal. */
+export function topUp(sql, ids, limit = TOP_UP_MAX) {
   return sql`
     with stale as (
       select f.user_id, f.client_id, f.payload, f.origins, f.source
@@ -256,7 +260,17 @@ export async function topUp(sql, ids, limit = TOP_UP_MAX) {
  * short row per recording. The window is applied to the RECORDING's own date, the same way every other
  * query in api/insights.js applies it, so the two cannot disagree about which recordings are in scope.
  */
-export async function behaviour(sql, ids, fromIso, toIso) {
+/* NOT `async`, and that is the whole contract of this function.
+ *
+ * The result goes into `sql.transaction([...])`, which takes an array of QUERY OBJECTS - unexecuted. An
+ * `async` wrapper makes it a Promise instead, Neon rejects the whole array with "transaction() expects an
+ * array of queries", and every request to the dashboard answers 500. It shipped that way.
+ *
+ * What hid it: a Neon query object is thenable. So `await behaviour(...)` in a standalone script unwraps
+ * the Promise, finds the thenable, and runs it - the measurement passed at 60 ms while the only path the
+ * endpoint actually uses was broken. A function returning a query must be a plain function, and awaiting
+ * one still works because of that same thenability. */
+export function behaviour(sql, ids, fromIso, toIso) {
   return sql`
     with mine as (
       select d.*

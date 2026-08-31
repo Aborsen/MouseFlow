@@ -230,8 +230,16 @@ expensive read in the product**.
 **One write happens before that transaction**, and it is the reason the behaviour blocks are affordable:
 recordings whose `flow_digest` row is missing, behind the formula version or older than the recording itself
 are brought up to date, at most 20 per request. It writes, so it cannot be inside a read-only transaction,
-and it goes first so the read sees fresh rows. Failure there does not fail the request — `digest.problem`
-carries the reason and the rest of the page is still real.
+and it goes first so the read sees fresh rows.
+
+**A digest failure degrades the page rather than replacing it**, and on both halves of the path — which took
+a production 500 to get right. Catching the write was easy; the two *reads* of `flow_digest` travel inside
+the transaction, and a transaction is indivisible, so one failing query rejects all twelve. A missing
+`flow_digest` — code deployed ahead of its migration, an ordinary deploy order — therefore answered 500 on
+every request instead of leaving three sections empty. The read is now retried **without those two queries
+only**: if something else failed, the retry fails too and the *first* error is what surfaces, so the extra
+round trip is paid only on failure and one component's outage cannot be reported as another's.
+`digest.problem` carries the reason either way.
 
 `team` counts every member of that team instead of the caller alone, and is accepted **only from an owner or
 an admin of it**: `api/_team-scope.js` turns the id into a set of accounts or into a refusal — `403` with a

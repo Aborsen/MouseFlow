@@ -293,7 +293,17 @@ export function shapeScope({ scope, people, rows, callerId }) {
 
 /* ------------------------------------------------------------------------ the counting */
 
-async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
+/* EXPORTED so it can be RUN, which is the lesson shapeScope above was extracted for and which this file
+ * had to learn twice.
+ *
+ * The whole of the dashboard's assembly lives in here, and until now the only way to execute it was to have
+ * a database, a session and a request - so it was never executed by anything but production. That is how an
+ * `async` on a function whose result goes into sql.transaction() shipped: every source-text assertion
+ * passed, the standalone measurement passed, and every real request answered 500.
+ *
+ * api/_test-insights.mjs now calls this with a fake `sql` that enforces Neon's contract - a tagged template
+ * gives back a query OBJECT, and transaction() refuses an array holding anything else. */
+export async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
   /* A run's timestamp is coalesce(started_at, synced_at) throughout. started_at is nullable and some
    * runs arrived without one; those runs happened, so dropping them would quietly undercount, and
    * synced_at is never null. How many needed the fallback is reported in `gaps`. */
@@ -839,7 +849,12 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
    *
    * Отказ ЗДЕСЬ НЕ РОНЯЕТ СТРАНИЦУ. Не приведённый в порядок дайджест значит неполный блок про поведение,
    * а не отсутствующий дашборд, - и `stale` в ответе говорит, сколько записей ещё не разобрано, чтобы
-   * «активность 45%» не читалась как «по всем записям», когда она по половине. */
+   * «активность 45%» не читалась как «по всем записям», когда она по половине.
+   *
+   * ЭТОГО ОБЕЩАНИЯ НЕДОСТАТОЧНО, и держится оно ниже, а не здесь: перехват вокруг записи закрывает только
+   * половину пути. Два ЧИТАЮЩИХ запроса блока едут внутри транзакции, а транзакция падает целиком - так что
+   * пока это было единственной защитой, отсутствующая таблица flow_digest роняла весь дашборд, а не свои
+   * три раздела. Проверено исполнением в api/_test-insights.mjs, а не обещано в комментарии. */
   let derived = 0;
   let stale = 0;
   let digestProblem = null;
@@ -853,14 +868,53 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
 
   /* Appended rather than always run: in a personal scope the breakdown is the header with one row under
    * it, and it would be a query the commonest request on this endpoint pays for and nothing reads. */
+  /* Названы, а не собраны прямо в литерале массива: ниже их нужно уметь ИЗЪЯТЬ из него, а безымянный
+   * вызов изъять нельзя - пришлось бы вырезать по позиции, то есть по числу, которое разъедется с этим
+   * массивом при первом же добавленном запросе.
+   *
+   * Группировка по коротким строкам дайджестов вместо разворота payload - то, ради чего таблица и
+   * появилась. Замер до: 1700 мс на окно, и линейно по числу записей. */
+  const behaviourNowQ = behaviour(sql, ids, fromIso, toIso);
+  const behaviourPrevQ = behaviour(sql, ids, prevFromIso, fromIso);
+
   const asked = [totalsQ, prevTotalsQ, flowsQ, byDayQ, appsQ, repeatedQ, slowestQ, failuresQ, skillsQ,
-    /* Группировка по коротким строкам дайджестов вместо разворота payload: ровно то, ради чего таблица и
-     * появилась. Замер до - 1700 мс на окно, и линейно по числу записей. */
-    behaviour(sql, ids, fromIso, toIso), behaviour(sql, ids, prevFromIso, fromIso)];
+    behaviourNowQ, behaviourPrevQ];
   if (wantPeople) asked.push(peopleQ);
 
+  /* ОДНА ТРАНЗАКЦИЯ НА ОБЫЧНОМ ПУТИ, и падение блока про поведение не забирает с собой остальное.
+   *
+   * Транзакция - неделимая: один отказавший запрос отвергает все двенадцать. Пока это была единственная
+   * попытка, `flow_digest`, которого нет - развёрнутый код впереди своей миграции, самый обыкновенный
+   * порядок деплоя, - означал 500 на каждый запрос дашборда вместо трёх пустых разделов на нём.
+   *
+   * Повтор БЕЗ двух дайджестовых запросов, и только он: если отказало что-то другое, повтор откажет
+   * снова и наружу уйдёт ПЕРВАЯ ошибка - та, которая настоящая. То есть лишний круг платится только при
+   * отказе, обычный путь остаётся одной транзакцией, и подмена причины невозможна: успех повтора и есть
+   * доказательство, что виноваты были именно они. */
+  const digestAt = asked.indexOf(behaviourNowQ);
+  let answered;
+  try {
+    answered = await sql.transaction(asked, { readOnly: true });
+  } catch (first) {
+    const without = asked.filter((q) => q !== behaviourNowQ && q !== behaviourPrevQ);
+    try {
+      answered = await sql.transaction(without, { readOnly: true });
+    } catch (_) {
+      /* Не дайджест. Наружу уходит первая ошибка - вторая описывает тот же отказ более узким запросом. */
+      throw first;
+    }
+    /* Пустые строки на их местах, чтобы разбор ниже читал ответ по одной и той же схеме и в обоих
+     * случаях: разветвление на два способа разбирать один ответ - это второе место, где можно ошибиться. */
+    answered.splice(digestAt, 0, [], []);
+    if (!digestProblem) {
+      digestProblem = first && first.message
+        ? String(first.message).slice(0, 200)
+        : 'the behaviour blocks could not be read';
+    }
+  }
+
   const [totalsRows, prevRows, flowRows, dayRows, appRows, repeatedRows, slowRows, failureRows, skillRows,
-    behaviourRows, prevBehaviourRows, peopleRows = []] = await sql.transaction(asked, { readOnly: true });
+    behaviourRows, prevBehaviourRows, peopleRows = []] = answered;
 
   const t = totalsRows[0] || {};
   const f = flowRows[0] || {};

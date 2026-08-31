@@ -56,15 +56,15 @@ group('свежесть, и случай, который легко пропус
   /* ТРЕТИЙ СЛУЧАЙ - главный. Запись можно ОТРЕДАКТИРОВАТЬ: api/transcript.js и remove_steps у ассистента
    * оба перезаписывают payload. Дайджест, посчитанный до правки, описывает запись, которой больше нет, и
    * без сравнения времён дашборд вечно показывал бы удалённые шаги. */
-  const staleWhere = digest.slice(digest.indexOf('export async function staleCount'),
-    digest.indexOf('export async function topUp'));
+  const staleWhere = digest.slice(digest.indexOf('function staleCount'),
+    digest.indexOf('function topUp'));
   check('устаревшим считается и отсутствующий, и по версии, и СТАРШЕ записи',
     /d\.user_id is null/.test(staleWhere) && /d\.version </.test(staleWhere)
       && /d\.derived_at < f\.updated_at/.test(staleWhere), staleWhere.slice(0, 200));
   /* Те же три условия у пишущего запроса: расхождение значило бы, что считающий и спрашивающий «сколько
    * осталось» не согласны, и счётчик никогда не дошёл бы до нуля. */
-  const topUpBody = digest.slice(digest.indexOf('export async function topUp'),
-    digest.indexOf('export async function behaviour'));
+  const topUpBody = digest.slice(digest.indexOf('function topUp'),
+    digest.indexOf('function behaviour'));
   check('и у пишущего запроса условие ТО ЖЕ',
     /d\.user_id is null or d\.version < \$\{DIGEST_VERSION\} or d\.derived_at < f\.updated_at/
       .test(topUpBody));
@@ -83,15 +83,25 @@ group('свежесть, и случай, который легко пропус
 
 group('читатель берёт дайджест, а не payload');
 {
-  const readerBody = digest.slice(digest.indexOf('export async function behaviour'));
+  const readerBody = digest.slice(digest.indexOf('function behaviour'));
   check('блок поведения читает flow_digest',
     /from flow_digest d/.test(readerBody) && !/payload/.test(readerBody));
   /* Окно применяется к дате ЗАПИСИ, тем же способом, что у всех прочих запросов файла: иначе два запроса
    * разошлись бы в том, какие записи попали в период. */
   check('и окно применяется к дате записи, как везде в insights.js',
     /coalesce\(f\.created_at, f\.updated_at\) >= /.test(readerBody));
-  check('а сам дашборд его и вызывает',
-    /behaviour\(sql, ids, fromIso, toIso\), behaviour\(sql, ids, prevFromIso, fromIso\)/.test(insights));
+  check('а сам дашборд спрашивает его про оба окна',
+    /const behaviourNowQ = behaviour\(sql, ids, fromIso, toIso\);/.test(insights)
+      && /const behaviourPrevQ = behaviour\(sql, ids, prevFromIso, fromIso\);/.test(insights)
+      && /behaviourNowQ, behaviourPrevQ\]/.test(insights));
+  /* И умеет их ИЗЪЯТЬ. Транзакция неделима: пока это было невозможно, отсутствующий flow_digest - код
+   * впереди своей миграции - отвечал 500 на каждый запрос дашборда вместо трёх пустых разделов. */
+  check('и умеет прочитать страницу без них, когда они отказали',
+    /asked\.filter\(\(q\) => q !== behaviourNowQ && q !== behaviourPrevQ\)/.test(insights)
+      && /answered\.splice\(digestAt, 0, \[\], \[\]\)/.test(insights));
+  /* И не выдаёт чужой отказ за свой: если повтор тоже отказал, наружу уходит ПЕРВАЯ ошибка. */
+  check('и чужой отказ не превращается в отчёт о дайджесте',
+    /throw first;/.test(insights));
   /* Приведение в порядок ПИШЕТ, значит не может ехать в read-only транзакции - и должно идти до чтения,
    * иначе первый запрос на новом аккаунте прочитает пустоту и покажет ноль часов. */
   check('приведение в порядок идёт до транзакции, а не внутри неё',
