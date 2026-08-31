@@ -781,9 +781,28 @@ const skillsInsights = read('../web/src/features/insights/InsightsView.tsx');
  * label one column out. */
 /* `md:` because the grid only applies where it fits: below that the row stacks, which is what makes this
  * readable in a narrow window and in the extension's side panel. The template is the same one. */
-check('teams are rows, in the anatomy the recordings table already uses',
-  /const COLUMNS = 'md:grid-cols-\[1\.5rem_minmax\(11rem,1fr\)/.test(teamView)
-  && /border border-stroke\/45/.test(teamView));
+/* СРАВНИВАЮТСЯ ДВА ФАЙЛА, а не проверяется литерал в одном.
+ *
+ * Прежний вид этого пина требовал у Teams чекбокс шириной 1.5rem - при том, что у RecordingsTable он
+ * 1.25rem, - и назывался «в той же анатомии, что у recordings table». То есть литерал закрепил само
+ * расхождение, а заметили его глазами: страница Teams выглядела рядом с остальными как другой продукт.
+ *
+ * Число колонок остаётся своим у каждой: у команды их семь, у записи шесть, и это данные. Совпадать должны
+ * ПЕРВАЯ колонка и высота строки - то, из чего складывается «одна анатомия». */
+const recordingsTable = read('../web/src/features/record/RecordingsTable.tsx');
+const firstCol = (src) => (src.match(/md:grid-cols-\[([^_\]]+)_/) || [])[1];
+check('teams and recordings share the checkbox column',
+  firstCol(teamView) && firstCol(teamView) === firstCol(recordingsTable),
+  firstCol(teamView) + ' vs ' + firstCol(recordingsTable));
+check('and the same row height',
+  /rounded-lg px-3 py-1\.5/.test(teamView) && /rounded-lg px-3 py-1\.5/.test(recordingsTable));
+check('and the same row border', /border border-stroke\/45/.test(teamView));
+/* И ШИРИНА СТРАНИЦЫ ТА ЖЕ. Teams была единственной, зажатой в 1180px по центру, - отсюда узкая колонка и
+ * пустая половина экрана рядом с Gallery и Skills. Проп убран целиком, а не только его вызов: проп без
+ * вызовов - приглашение снова разъехаться. */
+check('and no page centres itself at a different width',
+  !/max-w-\[1180px\]/.test(read('../web/src/shell/Surface.tsx'))
+  && !/<Page column/.test(teamView));
 check('one grid template for the header and the rows, or the labels sit over nothing',
   (teamView.match(/cn\(COLUMNS|cn\(\s*\n?\s*ROW, COLUMNS/g) || []).length >= 2);
 check('opening a team is a panel over the list, not a page away from it',

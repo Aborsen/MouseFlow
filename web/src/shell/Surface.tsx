@@ -67,16 +67,16 @@ export const usePageChrome = (): PageChrome => (
 );
 
 /** A screen's outermost box: the gutter this surface wants, and nothing else that isn't asked for. */
-export const Page = ({ children, className, column }: {
+/* `column` УБРАН, а не оставлен на будущее. Он центрировал страницу в 1180px «для экрана, чьи абзацы иначе
+ * растянутся на всю ширину», и им пользовалась одна страница - Teams, - из-за чего она выглядела рядом с
+ * остальными как другой продукт. Читаемость абзацев держит их собственный max-w в символах, а не обёртка
+ * всей страницы: заголовок, таблица и кнопки от неё только теряют.
+ *
+ * Проп, у которого не осталось ни одного вызова, - это приглашение снова разъехаться. */
+export const Page = ({ children, className }: {
   children: ReactNode;
   className?: string;
-  /** Centred at a readable width, for a screen whose paragraphs would otherwise run a desktop wide. */
-  column?: boolean;
 }) => {
   const { gutter } = usePageChrome();
-  return (
-    <div className={cn(gutter, column && 'mx-auto max-w-[1180px]', className)}>
-      {children}
-    </div>
-  );
+  return <div className={cn(gutter, className)}>{children}</div>;
 };

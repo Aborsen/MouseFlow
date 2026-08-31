@@ -130,9 +130,14 @@ const ROLE_TONE: Record<Role, 'primary' | 'accent' | 'secondary'> = {
  * the buttons beneath it, so the flexible name column absorbs a different amount in each and the two
  * disagree by exactly that difference. */
 /* The wide shape, and only where it fits - see the same note in SkillsView. */
-const COLUMNS = 'md:grid-cols-[1.5rem_minmax(11rem,1fr)_6.5rem_7rem_8rem_7rem_9.5rem]';
-const ROW = 'flex w-full flex-wrap items-center gap-x-3 gap-y-1 md:grid md:flex-nowrap rounded-lg px-3 py-2.5 border border-stroke/45 '
-  + 'bg-surface-card transition-colors duration-fast hover:border-stroke-hover';
+/* ТОЧНО ТА ЖЕ АНАТОМИЯ, ЧТО У RecordingsTable, и до этой правки шапка этого файла утверждала так, а код
+ * говорил иначе: чекбокс 1.5rem против 1.25rem, строка py-2.5 против py-1.5, тени нет. Совпадали только
+ * подписи колонок. Различия мелкие по отдельности и заметные вместе - именно на них и указали.
+ *
+ * Число колонок остаётся своим: у команды их семь, у записи шесть, и это данные, а не оформление. */
+const COLUMNS = 'md:grid-cols-[1.25rem_minmax(11rem,1fr)_6.5rem_7rem_8rem_7rem_9.5rem]';
+const ROW = 'flex w-full flex-wrap items-center gap-x-3 gap-y-1 md:grid md:flex-nowrap rounded-lg px-3 py-1.5 border border-stroke/45 '
+  + 'bg-surface-card shadow-rest transition-colors duration-fast hover:border-card-border-hover';
 const LABEL = 'text-[0.7rem] uppercase tracking-wide text-ink-inactive';
 const FIELD = 'h-9 rounded-lg border border-stroke bg-surface-card2 px-3 text-[0.86rem] text-ink-primary '
   + 'placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none';
@@ -373,7 +378,10 @@ export const TeamView = () => {
 
   return (
     <div className="relative min-h-full">
-      <Page column>
+      {/* БЕЗ `column`. Teams была единственной страницей, зажатой в 1180px по центру, - Gallery, Skills и
+          Record идут во всю ширину, - и рядом с ними она читалась как другой продукт. Абзацы при этом не
+          растягиваются: у них свой max-w-[74ch], и именно он делает текст читаемым, а не обёртка страницы. */}
+      <Page>
 
         {/* ------------------------------------------------------------ what this is, and the one act */}
         <header className="mb-5 flex flex-wrap items-start gap-5">
