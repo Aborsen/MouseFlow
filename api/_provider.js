@@ -74,6 +74,20 @@ export const MODELS = {
   openai: [...new Set([OPENAI_DEFAULT, 'gpt-5.6-luna', 'gpt-5.1', 'gpt-4.1'])],
 };
 
+/* MODELS IS THE MENU, and this list is not in it.
+ *
+ * api/models.js publishes MODELS as what the deployment offers, and api/chat.js validates the caller's
+ * choice against it - so a name added there becomes a model somebody can pick for the ASSISTANT. The
+ * instruction was OpenAI for documents only, with the assistant left on Anthropic, and adding
+ * gpt-5.6-terra to the menu would have quietly widened the assistant instead.
+ *
+ * But ask() refuses a model providerFor() does not recognise, so the writer's model has to be recognised
+ * somewhere. Here: callable, not offered. Two lists because there are genuinely two questions - what this
+ * deployment will call, and what it invites anybody to choose. */
+export const WRITER_MODELS = {
+  openai: ['gpt-5.6-terra'],
+};
+
 /** The model this deployment reaches for when a caller does not name one. */
 export const DEFAULT_MODEL = {
   anthropic: MODELS.anthropic[0],
@@ -85,6 +99,11 @@ export const PROVIDERS = Object.keys(MODELS);
 /** The provider a model belongs to, or null if it is not one we will call. */
 export function providerFor(model) {
   for (const [name, list] of Object.entries(MODELS)) {
+    if (list.includes(model)) return name;
+  }
+  /* And the models this deployment will call without offering - see WRITER_MODELS. Checked second, so a
+   * name that is in the menu keeps the menu's answer. */
+  for (const [name, list] of Object.entries(WRITER_MODELS)) {
     if (list.includes(model)) return name;
   }
   return null;

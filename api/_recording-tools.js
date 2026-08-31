@@ -613,6 +613,8 @@ function packSegments(segments, level) {
 import {
   PHRASES_SHOWN, TEXT_TOP_UP_MAX, searchRecordings, textStaleCount, textTopUp,
 } from './_search.mjs';
+import { randomBytes } from 'node:crypto';
+import { DOC_MODEL, newDocId, writeDoc } from './_docs.mjs';
 
 /* Насколько длинное имя доезжает до модели. Заголовки окон бывают абзацами - на живом аккаунте есть имя
  * в 200 символов про merge request, - и десяток таких в одном результате это страница текста вместо ответа.
@@ -626,7 +628,19 @@ export function recordingTools({ sql, userId }) {
     throw new TypeError('recordingTools needs the caller\'s own sql and user id');
   }
 
-  return [
+  /* СВОИ ЖЕ ИНСТРУМЕНТЫ ПО ИМЕНИ, и это нужно ровно одному из них.
+   *
+   * write_process_doc обязан читать расшифровку ТЕМ ЖЕ get_transcript, которым её читает ассистент: тот
+   * уже решает, что влезает, прореживает стретчи под потолок и СООБЩАЕТ, что выбросил. Написать здесь свою
+   * упаковку значило бы получить второе мнение о том, какие шаги существуют, - а ссылки [step N] в
+   * документе именно на том и стоят, что мнение одно.
+   *
+   * Присваивается после массива, потому что инструмент, который зовёт соседа, объявлен внутри этого же
+   * массива. К моменту вызова run() карта уже заполнена: собрать таблицу и вызвать инструмент нельзя в
+   * одном такте. */
+  let byName = new Map();
+
+  const list = [
     {
       /* ЧЕГО НЕ БЫЛО ВООБЩЕ. search_runs ищет по тому, что человек НАПЕЧАТАЛ АГЕНТУ - по цели, сводке и
        * ошибке прогона. По самим записям поиска не было: чтобы ответить «в какой записи я работал с
@@ -640,6 +654,112 @@ export function recordingTools({ sql, userId }) {
        * И НАПЕЧАТАННОГО ЗДЕСЬ НЕТ - не потому, что отфильтровано, а потому, что его нет в продукте:
        * записывается, что клавиша была нажата и какая, и ни одного слова из написанного. Поиск найдёт
        * имя поля, в которое печатали, и никогда - предложение, которое напечатали. */
+      /* ДОКУМЕНТ - ОБЪЕКТ, а не ответ в чате, и это было решением: процедуру правят, с ней спорят, её
+       * исправляет тот, кто действительно делает эту работу, и читают снова через квартал. Ответ в чате
+       * читают один раз и прокручивают дальше. Только вторая форма выдерживает «оно неверно, поправьте», а
+       * для сгенерированной процедуры это нормальный случай, а не сбой.
+       *
+       * МОДЕЛЬ ДРУГАЯ, И ЭТО ПРОСИЛИ: документы на gpt-5.6-terra с усилием medium, ассистент остаётся на
+       * Anthropic. И то и другое пришпилено в api/_docs.mjs и записывается в строку - «кто это написал»
+       * первый вопрос к любой сгенерированной процедуре. */
+      name: 'write_process_doc',
+      description:
+        'Write a process document from ONE recording and save it, so it can be read, edited and exported '
+        + 'later. Use it when somebody asks to document a process, write a procedure, or produce '
+        + 'instructions from a recording - not for answering a question about one, which get_transcript '
+        + 'does. Every line of the document cites the step it came from. The document says plainly what it '
+        + 'cannot tell anybody: typed text is never recorded, and any step ranges the transcript could not '
+        + 'deliver in full are named. Returns the document id and its title; the person reads it at '
+        + '/docs. It is written by a different model from you, on purpose.',
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          flowId: { type: 'string', description: 'The recording id list_recordings returned.' },
+          focus: {
+            type: 'string',
+            description: 'Optional. What the document should be about, in the asker\'s own words - use '
+              + 'this to pass on what they said rather than a summary of it.',
+          },
+        },
+        required: ['flowId'],
+      },
+      async run(input) {
+        const flowId = text(input.flowId, 80);
+        if (!flowId) {
+          return { data: { error: 'flowId is required - use an id list_recordings returned.' }, runIds: [] };
+        }
+
+        /* THE SAME READER THE ASSISTANT USES. See the note on byName: a second packer would disagree with
+         * this one about which steps exist, and the citations rest on there being one answer. */
+        const reader = byName.get('get_transcript');
+        if (!reader) {
+          return { data: { error: 'the transcript tool is not registered, so nothing can be documented.' }, runIds: [] };
+        }
+        const read = await reader.run({ flowId }, {});
+        if (!read.data || read.data.found === false || read.data.error) {
+          return { data: { error: read.data && read.data.error
+            ? String(read.data.error)
+            : 'that recording could not be read, so there is nothing to document.' }, runIds: [] };
+        }
+
+        const row = await flowRow(sql, userId, flowId);
+        let written;
+        try {
+          written = await writeDoc({
+            transcript: read.data,
+            name: row && row.name,
+            focus: text(input.focus, 400),
+          });
+        } catch (err) {
+          /* Причина словами, а не «не получилось»: отсутствующий ключ, отказ модели и обрыв на середине -
+           * три разных положения, и человеку с ними делать разное. */
+          return {
+            data: {
+              written: false,
+              error: 'the document was not written: '
+                + (err && err.message ? String(err.message).slice(0, 300) : 'unknown error')
+                + '. Nothing was saved.',
+            },
+            runIds: [],
+          };
+        }
+
+        const id = newDocId(randomBytes(8).toString('hex'));
+        await sql`
+          insert into user_doc (id, user_id, title, body, flow_ids, model, effort, revision)
+          values (${id}, ${userId}::uuid, ${written.title}, ${written.body},
+                  ${[flowId]}::text[], ${written.model}, ${written.effort}, 1)
+        `;
+        /* Первая ревизия пишется сразу, а не при первой правке: иначе у документа, отредактированного один
+         * раз, не было бы версии с тем, что написала модель, - то есть нельзя было бы отличить её текст от
+         * чужого. */
+        await sql`
+          insert into user_doc_version (doc_id, revision, title, body, written_by)
+          values (${id}, 1, ${written.title}, ${written.body}, 'model')
+        `;
+
+        return {
+          data: {
+            written: true,
+            docId: id,
+            title: written.title,
+            model: written.model,
+            effort: written.effort,
+            /* Сколько шагов документ на себя ссылается - счёт, а не список: он говорит, опирается ли
+             * процедура на запись или пересказывает её общими словами. */
+            citedSteps: citedCount(written.body),
+            words: written.body.split(/\s+/).filter(Boolean).length,
+            readAt: '/docs/' + id,
+            note: 'Saved. Tell the person the title and that it is at /docs, and that it can be edited '
+              + 'there - a generated procedure is usually wrong somewhere, and the person who does the job '
+              + 'is the one who knows where. Do not paste the whole document into your answer.',
+          },
+          runIds: [],
+        };
+      },
+    },
+    {
       name: 'search_recordings',
       description:
         'Find recordings by the NAMES OF THINGS THEY TOUCHED: window titles, control names, the container '
@@ -1534,4 +1654,20 @@ export function recordingTools({ sql, userId }) {
       },
     },
   ];
+
+  /* Заполняется ПОСЛЕ массива - см. объявление выше. */
+  byName = new Map(list.map((tool) => [tool.name, tool]));
+  return list;
+}
+
+/* Сколько шагов текст на себя ссылается. Здесь, а не в _docs.mjs, потому что это нужно ровно для одной
+ * строки в ответе инструмента; сама разборка ссылок живёт там, где живёт их формат. */
+function citedCount(body) {
+  const found = new Set();
+  for (const m of String(body || '').matchAll(/\[step\s+(\d+)\]/gi)) found.add(m[1]);
+  for (const m of String(body || '').matchAll(/\[steps\s+(\d+)\s*-\s*(\d+)\]/gi)) {
+    found.add(m[1]);
+    found.add(m[2]);
+  }
+  return found.size;
 }
