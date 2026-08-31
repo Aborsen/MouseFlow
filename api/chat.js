@@ -72,7 +72,10 @@ import { recordingTools } from './_recording-tools.js';
 /* Статическим импортом: файл - сосед в том же каталоге, и ленивый импорт защищал бы только от аварии
  * сборщика. От того, что действительно может отказать - самого запроса к flow_digest, - защищает
  * перехват на вызове: сводка это ускорение, а не условие того, что ассистент может ответить. */
-import { accountSummary, staleCount, topUp, TOP_UP_MAX } from './_digest.mjs';
+import {
+  ACTIVE_MAX_MS, EVENT_GAP_MAX_MS, TOP_UP_MAX,
+  accountSummary, appsByRecording, behaviour, digestOf, staleCount, topUp,
+} from './_digest.mjs';
 import { readSettings } from './admin.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -109,6 +112,13 @@ const ANSWER_TOKENS = 2000;
  * arrives here as `truncated`, i.e. as no answer at all. */
 const TOOL_OUTPUT_MAX = 12_000;
 const ROWS_MAX = 50;
+
+/* Потолки у дайджестовых инструментов. Хвост частых действий на большом аккаунте - по одному нажатию, а
+ * приложений и узоров больше десятка не читает никто: то, что за этими границами, стоило бы токенов на
+ * каждом круге и не изменило бы ни одного ответа. */
+const TOOL_ACTIONS = 12;
+const TOOL_APPS = 12;
+const TOOL_PATTERNS = 8;
 const STEPS_RETURNED = 60;
 const GROUPS_MAX = 30;
 
@@ -686,6 +696,128 @@ const TOOLS = {
     },
   },
 
+  /* THE RECORDINGS SIDE OF "where did my time go", which until now had no answer at all.
+   *
+   * summarize_time below groups RUNS - an agent carrying out a goal - and its application grouping covers
+   * only runs whose steps carry a url, so a desktop run contributes nothing to it. This groups the
+   * RECORDINGS: what a person did with their own hands, every one of them, desktop included. Neither is a
+   * subset of the other and both say which they are, because two honest answers to one question become a
+   * contradiction the moment either forgets to name its evidence.
+   *
+   * FOUR THINGS IN ONE CALL, deliberately, against the grain of summarize_time's groupBy. Three of them
+   * come out of one query, the model is limited to a handful of ROUNDS rather than to bytes, and "how was
+   * my week" wants all four - so a groupBy here would spend three of those rounds fetching parts of one
+   * picture. */
+  summarize_recordings: {
+    description:
+      'How the time inside this account\'s RECORDINGS was spent - the work somebody did with their own '
+      + 'hands, as opposed to summarize_time which measures agent runs. Four things at once: the split '
+      + 'between doing, waiting and being away from the machine; what was done, by kind and by action '
+      + 'name; which applications the time went to; and which sequences of applications repeat across '
+      + 'recordings. Use it for "how did my week go", "what do I keep doing", "how much of my day is '
+      + 'waiting", and "what should I automate". Its application figures cover every recording including '
+      + 'desktop ones, which summarize_time cannot see - so the two will differ, and neither is wrong.',
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        days: { type: 'integer', description: 'How far back to look, in days. Default 30, max 365.' },
+        compare: {
+          type: 'boolean',
+          description: 'Also return the window of the same length immediately before this one, as '
+            + '`previous`, so the two can be compared. Use it for "this week against last".',
+        },
+      },
+    },
+    async run(input, { sql, ids }) {
+      const days = clamp(input.days, 1, 365, 30);
+      const to = new Date();
+      const from = new Date(to.getTime() - days * 86_400_000);
+      const before = new Date(from.getTime() - days * 86_400_000);
+      const want = input.compare === true;
+
+      /* One transaction, so the two windows and the two groupings describe one instant. And query objects,
+       * not promises - see the comment on behaviour(); that distinction cost a production outage. */
+      const asked = [
+        behaviour(sql, ids, from.toISOString(), to.toISOString()),
+        appsByRecording(sql, ids, from.toISOString(), to.toISOString()),
+      ];
+      if (want) {
+        asked.push(behaviour(sql, ids, before.toISOString(), from.toISOString()));
+        asked.push(appsByRecording(sql, ids, before.toISOString(), from.toISOString()));
+      }
+      const answered = await sql.transaction(asked, { readOnly: true });
+
+      const shape = (rows, appRows) => {
+        const of = (kind) => rows.filter((r) => r.kind === kind);
+        const att = { active: 0, waiting: 0, away: 0 };
+        for (const r of of('attention')) if (r.label in att) att[r.label] = Number(r.ms) || 0;
+        const measured = att.active + att.waiting + att.away;
+        const kinds = of('action');
+        const moved = kinds.find((k) => k.label === 'move');
+        /* Каждая доля - от ИЗМЕРЕННОГО времени, и оно тут же рядом. Доля без своего знаменателя - это
+         * число, которое модель процитирует как «45% рабочего дня», чем оно не является. */
+        const shareOf = (ms) => (measured > 0 ? Math.round((ms / measured) * 1000) / 10 : 0);
+        return {
+          measuredSeconds: Math.round(measured / 1000),
+          attention: {
+            doingSeconds: Math.round(att.active / 1000),
+            waitingSeconds: Math.round(att.waiting / 1000),
+            awaySeconds: Math.round(att.away / 1000),
+            doingPercent: shareOf(att.active),
+            waitingPercent: shareOf(att.waiting),
+            awayPercent: shareOf(att.away),
+          },
+          events: kinds.reduce((was, k) => was + (Number(k.n) || 0), 0),
+          pointerMoves: Number(moved && moved.n) || 0,
+          byKind: kinds
+            .filter((k) => k.label !== 'move')
+            .map((k) => ({ kind: k.label, count: Number(k.n) || 0 }))
+            .sort((a, b) => b.count - a.count),
+          topActions: of('top')
+            .map((t) => ({ action: t.label, count: Number(t.n) || 0 }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, TOOL_ACTIONS),
+          applications: (appRows || [])
+            .map((a) => ({ name: a.name, seconds: Math.round((Number(a.ms) || 0) / 1000),
+              recordings: int(a.recordings) }))
+            .slice(0, TOOL_APPS),
+          /* Только повторные и только из двух шагов и больше - см. behaviour(). Узор из одного шага
+           * значит «запись не выходила из одного приложения», а не «процесс повторился». */
+          repeatedSequences: of('pattern')
+            .map((p) => ({ steps: p.label, recordings: Number(p.n) || 0 }))
+            .filter((p) => p.recordings > 1)
+            .sort((a, b) => b.recordings - a.recordings)
+            .slice(0, TOOL_PATTERNS),
+        };
+      };
+
+      const data = {
+        window: { days, from: from.toISOString(), to: to.toISOString() },
+        ...shape(answered[0], answered[1]),
+        /* Границы названы в результате, а не только в коде: «сколько я ждал» бессмысленно, пока не
+         * сказано, с какой паузы пауза считается ожиданием. */
+        boundaries: {
+          pauseUnderMsCountsAsDoing: ACTIVE_MAX_MS,
+          pauseOverMsCountsAsAway: EVENT_GAP_MAX_MS,
+          note: 'The three parts of the time add up to measuredSeconds exactly - every gap between two '
+            + 'events falls into one of them. This is time inside recordings, not a working day: the '
+            + 'hours when nothing was being recorded are stored nowhere.',
+        },
+      };
+      if (want) {
+        data.previous = {
+          window: { days, from: before.toISOString(), to: from.toISOString() },
+          ...shape(answered[2], answered[3]),
+        };
+        /* Сказано, что предыдущее окно ПУСТО, а не оставлено нулями: ноль без этого признака нельзя
+         * отличить от «не мерили», и модель прочитает его как падение до нуля. */
+        data.previous.hadRecordings = data.previous.measuredSeconds > 0 || data.previous.events > 0;
+      }
+      return { data, runIds: [] };
+    },
+  },
+
   find_repeated: {
     description:
       'Work that came round more than once: identical goals typed again, and skills run again. Use it '
@@ -896,7 +1028,107 @@ const TEAM_TOOLS = {
  * wrongly left in hands somebody another person's screen. New tools are personal-only until somebody adds
  * them here on purpose.
  */
-const TEAM_TOOL_NAMES = ['summarize_time', 'list_skills', 'find_repeated', 'search_runs', 'team_people'];
+/* ОДНА ЗАПИСЬ, БЕЗ ЧТЕНИЯ ЕЁ СОДЕРЖИМОГО.
+ *
+ * get_transcript отвечает на «что там делали» и стоит целого payload. Этот отвечает на «сколько это шло,
+ * где и сколько из этого - ожидание», и стоит одной короткой строки. Между «найти запись» и «прочитать
+ * запись» не было ничего, и модель платила расшифровкой за вопрос о длительности. */
+const recordingDigestTool = {
+  description:
+    'The measured shape of ONE recording without reading what is inside it: how long it ran, how that '
+    + 'time splits between doing, waiting and being away, how many events of each kind, its most '
+    + 'frequent actions, which applications its time went to, and the sequence of applications it moved '
+    + 'through. Use it when the question is how long, where, or how much waiting - it costs a fraction of '
+    + 'get_transcript, which you should use only when the question is what was actually DONE. Take the id '
+    + 'from list_recordings or from the account summary in your instructions.',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      flowId: { type: 'string', description: 'The recording id list_recordings returned.' },
+    },
+    required: ['flowId'],
+  },
+  async run(input, { sql, ids }) {
+    const flowId = text(input.flowId, 80);
+    if (!flowId) {
+      return { data: { error: 'flowId is required - use an id list_recordings returned.' }, runIds: [] };
+    }
+    const rows = await digestOf(sql, ids, flowId);
+    const r = rows[0];
+    /* Отсутствие и НЕДОСТУПНОСТЬ отвечаются одинаково, потому что WHERE фильтрует по владельцу: разные
+     * ответы на «нет такой» и «не ваша» рассказали бы, что чужая запись с таким идентификатором есть. */
+    if (!r) {
+      return { data: { found: false, error: 'No recording of this account has that id.' }, runIds: [] };
+    }
+    /* Дайджест может быть ещё не посчитан - запись сделана минуту назад или отредактирована. Тогда это
+     * говорится словами, а не отдаётся нулями: «0 событий» - утверждение о ЗАПИСИ. */
+    if (r.events == null) {
+      return {
+        data: {
+          found: true, id: r.client_id, name: r.name || null, at: r.at ? new Date(r.at).toISOString() : null,
+          summarised: false,
+          note: 'This recording has not been summarised yet, so none of the measured figures exist for it. '
+            + 'It usually happens within a request or two of the recording arriving. get_transcript reads '
+            + 'it in full regardless.',
+        },
+        runIds: [],
+      };
+    }
+    const n = (v) => Number(v) || 0;
+    const measured = n(r.active_ms) + n(r.waiting_ms) + n(r.away_ms);
+    const byKind = r.by_kind && typeof r.by_kind === 'object' ? r.by_kind : {};
+    return {
+      data: {
+        found: true,
+        summarised: true,
+        id: r.client_id,
+        name: r.name || null,
+        source: r.source || null,
+        at: r.at ? new Date(r.at).toISOString() : null,
+        events: n(r.events),
+        measuredSeconds: Math.round(measured / 1000),
+        doingSeconds: Math.round(n(r.active_ms) / 1000),
+        waitingSeconds: Math.round(n(r.waiting_ms) / 1000),
+        awaySeconds: Math.round(n(r.away_ms) / 1000),
+        pointerMoves: n(byKind.move),
+        byKind: Object.entries(byKind)
+          .filter(([kind]) => kind !== 'move')
+          .map(([kind, count]) => ({ kind, count: n(count) }))
+          .sort((a, b) => b.count - a.count),
+        topActions: Array.isArray(r.top_actions)
+          ? r.top_actions.map((t) => ({ action: t && t.action, count: n(t && t.n) }))
+            .filter((t) => t.action).slice(0, TOOL_ACTIONS)
+          : [],
+        applications: Array.isArray(r.apps)
+          ? r.apps.map((a) => ({ name: a && a.name, seconds: Math.round(n(a && a.ms) / 1000) }))
+            .filter((a) => a.name).slice(0, TOOL_APPS)
+          : [],
+        /* Один шаг здесь ОСТАВЛЕН, в отличие от сводок: «эта запись целиком прошла в Chrome» - честный
+         * факт об одной записи. Тавтологией это становилось только там, где называлось повторяющимся
+         * процессом. */
+        applicationSequence: r.pattern || null,
+        boundaries: {
+          pauseUnderMsCountsAsDoing: ACTIVE_MAX_MS,
+          pauseOverMsCountsAsAway: EVENT_GAP_MAX_MS,
+        },
+        note: 'Nothing here says what was typed - a key press is stored as which key. Use get_transcript '
+          + 'to read what was done, in order.',
+      },
+      runIds: [],
+    };
+  },
+};
+
+/* summarize_recordings ЕСТЬ в команде, и это не расширение прав: дашборд той же команды уже показывает эти
+ * самые три блока по тем же самым идентификаторам, и ассистента включили на командном виде именно затем,
+ * чтобы он объяснял числа, стоящие рядом с ним. Инструмента, которого нет, хватило бы ровно на «я не вижу
+ * того, что у вас на экране».
+ *
+ * recording_details в команде НЕТ. Он называет одну чужую запись по идентификатору - это уже не сводка, а
+ * шаг к её содержимому, и такие инструменты в командной беседе не регистрируются вовсе. */
+const TEAM_TOOL_NAMES = ['summarize_time', 'summarize_recordings', 'list_skills', 'find_repeated',
+  'search_runs', 'team_people'];
 
 /* The lookups above are the same for everybody, so they live at module scope. The recording tools are not:
  * recordingTools() takes the caller's own sql and user id and closes over them, and throws if either is
@@ -905,7 +1137,10 @@ const TEAM_TOOL_NAMES = ['summarize_time', 'list_skills', 'find_repeated', 'sear
  *
  * Names and specs are derived from the ASSEMBLED table, not from the static half. Deriving them from the
  * static half is exactly how a tool gets registered and then never offered to the model. */
-function toolsFor(ctx) {
+/* Экспортирован, чтобы инструмент можно было ВЫЗВАТЬ из теста. Он и так собирает таблицу целиком - это
+ * ровно та точка доступа, которая нужна проверке, и не шире: сами таблицы остаются приватными. Тот же
+ * урок, что с gather и shapeScope, и в этом файле он уже стоил одной пятисотки. */
+export function toolsFor(ctx) {
   /* A team question gets the whitelist above and stops there - no recording tools, so nothing that reads a
    * transcript or writes to one is even registered. Absent rather than guarded inside a tool: a tool that
    * exists and refuses is one refactor away from a tool that exists and does not. */
@@ -917,7 +1152,7 @@ function toolsFor(ctx) {
     }
     return table;
   }
-  const table = { ...TOOLS };
+  const table = { ...TOOLS, recording_details: recordingDigestTool };
   for (const tool of recordingTools({ sql: ctx.sql, userId: ctx.userId })) {
     table[tool.name] = tool;
   }

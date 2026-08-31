@@ -16,13 +16,16 @@
  * когда-то вынесли shapeScope, - и файлу пришлось выучить его дважды.
  */
 import { gather, shapeScope } from './insights.js';
-import { accountBlock, systemPrompt } from './chat.js';
+import { accountBlock, systemPrompt, toolsFor } from './chat.js';
 import { accountSummary, behaviour, staleCount, topUp } from './_digest.mjs';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const readHere = (p) => readFileSync(join(here, p), 'utf8').replace(/\r\n/g, '\n');
+const digest = readHere('_digest.mjs');
+const insights = readHere('insights.js');
 
 let pass = 0;
 let fail = 0;
@@ -364,6 +367,127 @@ group('правило про источники названо, а не обой
       && /if \(!team\) \{[\s\S]*?await accountSummary\(/.test(chat));
   check('и его отказ не отменяет ответа',
     /catch \(_\) \{ account = ''; \}/.test(chat));
+}
+
+/* ------------------------------------------------------- инструменты поверх дайджестов */
+
+const TOOL_CTX = (sql) => ({ sql, ids: IDS, userId: IDS[0], team: null });
+const toolTable = (sql) => toolsFor({ sql, userId: IDS[0], team: null });
+
+group('инструменты зарегистрированы там, где им положено');
+{
+  const personal = toolTable(fakeNeon());
+  check('в личной области есть оба новых',
+    !!personal.summarize_recordings && !!personal.recording_details,
+    Object.keys(personal).join(', '));
+  /* Командная таблица собирается из белого списка, а не из личной с вычетом: инструмент, которого в
+   * таблице нет, нельзя вызвать никаким уточнением схемы. */
+  const asTeam = toolsFor({ sql: fakeNeon(), userId: IDS[0], team: { id: 't1', name: 'Ops' } });
+  check('в командной есть сводка по записям',
+    !!asTeam.summarize_recordings, Object.keys(asTeam).join(', '));
+  check('и НЕТ ни одной записи по идентификатору',
+    !asTeam.recording_details && !asTeam.get_transcript && !asTeam.list_recordings,
+    Object.keys(asTeam).join(', '));
+  /* Описание - единственное, по чему модель выбирает инструмент. Два «где ушло время» без сказанного
+   * различия - это выбор наугад, а потом ответ, ссылающийся не на то тело доказательств. */
+  check('и описание говорит, чем эта сводка отличается от summarize_time',
+    /RECORDINGS/.test(personal.summarize_recordings.description)
+      && /summarize_time/.test(personal.summarize_recordings.description)
+      && /desktop/.test(personal.summarize_recordings.description));
+  check('а описание одной записи говорит, когда дешевле оно, а когда нужна расшифровка',
+    /get_transcript/.test(personal.recording_details.description)
+      && /without reading what is inside/.test(personal.recording_details.description));
+}
+
+group('сводка по записям вызывается и складывается');
+{
+  const sql = fakeNeon();
+  let out = null;
+  let problem = null;
+  try {
+    out = await toolTable(sql).summarize_recordings.run({ days: 7, compare: true }, TOOL_CTX(sql));
+  } catch (e) { problem = e && e.message ? e.message : String(e); }
+  /* Её запросы тоже едут в транзакцию - значит appsByRecording обязан быть обычной функцией. Тот класс
+   * ошибки, который снял дашборд, снял бы и этот инструмент. */
+  check('summarize_recordings проходит на пустом аккаунте', problem === null, problem);
+  check('и это одна транзакция, read-only, с четырьмя запросами при compare',
+    sql.seen.transactions === 1 && sql.seen.readOnly[0] === true, JSON.stringify(sql.seen));
+
+  if (out) {
+    const d = out.data;
+    check('окно названо в результате, а не подразумевается',
+      d.window && d.window.days === 7 && !!d.window.from && !!d.window.to);
+    check('три части времени есть и на нулях, и доли не NaN',
+      d.attention && d.attention.doingPercent === 0 && d.attention.waitingPercent === 0
+        && d.attention.awayPercent === 0 && d.measuredSeconds === 0, JSON.stringify(d.attention));
+    /* Границы - в РЕЗУЛЬТАТЕ. «Сколько я ждал» бессмысленно, пока не сказано, с какой паузы пауза
+     * считается ожиданием, и число без своего определения читается как объективное. */
+    check('границы названы числами прямо в результате',
+      d.boundaries && d.boundaries.pauseUnderMsCountsAsDoing > 0
+        && d.boundaries.pauseOverMsCountsAsAway > d.boundaries.pauseUnderMsCountsAsDoing);
+    check('и сказано, что это время ВНУТРИ записей, а не рабочий день',
+      /not a working day/.test(String(d.boundaries.note)));
+    check('движение отделено от остальных родов',
+      Object.prototype.hasOwnProperty.call(d, 'pointerMoves') && Array.isArray(d.byKind));
+    /* Пустое предыдущее окно ОТМЕЧЕНО, а не оставлено нулями: ноль без признака нельзя отличить от «не
+     * мерили», и модель прочитает его как падение до нуля. */
+    check('предыдущее окно есть и говорит, было ли в нём что-то вообще',
+      d.previous && d.previous.window && d.previous.hadRecordings === false, JSON.stringify(d.previous));
+    check('а без compare предыдущего окна нет вовсе',
+      !(await toolTable(fakeNeon()).summarize_recordings.run({ days: 7 }, TOOL_CTX(fakeNeon())))
+        .data.previous);
+  }
+}
+
+group('одна запись: чего нет и что не посчитано - разные ответы');
+{
+  /* Отсутствие и НЕДОСТУПНОСТЬ отвечаются одинаково нарочно: WHERE фильтрует по владельцу, и разные
+   * ответы на «нет такой» и «не ваша» рассказали бы, что чужая запись с таким идентификатором есть. */
+  const empty = fakeNeon();
+  const missing = await toolTable(empty).recording_details.run({ flowId: 'nope' }, TOOL_CTX(empty));
+  check('чужой или несуществующий идентификатор - один и тот же ответ',
+    missing.data.found === false && /No recording of this account has that id/.test(missing.data.error),
+    JSON.stringify(missing.data));
+  check('и без идентификатора инструмент говорит, откуда его взять',
+    /list_recordings/.test(
+      (await toolTable(empty).recording_details.run({}, TOOL_CTX(empty))).data.error));
+
+  /* НЕ РАЗОБРАННАЯ запись - словами, а не нулями. «0 событий» это утверждение о ЗАПИСИ, а не о том, что
+   * посчитано, и самая свежая запись - как раз та, о которой скорее всего спросят. */
+  const fresh = fakeNeon({
+    rows: (text) => (/from user_flow f/.test(text) && /flow_digest/.test(text)
+      ? [{ client_id: 'rfresh', name: 'just now', source: 'desktop', at: '2026-08-31T17:00:00.000Z',
+        version: null, events: null, active_ms: null, waiting_ms: null, away_ms: null,
+        by_kind: null, top_actions: null, apps: null, pattern: null }]
+      : []),
+  });
+  const notYet = await toolTable(fresh).recording_details.run({ flowId: 'rfresh' }, TOOL_CTX(fresh));
+  check('найденная но не разобранная запись говорит это, а не отдаёт нули',
+    notYet.data.found === true && notYet.data.summarised === false
+      && !Object.prototype.hasOwnProperty.call(notYet.data, 'events')
+      && /has not been summarised yet/.test(notYet.data.note), JSON.stringify(notYet.data));
+  check('и подсказывает, что расшифровка читается всё равно',
+    /get_transcript/.test(notYet.data.note));
+}
+
+group('имя приложения не зависит от регистра');
+{
+  /* «claude 201 мин» и «Claude 37 мин» были двумя приложениями. Регистр - НЕ догадка: это та же строка,
+   * и свёртка не может склеить ничего, что не было одним. В отличие от «chrome» против «Google Chrome» -
+   * разных строк, для которых нужна таблица, и она оставлена в границах.
+   *
+   * Проверяются ОБА файла: писатель дайджестов и запрос дашборда. Один без другого значил бы, что
+   * ассистент и страница называют одно приложение по-разному. */
+  for (const [what, src] of [['писатель дайджестов', digest], ['запрос дашборда', insights]]) {
+    check(what + ' приводит имя приложения к нижнему регистру',
+      /then left\(lower\(trim\(e\.v->'context'->>'app'\)\), 120\)/.test(src), what);
+  }
+  /* Формула изменилась - значит версия. Иначе на живом аккаунте остались бы строки, посчитанные по старому
+   * правилу, и «claude» с «Claude» жили бы дальше рядом с исправленным кодом. */
+  check('и версия формулы поднята, чтобы старые строки пересчитались',
+    /export const DIGEST_VERSION = 2;/.test(digest));
+  check('а история изменения формулы записана рядом с числом',
+    /1 -> 2: application names are case-folded/.test(digest));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

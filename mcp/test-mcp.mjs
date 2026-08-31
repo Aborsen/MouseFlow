@@ -882,12 +882,31 @@ group('the assistant on a team can count, and cannot read or write');
 const chatSrc = read('../api/chat.js');
 const listed = (chatSrc.match(/const TEAM_TOOL_NAMES = \[([^\]]*)\]/) || [])[1] || '';
 const allowed = [...listed.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
-check('it is a whitelist, and these five are on it',
-  allowed.length === 5 && ['summarize_time', 'list_skills', 'find_repeated', 'search_runs', 'team_people']
-    .every((n) => allowed.includes(n)), allowed.join(', '));
-for (const forbidden of ['get_run', 'get_transcript', 'list_recordings', 'remove_steps', 'undo_edit']) {
+/* THE LIST IS PINNED BY EXACT MEMBERSHIP, both ways, and the count is checked so a sixth name cannot
+ * arrive quietly. It grew from five to six once, on purpose:
+ *
+ * summarize_recordings was added because the team DASHBOARD already shows those same three blocks over
+ * those same accounts, and the assistant exists on the team view to explain the numbers standing next to
+ * it. A tool that is absent there buys nothing but "I cannot see what is on your screen".
+ *
+ * recording_details was NOT added, and that is the line: it names ONE colleague's recording by id, which
+ * is a step towards its contents rather than a count over many. It is registered only outside a team
+ * scope - see the check below that the recording tools are not registered at all there. */
+const TEAM_ALLOWED = ['summarize_time', 'summarize_recordings', 'list_skills', 'find_repeated',
+  'search_runs', 'team_people'];
+check('it is a whitelist, and it is exactly these six',
+  allowed.length === TEAM_ALLOWED.length
+    && TEAM_ALLOWED.every((n) => allowed.includes(n))
+    && allowed.every((n) => TEAM_ALLOWED.includes(n)), allowed.join(', '));
+for (const forbidden of ['get_run', 'get_transcript', 'list_recordings', 'remove_steps', 'undo_edit',
+  'recording_details']) {
   check(`${forbidden} is NOT reachable about a colleague`, !allowed.includes(forbidden));
 }
+/* И оно не просто отсутствует в списке - оно РЕГИСТРИРУЕТСЯ на другой ветке, за той же дверью, что и
+ * остальные инструменты записи. Отсутствие в списке и отсутствие в таблице - разные гарантии. */
+check('recording_details is registered only outside a team scope',
+  /const table = \{ \.\.\.TOOLS, recording_details: recordingDigestTool \};/.test(chatSrc)
+  && chatSrc.indexOf('if (ctx.team)') < chatSrc.indexOf('recording_details: recordingDigestTool'));
 check('the recording tools are not even registered in a team scope',
   /if \(ctx\.team\) \{[\s\S]{0,400}?return table;/.test(chatSrc)
   && chatSrc.indexOf('if (ctx.team)') < chatSrc.indexOf('recordingTools({ sql: ctx.sql'));

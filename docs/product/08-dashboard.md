@@ -136,7 +136,7 @@ things that want a decision, then the flat tables.
 | **Activity by day** | Runs per day, with the finished/failed split. Bars, scaled to the tallest day. Each bar is also the drill-down into that day — see Controls. |
 | **How the time was spent** | The measured time inside recordings, split three ways: **doing**, **waiting or reading**, **away from the machine**. One bar rather than three tiles, because the three parts add up to the whole by construction and drawing them apart invites a reader to add them up and get something else. Both boundaries are printed under the numbers they decide — a share of "waiting" is unreadable until you know how long a pause has to be to count. The comparison with the previous window is in **points**, never as a percentage: 46% against 38% is eight points, and "+18%" is the commonest way a dashboard misleads without containing a false number. |
 | **What was actually done** | Events by kind, then the individual actions by name — `Key Backspace`, `Scroll Down`. Pointer movement is held out of both lists and stated on its own line: it is 86% of all events, and ranked beside the clicks it buries them. Typed text is never stored, so this can say how often Backspace was pressed and can never say what was written. |
-| **Processes that look alike** | The sequence of applications a recording moved through, consecutive repeats collapsed, listing only the sequences that appear in **more than one** recording *and* that have **at least two steps**. The second condition is not a tidiness: a one-step "pattern" says only that a recording never left one application, and under this heading "6× Google Chrome" read as *you did the Chrome process six times*, which the data does not support and nobody can act on. On the live account that filter removed three of eight repeats, and all three were that. This is *Worth automating* asked of the recordings instead of the runs — work being done by hand twice, before anybody has written a skill for it. It claims a candidate, not a saving: the same three applications in the same order can be two different jobs, which is why the heading says *look alike*. |
+| **Processes that look alike** | The sequence of applications a recording moved through, consecutive repeats collapsed, listing only the sequences that appear in **more than one** recording *and* that have **at least two steps**. Names are case-folded, so `claude` and `Claude` are one application rather than two. The second condition is not a tidiness: a one-step "pattern" says only that a recording never left one application, and under this heading "6× Google Chrome" read as *you did the Chrome process six times*, which the data does not support and nobody can act on. On the live account that filter removed three of eight repeats, and all three were that. This is *Worth automating* asked of the recordings instead of the runs — work being done by hand twice, before anybody has written a skill for it. It claims a candidate, not a saving: the same three applications in the same order can be two different jobs, which is why the heading says *look alike*. |
 | **Worth automating** | Goals that ran more than once in the window, with the times and what those runs took. **Not a saving** — the tooltip says so, and so does the gaps list. Matching is on identical goal text (see the limit below). |
 | **What went wrong** | Failure reasons, grouped, with how often and an example run. |
 | **Where the time went** | Per application (or per origin for browser flows): recordings, runs, seconds and share. Plus the **unattributed** slice as a named row with its own explanation, so the shares add to one and a dataset where most time cannot be placed *looks* like one. |
@@ -259,9 +259,29 @@ Account-wide (`api/chat.js`):
 |---|---|
 | `search_runs` | `days` (≤365), `outcome`, `flowId`, `contains`, `limit` (≤50) |
 | `get_run` | `runId` — the goal, outcome, timing and up to 60 steps |
-| `summarize_time` | `days`, `groupBy: day \| application \| skill` |
+| `summarize_time` | `days`, `groupBy: day \| application \| skill` — **runs**, and its applications only from runs whose steps carry a url |
+| `summarize_recordings` | `days`, `compare` — **recordings**: the doing/waiting/away split, actions by kind and by name, applications, and the repeated application sequences. Four things in one call |
+| `recording_details` | `flowId` — the measured shape of one recording without reading what is in it |
 | `list_skills` | `kind`, `limit` |
 | `find_repeated` | `days` (default 90) — identical goal text, run more than once |
+
+**`summarize_time` and `summarize_recordings` are not rivals, and the descriptions say so to the model.**
+One groups agent runs; the other groups what a person did by hand. `summarize_time`'s application figures
+can only cover runs whose steps carry a url, so a desktop run contributes nothing to them;
+`summarize_recordings` covers every recording, desktop included. Neither is a subset of the other, so the
+two *will* give different answers to "where did my time go" — and that is only a contradiction if either
+forgets to name its evidence, which is why both descriptions do.
+
+`summarize_recordings` returns four things at once rather than taking a `groupBy` like its neighbour. Three
+of them come out of one query, the model is limited to a handful of **rounds** rather than to bytes, and
+"how did my week go" wants all four — so a `groupBy` here would spend three rounds fetching parts of one
+picture.
+
+`recording_details` fills the gap between *find a recording* and *read a recording*: it answers how long,
+where, and how much of it was waiting, off one short row, where `get_transcript` costs a whole payload. A
+recording whose digest is not derived yet is told so **in words** — never as zeros, because "0 events" is a
+claim about the recording rather than about what has been counted, and the newest recording is the one most
+likely to be asked about.
 
 One recording at a time (`api/_recording-tools.js`, registered alongside):
 

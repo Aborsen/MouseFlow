@@ -22,8 +22,12 @@
  */
 
 /* WHICH FORMULA PRODUCED A ROW. Bump this and every digest is recomputed on the next read - no migration,
- * no backfill script. A cache with no version needs a person to remember to clear it. */
-export const DIGEST_VERSION = 1;
+ * no backfill script. A cache with no version needs a person to remember to clear it.
+ *
+ * 1 -> 2: application names are case-folded. Until then "claude" and "Claude" were two applications, two
+ * rows and two patterns. This is the first time the mechanism has actually been used, and using it is the
+ * whole argument for having built it: the change is one line of SQL and no migration. */
+export const DIGEST_VERSION = 2;
 
 /* A gap longer than this inside a recording is somebody away from the machine, not time spent in an
  * application. Counting it would let one abandoned recording claim three hours in a CRM. */
@@ -132,8 +136,16 @@ export function topUp(sql, ids, limit = TOP_UP_MAX) {
              case
                when e.v->>'url' ~ '^https?://'
                  then left(lower(regexp_replace(e.v->>'url', '^(https?://[^/?#]+).*$', '\\1')), 120)
+               /* lower(), like the url branch immediately above it, and for the same reason rather than
+                  for tidiness: "claude" and "Claude" are ONE application named twice, and on the live
+                  account they were two rows of 201 and 37 minutes. Windows reports a process name and is
+                  already lowercase; macOS reports a display name and is capitalised.
+                  NOT the same thing as "chrome" against "Google Chrome" - those are different STRINGS, and
+                  folding them would need a table somebody types, where one wrong row silently merges two
+                  real applications. That one is left alone and written down in the limits. This one is the
+                  same string, so folding it cannot merge anything that was not already one thing. */
                when nullif(trim(e.v->'context'->>'app'), '') is not null
-                 then left(trim(e.v->'context'->>'app'), 120)
+                 then left(lower(trim(e.v->'context'->>'app')), 120)
              end as origin
       from stale s
       cross join lateral jsonb_array_elements(
@@ -444,4 +456,49 @@ export async function accountSummary(sql, ids, options = {}) {
       apps: Array.isArray(r.apps) ? r.apps.slice(0, 4).map((a) => a && a.name).filter(Boolean) : [],
     })),
   };
+}
+
+
+/* WHERE THE RECORDED TIME WENT, BY APPLICATION - out of the digests, and it answers a question the
+ * dashboard's own per-application query cannot.
+ *
+ * THE TWO ARE NOT RIVALS AND MUST NOT BE READ AS ONE. api/insights.js groups application time out of
+ * RUNS, and only runs whose steps carry a url - which desktop runs do not - plus agent step time. This
+ * groups out of RECORDINGS, every one of them, desktop included. So "where did my time go" has two honest
+ * answers over two different bodies of evidence, and the only way that becomes a contradiction is if
+ * either one forgets to say which it is. Both descriptions say it.
+ *
+ * A plain function returning a query, like everything else here that goes into a transaction. */
+export function appsByRecording(sql, ids, fromIso, toIso) {
+  return sql`
+    with mine as (
+      select d.apps
+      from flow_digest d
+      join user_flow f on f.user_id = d.user_id and f.client_id = d.client_id
+      where d.user_id = any(${ids}::uuid[]) and f.deleted_at is null and f.kind = 'recorded'
+        and coalesce(f.created_at, f.updated_at) >= ${fromIso}
+        and coalesce(f.created_at, f.updated_at) <= ${toIso}
+    )
+    select a->>'name' as name,
+           sum((a->>'ms')::numeric)::numeric as ms,
+           count(*)::int as recordings
+    from mine, jsonb_array_elements(mine.apps) a
+    where nullif(trim(a->>'name'), '') is not null
+    group by 1
+    order by ms desc nulls last
+  `;
+}
+
+/* Один дайджест, по идентификатору записи. Проверка владения - в WHERE по user_id, как у всего остального
+ * в этом файле: идентификатор записи приходит от модели и сам по себе не является правом. */
+export function digestOf(sql, ids, flowId) {
+  return sql`
+    select f.client_id, f.name, f.source, coalesce(f.created_at, f.updated_at) as at,
+           d.version, d.events, d.active_ms, d.waiting_ms, d.away_ms,
+           d.by_kind, d.top_actions, d.apps, d.pattern, d.derived_at, f.updated_at
+    from user_flow f
+    left join flow_digest d on d.user_id = f.user_id and d.client_id = f.client_id
+    where f.user_id = any(${ids}::uuid[]) and f.client_id = ${flowId} and f.deleted_at is null
+    limit 1
+  `;
 }

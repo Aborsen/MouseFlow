@@ -277,6 +277,13 @@ GET  /api/chat
 
 The grounded assistant. Read-only tools, the SQL run here, every lookup listed. Rate: 20/min per account.
 
+The tools it may run are listed in [08 — Dashboard](08-dashboard.md#the-tools). Two of them read the
+per-recording digests rather than the runs: `summarize_recordings` (the doing/waiting/away split, the
+actions, the applications and the repeated sequences, optionally against the previous window of the same
+length) and `recording_details` (one recording's measured shape without its contents). The first is on the
+team whitelist because the team dashboard already shows those blocks over those accounts; the second is
+not, because it names one colleague's recording by id.
+
 In a **personal** scope the request also carries an account summary into the system prompt — all-time
 counts, how the recorded time was spent, the commonest actions, the repeated application sequences, and the
 12 most recent recordings with the ids `get_transcript` takes. Three short queries over `flow_digest`, about

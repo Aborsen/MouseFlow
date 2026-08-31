@@ -491,8 +491,16 @@ export async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
              case
                when e.v->>'url' ~ '^https?://'
                  then left(lower(regexp_replace(e.v->>'url', '^(https?://[^/?#]+).*$', '\\1')), 120)
+               /* lower(), like the url branch immediately above it, and for the same reason rather than
+                  for tidiness: "claude" and "Claude" are ONE application named twice, and on the live
+                  account they were two rows of 201 and 37 minutes. Windows reports a process name and is
+                  already lowercase; macOS reports a display name and is capitalised.
+                  NOT the same thing as "chrome" against "Google Chrome" - those are different STRINGS, and
+                  folding them would need a table somebody types, where one wrong row silently merges two
+                  real applications. That one is left alone and written down in the limits. This one is the
+                  same string, so folding it cannot merge anything that was not already one thing. */
                when nullif(trim(e.v->'context'->>'app'), '') is not null
-                 then left(trim(e.v->'context'->>'app'), 120)
+                 then left(lower(trim(e.v->'context'->>'app')), 120)
              end as origin
       from flow f,
         /* The payload is client-written JSON and nothing validates its inner shape on the way in, so

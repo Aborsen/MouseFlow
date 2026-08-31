@@ -290,19 +290,23 @@ These are not bugs and no amount of work inside the current design removes them.
 
 ---
 
-### One application, two names, and the two never match
+### One application, two names, and only half of it is fixable here
 
 An application is named by whatever the platform reports, and the two halves report differently: the Windows
-agent gives the **process** name (`chrome`), the macOS agent gives the **display** name (`Google Chrome`). So
-the same browser produces two different strings, and every place that groups by application name treats them
-as two applications — the per-application split counts them separately, and a repeated sequence recorded on
-both machines is never recognised as repeated.
+agent gives the **process** name (`chrome`), the macOS agent gives the **display** name (`Google Chrome`).
 
-It is left alone rather than patched, and the reason is that the obvious fix is a guess: any mapping from
-`Google Chrome` to `chrome` is a table somebody types, it has to be right for every application anybody
-records, and a wrong row silently merges two real applications into one. That is a worse failure than two
-rows a reader can see and add up themselves. Worth doing properly — the agent knows which platform it is on
-and could emit both names — and not worth doing by inference here.
+Half of that turned out not to be this problem at all. `claude` and `Claude` are the *same string* in two
+cases — on the live account they were two rows of 201 and 37 minutes — and folding case cannot merge
+anything that was not already one thing. So application names are now lowercased where they are derived, in
+both `api/_digest.mjs` and `api/insights.js`, exactly as origins already were. The digest version went 1 → 2
+and every row recomputed; the totals were unchanged to the digit, which is the check that mattered.
+
+**`chrome` against `Google Chrome` remains**, and is deliberately left alone. Those are different strings,
+so any fix is a table somebody types: it has to be right for every application anybody records, and one
+wrong row silently merges two real applications into one — a worse failure than two rows a reader can see
+and add up. Worth doing properly, since the agent knows which platform it is on and could emit both names,
+and not worth doing by inference here. Until then the per-application split counts them separately, and a
+process recorded on both machines is not recognised as repeated.
 
 ### The Dashboard drills into time, and not yet into anything else
 
