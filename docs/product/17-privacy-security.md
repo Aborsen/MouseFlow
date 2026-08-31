@@ -2,6 +2,24 @@
 
 Read this before sharing the link, and before putting the agent on a machine that is not yours.
 
+## What is searchable, and what does not exist to be searched
+
+`flow_text` (see [15 — Data model](15-data-model.md)) makes recordings findable by the **names of things
+that were touched**: window titles, control names, the container a control sat in, applications, page
+origins. All of that was already on screen — in the transcript, in `list_recordings`, and for window titles
+on the team dashboard. Indexing it changes findability, not visibility.
+
+**Typed text is not indexed because it is not recorded.** The recorder stores that a key was pressed and
+which key; no sentence written by a person exists anywhere in this product. So a search finds the name of
+the field somebody typed into and can never find what they put in it — and the assistant's search tool
+states this in its description and in every result it returns, so a model cannot report "not found" where
+the truthful answer is "that is not stored".
+
+The two derived tables differ on purpose and say so in their own migrations: `flow_digest` holds no text
+from anybody's screen, `flow_text` holds text as its whole reason for existing. Keeping that distinction in
+the files themselves is deliberate — a rule you can only find by reading the other table's migration is a
+rule in two places.
+
 ## What is captured
 
 | | Captured | Not captured |

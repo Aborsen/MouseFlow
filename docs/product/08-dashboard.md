@@ -287,10 +287,23 @@ One recording at a time (`api/_recording-tools.js`, registered alongside):
 
 | Tool | Arguments |
 |---|---|
+| `search_recordings` | `text`, `limit` (≤25) — find recordings by the **names of things they touched** |
 | `list_recordings` | `limit` (≤40), `source: web \| desktop` |
 | `get_transcript` | `flowId`, `fromStep`, … — the same derivation the panel shows |
 | `remove_steps` | `flowId`, the step numbers — **the only tool in the assistant that writes** |
 | `undo_edit` | `flowId` — puts the previous payload back |
+
+**`search_recordings` is the only way to reach the recordings by text**, and until it existed there was
+none: `search_runs` searches what somebody typed *at an agent* — the goal, the summary, the error — so "which
+recording was I working with invoices in" meant reading transcripts one at a time, and there are 45 of them
+on the live account. It matches window titles, control names, the container a control sat in, applications
+and page origins, ranks by how many of a recording's names matched, and hands back the matched names so a
+result explains itself. A substring, so a stem finds its longer forms; see
+[15 — Data model](15-data-model.md) for why not full-text search.
+
+It **cannot** find what anybody typed, and the tool says so twice — in its description and in every result —
+because that is the difference between "I could not find it" and "that does not exist". Personal scope only:
+it names a recording by id, which is a step towards its contents rather than a count over many.
 
 The derivation is **not repeated** in the tools module. `api/_transcript.js` turns a payload into a
 transcript and is the only thing that does; a second derivation would drift, and then the panel on the

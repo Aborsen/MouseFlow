@@ -167,6 +167,55 @@ One join direction is load-bearing: the upsert joins **from the stale rows**, no
 recording with no events has no row in any grouping, and joining the other way would leave it stale for
 ever — recomputed on every request and never satisfying the counter.
 
+## `flow_text` — what a recording touched, by name
+
+`db/016_flow_text.sql`, derived by `api/_search.mjs`
+
+**Why a second table and not more columns on `flow_digest`.** That table deliberately holds no text from
+anybody's screen, and its own migration says so, because a table added for speed that also held content
+would put the privacy rules in two places. This one holds text *on purpose*, so its rules live beside it —
+a rule you cannot reach by reading only one of the two files is a rule in two places again.
+
+**What is in it.** The names of things that were touched: window titles, control names, the container a
+control sat in, application names, page origins. Every one of them is already shown by the transcript and by
+`list_recordings`, and window titles are already on the team dashboard. **Nothing new becomes visible; what
+changes is that it can be found.**
+
+**What cannot be in it**, and not because it is filtered: the recorder stores that a key was pressed and
+which key, and no sentence anybody wrote exists in this product at all. A search here finds the *name of the
+field* somebody typed into and can never find the words they put in it. The tool says so in its own
+description and again in every result, because a model that does not know this answers "I could not find it"
+where the honest answer is "that does not exist".
+
+| Column | Notes |
+|---|---|
+| `user_id`, `client_id` | composite primary key, the same key `user_flow` and `flow_digest` use |
+| `version` | which formula produced the row — same mechanism as `flow_digest.version` |
+| `words` | every distinct phrase, lowercased, newline-separated. **A text blob rather than a `tsvector`**, and that is a decision: control names are interface labels in whatever language the application is in — the live account has `Снимок экрана` and `Prompt` inside one recording — and full-text search must be told a language before it can stem. A substring needs no language, no extension and no configuration, and finds `накладную` inside `накладные`. The cost is an index it cannot use, over a table of 80 kB where the payloads are 28.5 MB |
+| `phrases` | the commonest few in their **original spelling**, so a result can say *why* it matched rather than only that it did |
+| `distinct_n` | how many distinct names there were **before** the cap on `words`, so a truncated index says it is truncated instead of quietly answering "nothing found" |
+| `derived_at` | |
+
+**Normalised in JavaScript, not in SQL**, and this is the one place that ordering matters. The names are
+already normalised once — `plainName` and `plainTitle` in `api/_names.mjs` — and that is the definition the
+transcript *displays*: Chrome hands over a tab name as a whole sentence with a memory reading inside it, and
+the transcript strips that before showing it. Writing those rules again in SQL would give two definitions of
+one name, and the index would then be searchable by text nobody was ever shown. So SQL groups the raw names
+(a few hundred rows per recording rather than a payload) and the module that owns the rules applies them.
+
+### The batch is picked once, and that was a data-losing bug
+
+It used to be picked twice: the names query took `limit N` of the stale recordings, and a second query then
+took `limit N` of whatever was **still** stale and wrote an *empty* index for each. Every batch quietly
+ruined as many recordings as it indexed — they stopped being stale with nothing in them, so they were never
+re-derived and could never be found again.
+
+Measured: `снимок экрана` appears in 81 events of three recordings and appeared in none of the 45 index
+rows; after the fix the account holds **2326 distinct names against 906**, so 61% of them were being lost.
+The batch is now a list of ids, everything works from that list, and a recording in it gets a row whether or
+not it had a single name — which is the other half of the same rule, and the one `flow_digest` had to learn
+from the opposite direction.
+
 ## `run_queue` — work asked for in one place and done in another
 
 `db/007_run_queue.sql`, plus `db/010_run_queue_loop.sql`

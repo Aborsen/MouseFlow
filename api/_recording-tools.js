@@ -606,6 +606,19 @@ function packSegments(segments, level) {
 
 /* ------------------------------------------------------------------------------ the tools */
 
+/* Поиск живёт в отдельном файле по причине, записанной в нём же: flow_digest нарочно не держит текста с
+ * экрана, а flow_text держит - и правила про него стоят рядом с ним. Импорт СТАТИЧЕСКИЙ, в отличие от
+ * расшифровки ниже: расшифровка приходит из файла, которого может не быть на данном развёртывании, а этот
+ * модуль лежит здесь же, и его отсутствие - авария сборки, а не состояние развёртывания. */
+import {
+  PHRASES_SHOWN, TEXT_TOP_UP_MAX, searchRecordings, textStaleCount, textTopUp,
+} from './_search.mjs';
+
+/* Насколько длинное имя доезжает до модели. Заголовки окон бывают абзацами - на живом аккаунте есть имя
+ * в 200 символов про merge request, - и десяток таких в одном результате это страница текста вместо ответа.
+ * Само имя в индексе не обрезано, обрезано только показанное. */
+const SHOWN_NAME_MAX = 90;
+
 export function recordingTools({ sql, userId }) {
   /* Loud rather than lenient. A tool bound to no user, or to no database, must not exist at all -
    * every guarantee in this file rests on the id being the one the session resolved to. */
@@ -614,6 +627,100 @@ export function recordingTools({ sql, userId }) {
   }
 
   return [
+    {
+      /* ЧЕГО НЕ БЫЛО ВООБЩЕ. search_runs ищет по тому, что человек НАПЕЧАТАЛ АГЕНТУ - по цели, сводке и
+       * ошибке прогона. По самим записям поиска не было: чтобы ответить «в какой записи я работал с
+       * накладными», надо было читать расшифровки по одной, а их на живом аккаунте сорок пять.
+       *
+       * ЧТО ИМЕННО ИЩЕТСЯ, и это сказано модели в описании, а не только здесь: имена того, до чего
+       * дотрагивались - заголовки окон, названия элементов, контейнер, приложение, источник страницы.
+       * Всё это расшифровка и list_recordings показывают и так; новым становится не видимость, а
+       * находимость.
+       *
+       * И НАПЕЧАТАННОГО ЗДЕСЬ НЕТ - не потому, что отфильтровано, а потому, что его нет в продукте:
+       * записывается, что клавиша была нажата и какая, и ни одного слова из написанного. Поиск найдёт
+       * имя поля, в которое печатали, и никогда - предложение, которое напечатали. */
+      name: 'search_recordings',
+      description:
+        'Find recordings by the NAMES OF THINGS THEY TOUCHED: window titles, control names, the container '
+        + 'a control sat in, applications, page origins. Use it for "which recording was I working with X '
+        + 'in" - it is the only way to reach the recordings by text, since search_runs searches what was '
+        + 'typed at an agent instead. A substring match, so a stem finds its longer forms. IT CANNOT FIND '
+        + 'WHAT ANYBODY TYPED: the recorder stores that a key was pressed and which key, and no sentence '
+        + 'written by a person exists in this product at all - so this finds the name of a field somebody '
+        + 'typed into, never the words they put in it. Take a flowId from the result into get_transcript to '
+        + 'read what was actually done.',
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          text: {
+            type: 'string',
+            description: 'The text to look for, matched anywhere inside a name, case-insensitively. Use a '
+              + 'stem rather than a full word - "invoic" finds invoice and invoices.',
+          },
+          limit: { type: 'integer', description: 'How many recordings to return. Default 10, max 25.' },
+        },
+        required: ['text'],
+      },
+      async run(input) {
+        /* ОБРЕЗАЕТСЯ И ПО ПРОБЕЛАМ: text() режет только по длине, поэтому «   » проходило дальше как
+         * настоящий запрос - искались три пробела внутри имён, а в ответе стояло lookedFor: "   ".
+         * Пустая же строка совпала бы с каждым индексом, то есть вернула бы «всё» под видом находки. */
+        const needle = String(text(input.text, 80) || '').trim();
+        if (!needle) {
+          return { data: { error: 'text is required - a word or a stem to look for in the names.' }, runIds: [] };
+        }
+        const limit = clamp(input.limit, 1, 25, 10);
+
+        /* ИНДЕКС ПРИВОДИТСЯ В ПОРЯДОК ДО ПОИСКА, порцией, по той же причине, по которой это делает
+         * дашборд: первый поиск на аккаунте с сотнями записей иначе заплатил бы за все сразу. Отказ
+         * здесь не отменяет поиска - он делает его неполным, и это сказано в ответе, а не проглочено. */
+        let indexProblem = null;
+        let notIndexed = 0;
+        try {
+          if (await textStaleCount(sql, [userId]) > 0) await textTopUp(sql, [userId], TEXT_TOP_UP_MAX);
+          notIndexed = await textStaleCount(sql, [userId]);
+        } catch (err) {
+          indexProblem = err && err.message ? String(err.message).slice(0, 200) : 'the index could not be built';
+        }
+
+        const rows = await searchRecordings(sql, [userId], needle, limit);
+        return {
+          data: {
+            lookedFor: needle,
+            found: rows.length,
+            recordings: rows.map((r) => ({
+              flowId: r.client_id,
+              name: r.name || null,
+              source: r.source || null,
+              at: r.at ? new Date(r.at).toISOString() : null,
+              /* СКОЛЬКО ИМЁН совпало, а не сколько раз встретилось слово: второе - факт о длине самого
+               * длинного имени, первое - о записи. По нему и отсортировано. */
+              matchedNames: int(r.matches),
+              distinctNames: int(r.distinct_n),
+              /* Те самые имена, чтобы результат объяснял себя. В нижнем регистре - так их держит индекс. */
+              matched: (Array.isArray(r.matched) ? r.matched : [])
+                .map((one) => String(one).slice(0, SHOWN_NAME_MAX)),
+              /* И самые частые имена этой записи, в исходном написании: они говорят, о чём она вообще,
+               * а не только чем совпала. */
+              commonest: (Array.isArray(r.phrases) ? r.phrases : [])
+                .slice(0, PHRASES_SHOWN)
+                .map((p) => ({ name: String(p && p.t || '').slice(0, SHOWN_NAME_MAX), times: int(p && p.n) })),
+            })),
+            notIndexed,
+            problem: indexProblem,
+            note: 'Matched against the names of things that were touched. Nothing anybody typed is stored '
+              + 'anywhere in this product, so no search can reach it. '
+              + (notIndexed > 0
+                ? notIndexed + ' recording(s) are not indexed yet and were not searched - ask again to '
+                  + 'catch up further.'
+                : 'Every recording on this account is indexed.'),
+          },
+          runIds: [],
+        };
+      },
+    },
     {
       name: 'list_recordings',
       description:
