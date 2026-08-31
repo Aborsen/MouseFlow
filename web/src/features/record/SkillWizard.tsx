@@ -64,7 +64,7 @@ interface TStep {
 
 interface TSegment {
   n?: number;
-  where?: { kind?: string; label?: string; detail?: string };
+  where?: { kind?: string; label?: string; detail?: string; url?: string };
   steps?: TStep[];
 }
 
@@ -85,6 +85,12 @@ interface Line {
   role: string | null;
   keys: number;
   where: string | null;
+  /* САЙТ И ССЫЛКА, когда запись их знает. `where` - заголовок окна, и он не говорит, ГДЕ человек был:
+   * «Dashboard - Google Chrome» это 2Checkout, «#230117 - Devart» это Zoho Desk. Черновик, не называющий
+   * места, нельзя повторить - см. заметку у placeLine. Отсутствуют у записи расширения и у всякой, где
+   * агент адреса не разрешил. */
+  host: string | null;
+  url: string | null;
   pressed: string | null;
 }
 
@@ -244,19 +250,48 @@ function instruction(line: Line, blank: Blank | undefined): string | null {
  * them, because a note is placed by saying which step it follows - and the numbers are the recording's,
  * with gaps in them where steps were dropped, not positions in a list. Building the string and then
  * parsing the numbers back out of it is the mistake this file's header already warns about once. */
+/* ГДЕ ЭТОТ ШАГ ПРОИСХОДИТ - строкой перед ним, и только когда место сменилось.
+ *
+ * Вступление называло два заголовка окон и на этом заканчивалось: «In Dashboard - Google Chrome and Order
+ * search - Google Chrome, do this:». Работа шла через три сайта - 2Checkout, Zoho Desk, SalesIQ, - и по
+ * такому черновику её не повторить: ровно то, что назвали незаконченным файлом у документа.
+ *
+ * Ссылка ЦЕЛИКОМ, а не хост: по хосту страницу не открыть. Строку запроса отрезает api/_transcript.js, и
+ * поэтому ссылку не страшно оставить в скилле, который потом кому-то отдают.
+ *
+ * Пусто, когда места нет вовсе - у записи расширения и там, где агент адреса не разрешил: строка «где-то»
+ * была бы шумом. */
+const placeLine = (line: Line): string | null => {
+  if (line.url) return `In ${line.url}:`;
+  if (line.host) return `In ${line.host}:`;
+  if (line.where) return `In ${line.where}:`;
+  return null;
+};
+
 function goalParts(lines: Line[], kept: Set<number>, blanks: Blank[]) {
   const byStep = new Map(blanks.map((b) => [b.n, b]));
-  const wheres = [...new Set(lines.filter((l) => kept.has(l.n) && l.where).map((l) => l.where as string))];
   const steps: { n: number; instruction: string }[] = [];
+  /* МЕСТА - ОТДЕЛЬНОЙ КАРТОЙ, а не полем на шаге, и это не вкусовщина: `steps` уходит по проводу в
+   * /api/params и /api/compose, и они читают ровно `n` и `instruction`. Лишнее поле в теле запроса - это
+   * либо отказ валидации, либо тихое расширение договора, о котором те маршруты не просили.
+   *
+   * Место ставится только при СМЕНЕ: перед каждым шагом оно утопило бы сами шаги. */
+  const places = new Map<number, string>();
+  let place: string | null = null;
   for (const line of lines) {
     if (!kept.has(line.n)) continue;
     const said = instruction(line, byStep.get(line.n));
-    if (said) steps.push({ n: line.n, instruction: said });
+    if (!said) continue;
+    const here = placeLine(line);
+    if (here && here !== place) {
+      places.set(line.n, here);
+      place = here;
+    }
+    steps.push({ n: line.n, instruction: said });
   }
-  const opening = wheres.length
-    ? `In ${wheres.slice(0, 2).join(' and ')}, do this:`
-    : 'Do this on the computer:';
-  return { opening, steps };
+  /* Вступление больше не перечисляет места - они стоят у своих шагов. Оставшаяся фраза нужна: без неё
+   * черновик начинается с «1.» и читается как список чего угодно. */
+  return { opening: 'Do this on the computer:', steps, places };
 }
 
 /* A ceiling on the goal, and one that cannot bite the thing it is meant to protect.
@@ -283,11 +318,17 @@ const capped = (next: string, was: string) => {
 };
 
 function buildGoal(lines: Line[], kept: Set<number>, blanks: Blank[]): string {
-  const { opening, steps } = goalParts(lines, kept, blanks);
+  const { opening, steps, places } = goalParts(lines, kept, blanks);
   if (!steps.length) return '';
-  return `${opening}\n${steps
-    .map((s, i) => `${i + 1}. ${s.instruction[0].toUpperCase()}${s.instruction.slice(1)}.`)
-    .join('\n')}`;
+  /* Нумерация НЕПРЕРЫВНА через все места: человек читает процедуру целиком, и «шаг 9» должен быть один на
+   * скилл. Строка места между шагами её не сбрасывает - она не шаг, а заголовок. */
+  const said: string[] = [];
+  steps.forEach((step, i) => {
+    const place = places.get(step.n);
+    if (place) said.push(said.length ? `\n${place}` : place);
+    said.push(`${i + 1}. ${step.instruction[0].toUpperCase()}${step.instruction.slice(1)}.`);
+  });
+  return `${opening}\n${said.join('\n')}`;
 }
 
 /* Whatever the person added in their own words, on the end of the derived steps.
@@ -534,6 +575,13 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
         const flat: Line[] = [];
         for (const segment of body.segments ?? []) {
           const where = segment.where && segment.where.label ? segment.where.label : null;
+          /* `detail` у отрезка со страницей - это «secure.2checkout.com (chrome)»; нужен хост, без имени
+           * процесса в скобках. У отрезка без страницы там имя приложения, и хостом оно не является. */
+          const detail = (segment.where && segment.where.detail) || '';
+          const host = segment.where && segment.where.kind === 'page'
+            ? (detail.split(' (')[0] || null)
+            : null;
+          const url = (segment.where && segment.where.url) || null;
           for (const step of segment.steps ?? []) {
             if (typeof step.n !== 'number') continue;
             flat.push({
@@ -547,6 +595,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
               keys: step.keys ?? 0,
               pressed: step.pressed ?? null,
               where,
+              host,
+              url,
             });
           }
         }
