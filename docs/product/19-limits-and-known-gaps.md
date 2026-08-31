@@ -225,10 +225,17 @@ These are not bugs and no amount of work inside the current design removes them.
   reads a password box as "empty" will type into it. Both facts were found by probing a live window with
   one plain and one secure field, not by reading the code:
   `text field "" … = "plain-visible-value"; secure text field "" … = (password, not read)`.
-  **The Windows half is written, not run** — `ValuePattern.ValueProperty` with `IsPassword` and
-  `IsReadOnly` excluded — and one asymmetry is deliberate: the Windows search still requires a non-empty
-  Name, so an entirely unnamed field can be missed there where macOS now lists it. Relaxing that condition
-  changes the size of every Windows result set and was not worth doing blind.
+  **The Windows half is run now** — `ValuePattern.ValueProperty` with `IsPassword` and `IsReadOnly`
+  excluded, driven against a real Notepad: `document "Text editor" at 68,139 1428x827 = "## 1. Primary
+  Target Самый высококонверсионный сегмент…"`, clipped at eighty characters with the ellipsis in place.
+  **And the asymmetry that came with it is measured rather than assumed.** The Windows search requires a
+  non-empty Name, so an entirely unnamed field is missed there where macOS lists it. Over fourteen live
+  windows the targeted relaxation — "named OR has a value" — added **at most one element**, and on the two
+  windows where it added one it was a read-only Document and an unnamed 13×14 checkbox with an empty
+  value, both of which `ValueOf` skips anyway. Every value-bearing element in that sample was already
+  named. Dropping the Name condition outright costs 25–50% more elements (Outlook 229 → 337, Teams
+  184 → 275) against a read that already truncates at 28. So it stays, and the reason is now a number:
+  see `NamedAndVisible` for the shape to use if a machine ever does show one.
 - **A short name that is content still gets recorded, on both platforms.** From 0.16.0 the macOS agent drops
   any element name over 60 characters and writes `namelen=` instead, which is what Windows has done since
   0.11.0 — the accessibility name of a message element *is* the message. The rule is a length, so it cannot

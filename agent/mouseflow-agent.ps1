@@ -2936,6 +2936,31 @@ namespace MouseFlow
            Bounded anyway, on a worker thread with a deadline: a provider that hangs must not take the action
            with it. An application that will not answer is a fact worth reporting, not a reason to wait.
         */
+        /* THE NAME CONDITION STAYS, and this is the measurement that settled it rather than a caution.
+         *
+         * macOS lists an entirely unnamed text field, because it has a VALUE; this condition drops it,
+         * because it has no name. That asymmetry was written down as a gap with "relaxing it changes the
+         * size of every Windows result set and was not worth doing blind". Measured over fourteen live
+         * top-level windows - Teams, Outlook (PWA), Chrome, an Electron app, three File Explorers, Notepad,
+         * dbForge:
+         *
+         *   named + visible + control              0 - 335 elements   (what this returns)
+         *   visible + control                      +23 to +108 more   (Outlook 229 -> 337, Teams 184 -> 275)
+         *   (named OR has a value) + visible       +0 or +1
+         *
+         * So the targeted version - the one that would close the asymmetry - found ONE extra element on two
+         * windows out of fourteen, and both were useless: a read-only Document, and an unnamed 13x14
+         * checkbox with an empty value. ValueOf skips both anyway, the first for being read-only and the
+         * second for being empty. Every element with a value in that sample was already named.
+         *
+         * Dropping the condition outright is the expensive one and it buys the same nothing: a quarter to a
+         * half more elements, against a read that already truncates at 28 and says how many it left out.
+         * More elements there is not more information, it is a shorter list of the ones that matter.
+         *
+         * If an unnamed editable field does show up on some machine, the shape to reach for is
+         * `Not(And(Name=="", IsValuePatternAvailable==false))` - equivalent to "named or has a value" and
+         * measured to return exactly the same set as the Or form, which was checked because a wrong claim
+         * about UIA condition trees nearly went into this comment. */
         static Condition NamedAndVisible()
         {
             return new AndCondition(
