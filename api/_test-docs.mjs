@@ -8,7 +8,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { DOC_EFFORT, DOC_MODEL, DOC_SYSTEM, DOC_TOKENS, citedSteps, docPrompt, newDocId, titleOf } from './_docs.mjs';
+import { DOC_EFFORT, DOC_MODEL, DOC_SYSTEM, DOC_TOKENS, DOC_TRANSCRIPT_BUDGET, citedSteps, docPrompt, newDocId, titleOf } from './_docs.mjs';
 import { MODELS, WRITER_MODELS, ask, providerFor } from './_provider.js';
 import { recordingTools } from './_recording-tools.js';
 import { toolsFor } from './chat.js';
@@ -139,6 +139,38 @@ group('модели показывается результат чужого и�
     !/wants the document focused/.test(docPrompt({ transcript: fake, name: 'x' })));
   check('и в файле нет второй упаковки шагов',
     !/slice\(0, \d+\)[\s\S]{0,80}segments/.test(docs));
+}
+
+group('доказательства переживают проzу, а не наоборот');
+{
+  /* ИЗМЕРЕНО, и это был живой отчёт: документ ответил «individual execution steps are not available in the
+   * supplied transcript». Причина - порядок жертв при упаковке: лестница прореживала ТОЛЬКО шаги, а рассказ
+   * (2823 байта), границы и примечания занимали место безусловно. На записи из 73 шагов до модели доезжало
+   * НОЛЬ шагов и 4 стретча из 12. */
+  const rt = read('_recording-tools.js');
+  check('проза жертвуется ДО прореживания шагов',
+    /let prose = true;[\s\S]{0,400}?if \(bytes\(data\) > budget\) \{\s*
+\s*prose = false;/.test(rt),
+    'order');
+  check('и рассказ с границами записи под этим признаком',
+    /story: prose \?/.test(rt) && /gaps: prose \?/.test(rt));
+  /* А `limits` - НЕ под ним. Там написано, что клавиатура никогда не читается: это условие правильного
+   * чтения всего остального, и документ, потерявший эту строку, опишет ввод текста как записанный. */
+  check('а вот limits не жертвуются никогда',
+    /limits: limitsFor\(row\.source\),/.test(rt) && !/limits: prose \?/.test(rt));
+  /* И убранная проза НАЗВАНА: её отсутствие иначе читается как «рассказывать было нечего». */
+  check('и об убранной прозе сказано в ответе',
+    /proseDropped: prose \? undefined/.test(rt));
+
+  /* Потолок - параметр, и у документа он свой: один вызов вместо шести кругов разговора. */
+  check('у документа свой потолок расшифровки, и он больше чатовского',
+    DOC_TRANSCRIPT_BUDGET > 100_000, String(DOC_TRANSCRIPT_BUDGET));
+  check('и инструмент его действительно передаёт',
+    /reader\.run\(\{ flowId, budget: DOC_TRANSCRIPT_BUDGET \}/.test(rt));
+  /* Модели этот параметр не предлагается: он не в схеме, его передаёт код, который знает свою цену. */
+  const schema = rt.slice(rt.indexOf("name: 'get_transcript'"), rt.indexOf("name: 'remove_steps'"));
+  check('но в схеме get_transcript его нет - это не выбор модели',
+    !/budget: \{ type:/.test(schema));
 }
 
 group('имя и ссылки разбираются, включая опечатки');

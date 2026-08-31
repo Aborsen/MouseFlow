@@ -28,6 +28,17 @@ export const DOC_EFFORT = 'medium';
  * short enough that a model asked for a document cannot answer with a book. */
 export const DOC_TOKENS = 6000;
 
+/* СКОЛЬКО РАСШИФРОВКИ ДОЕЗЖАЕТ ДО ПИСАТЕЛЯ, и это отдельное число от чатовского.
+ *
+ * get_transcript по умолчанию укладывается в потолок, выбранный под РАЗГОВОР: его результат остаётся в
+ * контексте на все круги, и 10.5 КБ на вызов - про то, чтобы шесть таких не вытеснили сам разговор.
+ * Написание документа - один вызов, ни одного круга после него.
+ *
+ * Измерено на живой записи: при чатовском потолке до документа доезжало НОЛЬ шагов из 73 - заголовки
+ * стретчей и просьба описать по ним процедуру, - и он честно отвечал, что отдельных шагов в расшифровке
+ * нет. При этом потолке доезжают все 73 шага и все 12 стретчей, а весит это 27 КБ. */
+export const DOC_TRANSCRIPT_BUDGET = 120_000;
+
 /* Ids are minted here rather than by the client, unlike chat_thread: a document does not exist before it is
  * written, and what writes it is a tool call on the server. */
 export const newDocId = (random) => 'doc_' + random;

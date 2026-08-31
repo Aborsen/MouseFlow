@@ -614,7 +614,7 @@ import {
   PHRASES_SHOWN, TEXT_TOP_UP_MAX, searchRecordings, textStaleCount, textTopUp,
 } from './_search.mjs';
 import { randomBytes } from 'node:crypto';
-import { DOC_MODEL, newDocId, writeDoc } from './_docs.mjs';
+import { DOC_MODEL, DOC_TRANSCRIPT_BUDGET, newDocId, writeDoc } from './_docs.mjs';
 
 /* Насколько длинное имя доезжает до модели. Заголовки окон бывают абзацами - на живом аккаунте есть имя
  * в 200 символов про merge request, - и десяток таких в одном результате это страница текста вместо ответа.
@@ -696,7 +696,10 @@ export function recordingTools({ sql, userId }) {
         if (!reader) {
           return { data: { error: 'the transcript tool is not registered, so nothing can be documented.' }, runIds: [] };
         }
-        const read = await reader.run({ flowId }, {});
+        /* С БОЛЬШИМ ПОТОЛКОМ - см. DOC_TRANSCRIPT_BUDGET. Без него сюда приезжали заголовки стретчей без
+         * единого шага, и документ выходил ровно таким, каким его и увидели: «individual execution steps
+         * are not available in the supplied transcript». */
+        const read = await reader.run({ flowId, budget: DOC_TRANSCRIPT_BUDGET }, {});
         if (!read.data || read.data.found === false || read.data.error) {
           return { data: { error: read.data && read.data.error
             ? String(read.data.error)
@@ -1064,7 +1067,7 @@ export function recordingTools({ sql, userId }) {
          * missing-ranges list were added on top, so a result built to fit left here half again as
          * large and chat.js cut it mid-string - which is the one outcome this budget exists to
          * prevent. */
-        const assemble = (level, segmentLimit) => {
+        const assemble = (level, segmentLimit, prose = true) => {
           const { packed, omitted } = packSegments(windowed, level);
           const kept = packed.slice(0, segmentLimit);
           const segmentsCut = packed.length - kept.length;
@@ -1088,7 +1091,10 @@ export function recordingTools({ sql, userId }) {
              * before it starts reading coordinates. It goes through the same budget as everything else:
              * `assemble` measures the whole result, so this competes for room rather than being added on
              * top of a result already built to fit. */
-            story: nonEmpty(bounded(transcript.story)) || undefined,
+            /* ПЕРВОЕ, ЧЕМ ЖЕРТВУЮТ. Рассказ - проза о том же, что говорят шаги; при шагах он избыточен,
+               а без них оставался единственным, что доезжало. Измерено на записи из 73 шагов: 2823 байта
+               рассказа против НУЛЯ шагов. */
+            story: prose ? nonEmpty(bounded(transcript.story)) || undefined : undefined,
             /* `captured` НЕ через общий bounded, и это не вкусовщина.
              *
              * bounded режет любую строку на 300 знаках, а `captured` у десктопной записи с контекстом
@@ -1144,6 +1150,11 @@ export function recordingTools({ sql, userId }) {
                 + 'is how far into the recording that step begins, and `ms` is how long it took - the '
                 + 'pause folded into it plus the action itself. Neither is a time of day; `created` '
                 + 'above is the only real date here.',
+              /* Сказано, что проза убрана: её отсутствие иначе читается как «рассказывать было нечего». */
+              proseDropped: prose ? undefined
+                : 'the narrative overview and the "what this recording cannot tell you" list were left out '
+                  + 'to make room for the steps themselves - the steps are the evidence. Ask again with a '
+                  + 'narrower step range if the overview is wanted.',
               missing: gaps.slice(0, MISSING_MAX),
               missingNotListed: gaps.length > MISSING_MAX ? gaps.length - MISSING_MAX : undefined,
               segmentsNotListed: segmentsCut || undefined,
@@ -1154,7 +1165,12 @@ export function recordingTools({ sql, userId }) {
             /* Two lists, kept apart on purpose: `gaps` is what the transcript reports about THIS
              * recording, `limits` is what is true of every recording of this kind. Merged, there
              * would be no way to tell a fact about this row from a fact about the format. */
-            gaps: gapList(transcript.gaps),
+            /* Второе. «Чего эта запись не говорит» - настоящая честность, но 3266 байт её вытесняли все
+               доказательства целиком, а detail.how и без неё говорит, чего в ответе нет. */
+            gaps: prose ? gapList(transcript.gaps) : undefined,
+            /* А ЭТО ОСТАЁТСЯ ВСЕГДА: здесь написано, что клавиатура никогда не читается - условие
+               правильного чтения всего остального, а не комментарий к нему. Документ, потерявший эту
+               строку, опишет ввод текста как записанный. */
             limits: limitsFor(row.source),
             numbering: unnumbered
               ? unnumbered + ' of the steps in this transcript carry no number, so they cannot be '
@@ -1166,23 +1182,46 @@ export function recordingTools({ sql, userId }) {
           };
         };
 
+        /* ПОТОЛОК - ПАРАМЕТР, и по умолчанию тот же, что был.
+         *
+         * TRANSCRIPT_BUDGET выбран под чат: результат инструмента остаётся в контексте на все круги
+         * разговора, и 10.5 КБ на вызов - это про то, чтобы шесть таких не вытеснили сам разговор.
+         * Написание документа - другой случай: один вызов, ни одного круга после него, и модель принимает
+         * на порядок больше. Пока потолок был константой, документ получал те же 10.5 КБ и, как измерено,
+         * НОЛЬ шагов - то есть заголовки стретчей и просьбу описать по ним процедуру.
+         *
+         * Не в схеме инструмента: модели этот параметр не предлагается. Его передаёт вызывающий код,
+         * который знает, сколько может себе позволить. */
+        const budget = Math.max(2000, Math.min(Number(input.budget) || TRANSCRIPT_BUDGET, 400_000));
+
+        /* ПОРЯДОК ЖЕРТВ, и он был обратным нужному.
+         *
+         * Сначала всё. Не влезло - убирается ПРОЗА, потому что она пересказывает шаги. Только потом
+         * прореживается то, что она пересказывает. Пока проза была неприкосновенна, запись из 73 шагов
+         * приезжала как рассказ, границы и примечания - и ни одного шага, - а модель честно отвечала, что
+         * отдельных шагов в расшифровке нет. */
+        let prose = true;
         let level = 0;
-        let data = assemble(0, Infinity);
-        while (bytes(data) > TRANSCRIPT_BUDGET && level < LAST_SHAPE) {
+        let data = assemble(0, Infinity, prose);
+        if (bytes(data) > budget) {
+          prose = false;
+          data = assemble(0, Infinity, prose);
+        }
+        while (bytes(data) > budget && level < LAST_SHAPE) {
           level += 1;
-          data = assemble(level, Infinity);
+          data = assemble(level, Infinity, prose);
         }
         /* Still too long with no steps in it at all means hundreds of stretches. Dropped from the END,
          * so what survives is the beginning of the recording in order rather than a scattering of it,
          * and how many went is reported. */
         let limit = data.segments.length;
-        while (bytes(data) > TRANSCRIPT_BUDGET && limit > SEGMENTS_MIN) {
+        while (bytes(data) > budget && limit > SEGMENTS_MIN) {
           /* Scaled by how far over it is, rather than one stretch at a time: a recording with a
            * thousand stretches would otherwise be re-packed a thousand times to shed the overshoot,
            * and this runs inside a request somebody is waiting on. */
-          const over = bytes(data) / TRANSCRIPT_BUDGET;
+          const over = bytes(data) / budget;
           limit = Math.max(SEGMENTS_MIN, Math.min(limit - 1, Math.floor(limit / over)));
-          data = assemble(level, limit);
+          data = assemble(level, limit, prose);
         }
 
         return { data, runIds: [] };
