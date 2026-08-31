@@ -12,6 +12,7 @@
  */
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
+  BookText,
   ChartNoAxesColumn,
   ChevronsUpDown,
   CircleDot,
@@ -44,6 +45,9 @@ const NAV = [
    * for a roster you fill in once and the wrong one for what it now is: several teams, people being added
    * and moved, invitations to chase, and a dashboard scoped to each. A dialog also cannot be linked to,
    * and "open Teams" is what an invitation email has to be able to say. */
+  /* Между «что я делаю» и «чья это работа»: документ - результат записи и повод для решения, и стоит он
+   * ровно там, где о нём вспоминают - после Dashboard, откуда его просят у ассистента. */
+  { to: '/docs', label: 'Documents', icon: BookText },
   { to: '/team', label: 'Teams', icon: Users },
   /* Last, because it is the only one that is not YOUR work: everything above is something on this account,
    * and the gallery is other people's skills to browse. */

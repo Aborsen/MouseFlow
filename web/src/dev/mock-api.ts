@@ -781,6 +781,115 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
    *
    * Added because there was nothing here: /api/insights answered 501 and the Dashboard rendered its error
    * box, which is what the documentation's screenshot of it showed. */
+
+  /* ДОКУМЕНТЫ ПРОЦЕССОВ. Тело написано по тем же правилам, которые требует промпт в api/_docs.mjs: ссылка
+   * на шаг у каждой инструкции, раздел «чего этот документ не говорит», и напечатанный текст назван
+   * невосстановимым НЕ один раз. Фикстура, написанная свободнее, чем умеет генератор, учила бы страницу
+   * рисовать документ, которого не бывает.
+   *
+   * Две ревизии, и вторая - человеческая: у документа, где правок не было, не видно разницы между «как
+   * написала модель» и «как поправил тот, кто это делает», а вся страница про эту разницу. */
+  if (url.startsWith('/api/docs')) {
+    const asked = new URLSearchParams(url.split('?')[1] || '');
+    const id = (asked.get('doc') || '').trim();
+    const body = `# Reply that the invoice is approved
+
+## What this process does
+Takes an approval request that arrives in Outlook, checks the invoice line against the Zoho record, and
+replies to the sender that it is approved. It ran eleven times in the window this recording came from.
+
+## Before you start
+Outlook and the Zoho CRM tab both need to be open — the recording moves between them without ever opening
+either [steps 1-3].
+
+## Steps
+1. Open the approval request in Outlook [step 1].
+2. Read the invoice number off the request [step 2]. The recording does not show what the number was:
+   nothing anybody typed or read is stored.
+3. Switch to the Zoho CRM tab [step 4].
+4. Search for the invoice in the "Search" field [step 5]. Which characters were typed is not recorded.
+5. Open the matching record [steps 7-9].
+6. Check the amount against the request [step 10]. The recording does not show what was compared, only
+   that the two windows were used in turn.
+7. Switch back to Outlook [step 12].
+8. Press "Reply" [step 13].
+9. Type the reply in the "Message" field [steps 14-18] — 42 keystrokes over 19 seconds. The words are not
+   recorded.
+10. Press "Send" [step 19].
+
+## Where the time went
+Most of the eleven runs took between forty seconds and a minute. The longest stretch inside them was the
+Zoho lookup, not the writing [steps 5-10].
+
+## What this document cannot tell you
+- **Nothing anybody typed is stored.** The recorder keeps that a key was pressed and which key, never the
+  words. So the invoice number, the search text and the wording of the reply are all absent, and no step
+  above should be read as containing them.
+- Why the amount was accepted rather than queried. The recording shows the windows and the presses, not the
+  judgement [step 10].
+- Steps 20 to 34 were not delivered in full when this was written, so nothing here describes them.`;
+    const first = body.replace('It ran eleven times', 'It ran several times');
+    const versions = [
+      { revision: 2, title: 'Reply that the invoice is approved', body, writtenBy: 'person', at: hoursAgo(2) },
+      { revision: 1, title: 'Reply that the invoice is approved', body: first, writtenBy: 'model', at: hoursAgo(30) },
+    ];
+    const doc = {
+      id: 'doc_dev_1',
+      title: 'Reply that the invoice is approved',
+      body,
+      flowIds: ['ronly_account_1'],
+      model: 'gpt-5.6-terra',
+      effort: 'medium',
+      revision: 2,
+      created: hoursAgo(30),
+      updated: hoursAgo(2),
+    };
+
+    if (method === 'DELETE') return json(res, 200, { ok: true, id, deleted: true });
+    if (method === 'POST') {
+      /* Из потока, а не из req.body: в Connect-middleware его нет - см. заметку у /api/chats выше. */
+      let text = '';
+      req.on('data', (chunk) => { text += chunk; });
+      req.on('end', () => {
+        let sent: { body?: string; revision?: number } = {};
+        try {
+          sent = text ? JSON.parse(text) : {};
+        } catch (_) {
+          return json(res, 400, { error: { type: 'docs_error', message: 'that body is not JSON' } });
+        }
+        /* Тот же отказ, что у настоящего маршрута: ревизия, которую человек открыл, не совпала. Фикстура,
+         * где сохранение всегда удаётся, эту ветку не покажет никогда. */
+        if (sent.body !== undefined && sent.revision !== undefined && sent.revision !== doc.revision) {
+          return json(res, 409, { error: { type: 'docs_error', message:
+            'this document was saved somewhere else since you opened it - it is now at revision '
+            + doc.revision + ' and you were editing ' + sent.revision + '.' } });
+        }
+        if (sent.body === undefined && sent.revision !== undefined) {
+          return json(res, 200, { ok: true, id, revision: doc.revision + 1, restoredFrom: sent.revision });
+        }
+        return json(res, 200, { ok: true, id, title: doc.title, revision: doc.revision + 1, truncated: false });
+      });
+      return undefined;
+    }
+    if (id) {
+      if (id !== 'doc_dev_1') {
+        return json(res, 404, { error: { type: 'docs_error', message: 'no document with that id on this account' } });
+      }
+      return json(res, 200, { ok: true, doc, versions });
+    }
+    return json(res, 200, {
+      ok: true,
+      docs: [{
+        id: doc.id, title: doc.title,
+        opening: 'Takes an approval request that arrives in Outlook, checks the invoice line against the '
+          + 'Zoho record, and replies to the sender that it is approved.',
+        flowIds: doc.flowIds, model: doc.model, effort: doc.effort, revision: doc.revision,
+        bytes: body.length, created: doc.created, updated: doc.updated,
+      }],
+      caps: { docs: 200, versions: 100, bodyBytes: 400000 },
+    });
+  }
+
   if (url.startsWith('/api/insights')) {
     const asked = new URLSearchParams(url.split('?')[1] || '');
     /* THE WINDOW IS ECHOED BACK, both ways of naming it.

@@ -736,9 +736,18 @@ const scopeSrc = read('../api/_team-scope.js');
 
 check('/team is a route of its own', /path: '\/team'/.test(mainTsx));
 check('and it is in the sidebar, not buried in a dialog', /to: '\/team'/.test(sidebar));
-check('with Gallery last, since it is the only one that is not your own work',
-  [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join() === '/record,/create,/skills,/dashboard,/team,/gallery',
+/* ПОРЯДОК ЦЕЛИКОМ, а не «галерея последняя»: он говорит, в каком порядке об этих экранах думают, и
+   /docs встал между Dashboard и Teams намеренно - документ просят у ассистента на Dashboard, а Teams это
+   уже про чужую работу. Список обновляется осознанно: пин на порядке навигации существует ровно чтобы
+   добавленный пункт был виден в диффе теста. */
+const NAV_ORDER = '/record,/create,/skills,/dashboard,/docs,/team,/gallery';
+check('порядок в сайдбаре тот, о котором договорились, и Gallery последняя',
+  [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join() === NAV_ORDER,
   [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join());
+/* И у каждого пункта есть маршрут: пункт, ведущий в никуда, - это 404 из собственной навигации. */
+for (const to of NAV_ORDER.split(',')) {
+  check(`${to} - настоящий маршрут`, mainTsx.includes(`path: '${to}'`), to);
+}
 check('the settings dialog no longer keeps a second copy of it',
   !/TeamScreen/.test(settings) && !existsSync(fileURLToPath(new URL('../web/src/shell/settings/TeamScreen.tsx', import.meta.url))));
 
@@ -3217,12 +3226,21 @@ group('в api/ нет ничего, что не должно быть маршр
   check('и npm test зовёт их по новым именам',
     /node api\/_test-step\.mjs/.test(pkg) && /node api\/_test-report\.mjs/.test(pkg));
 
-  /* Список маршрутов целиком - на глаз, чтобы добавленный завтра был виден в диффе теста. */
+  /* Список маршрутов целиком - на глаз, чтобы добавленный завтра был виден в диффе теста.
+   *
+   * docs.js добавлен намеренно: документы процессов - объекты, их читают, правят и откатывают со страницы,
+   * а это HTTP-поверхность, которой раньше не было. Писать документ этот маршрут НЕ умеет - написание
+   * означает чтение расшифровки, вызов модели и плату за него, и живёт там, где уже действуют правила и
+   * потолки ассистента (api/_recording-tools.js, write_process_doc). */
   const expected = ['account.js', 'admin.js', 'auth.js', 'chat.js', 'chats.js', 'claude.js', 'compose.js',
-    'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js', 'skill-md.js',
+    'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js', 'skill-md.js',
     'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
   const unexpected = routes.filter((n) => !expected.includes(n));
   check('и новых маршрутов не появилось незамеченными', unexpected.length === 0, unexpected.join(', '));
+  /* И наоборот - что каждый ожидаемый на месте: список, из которого файл пропал, молча перестаёт его
+   * проверять, и пропажу маршрута этот пин не заметил бы вовсе. */
+  const missing = expected.filter((n) => !routes.includes(n));
+  check('и ни один из ожидаемых не исчез', missing.length === 0, missing.join(', '));
 }
 
 /* --------------------------------------------- кому браузер разрешит прочитать наш ответ */

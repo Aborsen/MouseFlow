@@ -24,6 +24,7 @@ import { AdminUsers } from '@/features/admin/AdminUsers';
 import { AdminUser } from '@/features/admin/AdminUser';
 import { AdminModels } from '@/features/admin/AdminModels';
 import { InsightsView } from '@/features/insights/InsightsView';
+import { DocsView } from '@/features/docs/DocsView';
 import { TeamView } from '@/features/team/TeamView';
 import { ErrorBoundary, startReporting } from '@/lib/sentry';
 
@@ -52,6 +53,12 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: '/skills', component: SkillsView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/gallery', component: GalleryView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/dashboard', component: InsightsView }),
+  /* ДВА маршрута на один экран, и это не дубликат: список документов и один документ - одно состояние
+   * (что загружено, что отказало, что сказано), и разделять их значило бы завести всё это дважды ради
+   * одного условия. Идентификатор в АДРЕСЕ, а не в состоянии, по тому же правилу, что уже держит срез
+   * дашборда: документ - это то, что посылают коллеге, и ссылка на него обязана открывать его. */
+  createRoute({ getParentRoute: () => rootRoute, path: '/docs', component: DocsView }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/docs/$docId', component: DocsView }),
   /* The old path. A rename should not break a link somebody already has - and this one is in a published
    * review of the roadmap, which is exactly the sort of link nobody thinks about until it 404s. */
   createRoute({ getParentRoute: () => rootRoute, path: '/insights', component: InsightsView }),
