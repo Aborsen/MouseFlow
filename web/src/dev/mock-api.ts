@@ -63,7 +63,10 @@ const FLOWS = [
       agent: 'desktop',
       role: 'recording',
       events: [
-        { x: 640, y: 380, delayMs: 0, action: 'Left Click Down', context: { app: 'chrome', window: 'Neon Console - Google Chrome', control: 'Run', type: 'button' } },
+        /* `url` В КОНТЕКСТЕ - там, где его пишет десктопный агент, и без строки запроса, как он и приезжает
+           после api/_transcript.js. Без адреса в фикстуре ссылка в заголовке отрезка не рисуется никогда, а
+           именно её отсутствие и назвали «незаконченным файлом». */
+        { x: 640, y: 380, delayMs: 0, action: 'Left Click Down', context: { app: 'chrome', window: 'Neon Console - Google Chrome', control: 'Run', type: 'button', url: 'https://console.neon.tech/app/projects/quiet-fog-12345/query' } },
         { x: 640, y: 380, delayMs: 60, action: 'Left Click Release' },
         { x: 700, y: 420, delayMs: 900, action: 'Left Click Down' },
         { x: 700, y: 420, delayMs: 60, action: 'Left Click Release' },
@@ -735,7 +738,17 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
           note: null,
         },
         {
-          n: 2, where: { kind: 'app', label: 'Book1 - Excel', detail: 'EXCEL' }, startMs: 41000, seconds: 33,
+          /* ОТРЕЗОК СО ССЫЛКОЙ. Один из двух - нарочно: фикстура, где адрес есть у всех, не покажет, как
+             выглядит отрезок без него, а это обычное дело для проводника, терминала и самого приложения.
+             Без строки запроса, как он и приезжает - см. api/_transcript.js. */
+          n: 2,
+          where: {
+            kind: 'page',
+            label: 'Book1 - Excel',
+            detail: 'excel.cloud.microsoft (EXCEL)',
+            url: 'https://excel.cloud.microsoft/open/onedrive/Book1.xlsx',
+          },
+          startMs: 41000, seconds: 33,
           steps: [
             { n: 5, at: 41000, ms: 260, action: 'click', what: 'clicked the "B4" cell in EXCEL', target: '899,1058', note: null, control: 'B4', controlType: 'cell', role: 'AXCell', keys: 0 },
             /* A SECOND run into the same box as step 4. Real recordings are full of these - one measured

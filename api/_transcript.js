@@ -691,6 +691,13 @@ function ctxOf(raw) {
    * той работы, а не место, где она шла; и стретч, названный полным адресом, распадался бы на новый на
    * каждой странице списка. Тот же выбор уже сделан у origins в дайджесте и на дашборде. */
   const url = typeof src.url === 'string' ? src.url.trim() : '';
+  /* И САМА ССЫЛКА, БЕЗ СТРОКИ ЗАПРОСА. Документ, написанный по записи, экспортируют и посылают коллеге, а
+   * в query оказываются идентификаторы сессии: в этой самой записи один заголовок окна несёт
+   * `reports.php?ecommerce&formid=bcd44675...` - шестидесятизначный токен. Схема, хост и путь дают
+   * работающую ссылку; всё после `?` отрезается всегда, а не когда кто-то заметит. */
+  const page = /^https?:\/\//i.test(url)
+    ? oneLine(url.split(/[?#]/)[0], 300)
+    : '';
   const host = /^https?:\/\//i.test(url)
     ? oneLine((url.match(/^https?:\/\/([^/?#]+)/i) || [])[1], 120).toLowerCase()
     : '';
@@ -718,6 +725,7 @@ function ctxOf(raw) {
     containerName: containerName || null,
     modifiers: modifiers || null,
     host: host || null,
+    page: page || null,
   };
 }
 
@@ -745,6 +753,9 @@ function ctxWhere(ctx) {
       kind: 'page',
       label: ctx.window || ctx.app,
       detail: ctx.app ? ctx.host + ' (' + ctx.app + ')' : ctx.host,
+      /* САМ АДРЕС отдельным полем, а не внутри подписи: подпись читают, а по адресу переходят, и склеенные
+       * в одну строку они не годятся ни для того, ни для другого. Документ строит из него ссылку. */
+      url: ctx.page || null,
     };
   }
   return {
@@ -1467,6 +1478,7 @@ function deriveDesktop(events, seen) {
     if (where.kind !== 'app' || String(where.detail || '').includes(ctx.host)) return;
     where.kind = 'page';
     where.detail = ctx.app ? ctx.host + ' (' + ctx.app + ')' : ctx.host;
+    if (ctx.page) where.url = ctx.page;
   };
 
   const enter = (rawCtx) => {

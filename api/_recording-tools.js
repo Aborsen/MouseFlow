@@ -576,6 +576,10 @@ function packSegments(segments, level) {
         kind: (where && text(where.kind, 20)) || 'unknown',
         label: (where && text(where.label, 160)) || '(not recorded)',
         detail: (where && text(where.detail, 200)) || undefined,
+        /* И АДРЕС, если запись его знает. Он проходит упаковщик наравне с остальным - то есть занимает
+           место в потолке, - потому что документ без ссылок на то, куда человек заходил, читается как
+           недописанный: именно так это и назвали. Без строки запроса; отрезано в api/_transcript.js. */
+        url: (where && text(where.url, 300)) || undefined,
       },
       startMs: int(segment && segment.startMs),
       seconds: Number.isFinite(seconds) ? Math.round(seconds) : null,
