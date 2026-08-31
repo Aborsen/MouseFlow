@@ -487,6 +487,19 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
        * дважды из трёх это стоило дороже, чем написать правильно. */
       flows: live.map((f) => {
         const recorded = f.kind !== 'created';
+        const shapeOf = (evs: { delayMs?: number; delay?: number }[]): number[] | null => {
+          if (!evs.length) return null;
+          let at = 0;
+          const stamps = evs.map((e) => {
+            at += Math.max(0, Number(e.delayMs ?? e.delay) || 0);
+            return at;
+          });
+          const span = stamps[stamps.length - 1];
+          if (!(span > 0)) return null;
+          const out = new Array(16).fill(0);
+          for (const stamp of stamps) out[Math.min(15, Math.floor((stamp / span) * 16))] += 1;
+          return out;
+        };
         const payload = f.payload ?? {};
         const events = Array.isArray(payload.events) ? payload.events : [];
         if (!recorded) return { ...f, payloadOmitted: false };
@@ -500,6 +513,11 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
             windows: Array.isArray(payload.windows) ? payload.windows : [],
             session: (payload.session as unknown) ?? null,
             role: typeof payload.role === 'string' ? payload.role : null,
+            /* Та же арифметика, что у api/_digest.mjs и у web/src/components/Signal.tsx: накопленная
+             * задержка - это часы, пролёт делится на равные части, считается попадание. Считается ЗДЕСЬ из
+             * тех же событий, а не выдумывается, потому что фикстура, чьи полоски не складываются в число
+             * событий, учит страницу рисовать состояние, которого не бывает. */
+            shape: shapeOf(events as { delayMs?: number; delay?: number }[]),
           },
         };
       }),

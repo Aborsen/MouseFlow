@@ -25,6 +25,7 @@ import { listedInSkills } from '@/lib/flow-role';
 import { SearchField } from '@/components/SearchField';
 import { SelectionBar } from '@/components/SelectionBar';
 import { Signal } from '@/components/Signal';
+import { eventsAreHere } from '@/features/record/events-for';
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { Page } from '@/shell/Surface';
@@ -1618,7 +1619,11 @@ export const SkillsView = () => {
                 className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2"
                 style={{ minHeight: `${READY_ROW}rem` }}
               >
-                <span className="flex items-center"><Signal events={rec.events} bars={10} className="h-4" /></span>
+                {/* Тот же признак, что и в таблице записей: у скилла, сделанного из выложенной записи,
+                    события тоже лежат на аккаунте, и плоский сигнал утверждал бы о нём то же неверное. */}
+                <span className="flex items-center">
+                  <Signal events={rec.events} here={eventsAreHere(rec)} shape={rec.shape} bars={10} className="h-4" />
+                </span>
 
                 <span className="flex min-w-0 flex-1 flex-col">
                   <Typography variant="span" weight="semibold" className="truncate text-[0.88rem]">

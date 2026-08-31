@@ -483,11 +483,23 @@ group('имя приложения не зависит от регистра');
       /then left\(lower\(trim\(e\.v->'context'->>'app'\)\), 120\)/.test(src), what);
   }
   /* Формула изменилась - значит версия. Иначе на живом аккаунте остались бы строки, посчитанные по старому
-   * правилу, и «claude» с «Claude» жили бы дальше рядом с исправленным кодом. */
-  check('и версия формулы поднята, чтобы старые строки пересчитались',
-    /export const DIGEST_VERSION = 2;/.test(digest));
-  check('а история изменения формулы записана рядом с числом',
-    /1 -> 2: application names are case-folded/.test(digest));
+   * правилу, и «claude» с «Claude» жили бы дальше рядом с исправленным кодом.
+   *
+   * Проверяется НЕ НОМЕР, а история: пин на числе падал бы при каждом законном поднятии, то есть требовал
+   * бы правки ради правки и учил бы править его не думая. Здесь можно поднять версию - и нельзя поднять её
+   * МОЛЧА: у каждого шага обязана быть строка о том, что изменилось. */
+  const version = Number((digest.match(/export const DIGEST_VERSION = (\d+);/) || [])[1]);
+  check('версия формулы объявлена числом и больше единицы', version >= 2, String(version));
+  const undocumented = [];
+  for (let was = 1; was < version; was++) {
+    if (!digest.includes(was + ' -> ' + (was + 1) + ':')) undocumented.push(was + ' -> ' + (was + 1));
+  }
+  check('и у каждого поднятия записано, что изменилось',
+    undocumented.length === 0, undocumented.join(', '));
+  /* И конкретно то, ради чего версия поднималась в этой сессии - чтобы причина не потерялась при
+   * следующем поднятии. */
+  check('в истории есть свёртка регистра и вывод формы',
+    /application names are case-folded/.test(digest) && /the shape/.test(digest));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

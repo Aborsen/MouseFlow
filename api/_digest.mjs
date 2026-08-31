@@ -26,8 +26,11 @@
  *
  * 1 -> 2: application names are case-folded. Until then "claude" and "Claude" were two applications, two
  * rows and two patterns. This is the first time the mechanism has actually been used, and using it is the
- * whole argument for having built it: the change is one line of SQL and no migration. */
-export const DIGEST_VERSION = 2;
+ * whole argument for having built it: the change is one line of SQL and no migration.
+ *
+ * 2 -> 3: the shape - sixteen bucket counts - is derived too, so the Record screen can draw a recording it
+ * does not hold the events of. */
+export const DIGEST_VERSION = 3;
 
 /* A gap longer than this inside a recording is somebody away from the machine, not time spent in an
  * application. Counting it would let one abandoned recording claim three hours in a CRM. */
@@ -52,6 +55,11 @@ export const TOP_ACTIONS = 10;
  * patterns for the same reason. The whole block comes to about a page - enough that "what do I keep doing"
  * is answerable before a single lookup, small enough that a long conversation is not paying for a catalogue
  * on every turn. */
+/* СКОЛЬКО ПОЛОСОК У ФОРМЫ ЗАПИСИ. Шестнадцать - потому что столько рисует web/src/components/Signal.tsx, и
+ * это ОДНО число на обе стороны: сервер отдаёт шестнадцать, а тот, кому нужно меньше, складывает соседние.
+ * Отдавать по запросу произвольное количество значило бы считать форму заново на каждый вид. */
+export const SHAPE_BARS = 16;
+
 export const SUMMARY_RECORDINGS = 12;
 export const SUMMARY_ACTIONS = 8;
 export const SUMMARY_PATTERNS = 5;
@@ -214,6 +222,42 @@ export function topUp(sql, ids, limit = TOP_UP_MAX) {
              first_value(origin) over (partition by user_id, client_id, grp order by ord) as at_origin
       from carried
     ),
+    /* ФОРМА: тот же расчёт, что в web/src/components/Signal.tsx, перенесённый туда, где лежат события.
+       Накопленная задержка - это часы: каждое событие несёт паузу ПЕРЕД собой, поэтому его место во времени
+       есть сумма задержек до него. Дальше пролёт делится на равные части и считается, сколько событий в
+       каждую попало.
+       Потолок паузы здесь НЕ применяется - намеренно. Он существует, чтобы отсутствие человека не
+       записывалось приложению как работа; форма же показывает, когда события происходили, и двухчасовой
+       перерыв в середине записи - это правда о ней, а не искажение. Обрезав его, картинка сказала бы, что
+       работа шла непрерывно. */
+    clock as (
+      select user_id, client_id, ord,
+             sum(delay_ms) over (partition by user_id, client_id order by ord) as at
+      from ev
+    ),
+    span as (
+      select user_id, client_id, max(at) as total, count(*)::int as n from clock group by 1, 2
+    ),
+    bucket as (
+      select c.user_id, c.client_id,
+             least(${SHAPE_BARS} - 1,
+                   floor((c.at / nullif(sp.total, 0)) * ${SHAPE_BARS})::int) as slot,
+             count(*)::bigint as n
+      from clock c join span sp on sp.user_id = c.user_id and sp.client_id = c.client_id
+      where sp.total > 0
+      group by 1, 2, 3
+    ),
+    /* generate_series, чтобы у формы всегда было ровно SHAPE_BARS чисел: массив переменной длины заставил
+       бы читателя догадываться, какая часть записи пропущена, а пустая часть - это ноль, а не отсутствие. */
+    shape as (
+      select keys.user_id, keys.client_id,
+             jsonb_agg(coalesce(b.n, 0) order by g.slot) as shape
+      from (select distinct user_id, client_id from bucket) keys
+      cross join generate_series(0, ${SHAPE_BARS} - 1) as g(slot)
+      left join bucket b on b.user_id = keys.user_id and b.client_id = keys.client_id
+        and b.slot = g.slot
+      group by 1, 2
+    ),
     app_ms as (
       select user_id, client_id, at_origin as name, sum(ms)::numeric as ms,
              row_number() over (partition by user_id, client_id order by sum(ms) desc, at_origin) as rn
@@ -243,7 +287,7 @@ export function topUp(sql, ids, limit = TOP_UP_MAX) {
     )
     insert into flow_digest (
       user_id, client_id, version, events,
-      active_ms, waiting_ms, away_ms, by_kind, top_actions, apps, pattern, derived_at
+      active_ms, waiting_ms, away_ms, by_kind, top_actions, apps, pattern, shape, derived_at
     )
     select s.user_id, s.client_id, ${DIGEST_VERSION},
            coalesce(t.events, 0),
@@ -252,6 +296,10 @@ export function topUp(sql, ids, limit = TOP_UP_MAX) {
            coalesce(p.top_actions, '[]'::jsonb),
            coalesce(a.apps, '[]'::jsonb),
            g.pattern,
+           /* Null, not sixteen zeros, when the recording has no timed events: a row of zeros is a picture
+              of a recording where nothing happened, and null is what "there is no shape to draw" is. The
+              reader distinguishes them - see web/src/components/Signal.tsx. */
+           h.shape,
            now()
     /* LEFT JOINed from stale, not from timing: a recording with an empty events list has no row in any
        aggregate above, and joining the other way round would leave it stale forever - re-derived on every
@@ -263,6 +311,7 @@ export function topUp(sql, ids, limit = TOP_UP_MAX) {
     left join tops    p on p.user_id = s.user_id and p.client_id = s.client_id
     left join apps    a on a.user_id = s.user_id and a.client_id = s.client_id
     left join pattern g on g.user_id = s.user_id and g.client_id = s.client_id
+    left join shape   h on h.user_id = s.user_id and h.client_id = s.client_id
     on conflict (user_id, client_id) do update set
       version     = excluded.version,
       events      = excluded.events,
@@ -273,6 +322,7 @@ export function topUp(sql, ids, limit = TOP_UP_MAX) {
       top_actions = excluded.top_actions,
       apps        = excluded.apps,
       pattern     = excluded.pattern,
+      shape       = excluded.shape,
       derived_at  = excluded.derived_at
     returning client_id, events
   `;

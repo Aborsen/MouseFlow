@@ -34,7 +34,7 @@ import { Signal } from '@/components/Signal';
 import { type Flow, push } from '@/lib/api';
 import { useAccount } from '@/shell/AccountProvider';
 import { type RecordedEvent, type Recording, useConsole } from '@/lib/store';
-import { eventsFor } from './events-for';
+import { eventsAreHere, eventsFor } from './events-for';
 import { useSending } from './sending';
 
 /* How many rows before Load more. Ten is theirs, and it is about the point where a list stops being
@@ -508,8 +508,12 @@ export const RecordingsTable = ({
                         </span>
                       </span>
 
-                      {/* Derived from this recording's own events - see Signal. */}
-                      <span className="flex items-center"><Signal events={rec.events} /></span>
+                      {/* Derived from this recording's own events - see Signal. `here` comes from the
+                          same helper the export path uses, rather than testing `eventsOnAccount` again:
+                          two answers to "are the events here" is how one of them comes to be wrong. */}
+                      <span className="flex items-center">
+                        <Signal events={rec.events} here={eventsAreHere(rec)} shape={rec.shape} />
+                      </span>
 
                       <span className="text-[0.76rem] text-ink-secondary tabular-nums">
                         {new Date(rec.created).toLocaleDateString()}

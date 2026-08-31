@@ -174,18 +174,34 @@ async function pull(res, sql, who) {
    *
    * Считается в SQL, а не в JS: тянуть 3МБ из базы, чтобы посчитать длину массива и выбросить, - это та же
    * работа, только на другой стороне провода. */
+  /* И ФОРМА - шестнадцать чисел из flow_digest, потому что события больше не приезжают.
+   *
+   * Столбец Signal на экране записи рисуется из событий, а этот ответ их намеренно не везёт - значит для
+   * любой записи, пришедшей с аккаунта, рисовать было нечем, и пустой массив давал шестнадцать полосок по
+   * нижней границе: картинку тихой записи поверх четырёхчасовой сессии. Столбец, существующий чтобы
+   * показывать форму записи, утверждал обратное тому, что было.
+   *
+   * LEFT JOIN, и это важнее, чем кажется: дайджест мог быть ещё не посчитан - запись сделана минуту назад,
+   * или код развёрнут впереди своей миграции. Тогда shape приезжает null, и читатель показывает прочерк с
+   * объяснением, а не плоский сигнал. INNER JOIN уронил бы всю синхронизацию из-за украшения.
+   *
+   * И ЭТОТ МАРШРУТ НЕ СЧИТАЕТ ДАЙДЖЕСТЫ. Он самый горячий в продукте - его зовут на каждую загрузку
+   * приложения; приведением в порядок занимаются дашборд и ассистент, а этот берёт то, что уже есть. */
   const flows = await sql`
-    select client_id, source, kind, name, description, origins, created_at, updated_at,
-           octet_length(payload::text) as bytes,
-           case when kind = 'created' then payload else null end as payload,
-           case when jsonb_typeof(payload->'events') = 'array'
-                then jsonb_array_length(payload->'events') else 0 end as events,
-           payload->'windows' as windows,
-           payload->'session' as session,
-           payload->'role' as role
-    from user_flow
-    where user_id = ${who.id} and deleted_at is null
-    order by updated_at desc
+    select f.client_id, f.source, f.kind, f.name, f.description, f.origins,
+           f.created_at, f.updated_at,
+           octet_length(f.payload::text) as bytes,
+           case when f.kind = 'created' then f.payload else null end as payload,
+           case when jsonb_typeof(f.payload->'events') = 'array'
+                then jsonb_array_length(f.payload->'events') else 0 end as events,
+           f.payload->'windows' as windows,
+           f.payload->'session' as session,
+           f.payload->'role' as role,
+           d.shape as shape
+    from user_flow f
+    left join flow_digest d on d.user_id = f.user_id and d.client_id = f.client_id
+    where f.user_id = ${who.id} and f.deleted_at is null
+    order by f.updated_at desc
   `;
   const runs = await sql`
     select client_id, kind, goal, name, model, flow_id, outcome, summary, error,
@@ -234,6 +250,11 @@ async function pull(res, sql, who) {
         windows: Array.isArray(f.windows) ? f.windows : [],
         session: f.session && typeof f.session === 'object' ? f.session : null,
         role: typeof f.role === 'string' ? f.role : null,
+        /* ОТСУТСТВУЕТ, а не заполнено нулями, когда формы нет. Шестнадцать нулей - это картинка записи,
+         * в которой ничего не происходило, и читатель обязан уметь отличить её от «нечего рисовать».
+         * Числа приводятся к числам здесь: jsonb отдаёт bigint строкой, и полоска высотой "1024" была бы
+         * NaN на той стороне. */
+        shape: Array.isArray(f.shape) ? f.shape.map((n) => Number(n) || 0) : null,
       },
     })),
     runs: runs.map((r) => ({

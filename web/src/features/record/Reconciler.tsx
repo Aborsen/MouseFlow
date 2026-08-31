@@ -68,7 +68,30 @@ export const Reconciler = () => {
      * «на аккаунте её нет» здесь означает «мы ещё не перечитали аккаунт». Реестр знает разницу, и заявка
      * снимается только после reload - то есть ровно на этом промежутке она и стоит. */
     plan.forget = plan.forget.filter((id) => !isSending(id));
-    const nothing = !plan.pull.length && !plan.push.length && !plan.forget.length && !plan.stamp.length;
+    /* ФОРМА - для тех строк, которые не могут нарисовать себя сами, и считается ЗДЕСЬ, до раннего выхода.
+     *
+     * События выложенной записи в этом браузере не лежат, а столбец Signal рисуется из них: пустой массив
+     * давал шестнадцать полосок по нижней границе - картинку тихой записи поверх четырёхчасовой сессии.
+     * Аккаунт присылает шестнадцать чисел в той же сводке, шестьдесят байт против сотен килобайт.
+     *
+     * Только тем, у кого события ВЫЛОЖЕНЫ: запись, чьи события здесь, рисуется из них, и вторая копия той
+     * же картинки рядом с первой - два способа получить одно число, то есть будущее расхождение. И только
+     * если её ещё нет, иначе строка переписывалась бы одним и тем же на каждом проходе.
+     *
+     * СТОИТ ВЫШЕ `nothing` не для порядка: сначала это было внутри асинхронного блока, за `if (nothing)
+     * return`, и в устойчивом состоянии - ничего не тянется, не отправляется, не забывается - не
+     * выполнялось НИКОГДА. Поймано проверкой в браузере, а не чтением. */
+    const shapes = new Map<string, number[]>();
+    for (const flow of flows) {
+      const shape = flow.summary?.shape;
+      if (Array.isArray(shape) && shape.length > 0) shapes.set(flow.id, shape);
+    }
+    const wantsShape = local.recordings.some(
+      (rec) => rec.eventsOnAccount && !rec.shape && shapes.has(rec.id),
+    );
+
+    const nothing = !plan.pull.length && !plan.push.length && !plan.forget.length
+      && !plan.stamp.length && !wantsShape;
     done.current = signature;
     if (nothing) return;
 
@@ -129,6 +152,7 @@ export const Reconciler = () => {
       /* Забытое включает похороненное аккаунтом: удаление, сделанное на другой машине, доходит сюда именно
        * так - не тем, что запись пропала из списка, а тем, что аккаунт отказался её принимать. */
       const forget = new Set([...plan.forget, ...buried]);
+
       const now = new Date().toISOString();
 
       /* ВНИЗ - ПО ОДНОЙ, И ТОЛЬКО ТЕ, КОГО ЗАБИРАЕМ.
@@ -166,13 +190,16 @@ export const Reconciler = () => {
         }
       }
 
-      if (pulled.length || stamped.size || forget.size) {
+      if (pulled.length || stamped.size || forget.size || wantsShape) {
         update((prev) => ({
           recordings: [
             ...prev.recordings
               .filter((rec) => !forget.has(rec.id))
               .map((rec) => (stamped.has(rec.id)
                 ? { ...rec, syncedAt: rec.syncedAt ?? fromServer.get(rec.id) ?? now }
+                : rec))
+              .map((rec) => (rec.eventsOnAccount && !rec.shape && shapes.has(rec.id)
+                ? { ...rec, shape: shapes.get(rec.id) }
                 : rec)),
             /* Appended, and the ids are the account's own, so a second pass finds them already here rather
              * than pulling a duplicate under a new name. */
