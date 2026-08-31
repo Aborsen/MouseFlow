@@ -290,6 +290,31 @@ These are not bugs and no amount of work inside the current design removes them.
 
 ---
 
+### What was picked was never in the recording, and now the draft asks
+
+A click carries the name of what it landed on, and sometimes what it landed on is the **page itself**.
+Measured on one live recording: the button ` Add filter` on 2Checkout, and then three clicks reported as
+`type=document`, `control="Order search"` — the name of the *document*, because the filter that opened had
+no accessibility name on anything inside it. Which filter was chosen is not in the recording and cannot be.
+
+Until this, those three clicks became three steps of a skill draft: `click "Order search"` three times over
+— a line a model reading the screen can do nothing with, standing exactly where the only real decision was
+made. The complaint was the right one: step 5 said `Click " Add filter"` and never asked *which* filter.
+
+**So the draft asks, once, where the question belongs.** A run of page-body clicks is folded away and the
+named click that opened it carries a fillable line instead: `click " Add filter", then pick the product
+filter`. It is an offer, not a question — left empty the step stays exactly as it was, and nothing is
+blocked. Whoever made the recording is still on screen, which is the same bargain the typing blanks strike.
+
+Two limits stay, and both are deliberate. **It only asks where somebody opened something**: a click on the
+page body is ordinary — 144 such runs on a 6,705-step recording, mostly clicks on empty space — and
+requiring a named click immediately before brings that to 29, and to 2 on the recording that prompted this,
+which are the two that matter. A pick with no opener is left as an ordinary step rather than turned into a
+question about nothing. And **the container test reads a localised string**: `type` arrives from UI
+Automation as `LocalizedControlType`, so on a non-English Windows the word will not be `document` and no
+line will be offered. That fails towards silence, never towards a wrong step, and it is the same trade the
+agent already makes when it decides what counts as a landmark.
+
 ### The site is in the transcript and not yet in the time split
 
 A desktop recording of a browser carries `context.url` on the clicks the agent could resolve — measured on

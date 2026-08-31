@@ -2197,6 +2197,7 @@ check('and one keystroke is not "1 keystrokes"', /keystroke\$\{b\.keys === 1 \? 
  * asked a three-way question about all thirteen. */
 group('a typing run is a field, or it is somebody pressing Enter');
 const { classifyTyping, splitTyping } = await import('../api/_typing.mjs');
+const { choiceRuns, isContainerClick, isOwnRecorderControl } = await import('../api/_choices.mjs');
 
 const MEASURED = [
   { keys: 60, role: 'AXTextArea', control: 'Prompt' },
@@ -2273,7 +2274,7 @@ check('the chip shows the current answer, so nothing is set without saying so',
  * had the chip been moved inside the label with the classes left alone - the one thing it exists to catch. */
 check('the control sits outside the label, so opening it does not untick the step',
   /The chip sits OUTSIDE the label/.test(wizard)
-    && /<\/label>\s*\{askable[\s\S]{0,80}<WhatWasTyped/.test(wizard));
+    && /<\/label>[\s\S]{0,400}\{askable[\s\S]{0,120}<WhatWasTyped/.test(wizard));
 /* A run that is NOT a field gets a chip too, and that is a fix rather than a decoration: without one the
  * row looked identical to a field's and simply had nowhere to answer. The first person to see the screen
  * asked why some typing rows could be filled in and others could not — the screen knew and was not saying. */
@@ -2352,33 +2353,47 @@ check('the save button carries no icon, which wrapped it onto two lines',
   !/<Check className/.test(wizard));
 
 check('the step list can be taken whole in one click', /const keepAll = useCallback/.test(wizard)
-  && /lines \?\? \[\]\)\.filter\(worthShowing\)\.map\(\(line\) => line\.n\)/.test(wizard));
+  && /lines \?\? \[\]\)\.filter\(\(line\) => worthShowing\(line, hushed\)\)\.map\(\(line\) => line\.n\)/.test(wizard));
 /* A scroll IS describable and still is not worth a line: this kind of skill is carried out by a model
  * reading the screen, which scrolls when it needs to see something. One recording here held 1,732 wheel
  * notches. */
 check('a scroll is folded away with the rest, not put in front of somebody',
   /describable\(line\) && line\.action !== 'scroll'/.test(wizard));
 check('and it is not in the skill by default either, so hidden means left out',
-  /setKept\(new Set\(flat\.filter\(worthShowing\)/.test(wizard));
+  /setKept\(new Set\(flat\.filter\(\(l\) => worthShowing\(l, hushed\)\)/.test(wizard));
 check('the fold says scrolls are among what it holds',
   /scrolls, clicks on things with no name/.test(wizard));
 
 /* Every recording started from the app ends with a click on MouseFlow's own Stop button. That click is
  * bookkeeping ABOUT the recording, not part of the work - and a skill repeating it presses Stop on a
- * recorder nobody started, which is what the first goal skill made here actually did. */
+ * recorder nobody started, which is what the first goal skill made here actually did.
+ *
+ * ПРОВЕРЯЕТСЯ ВЫЗОВОМ, а не регуляркой по .tsx, и переехало это ровно из-за той ошибки, которую регулярка
+ * поймать не могла: список сравнивался НА РАВЕНСТВО, а панель задач Windows отдаёт имя кнопки как имя
+ * приложения плюс заголовок окна. Пины видели в файле нужные строки и были зелёными, пока в скилл ехал
+ * последний шаг «нажать стоп». */
 check('MouseFlow’s own recorder controls are folded away too',
-  /const OWN_RECORDER_CONTROLS = new Set\(\[/.test(wizard)
-    && /'stop and save this recording',/.test(wizard)
-    && /!isOwnRecorderControl\(line\)/.test(wizard));
+  /!isOwnRecorderControl\(line\)/.test(wizard)
+    && isOwnRecorderControl({ control: 'Stop and save this recording' })
+    && isOwnRecorderControl({ control: 'Start recording' }));
+check('and the tray item as the taskbar actually hands it over — the app name glued to the window title',
+  /* Замерено на rn3l06nya, шаг 71: right-clicked the "MouseFlow agent MouseFlow agent - recording" button. */
+  isOwnRecorderControl({ control: 'MouseFlow agent MouseFlow agent - recording' })
+    && isOwnRecorderControl({ control: 'MouseFlow agent - recording' })
+    && isOwnRecorderControl({ control: 'MouseFlow agent' }));
 /* Narrow on purpose: a click on "Make a skill" or "Delete" is somebody USING the app - unlikely to be the
  * task, but at least something they did. Stopping the recording is the one action guaranteed not to be. */
 check('and only the recorder’s controls, not everything in MouseFlow',
-  !/'make a skill'|'delete'|'next'/.test(wizard.slice(
-    wizard.indexOf('const OWN_RECORDER_CONTROLS'), wizard.indexOf('const isOwnRecorderControl'))));
+  !isOwnRecorderControl({ control: 'Make a skill' })
+    && !isOwnRecorderControl({ control: 'Delete' })
+    && !isOwnRecorderControl({ control: 'Next' })
+    && !isOwnRecorderControl({ control: '' })
+    && !isOwnRecorderControl({}));
 /* Matching our OWN labels is safe where matching a platform's control type is not: these are not translated
  * — which is why the strings were taken from the app's and both agents' source rather than invented. */
-check('the labels cover the app, the macOS menu item and the Windows tray item',
-  /'stop and save recording',/.test(wizard) && /'mouseflow agent - recording',/.test(wizard));
+check('the tray label is the one the Windows agent actually sets',
+  read('../agent/mouseflow-agent.ps1').includes('"MouseFlow agent - recording"'));
+
 /* A recording whose only step is the click that stopped it now folds to nothing. An empty list under a
  * disabled Next with no sentence reads as a broken screen; it is a real recording with nothing in it. */
 check('a recording that folds to nothing says so rather than showing an empty list',
@@ -4229,6 +4244,96 @@ group('«clicked in the page, at 99,577» получает место');
   const memo = read(step('app=chrome\twindow=Claude\ttype=group\tside=below\tnear=Send  and 2 more pages'));
   check('и он проходит те же правила, что всякое имя с экрана',
     /"Send/.test(placeText(memo)), placeText(memo));
+}
+
+/* ------------------------------------------------------------------ выбор, которого запись не увидела */
+
+/* ЗАМЕР, а не выдумка: rn3l06nya, шаги 11-27, как их отдаёт /api/transcript. Кнопка « Add filter», а следом
+ * три клика с type=document и именем «Order search» - это имя ДОКУМЕНТА, и что человек выбрал в открывшемся
+ * фильтре, запись не знает и знать не может. Как шаги они давали «click "Order search"» трижды подряд:
+ * строчку, по которой ничего сделать нельзя, и при этом единственное место, где выбор произошёл. */
+group('клик, попавший в саму страницу, - это место для ответа, а не шаг');
+{
+  const PAGE = 'https://secure.2checkout.com/cpanel/reports.php';
+  const measured = [
+    { n: 11, action: 'click', control: 'Clear filters', controlType: 'button', url: PAGE },
+    { n: 12, action: 'move', control: null, controlType: null, url: PAGE },
+    { n: 13, action: 'click', control: ' Add filter', controlType: 'button', url: PAGE },
+    { n: 14, action: 'move', control: null, controlType: null, url: PAGE },
+    { n: 15, action: 'click', control: 'Order search', controlType: 'document', url: PAGE },
+    { n: 17, action: 'scroll', control: null, controlType: null, url: PAGE },
+    { n: 21, action: 'wait', control: null, controlType: null, url: PAGE },
+    { n: 23, action: 'click', control: 'Order search', controlType: 'document', url: PAGE },
+    { n: 25, action: 'click', control: 'Order search', controlType: 'document', url: PAGE },
+    { n: 27, action: 'click', control: 'Search', controlType: 'button', url: PAGE },
+  ];
+  const { runs, anchors, hushed } = choiceRuns(measured);
+
+  check('серия кликов по странице - один вопрос, а не три одинаковых',
+    runs.length === 1 && runs[0].clicks === 3, JSON.stringify(runs));
+  /* Спросили-то про шаг «Click " Add filter"» - там ответ и должен стоять. */
+  check('и стоит он на том шаге, который выбор открыл',
+    runs[0].n === 13 && runs[0].after === ' Add filter');
+  check('прокрутка и пауза серию не разрывают - это не действия',
+    JSON.stringify(runs[0].steps) === JSON.stringify([15, 23, 25]));
+  check('а сами клики по странице прячутся: за них отвечает вопрос',
+    hushed.has(15) && hushed.has(23) && hushed.has(25) && !hushed.has(13));
+  check('названная кнопка после серии её закрывает',
+    !hushed.has(27) && anchors.size === 1);
+
+  /* Клик по телу страницы - штука рядовая: на записи из 6705 шагов таких серий 144, и почти все они - клик
+   * по пустому месту или снятие фокуса. Без открывающего клика это остаётся обычным шагом, иначе вопросов
+   * было бы сто сорок четыре - тот самый провал, от которого рядом существует отбор набора текста. */
+  const lonely = choiceRuns([
+    { n: 1, action: 'click', control: 'Claude', controlType: 'document', url: 'https://claude.ai/' },
+    { n: 2, action: 'move', control: null, controlType: null, url: 'https://claude.ai/' },
+  ]);
+  check('без открывающего клика серии нет - и шаг остаётся как был',
+    lonely.runs.length === 0 && lonely.hushed.size === 0);
+
+  /* Другой сайт - другой выбор. */
+  const moved = choiceRuns([
+    { n: 1, action: 'click', control: 'Tickets', controlType: 'link', url: 'https://desk.zoho.com/a' },
+    { n: 2, action: 'click', control: 'List', controlType: 'main', url: 'https://desk.zoho.com/b' },
+  ]);
+  check('смена места разрывает серию', moved.runs.length === 0, JSON.stringify(moved.runs));
+
+  /* Набор текста - свой разговор, у него свой пропуск. */
+  const typed2 = choiceRuns([
+    { n: 1, action: 'click', control: 'Comment', controlType: 'toggle button', url: 'u' },
+    { n: 2, action: 'type', control: 'Comment', controlType: 'document', keys: 12, url: 'u' },
+    { n: 3, action: 'click', control: 'Ticket', controlType: 'document', url: 'u' },
+  ]);
+  check('набор текста между ними тоже разрывает - у него свой пропуск',
+    typed2.runs.length === 0, JSON.stringify(typed2.runs));
+
+  check('контейнер - это тип, а не отсутствие имени',
+    isContainerClick({ action: 'click', control: 'Order search', controlType: 'document' })
+      && isContainerClick({ action: 'click', control: 'tickets List', controlType: 'main' })
+      && !isContainerClick({ action: 'click', control: 'Search', controlType: 'button' })
+      && !isContainerClick({ action: 'click', control: null, controlType: 'document' })
+      && !isContainerClick({ action: 'type', control: 'x', controlType: 'document' }));
+
+  /* Ответ дописывается ПОСЛЕ самого шага: сначала то, что запись видела, потом то, чего она видеть не
+   * могла. Обратный порядок читался бы как инструкция выбрать раньше, чем открыл. */
+  check('ответ встаёт в шаг после него, а не вместо него',
+    wizard.includes('const withChoice = ') && wizard.includes('`${base}, then ${said}`'));
+  check('и только у клика: выбор открывают нажатием',
+    wizard.includes("case 'click': return named ? withChoice("));
+  /* Пустой ответ - это 'skip', то есть шаг остаётся как был. Именно поэтому вопрос ничего не держит: Next
+   * смотрит на 'fixed' без текста, а у выбора такого состояния не бывает. */
+  check('пустой ответ возвращает шаг в исходное состояние, а не держит Next',
+    wizard.includes("fill: (value.trim() ? 'fixed' : 'skip') as Fill")
+      && wizard.includes("fill: (e.target.value.trim() ? 'fixed' : 'skip') as Fill"));
+  /* Параметром выбор не становится: параметру нужны имя и тип, а тут неизвестно даже, что выбирали -
+   * «фильтр» бывает продуктом, а бывает диапазоном дат. */
+  check('и параметром не становится - ни один путь из вопроса не ведёт к ask',
+    !wizard.slice(wizard.indexOf('const WhatWasChosen'), wizard.indexOf('const STAGES'))
+      .includes("fill: 'ask'"));
+  check('спрашивают в двух местах - у строки и списком - и правят один Blank',
+    wizard.includes('<WhatWasChosen blank={blank}') && wizard.includes('{choices.length > 0 && ('));
+  check('а сложенные клики названы там, где названо всё сложенное',
+    wizard.includes('clicks that landed on the page itself'));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

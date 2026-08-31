@@ -42,6 +42,9 @@ import { type GoalSkillSource, saveAsGoalSkill } from './save-as-skill';
 /* Which typing runs are fields and which are somebody pressing Enter. Lives beside the API rather than here
  * because the suite runs it for real against measured recordings, and a .tsx cannot be imported by Node. */
 import { classifyTyping, type TypingVerdict } from './typing';
+/* Наши собственные кнопки записи и клики, попавшие в саму страницу. Тоже рядом с API и по той же причине:
+ * отбор, проверенный регуляркой по .tsx, - это отбор, который никто не запускал. */
+import { choiceRuns, isOwnRecorderControl, type ChoiceRun } from './choices';
 import type { Conflict, Unplaced } from '../../../../api/_compose.mjs';
 
 /* ------------------------------------------------------------------ what the transcript sends */
@@ -101,11 +104,27 @@ type Fill = 'ask' | 'fixed' | 'skip';
 interface Blank {
   /** The step this belongs to, so a dropped step drops its blank. */
   n: number;
+  /* ДВА РОДА ПРОПУСКОВ, и оба - «запись этого не видела, спросим один раз».
+   *
+   * `typing` - что напечатали: клавиши не читаются никогда, это устройство (docs/product/17-privacy-security.md).
+   * `choice` - что ВЫБРАЛИ: клик попал в саму страницу, и accessibility-имени у выбранного не оказалось.
+   *
+   * Один тип на оба, а не два состояния рядом: правка, галочки, сборка цели и подсчёт параметров написаны
+   * один раз и работают для обоих. Расходятся они только в вопросе, который задают, и в том, что выбор
+   * параметром не становится - см. `fill` у choice ниже. */
+  kind: 'typing' | 'choice';
   control: string | null;
   role: string | null;
   keys: number;
-  /** Is this a place a skill could type, and was that read or guessed? From classifyTyping(). */
-  verdict: TypingVerdict;
+  /** Is this a place a skill could type, and was that read or guessed? From classifyTyping(). Отсутствует у
+   *  choice: там нечего классифицировать - клик по странице это клик по странице. */
+  verdict?: TypingVerdict;
+  /* Только у choice. Имя открывшего выбор шага (« Add filter») и сколько кликов вопрос накрывает - для
+   * подписи, чтобы человек узнал место, о котором спрашивают. */
+  after?: string | null;
+  clicks?: number;
+  /* У choice `fill` знает только 'fixed' и 'skip': параметру нужны имя и тип, а тут не известно даже, что
+   * именно выбирали. Пустой ответ - это 'skip', то есть шаг остаётся как был, и Next никого не держит. */
   fill: Fill;
   /** Which of the runs into this same control this one is, and how many there are. 0 when it is the only
    *  one, or when this is not a field at all. Nine runs into one "Prompt" made nine identical cards. */
@@ -118,6 +137,12 @@ interface Blank {
   type: 'quoted' | 'email' | 'url';
   fixed: string;
 }
+
+/* Пропуск про НАБОР ТЕКСТА, у которого классификация точно есть. Отдельный тип, а не проверка на каждом
+ * обращении: `verdict` необязателен ровно потому, что у выбора его нет, и охранник говорит это один раз
+ * вместо восьми `?.` там, где вопрос уже решён. */
+type TypedBlank = Blank & { kind: 'typing'; verdict: TypingVerdict };
+const isTyped = (b: Blank): b is TypedBlank => b.kind === 'typing' && !!b.verdict;
 
 /* A field name is written for a person - "To", "Subject line", "Search the web" - and a parameter name is
  * written for a schema. Slugged rather than invented, so the two are recognisably the same thing. */
@@ -182,23 +207,11 @@ function describable(line: Line): boolean {
  * and a skill that faithfully repeats them ends by pressing Stop on a recorder nobody started, which is
  * what the first goal skill made here actually did.
  *
- * NARROW ON PURPOSE. Only the recorder's controls, not everything in MouseFlow: a click on "Make a skill"
- * or "Delete" is somebody USING the app, which is unlikely to be the task but is at least something they
- * did. Stopping the recording is the one action that is guaranteed not to be.
- *
- * Matched by name, which is safe HERE and nowhere else in this file: these are our own labels in our own
- * product, taken from our own source, and unlike a platform's control type they are not translated. The
- * strings are the ones the web app and both agents actually use - the app's button, the macOS menu-bar item
- * and the Windows tray item. */
-const OWN_RECORDER_CONTROLS = new Set([
-  'stop and save this recording',
-  'stop and save recording',
-  'start recording',
-  'mouseflow agent - recording',
-]);
-
-const isOwnRecorderControl = (line: Line) =>
-  OWN_RECORDER_CONTROLS.has(String(line.control || '').trim().toLowerCase());
+ * The names, and why matching them by name is safe here, live in api/_choices.mjs. What was wrong when the
+ * list was in this file: it compared for EQUALITY, and the Windows taskbar hands over the app name glued to
+ * the window title - "MouseFlow agent MouseFlow agent - recording" - so the one step this exists to remove
+ * was the one step it never matched. Measured on rn3l06nya, whose last step was exactly that.
+ */
 
 /* Worth putting in front of somebody, as opposed to merely expressible.
  *
@@ -210,8 +223,26 @@ const isOwnRecorderControl = (line: Line) =>
  *
  * So scrolls join the pointer moves and the unnamed clicks in the fold: left out by default, listed by
  * count, and one click away from being put back for the recording where a scroll really is the point. */
-const worthShowing = (line: Line) =>
-  describable(line) && line.action !== 'scroll' && !isOwnRecorderControl(line);
+/* `hushed` - клики, попавшие в саму страницу, за которые отвечает вопрос на открывшем их шаге; см.
+ * api/_choices.mjs. Как шаги они давали «click "Order search"» трижды подряд - строчку, по которой ничего
+ * сделать нельзя, и при этом единственное место, где человек ВЫБРАЛ, что фильтровать. */
+const worthShowing = (line: Line, hushed: Set<number>) =>
+  describable(line) && line.action !== 'scroll' && !isOwnRecorderControl(line) && !hushed.has(line.n);
+
+/* Что человек дописал про выбор - ПОСЛЕ самого шага, одним предложением.
+ *
+ * «click " Add filter", then pick the product filter» - два предложения об одном действии, и порядок именно
+ * такой: сначала то, что запись видела, потом то, чего она видеть не могла. Обратный порядок читался бы как
+ * инструкция выбрать раньше, чем открыл.
+ *
+ * Точка на конце снимается: её поставит buildGoal, и «then pick X.. » - это опечатка, которую никто не
+ * писал. */
+const withChoice = (base: string, blank: Blank | undefined): string => {
+  if (!blank || blank.kind !== 'choice' || blank.fill === 'skip') return base;
+  const said = blank.fixed.trim().replace(/[.\s]+$/, '');
+  if (!said) return base;
+  return `${base}, then ${said}`;
+};
 
 function instruction(line: Line, blank: Blank | undefined): string | null {
   if (line.action === 'type') {
@@ -223,8 +254,9 @@ function instruction(line: Line, blank: Blank | undefined): string | null {
   }
   const named = line.control ? `"${line.control}"` : null;
   switch (line.action) {
-    case 'click': return named ? `click ${named}` : null;
-    case 'dblclick': return named ? `double-click ${named}` : null;
+    /* Только у клика: выбор открывают нажатием, и вопрос стоит именно на нём - см. api/_choices.mjs. */
+    case 'click': return named ? withChoice(`click ${named}`, blank) : null;
+    case 'dblclick': return named ? withChoice(`double-click ${named}`, blank) : null;
     case 'tab': return named ? `switch to ${named}` : null;
     case 'drag': return named ? `drag ${named}` : null;
     case 'page': return named ? `open ${named}` : null;
@@ -380,7 +412,7 @@ function chipOf(b: Blank): { label: string; set: boolean } {
 }
 
 const WhatWasTyped = ({ blank, onEdit }: {
-  blank: Blank;
+  blank: TypedBlank;
   onEdit: (patch: Partial<Blank>) => void;
 }) => {
   /* A typing run that is NOT a field gets a chip too, and this is a fix rather than a decoration.
@@ -510,6 +542,87 @@ const WhatWasTyped = ({ blank, onEdit }: {
   );
 };
 
+/* ЧТО ЗДЕСЬ ВЫБРАЛИ - тот же поповер, но про клик, а не про клавиши.
+ *
+ * Жалоба была ровно такая: в черновике стоит «5. Click " Add filter"», и он не спрашивает, КАКОЙ фильтр, и
+ * нигде его не описывает. Спросить и правда некого - выбор жил в разметке без accessibility-имени, и запись
+ * видела только три клика «по документу Order search» (замер на rn3l06nya, шаги 15, 23, 25). Что человек
+ * помнит, а запись не знает, - это и есть то, о чём стоит спросить один раз, пока он ещё на экране.
+ *
+ * ПРЕДЛОЖЕНИЕ, А НЕ ВОПРОС, и это видно по весу: чип тихий, пустой ответ ничего не ломает и Next не держит.
+ * Незаполненное поле ввода громкое потому, что скилл без него напечатает не то; здесь же скилл просто
+ * сделает то, что видела запись, - меньше, но не неверно.
+ *
+ * Параметра нет намеренно. Параметру нужны имя и тип, а тут неизвестно даже, что именно выбирали: «фильтр»
+ * бывает продуктом, а бывает диапазоном дат. Человек пишет словами - «выбрать даты с 1-го по текущее
+ * число», - и это уходит в цель как есть, потому что цель исполняется моделью, читающей экран, а не
+ * подставляется в макрос. */
+const CHOICE_TEXT_MAX = 26;
+
+const WhatWasChosen = ({ blank, onEdit }: {
+  blank: Blank;
+  onEdit: (patch: Partial<Blank>) => void;
+}) => {
+  const said = blank.fixed.trim();
+  const short = said.length > CHOICE_TEXT_MAX ? `${said.slice(0, CHOICE_TEXT_MAX - 1)}…` : said;
+  /* Пустое поле возвращает шаг в исходное состояние, а не оставляет «печатать это всегда» без текста: у
+   * набора текста такое состояние держит Next, и здесь оно означало бы, что человек стёр ответ и застрял. */
+  const write = (value: string) => onEdit({
+    fixed: value,
+    fill: (value.trim() ? 'fixed' : 'skip') as Fill,
+  });
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'shrink-0 rounded-md border px-2 py-0.5 text-[0.76rem] transition-colors duration-fast',
+            'max-w-[13rem] truncate',
+            said
+              ? 'border-stroke bg-surface-card2 text-ink-secondary hover:bg-state-hover'
+              : 'border-transparent text-ink-inactive hover:bg-state-hover',
+          )}
+        >
+          {said ? `then ${short}` : 'what did you pick?'}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-[19rem]">
+        <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
+          What did you pick here?
+        </Typography>
+        <Typography variant="p" className="mt-1 mb-2 text-[0.82rem] text-ink-inactive leading-relaxed">
+          {blank.clicks === 1
+            ? 'The click after this one landed on the page itself'
+            : `The ${blank.clicks} clicks after this one landed on the page itself`}
+          , so nothing was read about what was chosen — only that something was. Say it in your own words and
+          it becomes part of this step.
+        </Typography>
+
+        <input
+          autoFocus
+          value={blank.fixed}
+          onChange={(e) => write(e.target.value)}
+          placeholder="pick the product filter"
+          className={cn(
+            'h-9 w-full rounded-md border border-stroke bg-surface-card2 px-2.5 text-[0.85rem]',
+            'text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none',
+          )}
+        />
+
+        {/* Как это встанет в цель - целиком, вместе с самим шагом: спрашивали про «Click " Add filter"», и
+          * увидеть надо то предложение, которое получится, а не отдельный обрывок. */}
+        <Typography variant="p" className="mt-2 text-[0.78rem] text-ink-inactive leading-relaxed">
+          {said
+            ? `The step becomes: click “${blank.control ?? ''}”, then ${said.replace(/[.\s]+$/, '')}.`
+            : 'Left empty, the step stays as it is — click it and carry on.'}
+        </Typography>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
 /* "What to type" was the name while the step could only ever be about the recorded typing — and when a
  * recording had none, it was a screen with a sentence on it and nothing to do. It takes instructions in
  * general now, of which "type this here" is one. */
@@ -601,10 +714,13 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
           }
         }
         setLines(flat);
+        /* Серии кликов по странице: где спросить про выбор и что за него спрятать. Считается здесь и ещё
+         * раз мемоизацией ниже - функция чистая, а начальные галочки ставятся до того, как мемо существует. */
+        const { anchors, hushed } = choiceRuns(flat);
         /* Everything DESCRIBABLE is in to start with. A step whose target had no name cannot become an
          * instruction, so leaving it on would put a tick beside a row that contributes nothing - which reads
          * as "this is in the skill" and is not. It stays in the list, switched off, saying why. */
-        setKept(new Set(flat.filter(worthShowing).map((l) => l.n)));
+        setKept(new Set(flat.filter((l) => worthShowing(l, hushed)).map((l) => l.n)));
 
         /* Is this a field, or is it Enter? See api/_typing.mjs - on a measured 6,617-event recording nine
          * of thirteen typing runs were one text box and the other four were keys pressed at a dialog. */
@@ -642,7 +758,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
 
         const soFar = new Map<string, number>();
         const taken = new Set<string>();
-        setBlanks(typed.map((l) => {
+        const typingBlanks = typed.map((l) => {
           const verdict = verdicts.get(l.n) as TypingVerdict;
           const base = slugOf(l.control);
           const of = verdict.field ? (totals.get(base) ?? 1) : 0;
@@ -668,8 +784,35 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
             param,
             type: typeFromControl(l.control),
             fixed: '',
+            kind: 'typing' as const,
           };
+        });
+
+        /* ПРОПУСК НА ВЫБОР - на том шаге, который выбор открыл.
+         *
+         * Пустой и ничего не требующий: `skip` значит «оставить шаг как есть», и до первой буквы в поле он
+         * ничего не меняет ни в цели, ни в кнопке Next. Это предложение, а не вопрос, - на записи из 6705
+         * шагов таких мест 29, и двадцать девять обязательных вопросов были бы тем самым провалом, от
+         * которого рядом существует отбор набора текста. */
+        const choiceBlanks: Blank[] = [...anchors.values()].map((run: ChoiceRun) => ({
+          n: run.n,
+          kind: 'choice' as const,
+          control: (flat.find((l) => l.n === run.n) || { control: null }).control,
+          role: null,
+          keys: 0,
+          after: run.after,
+          clicks: run.clicks,
+          fill: 'skip' as Fill,
+          nth: 0,
+          of: 0,
+          param: '',
+          type: 'quoted' as const,
+          fixed: '',
         }));
+
+        /* По номеру шага, потому что карточки на втором экране идут в порядке записи, а не в порядке двух
+         * списков, склеенных подряд. */
+        setBlanks([...typingBlanks, ...choiceBlanks].sort((a, b) => a.n - b.n));
       } catch (err) {
         if (!gone) setProblem(err instanceof Error ? err.message : 'The steps could not be read.');
       }
@@ -688,11 +831,20 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
   /* The steps that can become instructions, and the ones that cannot. A step with no name under it is not
    * a step a skill can be told to do - `instruction()` returns null for it either way - so hiding it hides
    * nothing that was going to happen. */
-  const describables = useMemo(() => (lines ?? []).filter(worthShowing), [lines]);
+  /* Клики, попавшие в саму страницу: за них отвечает вопрос на шаге, который их открыл. Пересчитывается из
+   * `lines` той же чистой функцией, что и при загрузке, - одно правило в одном месте. */
+  const hushed = useMemo(() => choiceRuns(lines ?? []).hushed, [lines]);
+  const describables = useMemo(
+    () => (lines ?? []).filter((line) => worthShowing(line, hushed)),
+    [lines, hushed],
+  );
   const hidden = (lines?.length ?? 0) - describables.length;
   const shown = showAll ? (lines ?? []) : describables;
-  const fields = useMemo(() => typing.filter((b) => b.verdict.field), [typing]);
-  const aside = useMemo(() => typing.filter((b) => !b.verdict.field), [typing]);
+  /* Карточки второго экрана - только про набор текста: у выбора нет ни параметра, ни классификации, и
+   * место для ответа у него своё, ниже. */
+  const fields = useMemo(() => typing.filter(isTyped).filter((b) => b.verdict.field), [typing]);
+  const aside = useMemo(() => typing.filter(isTyped).filter((b) => !b.verdict.field), [typing]);
+  const choices = useMemo(() => typing.filter((b) => b.kind === 'choice'), [typing]);
   const asked = useMemo(() => typing.filter((b) => b.fill === 'ask'), [typing]);
 
   const derived = useMemo(
@@ -730,8 +882,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
    * starting them unticked. */
   const allKept = describables.length > 0 && describables.every((line) => kept.has(line.n));
   const keepAll = useCallback(() => {
-    setKept(new Set((lines ?? []).filter(worthShowing).map((line) => line.n)));
-  }, [lines]);
+    setKept(new Set((lines ?? []).filter((line) => worthShowing(line, hushed)).map((line) => line.n)));
+  }, [lines, hushed]);
   const keepNone = useCallback(() => setKept(new Set()), []);
 
   const edit = useCallback((n: number, patch: Partial<Blank>) => {
@@ -1039,11 +1191,16 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                             )}
                           </span>
                         </label>
-                        {askable
+                        {/* Два разных пропуска и один и тот же приём: чип рядом со строкой, о которой
+                          * спрашивают. Про набор текста спрашивает первый, про выбор - второй, и оба правят
+                          * один и тот же Blank, так что экраны не могут разойтись. */}
+                        {askable && blank && isTyped(blank)
                           ? <WhatWasTyped blank={blank} onEdit={(patch) => edit(line.n, patch)} />
-                          : isTyping
-                            ? <Keyboard aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-primary" />
-                            : null}
+                          : askable && blank && blank.kind === 'choice'
+                            ? <WhatWasChosen blank={blank} onEdit={(patch) => edit(line.n, patch)} />
+                            : isTyping
+                              ? <Keyboard aria-hidden className="mt-0.5 size-4 shrink-0 text-brand-primary" />
+                              : null}
                       </li>
                     );
                   })}
@@ -1061,8 +1218,8 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                   <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-stroke bg-surface-card2 px-3 py-2">
                     <Typography variant="span" className="text-[0.82rem] text-ink-inactive">
                       {hidden} more step{hidden === 1 ? '' : 's'} left out — pointer moves, waits,
-                      scrolls, clicks on things with no name, and starting or stopping this recording.
-                      Show them to put any back.
+                      scrolls, clicks on things with no name, clicks that landed on the page itself, and
+                      starting or stopping this recording. Show them to put any back.
                     </Typography>
                     <Button
                       variant="ghost"
@@ -1164,7 +1321,7 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                         /* Fields only. Sweeping the folded-away keypresses into "ask" alongside them would
                          * undo the split in one click and put the nineteen questions straight back. */
                         onClick={() => setBlanks((was) => was.map(
-                          (b) => (kept.has(b.n) && b.verdict.field ? { ...b, fill: f } : b),
+                          (b) => (kept.has(b.n) && isTyped(b) && b.verdict.field ? { ...b, fill: f } : b),
                         ))}
                       >
                         {f === 'ask' ? 'Ask each time' : f === 'fixed' ? 'Always the same' : 'Type nothing'}
@@ -1330,6 +1487,54 @@ export const SkillWizard = ({ rec, onClose, onSaved }: Props) => {
                         ))}
                       </ul>
                     )}
+                  </div>
+                )}
+
+                {/* ГДЕ ЗАПИСЬ НЕ УВИДЕЛА ВЫБОРА - все такие места сразу, а не по одному в списке шагов.
+                  *
+                  * То же, что и у полей ввода: чип у своей строки на первом экране отвечает на вопрос там,
+                  * где виден контекст, а этот блок - для того, кто хочет пройти все места подряд. Оба правят
+                  * один Blank, разойтись не могут.
+                  *
+                  * Ничего не требует: пустой ответ значит «оставить шаг как есть». Поэтому и вид тихий - ни
+                  * рамки внимания, ни счётчика в подвале. */}
+                {choices.length > 0 && (
+                  <div className={cn('rounded-lg border border-stroke bg-surface-card2 px-3 py-2.5',
+                    (fields.length > 0 || aside.length > 0) && 'mt-3')}
+                  >
+                    <Typography variant="p" className="text-[0.83rem] text-ink-body leading-relaxed">
+                      {choices.length} step{choices.length === 1 ? '' : 's'} opened something and the click
+                      that followed landed on the page itself — a filter, a menu, a picker with no name the
+                      agent could read. Say what you picked and it becomes part of that step; leave it and
+                      the step stays as it is.
+                    </Typography>
+                    <ul className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-2 border-stroke border-t pt-2">
+                      {choices.map((b) => (
+                        <li key={b.n} className="grid grid-cols-[minmax(0,1fr)] gap-1">
+                          <div className="flex flex-wrap items-baseline gap-x-2">
+                            <span className="text-[0.78rem] text-ink-inactive tabular-nums">step {b.n}</span>
+                            <span
+                              title={b.control || undefined}
+                              className="max-w-[22rem] truncate text-[0.82rem] text-ink-secondary"
+                            >
+                              click “{b.control || 'no name'}”
+                            </span>
+                            <span className="text-[0.76rem] text-ink-inactive">
+                              then {b.clicks === 1 ? '1 click' : `${b.clicks} clicks`} on the page itself
+                            </span>
+                          </div>
+                          <input
+                            value={b.fixed}
+                            onChange={(e) => edit(b.n, {
+                              fixed: e.target.value,
+                              fill: (e.target.value.trim() ? 'fixed' : 'skip') as Fill,
+                            })}
+                            placeholder="what you picked there — in your own words"
+                            className="h-9 w-full rounded-md border border-stroke bg-surface-card px-2.5 text-[0.85rem] text-ink-primary placeholder:text-ink-inactive focus:border-brand-primary focus:outline-none"
+                          />
+                        </li>
+                      ))}
+                    </ul>
                   </div>
                 )}
 
