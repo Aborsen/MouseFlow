@@ -323,21 +323,15 @@ const Quiet = ({ children }: { children: ReactNode }) => (
  * сама указать, что нажимать - «ещё раз» рядом с неизменившейся иконкой это указание без адресата. И про
  * снятие сказано словами, потому что крестик в конце строки иначе читается как «закрыть сообщение», а он
  * здесь отменяет удаление. */
-/* КОГДА ШАГИ ПОКАЗЫВАЮТСЯ СРАЗУ.
+/* РАСШИФРОВКА СВЁРНУТА ПО УМОЛЧАНИЮ, и это решение пережило один разворот.
  *
- * Обе складки ниже были закрыты по доводу, который верен и записан рядом с ними: расшифровка,
- * открывающаяся шестьюстами строками координат, закапывает то, что стоило написать. Но у записи из 73
- * шагов закапывать нечего, а человек, пришедший за последовательностью, находил вместо неё пересказ и две
- * складки - именно это и было в отчёте.
+ * Сначала складки открывались у записи, которую можно прочитать целиком: жалоба была на то, что до
+ * последовательности не добраться. Верное лекарство оказалось другим - номера шагов появились в самом
+ * рассказе, - и после этого раскрывать список заранее стало незачем: последовательность видна в прозе, а
+ * координаты нужны тому, кто проверяет один конкретный шаг.
  *
- * Порог, а не переключатель: сколько в записи шагов, известно до отрисовки, и решение принимается один раз
- * за читателя, а не оставляется ему кнопкой.
- *
- * Числа - по измеренным записям: 73 шага в двенадцати стретчах, самый крупный 25. Такая открывается
- * целиком; четырёхчасовая на 6705 шагов остаётся сложенной, как и была. */
-const STEPS_OPEN_MAX = 160;
-const SEGMENT_OPEN_MAX = 40;
-
+ * Так что довод, записанный у складок ниже, остаётся в силе целиком: расшифровка, открывающаяся
+ * шестьюстами строками координат, закапывает то, что стоило написать. */
 const ARMED_WARNING = 'This deletes the recording and this transcript with it. Press the bin again to go '
   + 'ahead, or dismiss this line to leave it alone.';
 
@@ -539,7 +533,7 @@ const SegmentBlock = ({
         /* Closed. The header above says where the work was, how long it took and how many steps it holds -
          * which is what somebody reads. The coordinates are for checking one particular step, and a
          * transcript that opens with six hundred lines of them buries the part that was worth writing. */
-        <details className="group" open={steps.length <= SEGMENT_OPEN_MAX}>
+        <details className="group">
           <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-[0.78rem] text-ink-inactive hover:bg-state-hover">
             <ChevronRight className="size-3.5 shrink-0 transition-transform duration-base group-open:rotate-90" />
             <span>
@@ -1103,12 +1097,7 @@ export const TranscriptPanel = ({
                 * summary. The story above IS the summary; this is the evidence for it, and evidence
                 * belongs behind one door rather than eight. Open the transcript, then open the stretch
                 * you want - two clicks to reach a coordinate, and none to read the recording. */
-              <details
-                className="group rounded-lg border-stroke border bg-surface-card"
-                /* `open` как обычный атрибут, а не управляемое состояние: React его не контролирует, поэтому
-                   читатель по-прежнему может складку закрыть, и она останется закрытой. */
-                open={stepCount <= STEPS_OPEN_MAX}
-              >
+              <details className="group rounded-lg border-stroke border bg-surface-card">
                 <summary className="flex cursor-pointer list-none items-center gap-1.5 p-3.5">
                   <ChevronRight className="size-4 shrink-0 text-ink-inactive transition-transform duration-base group-open:rotate-90" />
                   <Typography variant="span" weight="semibold" className="text-[0.9rem]">

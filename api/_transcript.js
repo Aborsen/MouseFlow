@@ -2075,8 +2075,21 @@ function unnamedClicks(count, ctx, points) {
 
 /* One place's paragraph, walked in order. Consecutive clicks with names merge into one clause, because
  * "clicked New mail, then To, then Send" is the sentence a person would say and three clauses is not. */
+/* Номер шага в тексте: «[11]». Пусто, когда номера нет - у шага без номера его нельзя ни назвать, ни
+ * передать в remove_steps, и придумывать позицию значило бы дать читателю число, которое никуда не ведёт. */
+const stepTag = (n) => (Number.isFinite(n) ? ' [' + n + ']' : '');
+const tagAll = (ns) => (ns.length ? ' [' + ns.join(', ') + ']' : '');
+
 function placeStory(segment) {
+  /* ФРАЗЫ - ОБЪЕКТЫ, а не строки, и причина ниже, в свёртке одинаковых: она сравнивает текст, и номера,
+   * вписанные в него, сделали бы любые две фразы разными. `key` - то, по чему сравнивают; `ns` - номера,
+   * которые дописываются при показе. */
   const clauses = [];
+  const say = (text, ns, key) => clauses.push({
+    text,
+    key: key == null ? text : key,
+    ns: (Array.isArray(ns) ? ns : [ns]).filter((n) => Number.isFinite(n)),
+  });
   let namedRun = [];
   let unnamed = 0;
   /* The context of the unnamed run being counted, so the clause can say what KIND of thing it was. The first
@@ -2086,19 +2099,37 @@ function placeStory(segment) {
   /* Where those clicks landed. Kept because a coordinate is the only thing that distinguishes one unnamed
    * click from another, and the run collapsing was throwing exactly that away. */
   let unnamedAt = [];
+  /* Номера безымянных нажатий прогона: их несколько, и все они настоящие шаги, которые можно прочитать. */
+  let unnamedNs = [];
   let dropped = 0;
+
+  /* Две половины по отдельности, потому что порядок между ними зависит от того, что пришло раньше, - и
+   * решать это должен вызывающий, а не порядок строк внутри одной функции. */
+  const flushUnnamed = () => {
+    if (!unnamed) return;
+    say(unnamedClicks(unnamed, unnamedCtx, unnamedAt), unnamedNs);
+    unnamed = 0;
+    unnamedCtx = null;
+    unnamedAt = [];
+    unnamedNs = [];
+  };
 
   const flushNamed = () => {
     if (namedRun.length) {
-      clauses.push('clicked ' + joinWords(namedRun.map(quoted), 'then'));
+      /* НОМЕР У КАЖДОГО ИМЕНИ, а не у фразы: слитый прогон - это и есть несколько нажатий, и «clicked
+       * "Order search" [15], "Order search" [23] then "Order search" [25]» отвечает на вопрос, который
+       * возник у читателя, - три одинаковых имени подряд это три разных нажатия, а не сбой.
+       * Ключ - имена без номеров, чтобы свёртка ниже по-прежнему видела одинаковые фразы. */
+      say(
+        'clicked ' + joinWords(namedRun.map((one) => quoted(one.name) + stepTag(one.n)), 'then'),
+        namedRun.map((one) => one.n),
+        'clicked ' + joinWords(namedRun.map((one) => quoted(one.name)), 'then'),
+      );
       namedRun = [];
     }
-    if (unnamed) {
-      clauses.push(unnamedClicks(unnamed, unnamedCtx, unnamedAt));
-      unnamed = 0;
-      unnamedCtx = null;
-      unnamedAt = [];
-    }
+    /* А здесь - после: сюда попадают безымянные, пришедшие ПОСЛЕ именованных, и для них этот порядок и
+     * есть верный. */
+    flushUnnamed();
   };
 
   for (const step of segment.steps) {
@@ -2109,13 +2140,24 @@ function placeStory(segment) {
      * прочитался бы как «clicked "Netflix"» - то самое, из-за чего это и переписывалось. */
     if (step.action === 'tab') {
       flushNamed();
-      clauses.push('switched to this tab');
+      say('switched to this tab', step.n);
       continue;
     }
 
     if (step.action === 'click' || step.action === 'dblclick') {
       const name = step.ctx && step.ctx.control;
-      if (name && step.action === 'click') { namedRun.push(name); continue; }
+      if (name && step.action === 'click') {
+        /* СНАЧАЛА ВЫСЫПАЕТСЯ НАКОПЛЕННОЕ БЕЗЫМЯННОЕ, иначе порядок переворачивается.
+         *
+         * Безымянные нажатия копятся, чтобы пять кликов по одному и тому же не стали пятью фразами. Но
+         * пришедшее следом именованное просто добавлялось к прогону, а flushNamed печатает сначала
+         * именованные - и на живой записи вышло «"Active chats" [60], "Feedback" [67] and then clicked on a
+         * link [62]»: шаг 62 назван после шага 67. Видно это стало только когда в рассказе появились
+         * номера; до них порядок был неверен и незаметен. */
+        if (unnamed) flushUnnamed();
+        namedRun.push({ name, n: step.n });
+        continue;
+      }
       if (step.action === 'dblclick') {
         flushNamed();
         /* unnamedClicks, во множественном - функция называется так, и единственного числа никогда не
@@ -2129,9 +2171,9 @@ function placeStory(segment) {
          * «twice», ни «N times», а отдаёт «clicked <что-то> at x,y» - ровно ту фразу, у которой этот вызов
          * и отрезает начало. Точки передаются ей же, а не приклеиваются после: она сама решает, ставить ли
          * запятую перед координатами, и склейка снаружи давала «...at 400,300 at 400,300». */
-        clauses.push(name
+        say(name
           ? 'double-clicked ' + quoted(name)
-          : 'double-clicked ' + unnamedClicks(1, step.ctx, [step.target]).replace(/^clicked /, ''));
+          : 'double-clicked ' + unnamedClicks(1, step.ctx, [step.target]).replace(/^clicked /, ''), step.n);
         continue;
       }
       /* Counted rather than written out, so five clicks on the same unnamed thing are one clause. The named
@@ -2140,6 +2182,7 @@ function placeStory(segment) {
       if (namedRun.length) flushNamed();
       if (!unnamed) unnamedCtx = step.ctx || null;
       unnamed++;
+      if (Number.isFinite(step.n)) unnamedNs.push(step.n);
       if (step.target) unnamedAt.push(step.target);
       continue;
     }
@@ -2157,25 +2200,25 @@ function placeStory(segment) {
 
     if (step.action === 'type') {
       const into = step.ctx && step.ctx.control ? ' in ' + quoted(step.ctx.control) : '';
-      clauses.push(step.keys > 1
+      say(step.keys > 1
         ? 'typed for ' + spanText(step.own) + into + ' - ' + step.keys + ' keystrokes'
-        : 'pressed a key' + into);
+        : 'pressed a key' + into, step.n);
     } else if (step.action === 'scroll') {
-      clauses.push((step.direction ? 'scrolled ' + step.direction : 'scrolled')
-        + (step.notches > 8 ? ' a long way' : ''));
+      say((step.direction ? 'scrolled ' + step.direction : 'scrolled')
+        + (step.notches > 8 ? ' a long way' : ''), step.n);
     } else if (step.action === 'drag') {
-      clauses.push('dragged something ' + pxText(step.px));
+      say('dragged something ' + pxText(step.px), step.n);
     } else if (step.action === 'wait') {
       /* Only the long ones reach here: a short wait is the rhythm of working and is dropped above, with the
        * moves, so that neither breaks a run of clicks in half. */
-      clauses.push('stopped for ' + spanText(step.own));
+      say('stopped for ' + spanText(step.own), step.n);
     } else {
       /* Its own words, not an apology. These are the `other` steps - a press with no release, a release
        * with no press, an action from an imported file - and every one of them carries a sentence saying
        * exactly what it is. Replacing that with "did something this transcript could not read" was the
        * story telling a reader it knew less than the step list two inches below it. */
       const said = String(step.what || '').trim();
-      clauses.push(said || 'did something this transcript could not read');
+      say(said || 'did something this transcript could not read', step.n);
     }
   }
   flushNamed();
@@ -2183,16 +2226,23 @@ function placeStory(segment) {
   /* Two identical clauses in a row become one. "Did X and then did X" is what a run of the same unreadable
    * thing produced, and it reads as a stutter rather than as a count. */
   for (let at = clauses.length - 1; at > 0; at--) {
-    if (clauses[at] !== clauses[at - 1]) continue;
+    if (clauses[at].key !== clauses[at - 1].key) continue;
     let same = 1;
-    while (at - same >= 0 && clauses[at - same] === clauses[at]) same++;
+    while (at - same >= 0 && clauses[at - same].key === clauses[at].key) same++;
+    /* Номера СЛИТЫХ фраз собираются вместе, а не теряются: свёрнутая фраза говорит, что случилась пять раз,
+     * и читатель обязан иметь возможность посмотреть каждый из пяти. */
+    const merged = clauses.slice(at - same + 1, at + 1).flatMap((one) => one.ns);
     clauses.splice(at - same + 1, same - 1);
-    clauses[at - same + 1] = clauses[at - same + 1] + ' (' + same + ' times)';
+    clauses[at - same + 1] = {
+      text: clauses[at - same + 1].text + ' (' + same + ' times)',
+      key: clauses[at - same + 1].key,
+      ns: merged,
+    };
     at = at - same + 1;
   }
 
   if (dropped > 0 && clauses.length >= STORY_CLAUSES) {
-    clauses.push('and ' + dropped + ' more step' + (dropped === 1 ? '' : 's') + ' the list below has');
+    say('and ' + dropped + ' more step' + (dropped === 1 ? '' : 's') + ' the list below has', []);
   }
 
   /* The proportions, which are the part a step list cannot show: an hour of clicking and an hour of
@@ -2215,7 +2265,13 @@ function placeStory(segment) {
     ? 'Only pointer movement and pauses here — nothing was clicked or typed.'
     : 'Nothing happened here.';
 
-  return (clauses.length ? capitalise(joinWords(clauses, 'and then')) + '.' : nothing)
+  /* НОМЕРА ДОПИСЫВАЮТСЯ ПРИ ПОКАЗЕ, и не дважды: у слитого прогона нажатий они уже стоят внутри текста, у
+   * каждого имени, - потому что там они и нужны, - и признак этого в том, что текст их уже содержит. */
+  const said = clauses.map((one) => (one.ns.length && !one.text.includes('[')
+    ? one.text + tagAll(one.ns)
+    : one.text));
+
+  return (said.length ? capitalise(joinWords(said, 'and then')) + '.' : nothing)
     + (shape.length ? ' ' + shape.join('. ') + '.' : '');
 }
 
@@ -2260,7 +2316,12 @@ function tellStory(segments, counts, totalMs, source, dropped = { ms: 0, pauses:
     opening += ' Nothing in it names where it happened, so the story below is what was done rather than '
       + 'where.';
   }
-  story.push({ kind: 'overview', title: null, text: oneLine(opening, 400) });
+  /* ЧТО ЗНАЧАТ ЧИСЛА В СКОБКАХ - один раз, и последним: без этой фразы «[11]» читается как сноска в никуда,
+   * а посреди вступления она разрывала мысль между длительностью и местами. С ней рассказ становится
+   * проверяемым - каждое утверждение сопоставляется со шагом ниже, и это те же номера, которые принимает
+   * удаление шагов. */
+  opening += ' A number in brackets is the step it came from, in the list below.';
+  story.push({ kind: 'overview', title: null, text: oneLine(opening, 480) });
 
   /* --------------------------------------------------------------- one paragraph per place */
   for (const segment of segments) {
