@@ -149,8 +149,7 @@ group('доказательства переживают проzу, а не на
    * НОЛЬ шагов и 4 стретча из 12. */
   const rt = read('_recording-tools.js');
   check('проза жертвуется ДО прореживания шагов',
-    /let prose = true;[\s\S]{0,400}?if \(bytes\(data\) > budget\) \{\s*
-\s*prose = false;/.test(rt),
+    /let prose = true;[\s\S]{0,400}?if \(bytes\(data\) > budget\) \{[\s\S]{0,40}?prose = false;/.test(rt),
     'order');
   check('и рассказ с границами записи под этим признаком',
     /story: prose \?/.test(rt) && /gaps: prose \?/.test(rt));
