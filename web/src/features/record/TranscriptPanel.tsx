@@ -108,6 +108,13 @@ interface Chapter {
   text?: unknown;
   at?: unknown;
   seconds?: unknown;
+  /* ОДНО ДЕЙСТВИЕ НА СТРОКУ, в том же порядке, что и в `text`. Две формы одного, из одного прохода
+   * движка: предложение читает модель, список читает человек. Отсутствует у ответа старого развёртывания -
+   * тогда показывается `text`, как и раньше. */
+  lines?: unknown;
+  /* Про пропорции («больше половины никто ничего не нажимал») - не действие, поэтому вне списка и без
+   * номера. */
+  shape?: unknown;
 }
 
 interface Where {
@@ -757,6 +764,20 @@ export const TranscriptPanel = ({
   }, [armed, flowId, onClose, onRemoved]);
 
   const story = list(data?.story) as Chapter[];
+  /* С КАКОГО НОМЕРА НАЧИНАЕТСЯ КАЖДАЯ ГЛАВА. Нумерация идёт подряд через весь рассказ, а не с единицы в
+   * каждом месте: человек читает процедуру целиком, и «шаг 14» должен быть один на запись.
+   *
+   * Считается здесь, а не увеличением переменной в разметке: порядок вызова колбэков внутри map React не
+   * обещает, и счётчик, живущий в разметке, - это ошибка, которая проявится однажды и не воспроизведётся. */
+  const storyStart = useMemo(() => {
+    const out: number[] = [];
+    let at = 0;
+    for (const chapter of story) {
+      out.push(at);
+      at += Array.isArray(chapter.lines) ? chapter.lines.filter((one) => str(one)).length : 0;
+    }
+    return out;
+  }, [story]);
 
   return (
     /* Three bands: a header that does not move, a body that scrolls, a footer with the two things you can
@@ -1022,12 +1043,26 @@ export const TranscriptPanel = ({
                 <Typography variant="h3" weight="semibold" className="mb-2.5 text-[0.92rem]">
                   What happened
                 </Typography>
+                {/* НУМЕРУЕТ ПАНЕЛЬ, А НЕ ДВИЖОК, и это не мелочь: номер здесь - положение в том, что
+                    вынесено на экран, то есть свойство показа. Пронумеруй их движок - и то же число уехало
+                    бы в модель и в документ, где нумерация своя, и два разных «шага 5» встретились бы в
+                    одном ответе.
+                    Счётчик идёт ПОДРЯД ЧЕРЕЗ ВЕСЬ рассказ, а не с единицы в каждом месте: человек читает
+                    процедуру целиком, и «шаг 14» должен быть один на запись. */}
                 <div className="space-y-2.5">
                   {story.map((chapter, i) => {
                     const title = str(chapter.title);
                     const detail = str(chapter.detail);
                     const text = str(chapter.text);
-                    if (!text) return null;
+                    const lines = Array.isArray(chapter.lines)
+                      ? chapter.lines.map((one) => str(one)).filter((one): one is string => !!one)
+                      : [];
+                    const shape = str(chapter.shape);
+                    /* Откуда начинается нумерация ЭТОЙ главы - посчитано заранее, см. storyStart: счётчик,
+                       увеличиваемый прямо в разметке, зависел бы от порядка отрисовки, а React его не
+                       обещает. */
+                    const startAt = storyStart[i] ?? 0;
+                    if (!text && !lines.length) return null;
                     const reading = chapter.kind === 'reading';
                     return (
                       <div
@@ -1062,15 +1097,39 @@ export const TranscriptPanel = ({
                             )}
                           </div>
                         )}
-                        <Typography
-                          variant="p"
-                          className={cn(
-                            'break-words text-[0.85rem]',
-                            reading ? 'text-ink-inactive' : 'text-ink-secondary',
-                          )}
-                        >
-                          {text}
-                        </Typography>
+                        {/* Список, когда движок его дал; иначе прежнее предложение - ответ старого
+                            развёртывания `lines` не несёт, и падать из-за этого нечему. */}
+                        {lines.length ? (
+                          <>
+                            <ol className="mt-1 space-y-0.5">
+                              {lines.map((one, at) => (
+                                  <li key={`${i}-${at}`} className="flex gap-2">
+                                    <span className="w-5 shrink-0 text-right font-semibold text-[0.78rem] text-ink-inactive tabular-nums">
+                                      {startAt + at + 1}
+                                    </span>
+                                    <span className="min-w-0 flex-1 break-words text-[0.85rem] text-ink-secondary">
+                                      {one}
+                                    </span>
+                                  </li>
+                              ))}
+                            </ol>
+                            {shape && (
+                              <Typography variant="p" className="mt-1 break-words text-[0.8rem] text-ink-inactive">
+                                {shape}
+                              </Typography>
+                            )}
+                          </>
+                        ) : (
+                          <Typography
+                            variant="p"
+                            className={cn(
+                              'break-words text-[0.85rem]',
+                              reading ? 'text-ink-inactive' : 'text-ink-secondary',
+                            )}
+                          >
+                            {text}
+                          </Typography>
+                        )}
                       </div>
                     );
                   })}

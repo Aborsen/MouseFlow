@@ -724,8 +724,26 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
            рассказе быть не могут. См. заметку у `say` в api/_transcript.js. Порядок фраз при этом
            возрастающий, и это не косметика: на живой записи он однажды не возрастал - безымянное нажатие
            оказывалось названным после следующего именованного. */
-        { kind: 'place', title: 'Inbox — victorg — Outlook', detail: 'OUTLOOK', at: 0, seconds: 41, text: 'Clicked "New mail" then "To", clicked once on something with no name to read, typed for 47.2s in "Message body" - 132 keystrokes and then clicked "Send". Most of the time here went on typing (47.2s of 41s).' },
-        { kind: 'place', title: 'Q3-forecast.xlsx - Excel Online — Microsoft Edge', detail: 'msedge', at: 41000, seconds: 33, text: 'Clicked "B4" and then scrolled down.' },
+        /* ОБЕ ФОРМЫ, как их отдаёт движок: предложение для модели и пункты для человека. Пункты - те же
+           действия, из которых собрано предложение, поэтому разойтись они не могут, а фикстура, где они
+           расходятся, учит панель показывать список, не отвечающий её же прозе.
+           Нумерации здесь НЕТ: номера ставит панель, подряд через весь рассказ. */
+        { kind: 'place',
+          title: 'Inbox — victorg — Outlook', detail: 'OUTLOOK', at: 0, seconds: 41,
+          text: 'Clicked "New mail" then "To", clicked once on something with no name to read, typed for 47.2s in "Message body" - 132 keystrokes and then clicked "Send". Most of the time here went on typing (47.2s of 41s).',
+          lines: [
+            'Clicked "New mail"',
+            'Clicked "To"',
+            'Clicked once on something with no name to read',
+            'Typed for 47.2s in "Message body" - 132 keystrokes',
+            'Clicked "Send"',
+          ],
+          shape: 'Most of the time here went on typing (47.2s of 41s).' },
+        { kind: 'place',
+          title: 'Q3-forecast.xlsx - Excel Online — Microsoft Edge', detail: 'msedge', at: 41000, seconds: 33,
+          text: 'Clicked "B4" and then scrolled down.',
+          lines: ['Clicked "B4"', 'Scrolled down'],
+          shape: null },
         { kind: 'reading', title: 'Reading it', text: '47.2s of it - about 64% - went on typing, in 1 run; 6 clicks, 5 of them on something with a name; 2 wheel notches; 1 drag. Steady input for most of the recording, which is the shape of work being done rather than a screen being watched.' },
       ],
       segments: [

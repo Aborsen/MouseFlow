@@ -2090,10 +2090,14 @@ function placeStory(segment) {
    *
    * Собираются они потому, что на них стоит свёртка одинаковых фраз: слитая фраза обязана помнить, сколько
    * шагов в неё вошло. Печатать их - отдельное решение, и оно отрицательное. */
-  const say = (text, ns, key) => clauses.push({
+  const say = (text, ns, key, parts) => clauses.push({
     text,
     key: key == null ? text : key,
     ns: (Array.isArray(ns) ? ns : [ns]).filter((n) => Number.isFinite(n)),
+    /* ЧАСТИ ФРАЗЫ, по одному действию. Склейка прогона нажатий нужна ПРЕДЛОЖЕНИЮ - «clicked A, B then C»
+     * это то, как человек говорит, а три фразы подряд нет, - и совершенно не нужна списку, где просили «по
+     * шагам». По умолчанию часть одна: у большинства фраз действие и есть одно. */
+    parts: Array.isArray(parts) && parts.length ? parts : [text],
   });
   let namedRun = [];
   let unnamed = 0;
@@ -2121,10 +2125,12 @@ function placeStory(segment) {
 
   const flushNamed = () => {
     if (namedRun.length) {
-      /* БЕЗ НОМЕРОВ - см. заметку у `say`: последовательными они быть не могут, а ссылками с пропусками
-       * читались как испорченная нумерация. */
+      /* БЕЗ НОМЕРОВ ШАГОВ - см. заметку у `say`. И с частями: в предложении прогон склеен, в списке
+       * распадается на нажатия, потому что «по шагам» - это одно действие на пункт. */
       say('clicked ' + joinWords(namedRun.map((one) => quoted(one.name)), 'then'),
-        namedRun.map((one) => one.n));
+        namedRun.map((one) => one.n),
+        null,
+        namedRun.map((one) => 'clicked ' + quoted(one.name)));
       namedRun = [];
     }
     /* А здесь - после: сюда попадают безымянные, пришедшие ПОСЛЕ именованных, и для них этот порядок и
@@ -2265,12 +2271,27 @@ function placeStory(segment) {
     ? 'Only pointer movement and pauses here — nothing was clicked or typed.'
     : 'Nothing happened here.';
 
-  /* ПОКАЗЫВАЕТСЯ ТОЛЬКО ТЕКСТ - см. заметку у `say`. Номера собираются и не печатаются: они у шагов в
-   * списке ниже, где идут подряд и без дыр. */
+  /* ПОКАЗЫВАЕТСЯ ТОЛЬКО ТЕКСТ - см. заметку у `say`. Номера шагов собираются и не печатаются. */
   const said = clauses.map((one) => one.text);
 
-  return (said.length ? capitalise(joinWords(said, 'and then')) + '.' : nothing)
-    + (shape.length ? ' ' + shape.join('. ') + '.' : '');
+  /* ДВЕ ФОРМЫ ОДНОГО, из одного прохода: предложение - для модели, части - для списка, который человек
+   * видит. Не два вывода: `lines` - это те же самые фразы, из которых собрано `text`, и разойтись они не
+   * могут, потому что собраны здесь же и рядом.
+   *
+   * Нумерации тут НЕТ. Номер в списке - это положение в том, что вынесли на экран, то есть свойство
+   * показа; поставь его здесь - и то же число уехало бы в модель и в документ, где нумерация своя, и два
+   * разных «шага 5» встретились бы в одном ответе. */
+  return {
+    text: (said.length ? capitalise(joinWords(said, 'and then')) + '.' : nothing)
+      + (shape.length ? ' ' + shape.join('. ') + '.' : ''),
+    /* ПО ОДНОМУ ДЕЙСТВИЮ НА ПУНКТ - части, а не фразы: см. `parts`. Свёрнутые повторы («(3 times)»)
+     * остаются одним пунктом: три одинаковых строки подряд это не три шага процедуры, а один, случившийся
+     * трижды, и разворачивать их обратно значило бы вернуть заикание, от которого свёртка и написана. */
+    lines: clauses.flatMap((one) => (/ \(\d+ times\)$/.test(one.text) ? [one.text] : one.parts))
+      .map(capitalise),
+    /* Про пропорции - отдельно от списка: это не действие и номера не заслуживает. */
+    shape: shape.length ? shape.join('. ') + '.' : null,
+  };
 }
 
 const capitalise = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
@@ -2326,7 +2347,16 @@ function tellStory(segments, counts, totalMs, source, dropped = { ms: 0, pauses:
       at: Math.round(segment.startMs),
       seconds: secondsOf(seconds),
       detail: oneLine((segment.where && segment.where.detail) || '', 120) || null,
-      text: oneLine(placeStory(segment), 700),
+      /* Обе формы, из одного вызова. `text` - вход модели и старый вид; `lines` - то, что панель
+       * показывает списком и нумерует сама. */
+      ...(() => {
+        const told = placeStory(segment);
+        return {
+          text: oneLine(told.text, 700),
+          lines: told.lines.map((one) => oneLine(one, 300)),
+          shape: told.shape ? oneLine(told.shape, 300) : null,
+        };
+      })(),
     });
   }
 
