@@ -57,7 +57,16 @@ const routes = [
    * (что загружено, что отказало, что сказано), и разделять их значило бы завести всё это дважды ради
    * одного условия. Идентификатор в АДРЕСЕ, а не в состоянии, по тому же правилу, что уже держит срез
    * дашборда: документ - это то, что посылают коллеге, и ссылка на него обязана открывать его. */
-  createRoute({ getParentRoute: () => rootRoute, path: '/docs', component: DocsView }),
+  /* СПИСОК документов живёт вкладкой в Галерее - см. GalleryView. Этот адрес был живым ровно один день, и
+   * всё-таки перенаправляет, а не удалён: его отдавал ассистент в ответе про написанный документ, и
+   * закладка, отвечающая 404, - худший ответ, чем закладка, приводящая куда надо. */
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/docs',
+    beforeLoad: () => { throw redirect({ to: '/gallery', search: { tab: 'documents' } as never }); },
+  }),
+  /* ОДИН документ - по-прежнему свой адрес и своя страница: его посылают коллеге, и открываться он обязан
+   * сразу на себе, а не на списке, из которого его надо ещё найти. */
   createRoute({ getParentRoute: () => rootRoute, path: '/docs/$docId', component: DocsView }),
   /* The old path. A rename should not break a link somebody already has - and this one is in a published
    * review of the roadmap, which is exactly the sort of link nobody thinks about until it 404s. */

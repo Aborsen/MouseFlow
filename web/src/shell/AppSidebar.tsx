@@ -12,7 +12,6 @@
  */
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
-  BookText,
   ChartNoAxesColumn,
   ChevronsUpDown,
   CircleDot,
@@ -45,12 +44,11 @@ const NAV = [
    * for a roster you fill in once and the wrong one for what it now is: several teams, people being added
    * and moved, invitations to chase, and a dashboard scoped to each. A dialog also cannot be linked to,
    * and "open Teams" is what an invitation email has to be able to say. */
-  /* Между «что я делаю» и «чья это работа»: документ - результат записи и повод для решения, и стоит он
-   * ровно там, где о нём вспоминают - после Dashboard, откуда его просят у ассистента. */
-  { to: '/docs', label: 'Documents', icon: BookText },
   { to: '/team', label: 'Teams', icon: Users },
-  /* Last, because it is the only one that is not YOUR work: everything above is something on this account,
-   * and the gallery is other people's skills to browse. */
+  /* Last, and now it is the library rather than only the gallery: two shelves, other people's published
+   * flows and the process documents written from your own recordings. Documents had a nav row of its own for
+   * a day - the question a person brings is one, "what is already made and can I use it", and answering it
+   * from two menu entries was the mistake. */
   { to: '/gallery', label: 'Gallery', icon: LayoutGrid },
 ] as const;
 

@@ -27,6 +27,7 @@
  */
 import {
   AppWindow,
+  FileText,
   ChevronRight,
   CircleDashed,
   Globe,
@@ -533,6 +534,9 @@ interface Props {
   /** Hand this recording to the assistant on the Dashboard. The panel does not navigate itself - the caller
    * owns the router - it just says when. */
   onAnalyze?: () => void;
+  /* Открыть ассистента с просьбой НАПИСАТЬ процесс. Отдельный проп, а не флаг у
+   * onAnalyze: у вызывающей стороны это два разных перехода, и оба она делает сама. */
+  onDocument?: () => void;
   /** Make a skill of this recording: the panel says when, the caller opens SkillWizard. A promise for the
    * same reason onRestore is one - the caller may have to read the account first, and the button that was
    * pressed is the right place to show that it is working. */
@@ -540,7 +544,7 @@ interface Props {
 }
 
 export const TranscriptPanel = ({
-  flowId, name, onClose, onRemoved, onRestore, onAnalyze, onMakeSkill,
+  flowId, name, onClose, onRemoved, onRestore, onAnalyze, onDocument, onMakeSkill,
 }: Props) => {
   const [data, setData] = useState<Transcript | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -1114,6 +1118,37 @@ export const TranscriptPanel = ({
                     Open in AI Assistant
                   </Button>
                 </div>
+
+                {/* ВТОРАЯ ПРОСЬБА, отдельной строкой и под первой, а не второй кнопкой в один ряд: это не
+                  * вариант того же действия. Первая открывает разговор, вторая ПИШЕТ объект - строку в базе,
+                  * которую потом правят, - и стоит модельного вызова. Разные последствия читаются как одно,
+                  * когда кнопки стоят рядом одного размера.
+                  *
+                  * Она всё равно ведёт в ассистента, а не пишет документ здесь: писать значит читать
+                  * расшифровку и платить модели, и это живёт там, где уже действуют правила и потолки
+                  * ассистента. Кнопка избавляет от печатания просьбы, а не заводит вторую дорогу к
+                  * действию. */}
+                {onDocument && (
+                  <div className="mt-3 flex flex-wrap items-center gap-3 border-stroke border-t pt-3">
+                    <div className="min-w-0 flex-1">
+                      <Typography variant="span" weight="semibold" className="block text-[0.88rem]">
+                        Write it up as a process
+                      </Typography>
+                      <Typography variant="p" className="mt-0.5 max-w-[62ch] text-ink-inactive text-[0.8rem]">
+                        A document with every line citing the step it came from, saved so it can be
+                        corrected and exported. It says plainly what the recording cannot show — nothing
+                        anybody typed is stored, so the words in a field are never in it.
+                      </Typography>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      leftSlot={<FileText className="size-4" />}
+                      onClick={onDocument}
+                    >
+                      Write the process document
+                    </Button>
+                  </div>
+                )}
               </section>
             )}
           </div>

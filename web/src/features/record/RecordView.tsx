@@ -1349,6 +1349,12 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
               askAbout(viewing, viewingName);
               void navigate({ to: '/dashboard' });
             }}
+            /* Тот же переход, другая просьба - см. ask-about.ts: намерение едет вместе с записью, иначе
+               вторая кнопка была бы первой с другой надписью. */
+            onDocument={() => {
+              askAbout(viewing, viewingName, 'document');
+              void navigate({ to: '/dashboard' });
+            }}
             /* One flow, and it is the same one the row's skill button opens. */
             onMakeSkill={() => openWizard(viewing, viewingName)}
             onClose={() => setViewing(null)}

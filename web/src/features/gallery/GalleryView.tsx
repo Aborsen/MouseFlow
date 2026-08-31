@@ -33,6 +33,7 @@ import {
 import { useConsole } from '@/lib/store';
 import { useAccount } from '@/shell/AccountProvider';
 import { Page } from '@/shell/Surface';
+import { DocsView } from '@/features/docs/DocsView';
 import { adoptRecording } from '@/features/record/adopt';
 import { FlowCard } from './FlowCard';
 import {
@@ -128,6 +129,58 @@ const whatTravels = (payload: unknown): string[] => {
   return all.length > 8 ? [...all.slice(0, 8), `and ${all.length - 8} more`] : all;
 };
 
+/* ДВА ОТДЕЛЕНИЯ ОДНОЙ БИБЛИОТЕКИ, и это то, о чём просили: чужое опубликованное и свои написанные
+ * процессы. Не два адреса, потому что вопрос у человека один - «что уже готово и можно взять» - и раньше
+ * ответ на него был размазан по двум пунктам меню.
+ *
+ * ВКЛАДКА В АДРЕСЕ, а не только в состоянии: то же правило, что уже держит срез дашборда и команду. Ссылку
+ * на документы посылают - её возвращает ассистент, написав документ, - и она обязана открывать документы, а
+ * не библиотеку скиллов.
+ *
+ * replaceState, а не роутер: /gallery не объявляет схему поиска, и добавлять её ради одной необязательной
+ * строки значило бы протащить валидацию во всех прочих, кто зовёт этот маршрут - тот же довод, который
+ * записан у дашборда. */
+type Shelf = 'published' | 'documents';
+
+const SHELVES: { key: Shelf; label: string; hint: string }[] = [
+  { key: 'published', label: 'Published by others',
+    hint: 'Flows somebody else made public. Installing one puts it on your account.' },
+  { key: 'documents', label: 'Documents',
+    hint: 'Processes written from your own recordings, and yours to correct.' },
+];
+
+const shelfFromAddress = (): Shelf => {
+  try {
+    return new URLSearchParams(window.location.search).get('tab') === 'documents'
+      ? 'documents'
+      : 'published';
+  } catch (_) {
+    return 'published';
+  }
+};
+
+const Shelves = ({ at, onGo }: { at: Shelf; onGo: (next: Shelf) => void }) => (
+  <div className="mb-4">
+    <div className="flex flex-wrap items-center gap-1 rounded-lg border-stroke border bg-surface-card p-1">
+      {SHELVES.map((shelf) => (
+        <button
+          key={shelf.key}
+          type="button"
+          onClick={() => onGo(shelf.key)}
+          aria-pressed={at === shelf.key}
+          title={shelf.hint}
+          className={cn(
+            'rounded-md px-3 py-1.5 text-[0.86rem] font-medium transition-colors duration-fast',
+            at === shelf.key ? 'on-accent bg-brand-primary' : 'text-ink-secondary hover:bg-state-hover',
+          )}
+        >
+          {shelf.label}
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
 export const GalleryView = () => {
   const { flows, reload } = useAccount();
   const [local] = useConsole();
@@ -147,6 +200,16 @@ export const GalleryView = () => {
   const [app, setApp] = useState('');
   const [sort, setSort] = useState<Sort>('installs');
   const [page, setPage] = useState(1);
+  /* Из адреса при входе, обратно в адрес при переключении. */
+  const [shelf, setShelf] = useState<Shelf>(shelfFromAddress);
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      if (shelf === 'documents') url.searchParams.set('tab', 'documents');
+      else url.searchParams.delete('tab');
+      window.history.replaceState(null, '', url.toString());
+    } catch (_) { /* ничего здесь не зависит от того, что адрес верен */ }
+  }, [shelf]);
 
   const load = useCallback(async (q: string) => {
     setSkills(null);
@@ -303,6 +366,18 @@ export const GalleryView = () => {
       onTry={() => void tryIt(skill)}
     />
   );
+
+  /* ОТДЕЛЕНИЕ ДОКУМЕНТОВ - до всех прочих ветвей. У Галереи их несколько, каждая со своим ранним
+   * возвратом, и вставлять переключатель в каждую значило бы четыре копии одного; а вкладка документов не
+   * делит с ними ни поиск, ни фильтр по приложению, ни разбивку на страницы. */
+  if (shelf === 'documents') {
+    return (
+      <Page>
+        <Shelves at={shelf} onGo={setShelf} />
+        <DocsView embedded />
+      </Page>
+    );
+  }
 
   // ------------------------------------------------------------------ one collection, on its own
   if (open) {
@@ -462,6 +537,7 @@ export const GalleryView = () => {
 
   return (
     <Page>
+      <Shelves at={shelf} onGo={setShelf} />
       <div className="mb-4 grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,26rem)] xl:items-start">
         <div className="min-w-0">
           <Typography variant="span" className="block text-[0.7rem] uppercase tracking-[0.14em] text-brand-tertiary">
