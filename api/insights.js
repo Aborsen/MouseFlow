@@ -88,6 +88,31 @@ const RUN_MAX_SECONDS = 12 * 3600;
  * was dropped is reported in `gaps`, so the drop is visible rather than quietly flattering. */
 const EVENT_GAP_MAX_MS = 120_000;
 
+/* ВНИМАНИЕ, ОЖИДАНИЕ И ОТСУТСТВИЕ - три части одного измеренного времени, и до этой волны у дашборда была
+ * только первая, причём под именем «активность».
+ *
+ * Замерено на живом аккаунте: из 20.9 часов записанного времени 8.6 приходится на 74 паузы длиннее двух
+ * минут, и ещё 5.5 - на промежутки от пяти секунд до двух минут. То есть примерно треть времени человек
+ * был не за машиной, ещё четверть читал или ждал, и меньше половины что-то делал. Всё это ИЗМЕРЕНО, но
+ * показывалась только последняя часть, а самая большая упоминалась в `gaps` как оговорка о неточности.
+ *
+ * Пять секунд - граница между «делает» и «смотрит». Выбрана, а не измерена, и это сказано вслух: паузу
+ * короче пяти секунд человек проводит внутри действия (прочитать подпись, прицелиться), длиннее - между
+ * действиями. Двухсекундная граница отнесла бы к ожиданию половину обычной работы, десятисекундная
+ * спрятала бы чтение письма. Если число окажется неверным, менять его надо ЗДЕСЬ - оно одно на все три
+ * величины, и они по построению складываются в измеренное время целиком. */
+const ACTIVE_MAX_MS = 5_000;
+
+/* Сколько приложений подряд составляют «узор» одной записи, и сколько узоров показывать.
+ *
+ * Восемь шагов, потому что узор длиннее не повторяется: цель - найти ОДИН И ТОТ ЖЕ процесс, сделанный
+ * несколько раз, а не описать запись целиком. Подряд идущие повторы одного приложения сворачиваются в
+ * один шаг, иначе «chrome, chrome, chrome» отличалось бы от «chrome, chrome» и один процесс распался бы
+ * на десяток непохожих узоров. */
+const PATTERN_STEPS = 8;
+const PATTERNS_MAX = 8;
+const ACTIONS_MAX = 10;
+
 /* Per-account, best effort, and for one honest reason: this endpoint unrolls every event of every
  * recording in the window, which is the most expensive read in the product. Same construction as
  * api/claude.js - a serverless instance holds its own window, so the real limit is this times the
@@ -814,13 +839,122 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
     left join r on r.user_id = ids.id
   `;
 
+  /* КАК ПРОШЛО ВРЕМЯ, ЧТО ИМЕННО ДЕЛАЛОСЬ И ЧТО ПОВТОРЯЛОСЬ - один проход по payload, три ответа.
+   *
+   * ОТДЕЛЬНЫМ ЗАПРОСОМ, А НЕ ВЕТКОЙ В appsQ, и это снижение риска, а не лень. appsQ - самый сложный
+   * запрос в продукте: перенос имени приложения вперёд оконной функцией, единственное имя записи,
+   * отнесение времени агентских шагов. Дописывать в него ещё три группировки значит рисковать тем, что
+   * работает, ради того, чего ещё нет. Цена - лишний проход по payload: измерено 642 мс на ВСЮ историю
+   * аккаунта, то есть на окно меньше.
+   *
+   * Союз с колонкой `kind`, потому что запрос отдаёт одну форму, а ответов нужно три. Общие столбцы -
+   * `label`, `n`, `ms`; каждый вид заполняет то, что для него осмысленно.
+   */
+  const behaviourFor = (a, b) => sql`
+    with flow as (
+      select user_id::text || ':' || client_id as key, payload
+      from user_flow
+      where user_id = any(${ids}::uuid[]) and deleted_at is null and kind = 'recorded'
+        and coalesce(created_at, updated_at) >= ${a}
+        and coalesce(created_at, updated_at) <= ${b}
+    ),
+    ev as materialized (
+      select f.key, e.ord,
+             nullif(trim(e.v->>'action'), '') as action,
+             greatest(0, case
+               when jsonb_typeof(e.v->'delay')   = 'number' then (e.v->>'delay')::numeric
+               when jsonb_typeof(e.v->'delayMs') = 'number' then (e.v->>'delayMs')::numeric
+               else 0
+             end) as delay_ms,
+             coalesce((
+               select sum(greatest(0, (p->>'dt')::numeric))
+               from jsonb_array_elements(
+                 case when jsonb_typeof(e.v->'points') = 'array' then e.v->'points' else '[]'::jsonb end
+               ) p
+               where jsonb_typeof(p->'dt') = 'number'
+             ), 0) as move_ms,
+             case
+               when e.v->>'url' ~ '^https?://'
+                 then left(lower(regexp_replace(e.v->>'url', '^(https?://[^/?#]+).*$', '\\1')), 120)
+               when nullif(trim(e.v->'context'->>'app'), '') is not null
+                 then left(trim(e.v->'context'->>'app'), 120)
+             end as origin
+      from flow f
+      cross join lateral jsonb_array_elements(
+        case when jsonb_typeof(f.payload->'events') = 'array' then f.payload->'events' else '[]'::jsonb end
+      ) with ordinality as e(v, ord)
+    ),
+    /* Три части одного времени. Складываются в целое по построению: каждая миллисекунда паузы попадает
+       ровно в одну из них, а время движения курсора - деятельность по определению. */
+    /* ОДНА группировка на три части, а не три сканирования. Три ветки union all по ev читались как
+       симметричная запись правила и стоили трёх проходов по всем событиям; условные суммы дают то же
+       самое за один проход. Разворот в три строки - уже поверх посчитанного.
+       (Обратные кавычки в этом комментарии стоять НЕ МОГУТ: он внутри template literal, и первая же
+       закрыла бы строку запроса. В этой сессии этот капкан сработал дважды.) */
+    split as materialized (
+      select sum(least(delay_ms, ${ACTIVE_MAX_MS}::numeric) + move_ms) as active_ms,
+             sum(greatest(0, least(delay_ms, ${EVENT_GAP_MAX_MS}::numeric)
+                             - ${ACTIVE_MAX_MS}::numeric))              as waiting_ms,
+             sum(greatest(0, delay_ms - ${EVENT_GAP_MAX_MS}::numeric)) as away_ms
+      from ev
+    ),
+    attention as (
+      select 'active'::text as label, active_ms as ms from split
+      union all select 'waiting'::text, waiting_ms from split
+      union all select 'away'::text, away_ms from split
+    ),
+    /* ЧТО ИМЕННО ДЕЛАЛОСЬ. Движение курсора вынесено в свой род, а не смешано с остальным: замерено
+       363 460 движений из 424 730 событий - 86%, - и в одном списке с ними пять тысяч щелчков выглядели бы
+       шумом. Оба агента и расширение пишут действие по-разному («Left Click Down», «Key Ctrl+V»), поэтому
+       род определяется по началу строки, а не таблицей соответствий. */
+    acted as materialized (
+      select case
+               when action is null then 'other'
+               when action ilike 'mouse movement%' or action = 'path' then 'move'
+               when action ilike '%click%' then 'click'
+               when action ilike 'key %' or action = 'Key Down' then 'key'
+               when action ilike 'scroll%' then 'scroll'
+               when action ilike '%drag%' then 'drag'
+               when action = 'Focus' then 'focus'
+               else 'other'
+             end as label,
+             action
+      from ev
+    ),
+    /* Узор записи: приложения в порядке появления, подряд идущие повторы свёрнуты. */
+    named as (
+      select key, ord, origin,
+             lag(origin) over (partition by key order by ord) as prev
+      from ev where origin is not null
+    ),
+    turns as (
+      select key, origin, row_number() over (partition by key order by ord) as step
+      from named where prev is distinct from origin
+    ),
+    pattern as (
+      select key, string_agg(origin, ' -> ' order by step) as label
+      from turns where step <= ${PATTERN_STEPS}
+      group by key
+    )
+    select 'attention'::text as kind, label, 0::bigint as n, coalesce(ms, 0)::numeric as ms
+    from attention
+    union all
+    select 'action', label, count(*)::bigint, 0::numeric from acted group by label
+    union all
+    select 'top', coalesce(action, '(none)'), count(*)::bigint, 0::numeric
+    from acted where label <> 'move' group by action
+    union all
+    select 'pattern', label, count(*)::bigint, 0::numeric from pattern group by label
+  `;
+
   /* Appended rather than always run: in a personal scope the breakdown is the header with one row under
    * it, and it would be a query the commonest request on this endpoint pays for and nothing reads. */
-  const asked = [totalsQ, prevTotalsQ, flowsQ, byDayQ, appsQ, repeatedQ, slowestQ, failuresQ, skillsQ];
+  const asked = [totalsQ, prevTotalsQ, flowsQ, byDayQ, appsQ, repeatedQ, slowestQ, failuresQ, skillsQ,
+    behaviourFor(fromIso, toIso), behaviourFor(prevFromIso, fromIso)];
   if (wantPeople) asked.push(peopleQ);
 
   const [totalsRows, prevRows, flowRows, dayRows, appRows, repeatedRows, slowRows, failureRows, skillRows,
-    peopleRows = []] = await sql.transaction(asked, { readOnly: true });
+    behaviourRows, prevBehaviourRows, peopleRows = []] = await sql.transaction(asked, { readOnly: true });
 
   const t = totalsRows[0] || {};
   const f = flowRows[0] || {};
@@ -948,12 +1082,78 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
     lastMade: iso(r.last_made),
   }));
 
+  /* ТРИ БЛОКА ИЗ ОДНОГО СОЮЗА, и разбор здесь, а не в браузере, по тому же правилу, что держит весь этот
+   * файл: страница показывает поле, которое ей прислали, и ничего не считает сама.
+   *
+   * `attention` складывается в измеренное время целиком - каждая миллисекунда паузы попадает ровно в одну
+   * из трёх частей, - поэтому доли считаются от их суммы, а не от отдельно взятого итога: расхождение
+   * между «суммой частей» и «целым» было бы ровно тем, чего в этом файле быть не должно. */
+  const behaviourOf = (rows) => {
+    const list = Array.isArray(rows) ? rows : [];
+    const of = (kind) => list.filter((r) => r.kind === kind);
+    const attentionMs = { active: 0, waiting: 0, away: 0 };
+    for (const r of of('attention')) {
+      if (r.label in attentionMs) attentionMs[r.label] = num(r.ms);
+    }
+    const measured = attentionMs.active + attentionMs.waiting + attentionMs.away;
+    const attention = {
+      measuredSeconds: round(measured / 1000, 1),
+      active: { seconds: round(attentionMs.active / 1000, 1), share: share(attentionMs.active, measured) },
+      waiting: { seconds: round(attentionMs.waiting / 1000, 1), share: share(attentionMs.waiting, measured) },
+      away: { seconds: round(attentionMs.away / 1000, 1), share: share(attentionMs.away, measured) },
+      /* Границы названы в ответе, а не только в коде: доля «ожидания» бессмысленна, пока читатель не знает,
+       * от какой паузы она считается, и число, чью границу нельзя посмотреть, читается как объективное. */
+      activeUnderMs: ACTIVE_MAX_MS,
+      awayOverMs: EVENT_GAP_MAX_MS,
+    };
+
+    const actionRows = of('action');
+    const actionsTotal = actionRows.reduce((was, r) => was + num(r.n), 0);
+    const moved = actionRows.find((r) => r.label === 'move');
+    const actions = {
+      /* Движение отдельно и первым полем, потому что его 86% от всех событий: в одном списке с щелчками
+       * оно не сведение, а помеха. */
+      moves: num(moved && moved.n),
+      total: actionsTotal,
+      byKind: actionRows
+        .filter((r) => r.label !== 'move')
+        .map((r) => ({ kind: r.label, count: num(r.n) }))
+        .sort((a, b) => b.count - a.count),
+      /* Самые частые действия своими именами - «Key Backspace», «Key Ctrl+V», - потому что род говорит,
+       * что человек нажимал клавиши, а имя говорит, какие. */
+      top: of('top')
+        .map((r) => ({ action: r.label, count: num(r.n) }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, ACTIONS_MAX),
+    };
+
+    /* УЗОР - это последовательность приложений, а не список действий, и он отвечает на один вопрос: один
+     * и тот же процесс делался несколько раз? Больше одной записи на узор - кандидат в скилл. */
+    const patternRows = of('pattern').map((r) => ({ steps: r.label, recordings: num(r.n) }))
+      .sort((a, b) => b.recordings - a.recordings || String(a.steps).localeCompare(String(b.steps)));
+    const patterns = {
+      repeated: patternRows.filter((p) => p.recordings > 1).slice(0, PATTERNS_MAX),
+      once: patternRows.filter((p) => p.recordings === 1).length,
+      total: patternRows.length,
+    };
+
+    return { attention, actions, patterns };
+  };
+
+  const behaviour = behaviourOf(behaviourRows);
+  const prevBehaviour = behaviourOf(prevBehaviourRows);
+
   return {
     people,
     totals,
     byOutcome,
     byDay,
     applications,
+    /* КАК ПРОШЛО ВРЕМЯ, ЧТО ДЕЛАЛОСЬ, ЧТО ПОВТОРЯЛОСЬ - и то же за предыдущий период рядом, потому что
+     * «активность 41%» без «было 33%» не отвечает ни на один вопрос, который стоило задавать. */
+    attention: behaviour.attention,
+    actions: behaviour.actions,
+    patterns: behaviour.patterns,
     /* Named, not spread. This is real measured time that the stored data cannot attribute to any
      * application: multi-application desktop recordings, agent steps with no page or no timing, and
      * the thinking time between a run's steps. Its share completes the applications pie, which is
@@ -968,6 +1168,9 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
         + 'and splitting that across it would be a guess dressed as a measurement.',
     },
     previous,
+    /* Прошлое окно по тем же трём блокам. `had` у `previous` уже говорит, было ли предыдущее окно вообще -
+     * ноль без этого признака нельзя отличить от «не измеряли». */
+    previousBehaviour: prevBehaviour,
     repeated,
     slowestSteps,
     failures,
@@ -975,6 +1178,9 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
     gaps: gapsFor(t, idleSeconds),
     caps: {
       days: DAYS_MAX,
+      patterns: { shown: behaviour.patterns.repeated.length, total: behaviour.patterns.total,
+        limit: PATTERNS_MAX, steps: PATTERN_STEPS },
+      actions: { shown: behaviour.actions.top.length, limit: ACTIONS_MAX },
       applications: { shown: applications.length, total: appGroups, limit: APPS_MAX },
       repeated: {
         shown: repeated.length,
