@@ -626,8 +626,15 @@ export const autostartEnable = (port: number) =>
  * That is why this moved: the nudge to update is the only way somebody on 0.8.x finds out that the install
  * step they were told about is no longer one. The previous note, kept because the reason still holds: 0.7.0
  * is the build that records what a recording is FOR - what each click landed on, plus that a key was
- * pressed and when - and an older one produces transcripts that read as a list of positions. */
-export const AGENT_WANTS = '0.22.0';
+ * pressed and when - and an older one produces transcripts that read as a list of positions.
+ *
+ * 0.23.0 IS THE BUILD WHERE A SHIFT-CLICK IS A SHIFT-CLICK ON WINDOWS. Before it the Windows recorder never
+ * saw a modifier: a Shift-click, Ctrl-click, Alt-drag or Ctrl+scroll made by a person was written down as
+ * the plain gesture, replayed as the plain gesture, and reported as a clean run. Nothing on 0.22.0 says so,
+ * which is exactly what this nudge is for. The macOS agent has had it since 0.21.0 and carries the same
+ * number here because the two have always shared one - a Mac user re-fetches an agent that gained nothing,
+ * and that is cheaper than two version lines to reason about. */
+export const AGENT_WANTS = '0.23.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

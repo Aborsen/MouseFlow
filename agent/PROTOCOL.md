@@ -312,7 +312,29 @@ action grammar, where it means the command modifier because the grammar was writ
 says what a person physically held: a Control-click on macOS opens a context menu, and replaying it as a
 Command-click performs a different gesture and reports a clean run. The known cost, said out loud: a Windows
 recording of Ctrl-click (multi-select) replays on macOS as Control-click. There is no correct translation
-without knowing which platform wrote the line, and the body does not say.
+without knowing which platform wrote the line, and the body does not say. Live from 0.23.0, when Windows
+started writing the field — before that the cost was one-directional and theoretical.
+
+`Cmd` is **the platform's system modifier in that position**: Command on macOS, the Windows key on Windows.
+A token has to mean the same KIND of key on both sides or a recording does not survive crossing platforms,
+and Windows has no Command to name. The reader on each side maps it to its own: `maskCommand` there, VK_LWIN
+here.
+
+**How the modifier is applied on replay differs between the platforms, and only one of them is free.** On
+macOS the flags ride on the posted event and that is *sufficient* — measured, with a window reporting the
+`NSEvent.modifierFlags` it saw: an event sent with flags only was indistinguishable from one sent with the
+key physically held. So no key is pressed there. A Windows `MOUSEINPUT` has **no field for a modifier**:
+`SendInput` cannot say "with Shift", so the only way to make a click a Shift-click is to hold the real key
+down — which is global machine state rather than a property of the event. Three consequences for anyone
+implementing this on a third platform, all of them found the hard way on one of these two:
+
+- whatever is already held has to be released **first**, or a foreign latch is *added* to the gesture: a
+  Shift-click under a stuck Ctrl is a Ctrl+Shift-click, and it reports success;
+- what was pressed has to be released when the gesture closes **and** unconditionally when the replay ends,
+  or a modifier outlives the run — invisibly, changing every keystroke the person makes next;
+- the release order is not free either. Windows releases the modifier **after** the button, because a
+  button-up that arrives without Alt ends an Alt-drag as a move rather than a copy; macOS releases it
+  first, because its button-up carries its own flags and is unaffected.
 
 **Only on a button-down and on a scroll.** Not on a movement, not on a release, not on a key. Not for file
 size: a per-move sample of global keyboard state, intersected with the per-keystroke timeline this format

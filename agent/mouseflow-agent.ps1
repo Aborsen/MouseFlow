@@ -440,6 +440,22 @@ namespace MouseFlow
         /* The page it landed on, when it landed on one. Origin and path - the cut happens in PageUrl(),
          * before the value ever reaches this object. Null on everything that is not a browser. */
         public string Url;
+
+        /* WHICH MODIFIERS WERE HELD when this gesture was made: "Shift", "Ctrl+Shift", "Alt". Null when
+         * none were, and NEVER the empty string - see PROTOCOL.md, which the macOS agent has followed
+         * since 0.21.0 and this one did not follow at all.
+         *
+         * Only on a button-DOWN and on a scroll. Not on a movement, not on a release, not on a key, and
+         * the reason for the first exclusion is a promise rather than file size: a per-move sample of
+         * global keyboard state, intersected with the per-keystroke timeline this format already keeps,
+         * recovers the shift-and-compose mask of text the format promises NOT to keep. A release needs
+         * none because the replay holds the modifier from a press to its pair; a scroll carries its own
+         * because it has no pair.
+         *
+         * Not caught, and said here rather than left to be found: a modifier pressed or released
+         * MID-DRAG. Copying in File Explorer by starting a drag and then pressing Ctrl records as a
+         * plain drag, which is a move rather than a copy. */
+        public string Mods;
     }
 
     public class Step
@@ -459,7 +475,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.22.0";
+        public const string Version = "0.23.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -749,6 +765,43 @@ namespace MouseFlow
             return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         }
 
+        /* The chord as a chord is spelled, in the fixed order PROTOCOL.md gives: Cmd, Ctrl, Alt, Shift.
+         * Empty when nothing is held, because the caller must write no field at all in that case.
+         *
+         * `Cmd` IS THE WINDOWS KEY HERE, and that needs saying because it looks like a mistake. macOS
+         * writes `Cmd` for Command; the token has to mean the same KIND of key on both sides or a
+         * recording does not survive crossing platforms. Windows has no Command, and its system modifier
+         * in this position is Win - so Win is what fills the slot. `Ctrl` stays the literal Control key on
+         * both, which is the whole point of the token being separate.
+         *
+         * GetAsyncKeyState rather than GetKeyState: the question is what a person had physically held at
+         * this instant, not what the message queue thinks the focused window's state was. Called from the
+         * hook, where the budget is 300ms (LowLevelHooksTimeout) - four reads of a keyboard bit are free
+         * at that scale, which is why this is not queued to the resolver the way a name is. */
+        static string ChordMods()
+        {
+            bool win = ((Native.GetAsyncKeyState(0x5B) & 0x8000) != 0)
+                    || ((Native.GetAsyncKeyState(0x5C) & 0x8000) != 0);
+            bool ctrl = (Native.GetAsyncKeyState(0x11) & 0x8000) != 0;
+            bool alt = (Native.GetAsyncKeyState(0x12) & 0x8000) != 0;
+            bool shift = (Native.GetAsyncKeyState(0x10) & 0x8000) != 0;
+
+            StringBuilder mods = new StringBuilder();
+            if (win) mods.Append("Cmd");
+            if (ctrl) { if (mods.Length > 0) mods.Append("+"); mods.Append("Ctrl"); }
+            if (alt) { if (mods.Length > 0) mods.Append("+"); mods.Append("Alt"); }
+            if (shift) { if (mods.Length > 0) mods.Append("+"); mods.Append("Shift"); }
+            return mods.ToString();
+        }
+
+        /* Which events carry one. Held apart from ChordMods so the RULE reads on its own line, and so the
+         * recorder and the replay cannot drift: a scroll has no pair, a press has one. */
+        static bool CarriesMods(string action)
+        {
+            return action != null
+                && (action.EndsWith("Click Down") || action.StartsWith("Scroll"));
+        }
+
         static void Capture(int msg, MSLLHOOKSTRUCT data)
         {
             string action = null;
@@ -777,6 +830,11 @@ namespace MouseFlow
                 default: return;
             }
 
+            /* BEFORE the lock, deliberately. The resolver thread waits on Gate, and asking the keyboard
+             * four questions inside the lock would put those reads on the critical path of every one of
+             * the hundreds of movements a second that also take it. Outside, they cost the hook alone. */
+            string mods = CarriesMods(action) ? ChordMods() : "";
+
             lock (Gate)
             {
                 long now = _clock.ElapsedMilliseconds;
@@ -803,6 +861,9 @@ namespace MouseFlow
                 e.DelayMs = _buffer.Count == 0 ? 0 : (int)(now - _lastStamp);
                 e.Action = action;
                 e.Wheel = wheel;
+                /* Null and not "", so WriteContext tests one thing and the wire never carries an empty
+                 * value. PROTOCOL.md: absent means none were held. */
+                if (mods.Length > 0) e.Mods = mods;
                 _buffer.Add(e);
 
                 /* Clicks only, and only the DOWN: the release is the same target a moment later, and a move
@@ -1600,7 +1661,15 @@ namespace MouseFlow
          */
         static void WriteContext(StringBuilder sb, Ev e)
         {
-            if (e.Process == null && e.Window == null && e.Control == null && e.Url == null) return;
+            /* EVERY FIELD THIS LINE CAN CARRY, and the guard was short of three of them.
+             *
+             * A Cmd+scroll is the case that made it matter: a scroll is not sent for name resolution at
+             * all, so a modifier is the ONLY thing in its context - and a guard testing four fields out of
+             * seven dropped the whole line, losing exactly one of the four gestures, silently. `namelen`
+             * and `type` were reachable the same way. The macOS half tests all of them; this one now does
+             * too, and PROTOCOL.md says outright that a `#ctx` line may carry `mods` and nothing else. */
+            if (e.Process == null && e.Window == null && e.Control == null && e.ControlType == null
+                && e.Url == null && e.NameLength == 0 && e.Mods == null) return;
             sb.Append("#ctx");
             if (e.Process != null) { sb.Append("\tapp="); sb.Append(e.Process); }
             if (e.Window != null) { sb.Append("\twindow="); sb.Append(e.Window); }
@@ -1617,6 +1686,11 @@ namespace MouseFlow
             /* Added after the four that were always here. PROTOCOL.md: unknown keys are skipped rather than
              * being an error, so an older reader loads this exactly as it did before. */
             if (e.Url != null) { sb.Append("\turl="); sb.Append(e.Url); }
+            /* LAST, which is where the macOS agent writes it. Not cosmetic: `mods` is the one field whose
+             * value is a token list, and a reader that took the rest of the line for it (the way `title=`
+             * and `app=` are taken) would swallow anything written after it. Nothing is written after it
+             * today - and keeping both agents in one order means nothing has to be. */
+            if (e.Mods != null) { sb.Append("\tmods="); sb.Append(e.Mods); }
             sb.Append("\n");
         }
 
@@ -1783,6 +1857,20 @@ namespace MouseFlow
                 /* Unconditionally, not only on abort: a flow whose last event is a button-down used to
                  * leave the mouse held down over the desktop, and everything after it dragged. */
                 ReleaseAllButtons();
+                /* And the same argument for a modifier, which is worse: a button left down is visible and
+                 * one click fixes it, while a Shift left down is invisible and silently changes every
+                 * keystroke and click the person makes next. Reached whenever a modified drag is cut short
+                 * - Escape, a stop from the app, a recording whose part boundary fell between a press and
+                 * its release.
+                 *
+                 * AFTER the buttons, and macOS does it BEFORE them. Not an inconsistency - the platforms
+                 * differ in what a modifier IS. There the flag rides on each posted event, and the button-up
+                 * is posted with the gesture's flags explicitly, so releasing the latch first changes
+                 * nothing about it. Here the modifier is a held key and the mouse event carries no flags at
+                 * all, so a button-up sent after the key is up arrives UNMODIFIED - and an Alt-drag whose
+                 * drop lands without Alt is a move where a copy was recorded. The button closes the
+                 * gesture; the modifier has to outlive it. */
+                DropMods();
                 Acting.End("replay");
                 lock (Gate) { _playing = false; }
             }
@@ -1848,6 +1936,82 @@ namespace MouseFlow
             if (sent >= wanted) { _injected += (int)sent; return; }
             _injectFailures++;
             _lastError = Marshal.GetLastWin32Error();
+        }
+
+        /* WHAT A REPLAY IS CURRENTLY HOLDING DOWN, and why this is a field rather than a local.
+         *
+         * THE PLATFORM DIFFERENCE, which is the whole of this half. On macOS a posted mouse event carries
+         * its own modifier flags, and a measurement settled that those flags are SUFFICIENT - a window
+         * reported the same NSEvent.modifierFlags for an event sent with flags only as for one sent with
+         * the key physically held. So the macOS agent presses no key at all. A Windows MOUSEINPUT has no
+         * field for a modifier: SendInput's mouse event cannot say "with Shift". The only way to make a
+         * click a Shift-click here is to hold the actual key down - which is GLOBAL MACHINE STATE, not a
+         * property of the event, and therefore has to be released by whoever pressed it or it stays held
+         * for the person afterwards. That is the same class of bug 0.19.0 found on macOS, where a latched
+         * Command turned the next typing into Command+Z.
+         *
+         * So: pressed at a button-down, released at its pair, and released again unconditionally in
+         * Finish() - next to ReleaseAllButtons, for exactly the reason its comment gives about a flow
+         * whose last event is a button-down. A recording that was cut off between a press and its release
+         * is not hypothetical; that is what a part boundary in a long session can look like.
+         *
+         * Not a set of booleans but the keycodes in press order, so the release can walk them backwards.
+         * Win outermost and released last, the same order PressKey uses and for the same reason: the shell
+         * watches for Win going down and up with nothing between, and letting go of it first can leave the
+         * Start menu sitting on top of whatever the gesture did. */
+        static readonly List<ushort> _gestureMods = new List<ushort>();
+
+        /* The token list to keycodes, in press order. Unknown tokens are data rather than an error, which
+         * is what PROTOCOL.md says about every value in this format and what lets the other agent add one.
+         *
+         * Both sides of each modifier are NOT used here, unlike ReleaseModifiers: pressing the generic
+         * VK_SHIFT is how you ask for Shift, while asking WHETHER shift is held has to check left and
+         * right separately. Asymmetric on purpose. */
+        static List<ushort> ModKeys(string mods)
+        {
+            List<ushort> keys = new List<ushort>();
+            if (string.IsNullOrEmpty(mods)) return keys;
+            string[] tokens = mods.Split('+');
+            bool win = false, ctrl = false, alt = false, shift = false;
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string token = tokens[i].Trim().ToLowerInvariant();
+                if (token == "cmd" || token == "command" || token == "win") win = true;
+                else if (token == "ctrl" || token == "control") ctrl = true;
+                else if (token == "alt" || token == "option") alt = true;
+                else if (token == "shift") shift = true;
+            }
+            if (win) keys.Add(0x5B);
+            if (ctrl) keys.Add(0x11);
+            if (shift) keys.Add(0x10);
+            if (alt) keys.Add(0x12);
+            return keys;
+        }
+
+        static void HoldMods(string mods)
+        {
+            List<ushort> keys = ModKeys(mods);
+            if (keys.Count == 0) return;
+            /* SOMEBODY ELSE'S FIRST. A modifier latched by another application, a stuck physical key or a
+             * previous agent that died mid-chord is ADDED to what this gesture asked for: a Shift-click
+             * under a latched Ctrl is a Ctrl+Shift-click, which selects a range where a range was not
+             * wanted. Same guard, same reason, as the first thing PressKey does. */
+            ReleaseModifiers();
+            for (int i = 0; i < keys.Count; i++)
+            {
+                SendVk(keys[i], false);
+                _gestureMods.Add(keys[i]);
+            }
+        }
+
+        static void DropMods()
+        {
+            for (int i = _gestureMods.Count - 1; i >= 0; i--)
+            {
+                try { SendVk(_gestureMods[i], true); }
+                catch { /* cleanup must not throw past the thing it was called to clean up after */ }
+            }
+            _gestureMods.Clear();
         }
 
         static void Emit(Ev e)
@@ -1936,6 +2100,20 @@ namespace MouseFlow
                     return;
             }
 
+            /* AFTER Retarget and immediately before the injection, which is the narrowest window this
+             * can sit in. Retarget makes UIA calls that can take a second or more, and a modifier held
+             * across them is held across them for the whole machine - including for whatever the person
+             * is doing if they are still at the keyboard. */
+            bool holding = false;
+            if (e.Mods != null && IsPress(e.Action)) { HoldMods(e.Mods); holding = true; }
+            /* A scroll has no pair, so it holds and lets go around itself. `#ctx mods=Cmd` on a scroll is
+             * the one line in this format whose context is nothing but a modifier. */
+            else if (e.Mods != null && e.Action != null && e.Action.StartsWith("Scroll"))
+            {
+                HoldMods(e.Mods);
+                holding = true;
+            }
+
             INPUT[] inputs = new INPUT[1];
             inputs[0].type = Native.INPUT_MOUSE;
             inputs[0].mi.dx = nx;
@@ -1945,6 +2123,20 @@ namespace MouseFlow
             inputs[0].mi.time = 0;
             inputs[0].mi.dwExtraInfo = IntPtr.Zero;
             Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT))), 1);
+
+            /* A press KEEPS them - through the movements of a drag and until its release, which is why
+             * this is not a symmetric hold/release around one event. The release event itself carries no
+             * `mods` (PROTOCOL.md: not written on a release), so the test is what we are holding, not what
+             * the line says.
+             *
+             * A second press while one is still held - two buttons down at once - lets go at the first
+             * release rather than the second. Named because it is a real limit and not worth the
+             * bookkeeping: nothing this format records produces it, since a recording of two overlapping
+             * modified drags is not something a person makes by hand. */
+            if (holding && e.Action != null && e.Action.StartsWith("Scroll")) DropMods();
+            else if (_gestureMods.Count > 0
+                && e.Action != null
+                && (e.Action.EndsWith("Click Release") || e.Action.EndsWith("Click Up"))) DropMods();
         }
 
         static bool IsPress(string action)
@@ -4153,6 +4345,10 @@ namespace MouseFlow
                 else if (key == "control") ctx.Control = val;
                 else if (key == "type") ctx.ControlType = val;
                 else if (key == "url") ctx.Url = val;
+                /* Read as written. `Cmd` here means the Windows key on this platform and Command on the
+                 * other - see ChordMods - and `Ctrl` means the literal Control key on both, which is why
+                 * it is a separate token from the `ctrl=` of the action grammar. */
+                else if (key == "mods") ctx.Mods = val;
             }
             return ctx;
         }
@@ -4255,6 +4451,12 @@ namespace MouseFlow
                     e.Control = pending.Control;
                     e.ControlType = pending.ControlType;
                     e.Url = pending.Url;
+                    /* FIELD BY FIELD, which is why this line has to exist and why its absence was invisible.
+                     * ParseCtx read `mods` correctly, Serialize wrote it correctly, and the value died here
+                     * - so every modified gesture replayed unmodified and reported a clean run, which is
+                     * precisely the defect the rest of this change removes. A copy that enumerates fields
+                     * needs an entry per field; found by running a round trip, not by reading the code. */
+                    e.Mods = pending.Mods;
                     pending = null;
                 }
                 current.Events.Add(e);

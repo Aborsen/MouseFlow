@@ -140,9 +140,27 @@ These are not bugs and no amount of work inside the current design removes them.
   The same measurement found the other half: those flags **latch** the session state exactly as a keyboard
   chord does, so the replay releases them when a gesture closes.
 
-  **Still open:** the Windows recorder and replay (the readers are ready for them, and a `mods` line they do
-  not write is simply absent), and the action grammar — the model still cannot ASK for a Shift-click, only
-  replay one a person made.
+  **Windows caught up in 0.23.0, and it was verified by running rather than by reading.** The recording
+  half writes `mods=` on a button-down and on a scroll and on nothing else; the replay performs the gesture
+  by holding the real key, because a Windows mouse event has no field for a modifier — see PROTOCOL.md for
+  the three consequences that follow from that difference. Checked on this machine with a window that
+  reports the modifiers it was given: a plain click arrived as `down -, up -`, the same body with one
+  `#ctx mods=Shift` line above it arrived as `down Shift, up Shift`, `mods=Ctrl+Shift` as
+  `down Ctrl+Shift, up Ctrl+Shift`, a Ctrl+scroll as `wheel Ctrl`, and an Alt-drag held Alt from the press
+  through two movements to the release. The recorder was driven the same way — `Capture()` called directly,
+  because the hook drops injected mouse events on purpose — and produced a `#ctx` line whose only field is
+  `mods=Ctrl` for the scroll, which is the case a four-field guard used to swallow whole.
+
+  **One defect this found that reading had not.** The wire was written correctly, `ParseCtx` read it
+  correctly, and the value died in between: the pending context is copied onto its event **field by field**,
+  and the new field was not in the list. Every modified gesture would have replayed unmodified and reported
+  a clean run — the exact failure the change exists to remove, reintroduced one line below the fix. It
+  survived a compile, a 431-test suite and a code read, and fell out of the first round trip that was
+  actually executed.
+
+  **Still open:** the action grammar — the model still cannot ASK for a Shift-click, only replay one a
+  person made. And a modifier pressed or released **mid-drag** is recorded on neither platform, so copying
+  in File Explorer by starting a drag and then pressing Ctrl records as a plain drag, which is a move.
 - **Modified pointer gestures could be neither performed nor recorded before 0.21.0, on either platform.** Shift-click to extend a
   selection, Command-click to open a link in a background tab, Option-drag to copy, Command+scroll to zoom:
   `click` reads only `button`, `double` and `name`; `drag` and `scroll` have no modifier field; and the bare

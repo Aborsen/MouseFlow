@@ -1225,10 +1225,21 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
                 : '',
             ].filter(Boolean).join(', '),
           ].filter(Boolean).join(' — ')}
+          {/* WHAT THE 3MB ACTUALLY IS, because this sentence named the wrong thing and a person acts on
+            * it. It said "this browser holds about 3MB of recordings" — a capacity, next to a number that
+            * is a DOWNLOAD BUDGET FOR ONE PASS. `spent` in reconcile() starts at zero every pass and never
+            * counts what the browser already holds (rows already here `continue` before the size is
+            * charged), so a browser holding 20MB is not full and told nothing of the sort.
+            *
+            * The difference is what somebody does next. Told the browser is full, they go and delete
+            * recordings to make room. Told the rest arrive on the next sync, they wait — which is correct,
+            * because a deferred row is deferred by exactly ONE pass: measured against a 400KB row and a
+            * 3.3MB row, pass one pulled the first and pass two the second. The `Bring it here` button only
+            * ever did sooner what the next pass would have done anyway. */}
           {state.lastSync.left
-            ? `. ${state.lastSync.left} older ${state.lastSync.left === 1 ? 'one' : 'ones'} stayed on the `
-              + 'account — this browser holds about 3MB of recordings, and the transcript reads them from '
-              + 'the account anyway.'
+            ? `. ${state.lastSync.left} older ${state.lastSync.left === 1 ? 'one' : 'ones'} stayed for the `
+              + 'next sync — about 3MB comes down at a time. The transcript reads them from your account '
+              + 'meanwhile, so nothing is waiting on them.'
             : '.'}
         </Typography>
       )}
