@@ -456,6 +456,20 @@ namespace MouseFlow
          * MID-DRAG. Copying in File Explorer by starting a drag and then pressing Ctrl records as a
          * plain drag, which is a move rather than a copy. */
         public string Mods;
+
+        /* ГДЕ ЭТО БЫЛО, когда сказать ЧТО не получилось.
+         *
+         * Заполняется только у шага БЕЗ имени - либо дерево не назвало ничего, либо имя оказалось
+         * содержимым и его отбросило правило длины. Это подпись ближайшего ЭЛЕМЕНТА УПРАВЛЕНИЯ и сторона,
+         * с которой от него оказалась точка: «ниже „Expanded“». Никогда не то, на что нажали, - поэтому
+         * отдельное поле, а не Control: читатель, увидевший имя в Control, решит, что нажали по нему.
+         *
+         * Почему не «искать имя усерднее». Измерено на живом окне Chrome: под курсором всегда безымянная
+         * группа, а единственное названное, СОДЕРЖАЩЕЕ точку, - элемент Text с абзацем, который человек
+         * читает. Поднять потолки поиска значит начать записывать содержимое, то есть вернуть ровно ту
+         * утечку, из-за которой имя и отбрасывается. Ориентир - это место, а не содержимое. */
+        public string Near;
+        public string Side;
     }
 
     public class Step
@@ -475,7 +489,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.23.0";
+        public const string Version = "0.24.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1221,6 +1235,209 @@ namespace MouseFlow
 
             RecordName(job.Target, name, type);
             job.Target.Url = PageUrl(el);
+
+            /* ТОЛЬКО когда имени нет. Если по клику есть подпись, ориентир не нужен и стоил бы чтения окна
+               ни за что; а `namelen` без имени - это тот же случай «сказать нечего», только по другой
+               причине, и ориентир там нужен так же. */
+            if (string.IsNullOrEmpty(job.Target.Control))
+            {
+                string side;
+                string near = NearestLandmark(Native.WindowFromPoint(new POINT { X = job.X, Y = job.Y }),
+                                              job.X, job.Y, out side);
+                /* Обрезка по краям — показал прогон: проводник отдаёт " Search scratchpad", TMetric
+                   "Отчёты " и " Timeline menu". Пробел внутри значения провод переживает (поля разделены
+                   табуляциями), а в кавычках транскрипта он выглядит опечаткой. */
+                if (near != null) near = near.Trim();
+                if (!string.IsNullOrEmpty(near))
+                {
+                    job.Target.Near = Clip(near, 120);
+                    job.Target.Side = side;
+                }
+            }
+        }
+
+        /* ЧТО ГОДИТСЯ В ОРИЕНТИР - список типов, полученный замером, а не выбранный.
+         *
+         * Замер по двенадцати живым окнам (Teams, Chrome, Claude, Outlook PWA, четыре проводника,
+         * PowerShell, Notepad, MouseFlow) - по каждому типу число элементов, медиана и максимум длины имени
+         * и три самых коротких примера:
+         *
+         *   Button       420  медиана 11  макс 114   'Cut' 'New'          <- ориентир
+         *   Edit         504  медиана  4  макс  23   'Type' 'Size' 'Name' <- ориентир (подпись поля)
+         *   TabItem       48  медиана 24  макс 157   'View' 'Help'        <- ориентир
+         *   Text         332  медиана 10  макс 432   '3' '1'              <- СОДЕРЖИМОЕ
+         *   ListItem     134  медиана 13  макс 390   ...                  <- СОДЕРЖИМОЕ (сообщение в Teams)
+         *   DataItem       8  медиана 28  макс 108   'Почему не проходит' <- СОДЕРЖИМОЕ (ячейка таблицы)
+         *   Group         88  медиана 13  макс 326   'New' 'Tags'         <- СОДЕРЖИМОЕ (те самые 1745)
+         *
+         * Text, ListItem, DataItem и Group исключены потому, что их короткие примеры выглядят как подписи,
+         * а длинные - это чужой текст: тип не различает, различает только длина, и полагаться на неё здесь
+         * нельзя, потому что короткое сообщение в чате пройдёт любой порог.
+         *
+         * Document и Pane исключены по другой причине: они не врут, они не ЛОКАЛИЗУЮТ. «Ниже „Claude“» про
+         * элемент во весь экран не говорит ничего. */
+        static readonly string[] LandmarkTypes = new string[] {
+            "button", "split button", "tab item", "menu item", "hyperlink", "link", "check box",
+            "radio button", "combo box", "edit", "tool bar", "toolbar", "tree item",
+        };
+
+        static bool IsLandmarkType(string localized)
+        {
+            if (string.IsNullOrEmpty(localized)) return false;
+            string kind = localized.Trim().ToLowerInvariant();
+            for (int i = 0; i < LandmarkTypes.Length; i++)
+            {
+                if (kind == LandmarkTypes[i]) return true;
+            }
+            return false;
+        }
+
+        /* Названные элементы окна, на пару секунд.
+         *
+         * Без кэша каждый безымянный клик стоил бы своего FindAll - 0-319 мс по замеру, - а на странице
+         * вроде claude.ai безымянны ПОДРЯД все клики, то есть плата была бы за каждый. Две секунды выбраны
+         * так, чтобы серия кликов в одном окне обошлась одним чтением, а переключение окна прочиталось
+         * заново: разметка за две секунды не переезжает, а окно - переезжает.
+         *
+         * Живёт на потоке-резолвере, который и так медленный и уже не на крючке. */
+        class WindowRead
+        {
+            public DateTime At;
+            public List<AutomationElement> Named;
+        }
+
+        static readonly Dictionary<IntPtr, WindowRead> _reads = new Dictionary<IntPtr, WindowRead>();
+        static readonly object ReadGate = new object();
+        const int ReadTtlMs = 2000;
+
+        static List<AutomationElement> NamedIn(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return null;
+            lock (ReadGate)
+            {
+                /* Просрочённое выбрасывается по пути, иначе долгая сессия растит этот словарь без границы -
+                   то же правило, что у _mute. */
+                List<IntPtr> over = new List<IntPtr>();
+                foreach (KeyValuePair<IntPtr, WindowRead> entry in _reads)
+                {
+                    if ((DateTime.UtcNow - entry.Value.At).TotalMilliseconds > ReadTtlMs) over.Add(entry.Key);
+                }
+                foreach (IntPtr key in over) _reads.Remove(key);
+
+                WindowRead have;
+                if (_reads.TryGetValue(hwnd, out have)) return have.Named;
+            }
+
+            AutomationElement root;
+            try { root = AutomationElement.FromHandle(hwnd); }
+            catch { return null; }
+            if (root == null) return null;
+
+            string problem;
+            /* Через тот же Search, что и всё остальное: у него дедлайн, глушение окна по ручке на минуту и
+               предел в три висящих чтения. Отдельный путь пришлось бы снабжать этим заново. */
+            AutomationElementCollection found = Search(root, hwnd, NamedAndVisible(), 2000, out problem);
+            List<AutomationElement> list = new List<AutomationElement>();
+            if (found != null)
+            {
+                foreach (AutomationElement el in found) list.Add(el);
+            }
+            lock (ReadGate)
+            {
+                WindowRead fresh = new WindowRead();
+                fresh.At = DateTime.UtcNow;
+                fresh.Named = list;
+                _reads[hwnd] = fresh;
+            }
+            return list;
+        }
+
+        /* Насколько велик элемент, чтобы ещё считаться ориентиром. Панель во весь экран - не ориентир, даже
+           если у неё есть имя: «ниже» относительно неё не сообщает ничего. Порог в четверть площади
+           экрана 1920x1080. */
+        const double LandmarkAreaMax = 520000;
+
+        /* Подпись ближайшего элемента управления и сторона, с которой от него точка.
+         *
+         * ПОВТОРЯЮЩЕЕСЯ ИМЯ - НЕ ОРИЕНТИР, и это правило нашлось в том же замере: 'Header' встречается в
+         * окне пять раз, 'Separator' дважды, 'Select a message' у шестнадцати флажков подряд. «Ниже
+         * „Header“» не говорит, ниже какого. Уникальность в пределах окна - дешёвая проверка, снимающая
+         * весь этот класс сразу. */
+        static string NearestLandmark(IntPtr hwnd, int x, int y, out string side)
+        {
+            side = null;
+            List<AutomationElement> named = NamedIn(hwnd);
+            if (named == null || named.Count == 0) return null;
+
+            Dictionary<string, int> seen = new Dictionary<string, int>();
+            List<AutomationElement> fit = new List<AutomationElement>();
+            for (int i = 0; i < named.Count; i++)
+            {
+                string name, kind;
+                System.Windows.Rect box;
+                try
+                {
+                    name = named[i].GetCachedPropertyValue(AutomationElement.NameProperty) as string;
+                    kind = named[i].GetCachedPropertyValue(
+                        AutomationElement.LocalizedControlTypeProperty) as string;
+                    box = (System.Windows.Rect)named[i].GetCachedPropertyValue(
+                        AutomationElement.BoundingRectangleProperty);
+                }
+                catch { continue; }
+
+                if (string.IsNullOrEmpty(name) || name.Length > NameMax) continue;
+                if (!IsLandmarkType(kind)) continue;
+                if (box.Width <= 0 || box.Height <= 0) continue;
+                if (box.Width * box.Height > LandmarkAreaMax) continue;
+
+                int count;
+                seen[name] = seen.TryGetValue(name, out count) ? count + 1 : 1;
+                fit.Add(named[i]);
+            }
+
+            AutomationElement best = null;
+            double bestDistance = double.MaxValue;
+            System.Windows.Rect bestBox = new System.Windows.Rect();
+            string bestName = null;
+            for (int i = 0; i < fit.Count; i++)
+            {
+                string name;
+                System.Windows.Rect box;
+                try
+                {
+                    name = fit[i].GetCachedPropertyValue(AutomationElement.NameProperty) as string;
+                    box = (System.Windows.Rect)fit[i].GetCachedPropertyValue(
+                        AutomationElement.BoundingRectangleProperty);
+                }
+                catch { continue; }
+                if (name == null || seen[name] > 1) continue;
+
+                /* Расстояние до ПРЯМОУГОЛЬНИКА, а не до его центра: у широкой кнопки центр может быть
+                   дальше, чем у мелкой, стоящей вплотную, и «ближайшим» тогда становится не то, что
+                   человек видит рядом. */
+                double dx = x < box.X ? box.X - x : (x > box.X + box.Width ? x - (box.X + box.Width) : 0);
+                double dy = y < box.Y ? box.Y - y : (y > box.Y + box.Height ? y - (box.Y + box.Height) : 0);
+                double distance = Math.Sqrt(dx * dx + dy * dy);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    best = fit[i];
+                    bestBox = box;
+                    bestName = name;
+                }
+            }
+
+            /* Дальше этого ориентир перестаёт быть ориентиром: «в 600 пикселях ниже „Отправить“» - это не
+               место, это другое место. Полторы сотни пикселей - примерно та дистанция, на которой человек
+               ещё связывает две вещи глазами. */
+            if (best == null || bestDistance > 220) return null;
+
+            if (bestDistance == 0) side = "in";
+            else if (y < bestBox.Y) side = "above";
+            else if (y > bestBox.Y + bestBox.Height) side = "below";
+            else if (x < bestBox.X) side = "left";
+            else side = "right";
+            return bestName;
         }
 
         /* THE SMALLEST NAMED THING CONTAINING THE POINT, searched DOWNWARDS.
@@ -1669,7 +1886,7 @@ namespace MouseFlow
              * and `type` were reachable the same way. The macOS half tests all of them; this one now does
              * too, and PROTOCOL.md says outright that a `#ctx` line may carry `mods` and nothing else. */
             if (e.Process == null && e.Window == null && e.Control == null && e.ControlType == null
-                && e.Url == null && e.NameLength == 0 && e.Mods == null) return;
+                && e.Url == null && e.NameLength == 0 && e.Mods == null && e.Near == null) return;
             sb.Append("#ctx");
             if (e.Process != null) { sb.Append("\tapp="); sb.Append(e.Process); }
             if (e.Window != null) { sb.Append("\twindow="); sb.Append(e.Window); }
@@ -1691,6 +1908,11 @@ namespace MouseFlow
              * and `app=` are taken) would swallow anything written after it. Nothing is written after it
              * today - and keeping both agents in one order means nothing has to be. */
             if (e.Mods != null) { sb.Append("\tmods="); sb.Append(e.Mods); }
+            /* ПОСЛЕ mods, чтобы не сдвинуть порядок, который держат тесты обеих платформ. Поля разделены
+               табуляциями, так что пробел внутри значения ничего не ломает - правило «забирает остаток
+               строки» относится к проводу ДЕЙСТВИЙ, где разделитель пробел, а не к этой строке. */
+            if (e.Side != null) { sb.Append("\tside="); sb.Append(e.Side); }
+            if (e.Near != null) { sb.Append("\tnear="); sb.Append(e.Near); }
             sb.Append("\n");
         }
 
@@ -4428,6 +4650,10 @@ namespace MouseFlow
                  * other - see ChordMods - and `Ctrl` means the literal Control key on both, which is why
                  * it is a separate token from the `ctrl=` of the action grammar. */
                 else if (key == "mods") ctx.Mods = val;
+                /* Читается, но повтором НЕ используется: ориентир описывает, где это было, а не куда
+                   нажимать. Прицел работает по `control`; довод тот же, по которому это отдельное поле. */
+                else if (key == "side") ctx.Side = val;
+                else if (key == "near") ctx.Near = val;
             }
             return ctx;
         }
@@ -4536,6 +4762,8 @@ namespace MouseFlow
                      * precisely the defect the rest of this change removes. A copy that enumerates fields
                      * needs an entry per field; found by running a round trip, not by reading the code. */
                     e.Mods = pending.Mods;
+                    e.Near = pending.Near;
+                    e.Side = pending.Side;
                     pending = null;
                 }
                 current.Events.Add(e);

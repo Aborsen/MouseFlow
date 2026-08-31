@@ -22,6 +22,27 @@ change under them between two looks.
 It is also what lets `removeSteps()` trust the numbering: it re-derives the transcript to find out which
 underlying events step 7 was made of, and that is only sound if **step 7 is always step 7**.
 
+## Where a step was, when saying what it was did not work
+
+A click on something the accessibility tree does not name used to read `clicked in the page, at 99,577` —
+a coordinate, and nothing a reader can place. From agent 0.24.0 such a step carries a **landmark**: the label
+of the nearest control and which side of it the point fell on.
+
+| what the recording carries | how it reads |
+|---|---|
+| `side=below near=Address Bar` | `clicked in the page just below "Address Bar", at 99,577` |
+| `side=in near=Favorites` | `clicked on the desktop or the taskbar in "Favorites", at 300,300` |
+| `namelen=1745 side=above near=Send feedback` | `clicked on a group holding 1745 characters of text, which is not recorded, just above "Send feedback", at 1144,454` |
+| neither | `clicked in the page, at 99,577` — unchanged, which is what every recording made before 0.24.0 gets |
+
+**It is not what was clicked**, and the wording keeps that distinction: `just below`, `just right of`, `in`.
+A name with no side reads `near "Send"` rather than being dropped — a direction missing does not make the
+label useless.
+
+The reason it is a nearby control rather than a better name is measured and is worth knowing: the only named
+thing *containing* a click in a document or a chat is the text being read, so a deeper search would record
+content. See [19 — Limits](19-limits-and-known-gaps.md).
+
 ## What it refuses to do
 
 Narrate data that is not there. That is the one failure that would make the whole feature worthless: a

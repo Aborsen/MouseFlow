@@ -336,6 +336,26 @@ implementing this on a third platform, all of them found the hard way on one of 
   button-up that arrives without Alt ends an Alt-drag as a move rather than a copy; macOS releases it
   first, because its button-up carries its own flags and is unaffected.
 
+**`near` and `side` — where a step was, when saying what it was did not work.** `side=below`
+`near=Address Bar`: the label of the nearest **control** and which side of it the point fell on — `in`,
+`above`, `below`, `left`, `right`. Written only on a step with no `control`, which is either a name the tree
+never gave or a name dropped for being content.
+
+It is never what was clicked, and that is why it is two separate keys rather than a fallback value in
+`control`: a reader who finds a name in `control` concludes the click landed on it, and a replay aims by
+`control`. Neither must happen here.
+
+**Why not simply look harder for a name.** Measured on a live Chrome window: under the pointer is an unnamed
+group, the first named ancestor is the document title, and the only named element *containing* the point is a
+`Text` node carrying the paragraph the person is reading. Raising the search limits would start recording
+content — which is the leak the name-length rule exists to prevent. So the search looks for something
+else: a **landmark**, and the set of control types that may serve as one is measured rather than chosen
+(twelve live windows; `Text`, `ListItem`, `DataItem` and `Group` are excluded because their short examples
+look like labels and their long ones are somebody's text). Two further rules, both from the same
+measurement: a name that repeats within the window is not a landmark (`Header` appears five times, `Select a
+message` on sixteen checkboxes), and an element larger than a quarter of the screen does not localise
+anything.
+
 **Only on a button-down and on a scroll.** Not on a movement, not on a release, not on a key. Not for file
 size: a per-move sample of global keyboard state, intersected with the per-keystroke timeline this format
 already stores, recovers the shift-and-compose mask of text the format promises not to keep. A release needs

@@ -78,6 +78,11 @@ export function parseMacro(text) {
            * пары регуляркой `^\s+(\w+): found\.(\w+),$`, и разложенная на две строки или через
            * деструктуризацию форма молча выпадает из проверки соответствия. */
           modifiers: found.mods,
+          /* ГДЕ ЭТО БЫЛО, когда сказать ЧТО не получилось — подпись ближайшего элемента управления и
+           * сторона. Есть только у шага без имени; см. Ev.Near в агенте о том, почему это отдельное поле
+           * и почему нельзя было «искать имя усерднее». */
+          near: found.near,
+          side: found.side,
         };
         pending = Object.values(context).some(Boolean) ? context : undefined;
       }
@@ -165,6 +170,13 @@ export function flowBody(flow, recordings, opts) {
          * пустым значением - это поле, которое каждому читателю пришлось бы отдельно оговаривать. */
         if (e.context.modifiers)
           fields.push(`mods=${e.context.modifiers}`);
+        /* И ориентир, следом: экспорт с последующим импортом иначе молча снимает у шага единственное, что о
+         * нём было известно, и перечитанная копия беднее оригинала без всякого видимого повода. Сторона
+         * перед именем, в том же порядке, в каком пишет агент. */
+        if (e.context.side)
+          fields.push(`side=${e.context.side}`);
+        if (e.context.near)
+          fields.push(`near=${e.context.near}`);
         if (fields.length)
           lines.push(`#ctx	${fields.join('	')}`);
       }

@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.23.0"
+let VERSION = "0.24.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -296,6 +296,12 @@ final class Ev {
      * на отпускание значило бы, что нажатие и отпускание одного жеста расходятся во мнении о нём, и каждому
      * читателю пришлось бы их мирить. */
     var mods: String?
+
+    /* ГДЕ ЭТО БЫЛО, когда сказать ЧТО не получилось - подпись ближайшего элемента УПРАВЛЕНИЯ и сторона, с
+     * которой от него оказалась точка. Только у шага без имени. Никогда не то, на что нажали: читатель,
+     * увидевший имя в `control`, решит, что нажали по нему, - поэтому отдельные поля. */
+    var near: String?
+    var side: String?
 }
 
 /// A resolution job. `target` is the event to write the names onto once they are known.
@@ -1053,7 +1059,7 @@ final class Recorder {
              * разрешение имён вовсе, так что кроме модификатора у неё в контексте ничего и нет. Пропустить
              * это в guard'е - невидимая ошибка, теряющая ровно один из четырёх жестов. */
             if e.app != nil || e.window != nil || e.control != nil || e.controlType != nil
-                || e.nameLength > 0 || e.mods != nil {
+                || e.nameLength > 0 || e.mods != nil || e.near != nil {
                 out += "#ctx"
                 if let v = e.app { out += "\tapp=" + v }
                 if let v = e.window { out += "\twindow=" + v }
@@ -1071,6 +1077,9 @@ final class Recorder {
                 if let v = e.containerName { out += "\tinName=" + v }
                 if let v = e.url { out += "\turl=" + v }
                 if let v = e.mods { out += "\tmods=" + v }
+                /* После mods и в том же порядке, что на Windows: сторона перед именем. */
+                if let v = e.side { out += "\tside=" + v }
+                if let v = e.near { out += "\tnear=" + v }
                 out += "\n"
             }
             out += "\(index) | \(e.x) | \(e.y) | \(e.delayMs) | \(e.action)\n"
@@ -1865,6 +1874,70 @@ enum Accessibility {
                     enabled: enabled, value: value, secret: isSecure(element))
     }
 
+    /* ЧТО ГОДИТСЯ В ОРИЕНТИР. Список получен замером на Windows по двенадцати живым окнам - Button с
+     * медианой имени 11 символов, Edit с медианой 4, TabItem с 24 - и тем же замером исключены Text,
+     * ListItem, DataItem и Group: их короткие примеры выглядят подписями, а длинные это чужой текст.
+     * Document и Pane исключены по другой причине - они не локализуют: «ниже „Claude“» про элемент во весь
+     * экран не сообщает ничего.
+     *
+     * Здесь сравнивается kAXRoleDescription, то есть та же человеческая строка, что записывается в `type`,
+     * и поэтому список один на две платформы. Держится тестом, сравнивающим оба файла. */
+    static let landmarkKinds: Set<String> = [
+        "button", "split button", "tab item", "menu item", "hyperlink", "link", "check box",
+        "radio button", "combo box", "edit", "text field", "tool bar", "toolbar", "tree item",
+    ]
+
+    /* Панель во весь экран - не ориентир, и ориентир в шестистах пикселях - другое место, а не это.
+     * Те же два числа, что на Windows. */
+    static let landmarkAreaMax: CGFloat = 520_000
+    static let landmarkReachMax: CGFloat = 220
+
+    /* Подпись ближайшего элемента управления и сторона, с которой от него точка.
+     *
+     * ПОВТОРЯЮЩЕЕСЯ ИМЯ - НЕ ОРИЕНТИР: 'Header' встречается в окне пять раз, 'Select a message' у
+     * шестнадцати флажков подряд, и «ниже „Header“» не говорит, ниже какого. Уникальность в пределах окна -
+     * дешёвая проверка, снимающая весь класс сразу. */
+    static func nearestLandmark(in root: AXUIElement, x: Double, y: Double) -> (near: String, side: String)? {
+        let point = CGPoint(x: x, y: y)
+        var counts: [String: Int] = [:]
+        var fit: [Seen] = []
+        for one in namedThings(in: root, nodes: 600, seconds: 1.2) {
+            let name = one.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.count <= NAME_MAX else { continue }
+            guard landmarkKinds.contains(one.kind.lowercased()) else { continue }
+            guard one.frame.width > 0, one.frame.height > 0 else { continue }
+            guard one.frame.width * one.frame.height <= landmarkAreaMax else { continue }
+            counts[name, default: 0] += 1
+            fit.append(one)
+        }
+
+        var best: Seen?
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for one in fit {
+            let name = one.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard counts[name] == 1 else { continue }
+            /* Расстояние до ПРЯМОУГОЛЬНИКА, а не до центра: у широкой кнопки центр может быть дальше, чем
+             * у мелкой, стоящей вплотную, и «ближайшим» тогда становится не то, что видит человек. */
+            let box = one.frame
+            let dx = point.x < box.minX ? box.minX - point.x
+                : (point.x > box.maxX ? point.x - box.maxX : 0)
+            let dy = point.y < box.minY ? box.minY - point.y
+                : (point.y > box.maxY ? point.y - box.maxY : 0)
+            let distance = (dx * dx + dy * dy).squareRoot()
+            if distance < bestDistance { bestDistance = distance; best = one }
+        }
+
+        guard let found = best, bestDistance <= landmarkReachMax else { return nil }
+        let box = found.frame
+        let side: String
+        if bestDistance == 0 { side = "in" }
+        else if point.y < box.minY { side = "above" }
+        else if point.y > box.maxY { side = "below" }
+        else if point.x < box.minX { side = "left" }
+        else { side = "right" }
+        return (found.name.trimmingCharacters(in: .whitespacesAndNewlines), side)
+    }
+
     /// Breadth first, so the things a person sees first are the things that fit in the answer.
     static func namedThings(in root: AXUIElement, nodes: Int = 1500, seconds: Double = 2.5) -> [Seen] {
         var out: [Seen] = []
@@ -1949,6 +2022,16 @@ enum Accessibility {
         job.target.containerName = named.containerName
         job.target.url = named.url
         if hasPid { job.target.window = frontWindowTitle(pid: pid) }
+
+        /* ТОЛЬКО когда имени нет: при живой подписи ориентир не нужен и стоил бы обхода дерева ни за что.
+         * Обход здесь короче, чем у read_window (600 узлов против 1500, 1.2 с против 2.5), потому что это
+         * не ответ модели, а приписка к шагу: лучше не найти ориентир, чем задержать резолвер. */
+        if job.target.control == nil, hasPid,
+           let found = nearestLandmark(in: AXUIElementCreateApplication(pid),
+                                       x: Double(job.x), y: Double(job.y)) {
+            job.target.near = clip(found.near, 120)
+            job.target.side = found.side
+        }
     }
 
     /* What has FOCUS, which is a different question from what is under the pointer.
@@ -3815,6 +3898,14 @@ struct ReplayCtx {
      * разобранными флагами, чтобы значение переживало круговой путь нетронутым, как все прочие ключи. */
     var mods: String?
 
+    /* ГДЕ ЭТО БЫЛО, когда сказать ЧТО не получилось - подпись ближайшего элемента УПРАВЛЕНИЯ и сторона.
+     *
+     * Заполняется только у шага без имени. Измерено на Windows, но верно и здесь по той же причине: в
+     * веб-приложении под курсором безымянная группа, а единственное названное, СОДЕРЖАЩЕЕ точку, - элемент
+     * с абзацем, который человек читает. Искать имя усерднее значит записывать содержимое. */
+    var near: String?
+    var side: String?
+
     /* ЗДЕСЬ `Ctrl` ЗНАЧИТ КЛАВИШУ CONTROL, а не «командный модификатор», и это сознательное расхождение с
      * путём `Key <аккорд>`, где Input.key сворачивает `ctrl` в Command - там грамматика писалась на Windows,
      * и `ctrl=1 key=c` значит «копировать».
@@ -3947,11 +4038,16 @@ final class Replayer {
                     if parts[0] == "control" { ctx.control = value }
                     if parts[0] == "type" { ctx.type = value }
                     if parts[0] == "mods" { ctx.mods = value }
+                    /* Читается, но повтором НЕ используется: ориентир говорит, где это было, а не куда
+                     * жать. Прицел работает по `control`. */
+                    if parts[0] == "side" { ctx.side = value }
+                    if parts[0] == "near" { ctx.near = value }
                 }
                 /* И `mods` держит строку живой. Без этой половины получается функция, которая работает для
                  * названных элементов и молча не работает везде остальном - то есть форма, проходящая
                  * демонстрацию: Cmd+прокрутка имени не несёт никогда. */
-                pending = (ctx.control == nil && ctx.type == nil && ctx.mods == nil) ? nil : ctx
+                pending = (ctx.control == nil && ctx.type == nil && ctx.mods == nil
+                           && ctx.near == nil) ? nil : ctx
                 continue
             }
             if line.isEmpty || line.hasPrefix("#") { continue }

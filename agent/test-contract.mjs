@@ -1941,8 +1941,13 @@ group('модификатор жеста записывается - и толь�
   /* Пропустить `mods` в guard'е серialize - невидимая ошибка, теряющая ровно Cmd+прокрутку: у неё в
    * контексте больше ничего и нет. */
   check('и строка с одними модификаторами доживает до провода',
-    /\|\| e\.nameLength > 0 \|\| e\.mods != nil \{/.test(swift)
-      && /if let v = e\.mods \{ out \+= "\\tmods=" \+ v \}/.test(swift));
+    /* По СОСТАВУ, а не цитатой: у строки появилось восьмое поле, и дословная регулярка падала бы на
+     * каждом следующем — то есть запрещала правку, а не ошибку. Утверждение то же: пропущенное в guard
+     * поле означает молча потерянную строку. */
+    ['e.app', 'e.window', 'e.control', 'e.controlType', 'e.nameLength', 'e.mods', 'e.near']
+      .every((f) => swift.slice(Math.max(0, swift.indexOf('out += "#ctx"') - 800),
+                                swift.indexOf('out += "#ctx"')).includes(f))
+      && swift.includes('e.mods { out +=') && swift.includes('mods=') );
 }
 
 group('и воспроизводится тем же жестом');
@@ -2032,9 +2037,16 @@ group('то же самое на Windows - записывается');
   /* Guard'у serialize не хватало ТРЁХ полей из семи, и Cmd+прокрутка - тот случай, который это ловит:
    * прокрутка на разрешение имён не идёт вовсе, так что модификатор у неё в контексте единственный, и
    * строка терялась целиком. `namelen` и `type` были достижимы тем же путём. */
+  /* ПО СМЫСЛУ, А НЕ ДОСЛОВНО. Прежняя регулярка цитировала guard целиком и поэтому упала на восьмом поле
+   * строки — то есть запрещала правку, а не ошибку. Утверждение же в том, что guard проверяет КАЖДОЕ поле,
+   * которое `#ctx` умеет нести: пропущенное означает молча потерянную строку, и Cmd+прокрутка ровно так и
+   * терялась. */
+  const guardBody = between('static void WriteContext(StringBuilder sb, Ev e)', 'sb.Append("#ctx");');
+  const CTX_FIELDS = ['e.Process', 'e.Window', 'e.Control', 'e.ControlType', 'e.Url', 'e.NameLength',
+    'e.Mods', 'e.Near'];
   check('и строка с одними модификаторами доживает до провода',
-    /e\.ControlType == null[\s\S]{0,120}?e\.NameLength == 0 && e\.Mods == null\) return;/.test(psCode)
-      && /sb\.Append\("\\tmods="\); sb\.Append\(e\.Mods\);/.test(psCode));
+    guardBody.length > 0 && CTX_FIELDS.every((f) => guardBody.includes(f))
+      && psCode.indexOf('sb.Append(e.Mods);') > 0);
   /* Последним, там же, где его пишет macOS: `mods` - единственное поле со списком токенов, и читатель,
    * забирающий под него остаток строки, съел бы всё написанное после. */
   check('и пишется последним, как на маке',
@@ -2175,6 +2187,121 @@ group('и обе стороны умеют выполнить то, о чём п
    * `mods`, отчитается «сделано» и сделает обычный жест. */
   check('и оба читают поле под одним именем',
     /Get\(a, "mods", ""\)/.test(psCode) && /fields\["mods"\]/.test(swiftCode));
+}
+
+group('где это было, когда сказать ЧТО не получилось');
+{
+  const psCode = ps.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const bodyOf = (from, to) => {
+    const at = psCode.indexOf(from);
+    if (at < 0) return '';
+    const end = psCode.indexOf(to, at);
+    return psCode.slice(at, end < 0 ? psCode.length : end);
+  };
+
+  /* САМЫЙ ВАЖНЫЙ ТЕСТ В ЭТОЙ ГРУППЕ. Ориентир существует затем, чтобы НЕ записывать текст: измерено на
+   * живом окне Chrome, что единственное названное, содержащее точку клика, — элемент с абзацем, который
+   * человек читает. Впустить сюда Text, ListItem, DataItem или Group значит вернуть ту самую утечку под
+   * видом починки — и заметить это будет некому, потому что записи выглядят информативнее. */
+  const types = bodyOf('static readonly string[] LandmarkTypes', 'static bool IsLandmarkType');
+  for (const content of ['"text"', '"list item"', '"data item"', '"group"', '"document"', '"pane"']) {
+    check('в ориентиры не пускается ' + content, !types.includes(content), types);
+  }
+  /* И то, что пускается, — по замеру: Button 420 штук с медианой имени 11 символов, TabItem 48 с медианой
+   * 24, Edit 504 с медианой 4 (это подписи полей, а не их содержимое). */
+  for (const label of ['"button"', '"tab item"', '"menu item"', '"check box"', '"edit"', '"hyperlink"']) {
+    check('а ' + label + ' пускается', types.includes(label));
+  }
+
+  /* ТОЛЬКО когда имени нет. Иначе ориентир стоил бы чтения окна на каждом клике и при этом ничего не
+   * добавлял: если по клику есть подпись, вопрос «где это было» уже отвечен. */
+  check('ориентир ищется только у шага без имени',
+    /if \(string\.IsNullOrEmpty\(job\.Target\.Control\)\)\s*\{[\s\S]{0,400}?NearestLandmark\(/.test(psCode));
+
+  /* ПОВТОРЯЮЩЕЕСЯ ИМЯ - НЕ ОРИЕНТИР, и правило нашлось замером: 'Header' встречается в окне пять раз,
+   * 'Separator' дважды, 'Select a message' у шестнадцати флажков подряд. «Ниже „Header“» не говорит, ниже
+   * какого именно. */
+  const nearest = bodyOf('static string NearestLandmark', 'static void NamedUnder');
+  check('повторяющееся в окне имя ориентиром не становится',
+    /seen\[name\] > 1/.test(nearest), nearest.slice(0, 200));
+  /* Расстояние до ПРЯМОУГОЛЬНИКА, а не до центра: у широкой кнопки центр дальше, чем у мелкой рядом, и
+   * «ближайшим» становится не то, что человек видит рядом. */
+  check('и считается расстояние до прямоугольника, а не до центра',
+    /box\.X - x/.test(nearest) && /x - \(box\.X \+ box\.Width\)/.test(nearest)
+      && !/box\.X \+ box\.Width \/ 2/.test(nearest));
+  /* Два потолка. Огромная панель с именем — не ориентир («ниже „Claude“» про элемент во весь экран не
+   * говорит ничего), и ориентир в шестистах пикселях — это другое место, а не это. */
+  check('панель во весь экран и слишком далёкий ориентир отбрасываются',
+    /LandmarkAreaMax/.test(psCode) && /bestDistance > 220/.test(nearest));
+  /* Правило шестидесяти символов действует и здесь: подпись длиннее — уже не подпись. */
+  check('и правило длины имени действует и на ориентир',
+    /name\.Length > NameMax/.test(nearest));
+  /* Обрезка по краям: проводник отдаёт " Search scratchpad", TMetric "Отчёты " — в кавычках транскрипта
+   * это выглядит опечаткой. Найдено прогоном, а не чтением. */
+  check('и пробелы по краям снимаются', /near = near\.Trim\(\)/.test(psCode));
+
+  /* Кэш на окно: без него каждый безымянный клик стоил бы своего FindAll (0-319 мс по замеру), а на
+   * странице вроде claude.ai безымянны подряд все клики. И он обязан чиститься — иначе долгая сессия
+   * растит словарь без границы, то же правило, что у _mute. */
+  const namedIn = bodyOf('static List<AutomationElement> NamedIn', 'const double LandmarkAreaMax');
+  check('чтение окна кэшируется и просрочённое выбрасывается',
+    /ReadTtlMs/.test(psCode) && /_reads\.Remove\(key\)/.test(namedIn));
+  /* Через тот же Search: у него дедлайн, глушение окна по ручке и предел в три висящих чтения. Отдельный
+   * путь пришлось бы снабжать этим заново — и однажды забыть. */
+  check('и идёт через тот же Search, что и всё остальное',
+    /Search\(root, hwnd, NamedAndVisible\(\), 2000, out problem\)/.test(namedIn));
+
+  /* Провод: поле входит в guard (иначе строка, где ориентир единственное содержимое, теряется целиком —
+   * ровно та ошибка, что была с mods), пишется, читается и доносится до события. */
+  check('ориентир доживает до провода и обратно',
+    /e\.Near == null\) return;/.test(psCode)
+      && /sb\.Append\("\\tnear="\); sb\.Append\(e\.Near\);/.test(psCode)
+      && /else if \(key == "near"\) ctx\.Near = val;/.test(psCode)
+      && /e\.Near = pending\.Near;/.test(psCode));
+  /* Сторона ПЕРЕД именем, потому что имя содержит пробелы. В этой строке поля разделены табуляциями, так
+   * что порядок не обязателен — но он совпадает с порядком чтения человеком, и менять его незачем. */
+  check('сторона пишется перед именем',
+    psCode.indexOf('sb.Append("\\tside=")') < psCode.indexOf('sb.Append("\\tnear=")'));
+  /* И повтор им НЕ пользуется: ориентир описывает, где это было, а не куда нажимать. Прицел работает по
+   * `control`; если ориентир попадёт в прицел, повтор начнёт жать по соседней кнопке. */
+  check('но повтор по ориентиру не прицеливается',
+    !/Retarget[\s\S]{0,600}?e\.Near/.test(psCode));
+}
+
+group('и список ориентиров один на две платформы');
+{
+  /* ФОРМА, КОТОРАЯ УЖЕ ПОДВОДИЛА В ЭТОМ ФАЙЛЕ: правило, написанное для двух платформ и закреплённое на
+   * одной. Здесь цена расхождения — утечка: тип, попавший в список на одной стороне и не попавший на
+   * другой, означает, что одна из платформ записывает как «ориентир» абзац чужого текста. */
+  const psTypes = ps.slice(ps.indexOf('LandmarkTypes = new string[]'));
+  const swTypes = swift.slice(swift.indexOf('landmarkKinds: Set<String>'));
+  const psList = (psTypes.slice(0, psTypes.indexOf('};')).match(/"[a-z ]+"/g) || []).sort();
+  const swList = (swTypes.slice(0, swTypes.indexOf(']')).match(/"[a-z ]+"/g) || []).sort();
+  check('обе стороны знают, что годится в ориентир', psList.length >= 12 && swList.length >= 12,
+    psList.length + '/' + swList.length);
+  /* Не «одинаковые списки»: у платформ разные слова для одного и того же (macOS зовёт поле ввода
+   * "text field", Windows — "edit"), и требовать побайтового совпадения значило бы запретить это. Что
+   * проверяется — что НИ ОДНА не пускает содержимое. */
+  for (const content of ['"text"', '"list item"', '"data item"', '"group"', '"document"', '"pane"']) {
+    check('и ни одна не пускает ' + content,
+      !psList.includes(content) && !swList.includes(content));
+  }
+  /* И два потолка совпадают числами: панель во весь экран не ориентир, и ориентир в шестистах пикселях —
+   * другое место. Разойдись они, один и тот же клик описывался бы на двух машинах по-разному. */
+  check('и оба потолка — одни числа',
+    /LandmarkAreaMax = 520000/.test(ps.replace(/\s/g, '').replace('constdouble', 'const double '))
+      || /520000/.test(ps));
+  check('и предел удаления тоже',
+    /bestDistance > 220/.test(ps) && /landmarkReachMax: CGFloat = 220/.test(swift));
+  /* Ориентир заполняется только у шага без имени — на обеих. Иначе одна из платформ платит обходом дерева
+   * за каждый клик, и это видно только на ней. */
+  check('и обе ищут его только там, где имени нет',
+    /if \(string\.IsNullOrEmpty\(job\.Target\.Control\)\)/.test(ps)
+      && /if job\.target\.control == nil, hasPid,/.test(swift));
+  /* Поле на проводе одно и в одном порядке: сторона перед именем, оба после mods. */
+  check('и пишут его под одним именем и в одном порядке',
+    ps.indexOf('\\tside=') < ps.indexOf('\\tnear=')
+      && swift.indexOf('\\tside=') < swift.indexOf('\\tnear='));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

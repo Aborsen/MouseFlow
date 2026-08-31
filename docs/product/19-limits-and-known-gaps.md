@@ -236,6 +236,24 @@ These are not bugs and no amount of work inside the current design removes them.
   named. Dropping the Name condition outright costs 25–50% more elements (Outlook 229 → 337, Teams
   184 → 275) against a read that already truncates at 28. So it stays, and the reason is now a number:
   see `NamedAndVisible` for the shape to use if a machine ever does show one.
+- **A click on nothing named used to be a coordinate and nothing else.** `clicked in the page, at 99,577`
+  was the whole of what a reader got, and a step cannot be placed from that. The cause was not a failed
+  read: measured on a live Chrome window, the element under the pointer is an unnamed group, the first named
+  ancestor is the document title, and **the only named element containing the point is a `Text` node
+  carrying the paragraph being read**. Looking harder would have recorded content.
+  From 0.24.0 the step carries a **landmark** instead — the label of the nearest control and which side
+  of it the point fell on — so the same step reads `clicked in the page just below "Address Bar", at
+  99,577`. The coordinate stays, because a replay and an edit both need it; what changed is that it is no
+  longer the only thing known.
+  The set of types that may be a landmark is measured, not chosen: over twelve live windows `Button` has 420
+  instances with a median name of 11 characters and `Edit` 504 with a median of 4, while `Text` runs to 432
+  characters and `Group` to 326 — so those two, with `ListItem` and `DataItem`, are excluded. Verified by
+  running it against every open window: Teams answered `Favorites`, `Chats`, `Translate`; Outlook `View
+  request`, `Quick actions`; Explorer `Address Bar`, `More options`; and not one answer was a sentence of
+  content. The whole window is read once per two seconds and cached, so a burst of clicks in one window costs
+  one read (61–342 ms measured) rather than one per click.
+  **The macOS half is written, not run** — swiftc is absent on the Windows machine this was written on,
+  and it is held by cross-platform pins rather than by a build.
 - **A short name that is content still gets recorded, on both platforms.** From 0.16.0 the macOS agent drops
   any element name over 60 characters and writes `namelen=` instead, which is what Windows has done since
   0.11.0 — the accessibility name of a message element *is* the message. The rule is a length, so it cannot

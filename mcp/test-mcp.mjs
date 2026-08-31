@@ -4104,6 +4104,61 @@ group('the run log says what the gesture was made with');
       && /NOT press_key\\'s ctrl/.test(brain));
 }
 
+group('«clicked in the page, at 99,577» получает место');
+{
+  /* ЖАЛОБА, ИЗ КОТОРОЙ ЭТО ВЫРОСЛО, дословно: «clicked in the page, at 99,577». Координата была
+   * единственным, что читатель получал о шаге, и разместить его по ней нельзя. Причина не в том, что чтение
+   * не удалось — измерено, что под курсором в claude.ai безымянная группа, а единственное названное,
+   * содержащее точку, это абзац, который человек читает. Поэтому записывается не то, на что нажали, а
+   * ориентир: подпись ближайшего элемента управления и сторона. */
+  const step = (fields) => `#ctx\t${fields}\n1 | 99 | 577 | 0 | Left Click Down\n`
+    + '2 | 99 | 577 | 30 | Left Click Release\n';
+  const read = (body) => {
+    const { events } = parseMacro(body);
+    return transcribe({ payload: { events }, name: 'p' });
+  };
+  const placeText = (out) => (out.story || []).filter((s) => s.kind === 'place').map((s) => s.text).join(' ');
+  const stepText = (out) => (out.segments || []).flatMap((s) => s.steps || []).map((s) => s.what).join(' ');
+
+  const fixed = read(step('app=chrome\twindow=Claude\ttype=group\tside=below\tnear=Address Bar'));
+  check('та самая фраза теперь называет место',
+    /just below "Address Bar"/.test(placeText(fixed)), placeText(fixed));
+  /* Координата ОСТАЁТСЯ: она нужна повтору и редактированию. Менялось то, что она была единственным. */
+  check('и координата при этом остаётся', /at 99,577/.test(placeText(fixed)));
+
+  /* Имя, отброшенное за длину, — тот же случай «сказать нечего», по другой причине. Запятая обязательна:
+   * «not recorded just above „X“» слипается в одну мысль, а это два разных факта. */
+  const dropped = read(step('app=teams\twindow=Chat\tnamelen=1745\ttype=group\tside=above\tnear=Send feedback'));
+  check('и шаг с отброшенным за длину именем тоже',
+    /not recorded, just above "Send feedback"/.test(placeText(dropped)), placeText(dropped));
+
+  /* `side=in` значит, что точка внутри названной области — это сильнее, чем «рядом». */
+  const inside = read(step('app=explorer\twindow=scratchpad\ttype=pane\tside=in\tnear=Favorites'));
+  check('точка внутри названной области читается как «in»',
+    / in "Favorites"/.test(placeText(inside)), placeText(inside));
+  /* И эта ветка возвращалась РАНЬШЕ остальных, теряя ориентир: шаг говорил «in „Favorites“», рассказ
+   * молчал. Расхождение между двумя описаниями одного клика — хуже отсутствия обоих. */
+  check('и рассказ с шагом об этом не расходятся',
+    /Favorites/.test(placeText(inside)) && /Favorites/.test(stepText(inside)));
+
+  /* Незнакомая или отсутствующая сторона — не причина молчать: «near „Отправить“» всё ещё размещает шаг. */
+  const noSide = read(step('app=chrome\twindow=Claude\ttype=group\tnear=Send'));
+  check('имя без стороны читается как «near»', /near "Send"/.test(placeText(noSide)), placeText(noSide));
+
+  /* И РЕГРЕСС: без ориентира всё ровно как было. Старые записи его не несут, и их чтение меняться не
+   * должно ни на слово. */
+  const bare = read(step('app=chrome\twindow=Claude\ttype=group'));
+  check('без ориентира текст не меняется',
+    /in the page, at 99,577/.test(placeText(bare)) && !/near|just /.test(placeText(bare)),
+    placeText(bare));
+
+  /* Ориентир проходит те же правила, что всякое имя с экрана: приписка браузера про память бывает и на
+   * кнопке, а подпись в четыреста символов ориентиром не является. */
+  const memo = read(step('app=chrome\twindow=Claude\ttype=group\tside=below\tnear=Send  and 2 more pages'));
+  check('и он проходит те же правила, что всякое имя с экрана',
+    /"Send/.test(placeText(memo)), placeText(memo));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
  * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has

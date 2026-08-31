@@ -639,7 +639,13 @@ export const autostartEnable = (port: number) =>
  * before it a run could replay a person's Shift-click and not make one - so extending a selection, adding
  * to one, copying instead of moving, and zooming were all out of reach. That half is new on both
  * platforms, so the nudge is right for a Mac too. */
-export const AGENT_WANTS = '0.23.0';
+/* 0.24.0 НАЗЫВАЕТ МЕСТО, когда назвать нажатое не получилось. До него шаг по безымянному элементу
+ * описывался одной координатой - «clicked in the page, at 99,577», - по которой его нельзя разместить. Не
+ * потому, что чтение не удалось: измерено, что единственное названное, содержащее точку в веб-приложении,
+ * это абзац, который человек читает, а его записывать нельзя. Теперь пишется подпись ближайшего элемента
+ * УПРАВЛЕНИЯ и сторона: «just below „Address Bar“». Старый агент этого поля не пишет, и его записи
+ * читаются как раньше - о чём человеку сказать может только этот нудж. */
+export const AGENT_WANTS = '0.24.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

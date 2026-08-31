@@ -693,6 +693,10 @@ function ctxOf(raw) {
     control: control || null,
     /* Ноль, а не null: это счёт, и «нечего было отбрасывать» - это ноль. */
     nameLength: nameLength || 0,
+    /* Ориентир проходит через plainName и обрезку по длине, как всякое имя с экрана: приписка браузера про
+     * память бывает и на кнопке, и подпись в 400 символов ориентиром не является. */
+    near: shorten(plainName(src.near), CTX_MAX) || null,
+    side: oneLine(src.side, 16) || null,
     type: type || null,
     role: role || null,
     subrole: subrole || null,
@@ -739,6 +743,37 @@ const tabPlace = (ctx) => ({ app: ctx.app, window: ctx.control, control: null, t
 
 // ` in OUTLOOK`, or nothing. The application is worth saying even when the control is not known.
 const inApp = (ctx) => (ctx && ctx.app ? ' in ' + ctx.app : '');
+
+/* ГДЕ ЭТО БЫЛО, когда сказать ЧТО не получилось.
+ *
+ * `clicked in the page, at 99,577` — координата была ЕДИНСТВЕННЫМ, что читатель получал о шаге, и
+ * разместить его по ней нельзя. Не потому, что чтение не удалось: измерено на живом окне Chrome, что под
+ * курсором там безымянная группа, а единственное названное, СОДЕРЖАЩЕЕ точку, — элемент с абзацем, который
+ * человек читает. Искать усерднее значило бы записывать содержимое.
+ *
+ * Поэтому агент записывает не то, на что нажали, а ОРИЕНТИР: подпись ближайшего элемента управления и
+ * сторону. Список типов, годящихся в ориентиры, получен замером по двенадцати живым окнам — см.
+ * LandmarkTypes в агенте; Text, ListItem, DataItem и Group исключены именно потому, что несут текст.
+ *
+ * Координата при этом остаётся: она нужна повтору и редактированию. Меняется то, что она больше не
+ * единственное, что известно. */
+const SIDE_WORDS = {
+  in: 'in',
+  above: 'just above',
+  below: 'just below',
+  left: 'just left of',
+  right: 'just right of',
+};
+
+function nearWords(ctx) {
+  if (!ctx || !ctx.near) return '';
+  const name = String(ctx.near).trim();
+  if (!name) return '';
+  /* Сторона без имени бессмысленна, а имя без стороны — нет: «рядом с „Отправить“» всё ещё размещает шаг.
+   * Поэтому отсутствующая или незнакомая сторона даёт «near», а не пустую строку. */
+  const side = SIDE_WORDS[String(ctx.side || '').trim().toLowerCase()] || 'near';
+  return ' ' + side + ' ' + quoted(name);
+}
 
 /* `Shift-clicked`, `Alt-dragged`, `Cmd-scrolled`. Пусто, когда ничего не держали.
  *
@@ -811,12 +846,12 @@ function actWords(verb, ctx, where) {
     /* The name was dropped rather than missing - say which, and say how much there was. */
     if (ctx && num(ctx.nameLength) > 0) {
       return verb + ' ' + an(heldBy(ctx)) + ' holding ' + Math.round(num(ctx.nameLength))
-        + ' characters of text (not recorded) at ' + where + inApp(ctx);
+        + ' characters of text (not recorded)' + nearWords(ctx) + ' at ' + where + inApp(ctx);
     }
     /* Nothing named it - but the tree still said what KIND of thing it was, and "clicked a button at
      * 725,104" is a step somebody can place. This used to be the coordinates alone. */
     const kind = roleWords(ctx);
-    return verb + (kind ? ' ' + kind + ' at ' : ' at ') + where + inApp(ctx);
+    return verb + (kind ? ' ' + kind : '') + nearWords(ctx) + ' at ' + where + inApp(ctx);
   }
   const noun = ctx.type && !CTX_VAGUE.has(ctx.type.toLowerCase()) ? ' ' + ctx.type : '';
   return verb + (noun ? ' the' : '') + ' "' + ctx.control + '"' + noun + inContainer(ctx) + inApp(ctx);
@@ -1876,27 +1911,35 @@ function unnamedWhat(ctx) {
    * reason there is no name here is a decision rather than a gap. */
   if (ctx && num(ctx.nameLength) > 0) {
     return 'on ' + an(heldBy(ctx)) + ' holding ' + Math.round(num(ctx.nameLength))
-      + ' characters of text, which is not recorded';
+      + ' characters of text, which is not recorded'
+      /* Запятая, потому что «not recorded just above „X“» слипается в одну мысль: то, что имя не записано,
+       * и то, где это было, — два разных факта. */
+      + (nearWords(ctx) ? ',' + nearWords(ctx) : '');
   }
 
   /* An explorer pane with no name is the desktop or the taskbar - nothing else in that shell hit-tests to an
    * unnamed pane - and saying so is the difference between a step a reader can place and one they cannot. */
   if (type === 'pane' && ctx && ctx.app && /^explorer$/i.test(ctx.app)) {
-    return 'on the desktop or the taskbar';
+    /* С ориентиром тоже: эта ветка возвращалась РАНЬШЕ остальных и теряла его, из-за чего рассказ и шаг
+     * описывали один клик по-разному — шаг говорил «in „Favorites“», рассказ молчал. */
+    return 'on the desktop or the taskbar' + nearWords(ctx);
   }
 
   const noun = PLACE_NOUNS[type];
-  if (noun) return (noun.startsWith('the ') ? 'in ' : 'on ') + noun;
+  if (noun) return (noun.startsWith('the ') ? 'in ' : 'on ') + noun + nearWords(ctx);
 
   /* The unlocalised role, where the localised description gave nothing. An application that names none of
    * its controls still says which of them are buttons, and "on a button" is a step a reader can place. */
   const kind = roleWords(ctx);
-  if (kind) return 'on ' + kind;
+  if (kind) return 'on ' + kind + nearWords(ctx);
 
   /* An application was under the pointer and named nothing in itself: normal for Electron, a canvas, or a
    * window running as administrator. Different from knowing nothing at all, and worth the distinction. */
-  if (ctx && ctx.app) return 'on something ' + ctx.app + ' did not name';
-  return null;
+  if (ctx && ctx.app) return 'on something ' + ctx.app + ' did not name' + nearWords(ctx);
+  /* Ориентир без всего остального — всё ещё место. Раньше здесь возвращался null и шаг описывался одной
+   * координатой. */
+  const alone = nearWords(ctx);
+  return alone ? alone.replace(/^ /, '') : null;
 }
 
 /* The point, when there is nothing better to identify it by.
