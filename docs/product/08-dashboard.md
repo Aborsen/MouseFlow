@@ -136,7 +136,7 @@ things that want a decision, then the flat tables.
 | **Activity by day** | Runs per day, with the finished/failed split. Bars, scaled to the tallest day. Each bar is also the drill-down into that day — see Controls. |
 | **How the time was spent** | The measured time inside recordings, split three ways: **doing**, **waiting or reading**, **away from the machine**. One bar rather than three tiles, because the three parts add up to the whole by construction and drawing them apart invites a reader to add them up and get something else. Both boundaries are printed under the numbers they decide — a share of "waiting" is unreadable until you know how long a pause has to be to count. The comparison with the previous window is in **points**, never as a percentage: 46% against 38% is eight points, and "+18%" is the commonest way a dashboard misleads without containing a false number. |
 | **What was actually done** | Events by kind, then the individual actions by name — `Key Backspace`, `Scroll Down`. Pointer movement is held out of both lists and stated on its own line: it is 86% of all events, and ranked beside the clicks it buries them. Typed text is never stored, so this can say how often Backspace was pressed and can never say what was written. |
-| **Processes that look alike** | The sequence of applications a recording moved through, consecutive repeats collapsed, listing only the sequences that appear in **more than one** recording. This is *Worth automating* asked of the recordings instead of the runs — work being done by hand twice, before anybody has written a skill for it. It claims a candidate, not a saving: the same three applications in the same order can be two different jobs, which is why the heading says *look alike*. |
+| **Processes that look alike** | The sequence of applications a recording moved through, consecutive repeats collapsed, listing only the sequences that appear in **more than one** recording *and* that have **at least two steps**. The second condition is not a tidiness: a one-step "pattern" says only that a recording never left one application, and under this heading "6× Google Chrome" read as *you did the Chrome process six times*, which the data does not support and nobody can act on. On the live account that filter removed three of eight repeats, and all three were that. This is *Worth automating* asked of the recordings instead of the runs — work being done by hand twice, before anybody has written a skill for it. It claims a candidate, not a saving: the same three applications in the same order can be two different jobs, which is why the heading says *look alike*. |
 | **Worth automating** | Goals that ran more than once in the window, with the times and what those runs took. **Not a saving** — the tooltip says so, and so does the gaps list. Matching is on identical goal text (see the limit below). |
 | **What went wrong** | Failure reasons, grouped, with how often and an example run. |
 | **Where the time went** | Per application (or per origin for browser flows): recordings, runs, seconds and share. Plus the **unattributed** slice as a named row with its own explanation, so the shares add to one and a dataset where most time cannot be placed *looks* like one. |
@@ -203,6 +203,41 @@ The grounding is part of the answer rather than a disclosure underneath it: each
 actually ran and the runs it cited, and a citation is a **button** — pressing it prints that run's own id,
 goal, outcome and timing, read out of the rows this page already holds. And the corollary, which is why the
 warning is worded the way it is: **when the server cites nothing, the screen says the answer is general.**
+
+### It starts knowing what is on the account
+
+The assistant used to open every conversation blind: the rules, the tools, and nothing else — so "what do I
+keep doing by hand?" cost it three lookups before it could write a first sentence. It is now handed a
+summary of the account up front, which the digests made affordable: three short queries over one row per
+recording, where the same thing over `payload` was 28 MB and several seconds. Measured at **208 ms and about
+730 tokens**, and the tokens are the reason each part of it is capped rather than generous — 12 recent
+recordings, 8 actions, 5 repeated sequences.
+
+What it changes is not speed but the kind of answer available: the assistant can now notice something the
+question did not mention.
+
+Four things keep it honest, and each of them is a way it could otherwise mislead:
+
+- **It says ALL TIME in its first line, before any figure.** It cannot know which window a question means,
+  so a total quoted at "how was last week" would be wrong with nothing on the screen to reveal it. The
+  instruction to use the tools for any window is part of the block, not a nicety beside it.
+- **The rule about sources is amended rather than bypassed.** "Every number must come from a tool result" is
+  the strongest line in this prompt, and the model now has a second source. So the rule names it — *a tool
+  result in this conversation OR the account summary* — because a rule that ignores what the model was
+  handed either forbids using it or silently permits everything.
+- **The block is last in the prompt.** It is the longest part and the only part that is data rather than
+  instruction; above the rules it would push them out of the model's attention.
+- **Personal scope only.** A team conversation keeps its whitelist. A block of somebody's recording names
+  and ids injected into a colleague's conversation would be a second route to the same data, reached
+  differently and never reviewed as one.
+
+It also never decides whether a question can be answered: the top-up write, the count of what is left and
+the read are inside one `catch`. Without the summary the assistant is what it was before — it looks
+everything up — and that is a slower answer, not a missing one. The failure is not reported to the asker,
+because there is nothing they could do about it.
+
+The recording ids in the block are the ones `get_transcript` takes, and the block says so: an id whose use
+is not obvious is an id nobody uses.
 
 ### Scoping, which is not negotiable and not delegated
 

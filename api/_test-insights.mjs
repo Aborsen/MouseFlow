@@ -16,7 +16,13 @@
  * когда-то вынесли shapeScope, - и файлу пришлось выучить его дважды.
  */
 import { gather, shapeScope } from './insights.js';
-import { behaviour, staleCount, topUp } from './_digest.mjs';
+import { accountBlock, systemPrompt } from './chat.js';
+import { accountSummary, behaviour, staleCount, topUp } from './_digest.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0;
 let fail = 0;
@@ -242,6 +248,122 @@ group('shapeScope - тот же урок, выученный раньше');
   check('shapeScope собирает команду и называет выбранного',
     said.kind === 'team' && said.person && said.person.name === 'Vic' && said.people.length === 1
       && said.people[0].role === 'owner' && said.people[0].you === true, JSON.stringify(said));
+}
+
+/* ------------------------------------------------------- то, что ассистент знает не спрашивая */
+
+group('сводка аккаунта собирается тем же путём, что и дашборд');
+{
+  /* Три её запроса тоже едут в sql.transaction, значит на них действует то же правило: функция,
+   * возвращающая запрос, - не async. Тот же класс ошибки, который снял дашборд, снял бы и это. */
+  const sql = fakeNeon();
+  let out = null;
+  let problem = null;
+  try {
+    out = await accountSummary(sql, IDS);
+  } catch (e) { problem = e && e.message ? e.message : String(e); }
+  check('accountSummary проходит на пустом аккаунте', problem === null, problem);
+  check('и это одна read-only транзакция',
+    sql.seen.transactions === 1 && sql.seen.readOnly[0] === true, JSON.stringify(sql.seen));
+  if (out) {
+    check('на пустом аккаунте сводка - нули и пустые списки, а не отсутствие полей',
+      out.recordings === 0 && Array.isArray(out.recent) && Array.isArray(out.patterns)
+        && Array.isArray(out.topActions) && out.attention && out.attention.measuredSeconds === 0,
+      JSON.stringify(out));
+  }
+}
+
+group('блок промпта: то, что модель прочитает');
+{
+  /* Промпт - это текст, и проверяется он чтением. Фикстура нарочно содержит всё, что может исказиться:
+   * шестизначный счёт, запись без дайджеста, узор из одного шага. */
+  const summary = {
+    recordings: 44,
+    events: 421883,
+    firstAt: '2026-08-25T09:00:00.000Z',
+    lastAt: '2026-08-31T17:00:00.000Z',
+    attention: {
+      measuredSeconds: 75060, activeSeconds: 34128, waitingSeconds: 18864, awaySeconds: 22068,
+      activeUnderMs: 5000, awayOverMs: 120000,
+    },
+    moves: 361241,
+    byKind: [{ kind: 'key', count: 28336 }, { kind: 'scroll', count: 18480 }],
+    topActions: [{ action: 'Key Down', count: 23493 }, { action: 'Key Backspace', count: 3631 }],
+    patterns: [{ steps: 'chrome -> explorer -> powershell', recordings: 2 }],
+    recent: [
+      { id: 'r20hqqpqt', name: 'MouseFlow 31/08', source: 'desktop', at: '2026-08-31T16:59:41.000Z',
+        summarised: true, events: 81846, activeSeconds: 900, awaySeconds: 120,
+        pattern: 'chrome -> explorer', apps: ['chrome', 'explorer'] },
+      { id: 'rfresh1', name: 'just now', source: 'desktop', at: '2026-08-31T17:00:00.000Z',
+        summarised: false, events: null, activeSeconds: null, awaySeconds: null, pattern: null, apps: [] },
+    ],
+  };
+  const text = accountBlock(summary, 2);
+
+  /* САМАЯ ВАЖНАЯ строка блока. Он не может знать, о каком окне спросят, поэтому «всё время» должно быть
+   * сказано до первой цифры - иначе эти итоги будут процитированы в ответе про прошлую неделю, и ничто
+   * на экране этого не покажет. */
+  check('первым делом сказано, что это ВСЁ ВРЕМЯ и никакое другое окно',
+    /ALL TIME/.test(text) && text.indexOf('ALL TIME') < text.indexOf('421,883')
+      && /use the tools/.test(text), text.slice(0, 200));
+  check('и назван период, который блок покрывает',
+    /2026-08-25 to 2026-08-31/.test(text));
+  check('шестизначные счёты разделены по разрядам',
+    /421,883/.test(text) && /361,241/.test(text) && !/421883/.test(text), text.slice(0, 400));
+  check('движение вынесено отдельно от остальных родов',
+    /361,241 of the events were the pointer moving/.test(text));
+  check('три части времени названы и сказано, что они складываются',
+    /doing/.test(text) && /waiting or reading/.test(text) && /away from the machine/.test(text)
+      && /add up to the measured time exactly/.test(text));
+  check('границы названы числами, а не словами «короткая пауза»',
+    /under 5 s/.test(text) && /over 2 min/.test(text));
+  /* Идентификаторы - те, что берёт get_transcript, и сказано об этом: идентификатор, чьё применение
+   * неочевидно, не применяет никто. */
+  check('идентификаторы записей есть, и сказано, каким инструментом их открыть',
+    /r20hqqpqt/.test(text) && /get_transcript takes/.test(text));
+  /* Не разобранная запись - null, а не ноль: «0 событий» это утверждение о ЗАПИСИ, а не о том, что
+   * посчитано. Самая свежая запись - как раз та, о которой скорее всего спросят. */
+  check('не разобранная запись названа таковой, а не показана как пустая',
+    /rfresh1/.test(text) && /not summarised yet/.test(text) && !/rfresh1.*0 events/.test(text));
+  check('и сказано, сколько записей ещё не разобрано',
+    /2 recordings are not summarised yet/.test(text));
+  check('узор сопровождён оговоркой, что совпадение - не доказательство',
+    /not proof they were the same task/.test(text));
+  /* Пустой аккаунт не получает блока вовсе: «0 записей, 0 событий» это страница инструкций, тратящая
+   * токены на каждом вопросе, чтобы сообщить модели ничего. */
+  check('на пустом аккаунте блока нет вообще',
+    accountBlock({ recordings: 0 }, 0) === '' && accountBlock(null, 0) === '');
+}
+
+group('правило про источники названо, а не обойдено');
+{
+  /* Правило «только из инструмента» - самое сильное в этом промпте. У модели появился второй источник,
+   * и ослабить правило можно ровно одним способом: назвать этот источник и его границу. */
+  const withBlock = systemPrompt('2026-08-31', null, null, '\nWHAT IS ON THIS ACCOUNT. ...');
+  const without = systemPrompt('2026-08-31', null, null, '');
+  check('с блоком правило называет сводку вторым источником',
+    /OR from the account summary/.test(withBlock) && /The summary is ALL TIME/.test(withBlock));
+  check('и требует инструмента для любого окна',
+    /for any question about a window[\s\S]{0,120}look it up/.test(withBlock), withBlock.slice(0, 60));
+  check('без блока правило остаётся прежним и строгим',
+    /If you did not read it from a tool, you do not know it\./.test(without)
+      && !/account summary/.test(without));
+  /* Блок идёт ПОСЛЕДНИМ: он длиннее всех правил и является данными, а не инструкцией. Выше правил он
+   * вытеснял бы их из внимания модели. */
+  check('и блок стоит в конце, после правил',
+    withBlock.indexOf('WHAT IS ON THIS ACCOUNT') > withBlock.indexOf('Lead with the answer'));
+  /* Командная беседа блока не получает. Её инструменты - белый список ровно для того, чтобы то, что один
+   * экран может сложить о чужой работе, решалось в одном месте; второй маршрут к тем же данным не был бы
+   * рассмотрен как таковой. */
+  const chat = readFileSync(join(here, 'chat.js'), 'utf8');
+  /* Не расстоянием в символах - оно разъезжается от первого же дописанного комментария, - а тем, что
+   * вызов ОДИН и он под защитой. Второй вызов где-нибудь ещё и был бы тем самым вторым маршрутом. */
+  check('в командной области блок не собирается вовсе',
+    /if \(!team\) \{/.test(chat)
+      && (chat.match(/await accountSummary\(/g) || []).length === 1
+      && /if \(!team\) \{[\s\S]*?await accountSummary\(/.test(chat));
+  check('и его отказ не отменяет ответа',
+    /catch \(_\) \{ account = ''; \}/.test(chat));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

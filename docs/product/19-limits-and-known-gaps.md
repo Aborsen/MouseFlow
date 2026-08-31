@@ -290,6 +290,20 @@ These are not bugs and no amount of work inside the current design removes them.
 
 ---
 
+### One application, two names, and the two never match
+
+An application is named by whatever the platform reports, and the two halves report differently: the Windows
+agent gives the **process** name (`chrome`), the macOS agent gives the **display** name (`Google Chrome`). So
+the same browser produces two different strings, and every place that groups by application name treats them
+as two applications — the per-application split counts them separately, and a repeated sequence recorded on
+both machines is never recognised as repeated.
+
+It is left alone rather than patched, and the reason is that the obvious fix is a guess: any mapping from
+`Google Chrome` to `chrome` is a table somebody types, it has to be right for every application anybody
+records, and a wrong row silently merges two real applications into one. That is a worse failure than two
+rows a reader can see and add up themselves. Worth doing properly — the agent knows which platform it is on
+and could emit both names — and not worth doing by inference here.
+
 ### The Dashboard drills into time, and not yet into anything else
 
 A slice of the Dashboard lives in the address and can be sent to somebody: the window, as `?days=7` or

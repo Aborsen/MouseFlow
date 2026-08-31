@@ -81,9 +81,32 @@ group('свежесть, и случай, который легко пропус
     /on conflict \(user_id, client_id\) do update set/.test(topUpBody));
 }
 
+group('узор из одного шага - не узор');
+{
+  /* «6x Google Chrome» под заголовком «процесс, сделанный руками несколько раз» - утверждение, которого
+   * данные не поддерживают: это значит только «шесть записей не выходили из браузера». На живом аккаунте
+   * фильтр убрал 3 таких из 8 «повторных», и все три были тавтологиями.
+   *
+   * Фильтр в ЧИТАТЕЛЕ, а не в писателе: одна запись действительно вся прошла в одном приложении, это
+   * факт, и колонка его хранит. Вопрос «какая последовательность повторялась» задаётся к тем, у кого
+   * есть второй шаг. */
+  const readerFrom = digest.indexOf('function behaviour');
+  const readerBody = digest.slice(readerFrom, digest.indexOf('\n}', readerFrom) + 2);
+  check('в узоры попадают только последовательности с двумя шагами и больше',
+    /position\(' -> ' in pattern\) > 0/.test(readerBody), readerBody.slice(-400));
+  /* position(), а не LIKE: у LIKE '%' и '_' - метасимволы, и правило не должно опираться на то, что в
+   * имени приложения их не бывает. */
+  check('и условие не опирается на метасимволы LIKE',
+    !/pattern like/.test(readerBody));
+}
+
 group('читатель берёт дайджест, а не payload');
 {
-  const readerBody = digest.slice(digest.indexOf('function behaviour'));
+  /* До КОНЦА СВОЕЙ ФУНКЦИИ, а не до конца файла - тот же капкан, что уже ловил в этой сессии: срез до EOF
+   * захватывает всё, что допишут ниже, и первое же слово «payload» в чужом КОММЕНТАРИИ роняет проверку,
+   * не имеющую к нему отношения. `\n}` в нулевой колонке - это конец функции. */
+  const readerFrom = digest.indexOf('function behaviour');
+  const readerBody = digest.slice(readerFrom, digest.indexOf('\n}', readerFrom) + 2);
   check('блок поведения читает flow_digest',
     /from flow_digest d/.test(readerBody) && !/payload/.test(readerBody));
   /* Окно применяется к дате ЗАПИСИ, тем же способом, что у всех прочих запросов файла: иначе два запроса

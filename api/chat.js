@@ -69,6 +69,10 @@ import { whoIsCalling } from './_session.js';
 import { overSpend, spentWhy } from './_spend.mjs';
 import { ask, MODELS, DEFAULT_MODEL, PROVIDERS, providerFor, keyFor, ProviderError } from './_provider.js';
 import { recordingTools } from './_recording-tools.js';
+/* Статическим импортом: файл - сосед в том же каталоге, и ленивый импорт защищал бы только от аварии
+ * сборщика. От того, что действительно может отказать - самого запроса к flow_digest, - защищает
+ * перехват на вызове: сводка это ускорение, а не условие того, что ассистент может ответить. */
+import { accountSummary, staleCount, topUp, TOP_UP_MAX } from './_digest.mjs';
 import { readSettings } from './admin.js';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
@@ -932,7 +936,96 @@ const TOOL_NAMES = Object.keys(TOOLS);
 
 /* --------------------------------------------------------------------------- the prompt */
 
-function systemPrompt(today, team, person) {
+/* 23,493 rather than 23493. The assistant is told to answer in plain text and it copies what it is given,
+ * so a six-figure count handed over unseparated comes back out unseparated. */
+const grouped = (n) => (Number.isFinite(n) ? Math.round(n).toLocaleString('en-US') : '0');
+
+/* 3.2 h, 14 min, 47 s - one unit, because this is prose in a prompt and "1 h 12 m 9 s" invites the model
+ * to quote the seconds at somebody who asked how long something took. */
+const spanOf = (seconds) => {
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if (s < 90) return s + ' s';
+  if (s < 5400) return Math.round(s / 60) + ' min';
+  return (s / 3600).toFixed(1) + ' h';
+};
+
+/* WHAT THE ASSISTANT KNOWS BEFORE IT ASKS ANYTHING.
+ *
+ * It used to start blind: rules, tools, and nothing else, so "what do I keep doing by hand?" cost three
+ * lookups before a first sentence. The digests made this affordable - three short queries over one row per
+ * recording - and what it buys is not speed but a different kind of answer: the assistant can now notice
+ * something the question did not mention.
+ *
+ * ALL TIME, and said in the first line, because that is the one way this block can mislead. It cannot know
+ * which window a question means, so a summary quoted at "how was last week" would be wrong in a way
+ * nothing on the screen would reveal. The line telling the model to use tools for any window is therefore
+ * part of the block and not a nicety.
+ *
+ * The ids are the ones get_transcript takes, so the assistant can go from this block straight into a
+ * recording without spending a lookup on list_recordings to find it. That is said too - an id whose use is
+ * not obvious is an id nobody uses.
+ */
+/* Экспортирован, чтобы его можно было ПРОЧИТАТЬ на настоящих данных и проверить исполнением. Промпт -
+ * это текст, который читает модель; единственный способ узнать, что он читается как надо, - прочитать
+ * его. Чистая функция: данные на входе, текст на выходе, никакой базы. */
+export function accountBlock(summary, stale) {
+  if (!summary || !summary.recordings) return '';
+  const a = summary.attention || {};
+  const range = summary.firstAt && summary.lastAt
+    ? summary.firstAt.slice(0, 10) + ' to ' + summary.lastAt.slice(0, 10)
+    : 'dates unknown';
+  const lines = [
+    '',
+    'WHAT IS ON THIS ACCOUNT. Read from the stored recordings before you were asked anything, so you may'
+      + ' state these figures without looking them up. It covers ALL TIME - ' + range + ' - and no other'
+      + ' window. For any question about a period, use the tools: quoting these totals at "last week"'
+      + ' would be wrong and nothing would show it.',
+    '- ' + grouped(summary.recordings) + ' recordings, ' + grouped(summary.events) + ' recorded events.',
+  ];
+  if (a.measuredSeconds > 0) {
+    lines.push('- ' + spanOf(a.measuredSeconds) + ' of measured time inside them: '
+      + spanOf(a.activeSeconds) + ' doing, ' + spanOf(a.waitingSeconds) + ' waiting or reading, '
+      + spanOf(a.awaySeconds) + ' away from the machine. A pause under '
+      + Math.round((a.activeUnderMs || 0) / 1000) + ' s counts as inside an action; over '
+      + Math.round((a.awayOverMs || 0) / 60000) + ' min counts as away. These three add up to the'
+      + ' measured time exactly - every gap falls in one of them.');
+  }
+  if (summary.moves > 0 || summary.byKind.length) {
+    lines.push('- ' + grouped(summary.moves) + ' of the events were the pointer moving. The rest: '
+      + summary.byKind.map((k) => k.kind + ' ' + grouped(k.count)).join(', ') + '.');
+  }
+  if (summary.topActions.length) {
+    lines.push('- Most frequent actions: '
+      + summary.topActions.map((t) => t.action + ' ' + grouped(t.count)).join(', ') + '.');
+  }
+  if (summary.patterns.length) {
+    lines.push('- Sequences of applications that appear in MORE THAN ONE recording, which is the sign of a'
+      + ' process done by hand more than once: '
+      + summary.patterns.map((p) => p.recordings + '\u00d7 ' + p.steps).join('; ') + '.'
+      + ' Two recordings sharing a sequence is not proof they were the same task.');
+  }
+  if (summary.recent.length) {
+    lines.push('- The ' + summary.recent.length + ' most recent recordings. The id is what get_transcript'
+      + ' takes, so you can read one without calling list_recordings first:');
+    for (const r of summary.recent) {
+      lines.push('  ' + r.id + '  ' + (r.at ? r.at.slice(0, 10) : '??????????') + '  "'
+        + String(r.name || 'unnamed').slice(0, 60) + '"'
+        + (r.summarised ? '  ' + grouped(r.events) + ' events' : '  not summarised yet')
+        + (r.apps.length ? '  in ' + r.apps.join(', ') : ''));
+    }
+  }
+  /* Named for the same reason the dashboard names it: figures drawn from part of an account and presented
+   * as the account read exactly like figures drawn from all of it. */
+  if (stale > 0) {
+    lines.push('- ' + stale + ' recording' + (stale === 1 ? ' is' : 's are') + ' not summarised yet, so the'
+      + ' totals above cover the rest. list_recordings and get_transcript still reach them in full.');
+  }
+  return lines.join('\n');
+}
+
+/* Экспортирован по той же причине, что accountBlock и shapeScope: промпт - это текст, и единственный
+ * способ узнать, что в нём написано то, что задумано, - прочитать его исполнением. Чистая функция. */
+export function systemPrompt(today, team, person, account) {
   return [
     /* First line of all, when it applies: the tools are already narrowed to this one member, so without
      * being told the model would read one person's rows and describe them as the team's. */
@@ -960,8 +1053,15 @@ function systemPrompt(today, team, person) {
       : '',
     '',
     'How to answer:',
-    '- Look it up first. Every number, date, name, id and outcome you state must have come from a tool',
-    '  result in this conversation. If you did not read it from a tool, you do not know it.',
+    account
+      /* Две ветви, а не приписка: правило «только из инструмента» - самое сильное в этом промпте, и
+       * ослабить его на один источник можно только назвав этот источник и его границу. */
+      ? '- Every number, date, name, id and outcome you state must have come from a tool result in this\n'
+        + '  conversation OR from the account summary at the end of these instructions. Those two are the\n'
+        + '  only things you know. The summary is ALL TIME: for any question about a window - a day, a\n'
+        + '  week, a month - look it up, because the summary cannot answer it and does not say it cannot.'
+      : '- Look it up first. Every number, date, name, id and outcome you state must have come from a tool\n'
+        + '  result in this conversation. If you did not read it from a tool, you do not know it.',
     '- Never estimate, never round a figure you did not count, never fill a gap with something',
     '  plausible. If the tools cannot answer, say exactly: "I cannot tell from what is stored." Then say',
     '  what would have to be recorded for it to be answerable.',
@@ -990,6 +1090,10 @@ function systemPrompt(today, team, person) {
     '- find_repeated matches identical goal text. It is a floor on repeated work, not a survey of it.',
     '',
     'If a question is not about this account\'s history, say that is not what you can see here, and stop.',
+    /* LAST, and deliberately: it is the longest part of the prompt and the only part that is DATA rather
+     * than instruction. Above the rules it would push them out of the model's attention; here the rules
+     * are read first and this is read as what they are about. */
+    account || '',
   /* The scope lines above are conditional, and an unused one is an empty string. Dropped rather than
    * joined, or the prompt gains blank lines wherever a branch did not apply. */
   ].filter(Boolean).join('\n');
@@ -1016,7 +1120,47 @@ async function answerQuestion({ sql, ids, userId, team, person, people, model, q
    * something that no longer exists. */
   const tools = toolsFor({ sql, userId, team });
   const ctx = { sql, ids, userId, team, people, tools, specs: spec(tools) };
-  const system = systemPrompt(new Date().toISOString().slice(0, 10), team, person);
+
+  /* THE ACCOUNT SUMMARY, and PERSONAL SCOPE ONLY.
+   *
+   * A team conversation gets a whitelist of tools and nothing else - deliberately, so that what one
+   * person's screen can add up about somebody else's work is decided in one place. A block of somebody's
+   * recording names and ids injected into a colleague's conversation would be a second place, reached by a
+   * different route, and would not have been reviewed as one. Team scope keeps its whitelist.
+   *
+   * AND IT NEVER DECIDES WHETHER A QUESTION CAN BE ANSWERED. The bring-up-to-date write, the count of
+   * what is left, and the read itself are all inside one catch: without the summary the assistant is what
+   * it was last week - it looks everything up - and that is a slower answer, not a missing one. So the
+   * failure is not reported to the asker either; there is nothing for them to do about it. */
+  let account = '';
+  if (!team) {
+    try {
+      /* ASK BEFORE DOING, and the measurement is smaller than it first looked - which is worth writing
+       * down, because the first reading of it was wrong.
+       *
+       * On a WARM connection each of these costs about the same: staleCount 47-50 ms, topUp with nothing
+       * stale 51-64, accountSummary 62-68. The 245 ms I first attributed to topUp was the cost of the
+       * FIRST round trip to Neon, not of that query - it moves to whichever query goes first and cannot be
+       * removed by reordering.
+       *
+       * So what this ordering saves is one round trip, about 50 ms, on the converged account - which is
+       * every request but the first few after a recording lands. It also skips a WRITE that inserts
+       * nothing, which is worth having on its own. And it costs an extra count on the requests where there
+       * IS work: honest trade, not a free win.
+       *
+       * Counted AGAIN after deriving, because the first count is what needed doing and the second is what
+       * is left. Reporting the first would tell somebody twenty recordings are unsummarised in the same
+       * breath as summarising them. */
+      let stale = await staleCount(sql, ids);
+      if (stale > 0) {
+        await topUp(sql, ids, TOP_UP_MAX);
+        stale = await staleCount(sql, ids);
+      }
+      account = accountBlock(await accountSummary(sql, ids), stale);
+    } catch (_) { account = ''; }
+  }
+
+  const system = systemPrompt(new Date().toISOString().slice(0, 10), team, person, account);
   const messages = buildTranscript(history, question);
 
   const used = [];

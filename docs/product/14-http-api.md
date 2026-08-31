@@ -277,6 +277,13 @@ GET  /api/chat
 
 The grounded assistant. Read-only tools, the SQL run here, every lookup listed. Rate: 20/min per account.
 
+In a **personal** scope the request also carries an account summary into the system prompt — all-time
+counts, how the recorded time was spent, the commonest actions, the repeated application sequences, and the
+12 most recent recordings with the ids `get_transcript` takes. Three short queries over `flow_digest`, about
+730 tokens, and inside one `catch`: without it the assistant looks everything up, which is slower and not
+broken. A **team** scope does not get it — that conversation keeps its tool whitelist, so what one screen
+can add up about somebody else's work stays decided in one place.
+
 `team` and `person` scope it exactly as they scope `/api/insights`, through the same `api/_team-scope.js`
 check, so the panel beside the dashboard can only read what that dashboard was allowed to count. In a team
 scope the tool table is a **whitelist** of aggregate lookups: nothing that reads a transcript, and nothing

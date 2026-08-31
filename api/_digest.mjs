@@ -40,6 +40,18 @@ export const ACTIVE_MAX_MS = 5_000;
  * a digest - the tail of a 424,730-event account is one press each. */
 export const TOP_ACTIONS = 10;
 
+/* How much of an account the assistant is handed WITHOUT asking, and every one of these is a token cost
+ * paid on every question in the conversation - so each is a deliberate ceiling and not a round number.
+ *
+ * Twelve recordings, because the point is orientation and not inventory: the assistant needs to know what
+ * this person records and roughly when, and it has list_recordings for the rest. Eight actions and five
+ * patterns for the same reason. The whole block comes to about a page - enough that "what do I keep doing"
+ * is answerable before a single lookup, small enough that a long conversation is not paying for a catalogue
+ * on every turn. */
+export const SUMMARY_RECORDINGS = 12;
+export const SUMMARY_ACTIONS = 8;
+export const SUMMARY_PATTERNS = 5;
+
 /* Applications named per recording, and steps of its pattern. The pattern is capped because the question is
  * whether ONE PROCESS repeated, and a sequence of twenty steps never repeats. */
 export const APPS_PER_FLOW = 12;
@@ -289,7 +301,15 @@ export function behaviour(sql, ids, fromIso, toIso) {
       from mine, jsonb_array_elements(mine.top_actions) t group by 1
     ),
     pattern_rows as (
-      select pattern as label, count(*)::bigint as n from mine where pattern is not null group by 1
+      /* AT LEAST TWO STEPS, and this filter is the difference between a finding and a tautology.
+         A one-step pattern says only that a recording never left one application - true, and not a
+         process. Under the heading "a process done by hand more than once" it read as "you did the Chrome
+         process six times", which is not a claim the data supports and not one anybody can act on.
+         Filtered HERE rather than when writing: a single-application recording is a real fact and the
+         column keeps it. What this query answers is "which SEQUENCE repeated", and a sequence needs a
+         second step to be one. */
+      select pattern as label, count(*)::bigint as n
+      from mine where pattern is not null and position(' -> ' in pattern) > 0 group by 1
     )
     select 'attention'::text as kind, 'active'::text as label, 0::bigint as n,
            coalesce(sum(active_ms), 0)::numeric as ms from mine
@@ -299,4 +319,129 @@ export function behaviour(sql, ids, fromIso, toIso) {
     union all select 'top',    label, n, 0::numeric from top_rows
     union all select 'pattern', label, n, 0::numeric from pattern_rows
   `;
+}
+
+
+/* ------------------------------------------------------------------ what this account is, without asking
+ *
+ * WHY THIS EXISTS. The assistant used to start every conversation blind: it knew the rules and had tools,
+ * and "what do I keep doing by hand?" cost it three lookups before it could say anything. Handing it the
+ * shape of the account up front is what the digests made affordable - three short queries over one row per
+ * recording, where the same thing over payload was 28 MB and several seconds.
+ *
+ * ALL TIME, and that is stated rather than implied. A summary that silently meant "the last month" would
+ * have the assistant answer questions about June with April's numbers, and it has no way to notice. The
+ * range the summary covers travels with it, so the prompt can say which dates it is true of.
+ *
+ * ONE READ-ONLY TRANSACTION. The three parts are one picture: a summary whose totals came from before a
+ * sync and whose recording list came from after it describes an account that never existed. And the
+ * transaction takes QUERY OBJECTS - which is why `behaviour` and the two below are plain functions. That
+ * distinction cost a production outage once; see the comment on `behaviour`.
+ */
+function summaryTotals(sql, ids) {
+  return sql`
+    select count(*)::int                          as recordings,
+           coalesce(sum(d.events), 0)::bigint     as events,
+           coalesce(sum(d.active_ms), 0)::numeric as active_ms,
+           coalesce(sum(d.waiting_ms), 0)::numeric as waiting_ms,
+           coalesce(sum(d.away_ms), 0)::numeric   as away_ms,
+           min(coalesce(f.created_at, f.updated_at)) as first_at,
+           max(coalesce(f.created_at, f.updated_at)) as last_at
+    from flow_digest d
+    join user_flow f on f.user_id = d.user_id and f.client_id = d.client_id
+    where d.user_id = any(${ids}::uuid[]) and f.deleted_at is null and f.kind = 'recorded'
+  `;
+}
+
+/* The most recent few, by the same date the rest of the product places a recording by.
+ *
+ * A LEFT JOIN, so a recording with no digest yet still appears - with nulls where its numbers would be.
+ * Dropping it would make the newest recording, which is the one somebody is most likely to ask about,
+ * the one the assistant cannot see. */
+function summaryRecent(sql, ids, limit) {
+  return sql`
+    select f.client_id, f.name, f.source,
+           coalesce(f.created_at, f.updated_at) as at,
+           d.events, d.active_ms, d.waiting_ms, d.away_ms, d.pattern, d.apps
+    from user_flow f
+    left join flow_digest d on d.user_id = f.user_id and d.client_id = f.client_id
+    where f.user_id = any(${ids}::uuid[]) and f.deleted_at is null and f.kind = 'recorded'
+    order by coalesce(f.created_at, f.updated_at) desc
+    limit ${limit}
+  `;
+}
+
+/* Everything the assistant is told before it asks anything. Returns plain data; the wording is the
+ * caller's, because the prompt's voice belongs to the prompt and not to a SQL module.
+ *
+ * `stale` rides along for the same reason the dashboard shows it: a summary drawn from part of an account,
+ * presented as the account, reads identically to one drawn from all of it. */
+export async function accountSummary(sql, ids, options = {}) {
+  const recent = Math.max(1, Math.min(options.recordings || SUMMARY_RECORDINGS, 50));
+  /* All time. Not "a very long window" - the two ends are the widest instants Postgres will compare
+   * against a timestamptz here, so nothing is silently outside them. */
+  const from = '0001-01-01T00:00:00.000Z';
+  const to = '9999-12-31T23:59:59.999Z';
+
+  const [totalsRows, recentRows, blockRows] = await sql.transaction(
+    [summaryTotals(sql, ids), summaryRecent(sql, ids, recent), behaviour(sql, ids, from, to)],
+    { readOnly: true },
+  );
+
+  const t = totalsRows[0] || {};
+  const n = (v) => {
+    const x = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+  const of = (kind) => blockRows.filter((r) => r.kind === kind);
+  const att = { active: 0, waiting: 0, away: 0 };
+  for (const r of of('attention')) if (r.label in att) att[r.label] = n(r.ms);
+  const measured = att.active + att.waiting + att.away;
+
+  return {
+    recordings: n(t.recordings),
+    events: n(t.events),
+    firstAt: t.first_at ? new Date(t.first_at).toISOString() : null,
+    lastAt: t.last_at ? new Date(t.last_at).toISOString() : null,
+    attention: {
+      measuredSeconds: Math.round(measured / 1000),
+      activeSeconds: Math.round(att.active / 1000),
+      waitingSeconds: Math.round(att.waiting / 1000),
+      awaySeconds: Math.round(att.away / 1000),
+      activeUnderMs: ACTIVE_MAX_MS,
+      awayOverMs: EVENT_GAP_MAX_MS,
+    },
+    /* Movement separated here rather than by the caller, because every reader of this wants it separated
+     * and one of them would forget. */
+    moves: n((of('action').find((r) => r.label === 'move') || {}).n),
+    byKind: of('action')
+      .filter((r) => r.label !== 'move')
+      .map((r) => ({ kind: r.label, count: n(r.n) }))
+      .sort((a, b) => b.count - a.count),
+    topActions: of('top')
+      .map((r) => ({ action: r.label, count: n(r.n) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, options.actions || SUMMARY_ACTIONS),
+    /* Only the repeated ones. A pattern seen once is a recording, not a finding, and the assistant has
+     * the recording list right above it. */
+    patterns: of('pattern')
+      .map((r) => ({ steps: r.label, recordings: n(r.n) }))
+      .filter((p) => p.recordings > 1)
+      .sort((a, b) => b.recordings - a.recordings)
+      .slice(0, options.patterns || SUMMARY_PATTERNS),
+    recent: recentRows.map((r) => ({
+      id: r.client_id,
+      name: r.name || null,
+      source: r.source || null,
+      at: r.at ? new Date(r.at).toISOString() : null,
+      /* Null, not nought, when this recording has no digest yet: nought seconds reads as an empty
+       * recording, which is a claim about the recording rather than about what has been derived. */
+      summarised: r.events != null,
+      events: r.events == null ? null : n(r.events),
+      activeSeconds: r.active_ms == null ? null : Math.round(n(r.active_ms) / 1000),
+      awaySeconds: r.away_ms == null ? null : Math.round(n(r.away_ms) / 1000),
+      pattern: r.pattern || null,
+      apps: Array.isArray(r.apps) ? r.apps.slice(0, 4).map((a) => a && a.name).filter(Boolean) : [],
+    })),
+  };
 }
