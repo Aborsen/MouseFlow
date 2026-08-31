@@ -213,14 +213,25 @@ cannot tell you already is.
 
 ```
 GET /api/insights?days=30
+GET /api/insights?from=<iso>&to=<iso>
 GET /api/insights?days=30&team=t_ab12
 GET /api/insights?days=30&team=t_ab12&person=<uuid>
 ```
 
-`days` defaults to 30, maximum 365 — a year of runs is a lot of `jsonb` to unroll. One read-only transaction,
-so the totals, the day series and the per-application split agree with each other. Rate: 30/min per account,
-because this unrolls every event of every recording in the window and is **the most expensive read in the
-product**.
+`days` defaults to 30, maximum 365 — a year of runs is a lot of `jsonb` to unroll. `from`/`to` name the two
+ends instead, and the explicit pair wins: a day boundary belongs to the caller's own clock and this end never
+guesses a time zone it was not told about. The span is bounded by the same ceiling, and `window.days` comes
+back as a real number rather than as the parameter that was sent — a custom range of 36 hours is not "1 day".
+
+One read-only transaction, so the totals, the day series and the per-application split agree with each other.
+Rate: 30/min per account, because this unrolls every event of every recording in the window and is **the most
+expensive read in the product**.
+
+**One write happens before that transaction**, and it is the reason the behaviour blocks are affordable:
+recordings whose `flow_digest` row is missing, behind the formula version or older than the recording itself
+are brought up to date, at most 20 per request. It writes, so it cannot be inside a read-only transaction,
+and it goes first so the read sees fresh rows. Failure there does not fail the request — `digest.problem`
+carries the reason and the rest of the page is still real.
 
 `team` counts every member of that team instead of the caller alone, and is accepted **only from an owner or
 an admin of it**: `api/_team-scope.js` turns the id into a set of accounts or into a refusal — `403` with a
@@ -229,10 +240,21 @@ reason for a member of the team, `404` for somebody who is not in it, which does
 query string is no more a permission than a team id is. Without either parameter the scope is one account,
 so every existing caller and every bookmark asks exactly the question it always asked.
 
-Response: `scope`, `window`, `totals`, `byOutcome`, `byDay`, `applications`, `unattributed`, `previous`,
-`repeated`, `slowestSteps`, `failures`, `skills`, `gaps`, `caps`. `scope` says whose the numbers are, and in
-a team scope carries one row per member — counts and dates only. See [08 — Dashboard](08-dashboard.md) for
-what each means and every cap, and [22 — Teams](22-teams.md#the-teams-dashboard) for the roles.
+Response: `scope`, `window`, `totals`, `byOutcome`, `byDay`, `applications`, `unattributed`, `attention`,
+`actions`, `patterns`, `previous`, `previousBehaviour`, `digest`, `repeated`, `slowestSteps`, `failures`,
+`skills`, `gaps`, `caps`. `scope` says whose the numbers are, and in a team scope carries one row per member —
+counts and dates only. See [08 — Dashboard](08-dashboard.md) for what each means and every cap, and
+[22 — Teams](22-teams.md#the-teams-dashboard) for the roles.
+
+Three of those are derived from `flow_digest` rather than from the runs:
+
+| Field | Holds |
+|---|---|
+| `attention` | `measuredSeconds`, and `active` / `waiting` / `away` each as `{ seconds, share }`. The three **add up to `measuredSeconds`** by construction. `activeUnderMs` and `awayOverMs` are the two boundaries, sent rather than left in the code, because a share of "waiting" means nothing until the reader knows how long a pause has to be |
+| `actions` | `total`, `moves` (pointer movement, held out of both lists but counted in `total`), `byKind`, and `top` by action name |
+| `patterns` | `repeated` (sequences seen in more than one recording), `repeatedTotal` before the cap, `once`, `total` |
+| `previousBehaviour` | the same three for the window immediately before, so a share can be compared rather than only read |
+| `digest` | `version`, `derived` (how many this request caught up), `stale` (how many are still to be summarised), `perRequest`, `problem`. **`stale` is a response field and not a log line**: "46% doing" over half the recordings looks exactly like "46% doing" over all of them |
 
 ---
 

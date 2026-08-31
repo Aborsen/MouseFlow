@@ -765,8 +765,21 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
    * box, which is what the documentation's screenshot of it showed. */
   if (url.startsWith('/api/insights')) {
     const asked = new URLSearchParams(url.split('?')[1] || '');
-    const days = Number(asked.get('days')) || 30;
-    const from = new Date(now - days * 86400_000).toISOString();
+    /* THE WINDOW IS ECHOED BACK, both ways of naming it.
+     *
+     * The rows below are a fixed week of invented numbers and do not re-filter - that is what a fixture is
+     * - but the window it REPORTS has to be the window that was asked for, because the page labels its
+     * header from this field and highlights its range button from its own state. Answering "days=7" to a
+     * request for one day put "Aug 30" on the button and "24 Aug to 31 Aug" in the sentence under it, and a
+     * page arguing with itself is worse than a page with obviously invented numbers on it. */
+    const wantFrom = new Date(String(asked.get('from') || ''));
+    const wantTo = new Date(String(asked.get('to') || ''));
+    const ranged = Number.isFinite(+wantFrom) && Number.isFinite(+wantTo) && +wantTo > +wantFrom;
+    const days = ranged
+      ? Math.max(1, Math.round((+wantTo - +wantFrom) / 86400_000))
+      : Number(asked.get('days')) || 30;
+    const from = ranged ? wantFrom.toISOString() : new Date(now - days * 86400_000).toISOString();
+    const to = ranged ? wantTo.toISOString() : new Date(now).toISOString();
     /* The team scope, and the same rule the endpoint enforces: only a team this account owns or
      * administers. 't_dev3' is here to be REFUSED - the page has a path for a team the reader may not
      * read, and a fixture where every id succeeds never renders it. */
@@ -878,7 +891,7 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
     return json(res, 200, {
       ok: true,
       scope,
-      window: { days, from, to: new Date(now).toISOString(), timeZone: 'UTC' },
+      window: { days, from, to, timeZone: 'UTC' },
       totals,
       previous: chosen
         ? {
@@ -913,6 +926,102 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
         why: 'Time that happened but cannot be placed: agent steps with no page or no timing, the model '
           + 'thinking between steps, and the part of a recording before anything named where it was.',
       },
+      /* THE THREE BEHAVIOUR BLOCKS, and this fixture obeys the same law as the rest of it: the parts add
+       * up to their own whole. 9108 + 4950 + 5742 = 19800, and 0.46 + 0.25 + 0.29 = 1. A fixture where
+       * they do not teaches the page to render a bar with a sliver of background showing through it.
+       *
+       * These are RECORDING seconds and the applications table above is recordings AND runs, so the two
+       * totals are deliberately unrelated - "away from the machine" is real measured time that no
+       * application can be charged for, which is exactly why it lives here and not there. */
+      attention: {
+        measuredSeconds: 19800,
+        active: { seconds: 9108, share: 0.46 },
+        waiting: { seconds: 4950, share: 0.25 },
+        away: { seconds: 5742, share: 0.29 },
+        activeUnderMs: 5000,
+        awayOverMs: 120000,
+      },
+      /* moves + every kind = total: 118402 + 9140 + 6215 + 3480 + 1066 + 7 = 138310. And each named action
+       * fits inside its own kind - Key Down 7602 plus Key Backspace 1538 is the 9140 of `key`, the two
+       * scrolls are the 6215 of `scroll`, the two halves of a click are the 3480 of `click`. The page
+       * draws the named list against the kind list, so a name outgrowing its kind would be visible. */
+      actions: {
+        moves: 118402,
+        total: 138310,
+        byKind: [
+          { kind: 'key', count: 9140 },
+          { kind: 'scroll', count: 6215 },
+          { kind: 'click', count: 3480 },
+          { kind: 'focus', count: 1066 },
+          { kind: 'other', count: 7 },
+        ],
+        top: [
+          { action: 'Key Down', count: 7602 },
+          { action: 'Scroll Down', count: 3402 },
+          { action: 'Scroll Up', count: 2813 },
+          { action: 'Left Click Down', count: 1740 },
+          { action: 'Left Click Release', count: 1740 },
+          { action: 'Key Backspace', count: 1538 },
+          { action: 'Focus', count: 1066 },
+        ],
+      },
+      /* repeatedTotal + once = total: 3 + 5 = 8. And the recordings the patterns account for - 4 + 3 + 2
+       * and five singletons, fourteen - is fewer than the eighteen the header counts, because a recording
+       * where nothing named which application it was in has no pattern at all. */
+      patterns: {
+        repeated: [
+          { steps: 'chrome -> outlook -> excel', recordings: 4 },
+          { steps: 'chrome -> excel', recordings: 3 },
+          { steps: 'outlook -> chrome', recordings: 2 },
+        ],
+        repeatedTotal: 3,
+        once: 5,
+        total: 8,
+      },
+      /* The window before, so the shares have something to be compared with. Internally consistent by the
+       * same arithmetic: 6498 + 4959 + 5643 = 17100, and 96140 + 7020 + 5002 + 2884 + 902 = 111948. The
+       * active share is 0.38 against 0.46, which is what puts a real "+8 pts" on the screen rather than a
+       * dash - a fixture with no previous window never renders the comparison at all. */
+      previousBehaviour: {
+        attention: {
+          measuredSeconds: 17100,
+          active: { seconds: 6498, share: 0.38 },
+          waiting: { seconds: 4959, share: 0.29 },
+          away: { seconds: 5643, share: 0.33 },
+          activeUnderMs: 5000,
+          awayOverMs: 120000,
+        },
+        actions: {
+          moves: 96140,
+          total: 111948,
+          byKind: [
+            { kind: 'key', count: 7020 },
+            { kind: 'scroll', count: 5002 },
+            { kind: 'click', count: 2884 },
+            { kind: 'focus', count: 902 },
+          ],
+          top: [
+            { action: 'Key Down', count: 5640 },
+            { action: 'Scroll Down', count: 2701 },
+            { action: 'Scroll Up', count: 2301 },
+            { action: 'Left Click Down', count: 1442 },
+            { action: 'Left Click Release', count: 1442 },
+            { action: 'Key Backspace', count: 1380 },
+            { action: 'Focus', count: 902 },
+          ],
+        },
+        patterns: {
+          repeated: [{ steps: 'chrome -> outlook', recordings: 2 }],
+          repeatedTotal: 1,
+          once: 6,
+          total: 7,
+        },
+      },
+      /* NOT ZERO, on purpose, and for the reason 't_dev3' above exists to be refused: a fixture where
+       * every number is complete never renders the sentence that says a number is incomplete. Two
+       * recordings still to be summarised is the state a real account is in for the first few seconds
+       * after a recording lands, and it is the one state where these three blocks are a partial truth. */
+      digest: { version: 1, derived: 3, stale: 2, perRequest: 20, problem: null },
       repeated: [
         {
           signature: 'sig_invoice', label: 'reply that the invoice is approved', times: 11,
@@ -964,6 +1073,10 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       ],
       caps: {
         days: 365,
+        /* `total` is the REPEATED sequences, which is the list `shown` was cut from - not all eight
+         * patterns. `steps` is the cap that merges rather than truncates. */
+        patterns: { shown: 3, total: 3, limit: 8, steps: 8 },
+        actions: { shown: 7, limit: 10 },
         applications: { shown: 5, total: 5, limit: 12 },
         repeated: { shown: 3, total: 3, limit: 10 },
         slowestSteps: { shown: 4, total: 4, limit: 10, minCalls: 2 },

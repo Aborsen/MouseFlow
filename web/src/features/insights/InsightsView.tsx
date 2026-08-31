@@ -31,9 +31,12 @@ import {
   CalendarDays,
   Clock,
   Film,
+  Hourglass,
   MessageSquareText,
+  MousePointerClick,
   RefreshCw,
   Repeat2,
+  Route,
   ShieldCheck,
   Sparkles,
   Timer,
@@ -156,6 +159,66 @@ interface Cap {
   limit: number;
 }
 
+/* HOW THE MEASURED TIME WAS SPENT, and it is three parts of one whole rather than three numbers.
+ *
+ * The endpoint guarantees they add up to `measuredSeconds` by construction - every millisecond of every
+ * gap lands in exactly one of them - which is why this page draws them as one bar and not as three tiles.
+ * Three tiles would let a reader add them up and get something other than the total, and the arithmetic
+ * that failed would be theirs rather than ours.
+ *
+ * `activeUnderMs` and `awayOverMs` are the two boundaries, sent rather than hard-coded here. A share of
+ * "waiting" is meaningless until you know how long a pause has to be to count as waiting, and a number
+ * whose definition is not on the screen gets read as objective. */
+interface Attention {
+  measuredSeconds: number;
+  active: { seconds: number; share: number };
+  waiting: { seconds: number; share: number };
+  away: { seconds: number; share: number };
+  activeUnderMs: number;
+  awayOverMs: number;
+}
+
+/* WHAT WAS ACTUALLY DONE. `moves` is separate from everything else because pointer movement is 86% of all
+ * events on a real account: in one list with the clicks it is not a summary, it is noise. `total` still
+ * counts it, so the parts and the whole agree. */
+interface Actions {
+  moves: number;
+  total: number;
+  byKind: { kind: string; count: number }[];
+  /** By name - "Key Backspace", "Scroll Down" - because the kind says keys were pressed and this says which. */
+  top: { action: string; count: number }[];
+}
+
+/* ONE PROCESS, DONE MORE THAN ONCE. A pattern is the sequence of applications a recording moved through,
+ * consecutive repeats collapsed. `repeated` is the answer to the only question it exists for: did the same
+ * process happen in more than one recording? `once` and `total` are there so a short list can say what it
+ * was cut from without implying the rest were repeats. */
+interface Patterns {
+  repeated: { steps: string; recordings: number }[];
+  /* The repeated ones BEFORE the cap. Separate from `total`, which counts every distinct pattern: the cap
+   * note needs the denominator of the list it cut, and `total` would make eight repeats out of an account
+   * that had eight repeats and twenty singletons. */
+  repeatedTotal?: number;
+  once: number;
+  total: number;
+}
+
+/* WHAT THE THREE BLOCKS ABOVE ARE MADE OF, said out loud.
+ *
+ * They are read from a per-recording digest, and a recording made a minute ago may not have one yet. Then
+ * "45% doing" is the truth about SOME of the recordings, and presenting it as the truth about all of them
+ * would look identical on screen to inventing it. `stale` is how many are still to be summarised.
+ *
+ * `problem` is set when deriving failed outright: the rest of the page is still real, so the page renders,
+ * and this says which part of it to distrust. */
+interface Digest {
+  version: number;
+  derived: number;
+  stale: number;
+  perRequest: number;
+  problem: string | null;
+}
+
 interface Insights {
   ok: true;
   /** timeZone is the zone the day boundaries were cut on - UTC, since that is Neon's. */
@@ -164,6 +227,14 @@ interface Insights {
   byOutcome: OutcomeRow[];
   byDay: DayRow[];
   applications: AppRow[];
+  /* The three behaviour blocks, optional because a deploy where the page is newer than the endpoint is
+   * ordinary and a dashboard that renders an error over a missing section is not. */
+  attention?: Attention;
+  actions?: Actions;
+  patterns?: Patterns;
+  /** The same three for the window before this one, so a share can be compared instead of just read. */
+  previousBehaviour?: { attention?: Attention; actions?: Actions; patterns?: Patterns };
+  digest?: Digest;
   /* Real measured time that cannot be attributed to any application. Its share completes the
    * applications table, which is the only reason the shares there can be read as shares of anything. */
   unattributed?: { seconds: number; share: number; why: string };
@@ -189,6 +260,9 @@ interface Insights {
    * survived one and so cannot work it out for itself. */
   caps?: {
     days: number;
+    /** `steps` is how many applications a pattern is cut to, which is why two long processes can look alike. */
+    patterns?: Cap & { steps: number };
+    actions?: { shown: number; limit: number };
     applications: Cap;
     repeated: Cap;
     slowestSteps: Cap & { minCalls: number };
@@ -265,6 +339,24 @@ export const todayWindow = (): Window => {
   return { kind: 'range', from: startOfDay(now), to: now, label: 'Today' };
 };
 
+/* ONE DAY OF THE CHART, and its boundaries are UTC on purpose.
+ *
+ * Every other window on this page is cut on the reader's own clock, because "today" belongs to them. This
+ * one is not: it comes from a column of the day chart, and that axis is UTC - the endpoint says so in
+ * `window.timeZone`, because date_trunc uses the database's zone and Neon's is UTC. Cutting the drill-down
+ * on local midnight would hand back a different set of runs from the ones the column counted, and the two
+ * numbers would disagree by a few hours' worth with nothing on the screen to explain it.
+ *
+ * The end is clamped to now for the same reason the picker refuses future dates: asking for the rest of
+ * today returns the same rows and labels the window with an hour that has not happened. */
+const dayWindow = (day: string): Window | null => {
+  const start = new Date(`${day}T00:00:00.000Z`);
+  if (!Number.isFinite(+start)) return null;
+  const end = new Date(start.getTime() + 86_400_000 - 1);
+  const now = new Date();
+  return { kind: 'range', from: start, to: end > now ? now : end, label: fmtDay(day) };
+};
+
 const asQuery = (w: Window) => (w.kind === 'days'
   ? `days=${w.days}`
   : `from=${encodeURIComponent(w.from.toISOString())}&to=${encodeURIComponent(w.to.toISOString())}`);
@@ -275,6 +367,53 @@ export type Scope =
   | { kind: 'mine' }
   /** `person` narrows a team view to one of its members; the endpoint checks they are in it. */
   | { kind: 'team'; id: string; person?: string };
+
+/* THE WINDOW, READ BACK OUT OF THE ADDRESS - the same three parameters the endpoint itself accepts, so a
+ * link pasted into a chat opens the numbers the person was looking at rather than the last seven days.
+ *
+ * `days` and `from`/`to` are both understood because both are what `asQuery` writes; an unparseable pair
+ * falls through to the default rather than rendering an error, since a mistyped address is not a failure
+ * of the dashboard. The default is stated in one place - the caller's - so this returns null for "nothing
+ * in the address" instead of inventing a window of its own. */
+const windowFromAddress = (search: string): Window | null => {
+  try {
+    const q = new URLSearchParams(search);
+    const from = q.get('from');
+    const to = q.get('to');
+    if (from && to) {
+      const a = new Date(from);
+      const b = new Date(to);
+      if (Number.isFinite(+a) && Number.isFinite(+b) && b > a) {
+        /* "Today" is recovered rather than re-derived: it is the one label the preset row highlights, and
+         * a window that IS today wearing a date label would leave every preset unpressed. */
+        const now = new Date();
+        const isToday = +a === +startOfDay(now) && b >= startOfDay(now);
+        if (isToday) return { kind: 'range', from: a, to: b, label: 'Today' };
+        /* AND A WHOLE UTC DAY IS RECOVERED TOO, because that is what a column of the day chart writes.
+         *
+         * Without this the same window has two names: "Aug 30" while it is being looked at, and
+         * "30.08 - 31.08" after a reload - since the end of a UTC day falls on the next LOCAL date for
+         * anybody east of Greenwich, and labelFor reads local dates. One window, two labels, and the
+         * reader's only conclusion is that the reload changed something. */
+        /* Starts at UTC midnight and lasts at most a UTC day: that IS one UTC day, whether it runs to
+         * 23:59:59.999 or was clamped to now because the day in question is today. Both are what a column
+         * of the chart writes, and both have to come back with the column's own label. */
+        const wholeUtcDay = a.getUTCHours() === 0 && a.getUTCMinutes() === 0
+          && a.getUTCSeconds() === 0 && a.getUTCMilliseconds() === 0
+          && +b - +a <= 86_400_000;
+        return {
+          kind: 'range',
+          from: a,
+          to: b,
+          label: wholeUtcDay ? fmtDay(a.toISOString().slice(0, 10)) : labelFor(a, b),
+        };
+      }
+    }
+    const days = Number.parseInt(String(q.get('days') || ''), 10);
+    if (Number.isFinite(days) && days > 0) return { kind: 'days', days };
+  } catch (_) { /* an address nobody can parse is a default window, not an error */ }
+  return null;
+};
 
 const asScope = (scope: Scope) => (scope.kind === 'team'
   ? `&team=${encodeURIComponent(scope.id)}${scope.person ? `&person=${encodeURIComponent(scope.person)}` : ''}`
@@ -345,6 +484,26 @@ const asFraction = (value: number): number => {
 };
 
 const pct = (fraction: number) => `${Math.round(fraction * 1000) / 10}%`;
+
+/* 361,241 rather than 361241. Event counts here reach six figures - the account this was measured on has
+ * 424,730 of them - and at that size an unseparated run of digits is read wrong more often than it is read.
+ * The reader's own locale, because the separator is a convention and this page has no business picking one. */
+const fmtCount = (n: number): string => (Number.isFinite(n) ? n.toLocaleString() : '—');
+
+/* A difference between two SHARES, in points and never as a percentage.
+ *
+ * "45% this week against 38% last week" is a difference of seven POINTS, and printing it as "+18%" - which
+ * is what dividing one by the other gives - is the single commonest way a dashboard misleads without
+ * containing a false number. Null rather than nought when there is nothing to compare against, so an empty
+ * previous window shows no delta instead of a confident "no change". */
+const points = (now: number, then: number | null): string | null => {
+  if (then == null || !Number.isFinite(then) || !Number.isFinite(now)) return null;
+  const diff = Math.round((now - then) * 1000) / 10;
+  if (Math.abs(diff) < 0.5) return null;
+  /* "points", spelled the same way the success-rate tile spells it. Two spellings of one unit on one
+   * screen read as two different units. */
+  return `${diff > 0 ? '+' : '−'}${Math.abs(diff)} points`;
+};
 
 /* --------------------------------------------------------------------------- the marks */
 
@@ -469,6 +628,51 @@ const Section = ({
   </section>
 );
 
+/* ONE MEASURED WHOLE, DRAWN AS ONE BAR. Used for the attention split, where the three parts are guaranteed
+ * to add up to the total and drawing them apart would invite a reader to add them up themselves.
+ *
+ * `flexGrow` on the segments rather than a width in percent: the parts then divide exactly the space they
+ * have, so three shares that sum to one cannot leave a sliver of background showing because of rounding.
+ * A part with nothing in it is not drawn - a zero-width segment with a border is a mark that means nothing. */
+const Split = ({
+  parts,
+}: {
+  parts: { key: string; label: string; fill: string; text: string; value: string; share: number; delta?: string | null; note?: string }[];
+}) => {
+  const drawn = parts.filter((p) => p.share > 0);
+  return (
+    <>
+      <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-state-hover" role="img"
+        aria-label={parts.map((p) => `${p.label} ${pct(p.share)}`).join(', ')}
+      >
+        {drawn.map((part) => (
+          <div key={part.key} className={part.fill} style={{ flexGrow: part.share }} />
+        ))}
+      </div>
+      <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-3">
+        {parts.map((part) => (
+          <div key={part.key} className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className={cn('size-2 shrink-0 rounded-full', part.fill)} />
+              <span className="text-[0.76rem] uppercase tracking-wide text-ink-inactive">{part.label}</span>
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2">
+              <strong className={cn('font-semibold text-[1.15rem] tabular-nums leading-tight', part.text)}>
+                {pct(part.share)}
+              </strong>
+              <span className="text-[0.8rem] text-ink-secondary tabular-nums">{part.value}</span>
+              {part.delta && (
+                <span className="text-[0.76rem] font-semibold text-ink-inactive tabular-nums">{part.delta}</span>
+              )}
+            </div>
+            {part.note && <span className="block text-[0.74rem] text-ink-inactive">{part.note}</span>}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+};
+
 const Quiet = ({ children }: { children: ReactNode }) => (
   <Typography variant="p" className="text-ink-inactive text-[0.84rem]">
     {children}
@@ -487,20 +691,43 @@ const CapNote = ({ cap, what }: { cap?: Cap; what: string }) =>
 
 /* One column per day, stacked so the column's height is the run count and its colours are the outcomes.
  * The grey segment is runs minus finished minus failed - stopped, or still going. It is drawn rather than
- * dropped, because a column shorter than its own label would be a lie about how much ran that day. */
-const DayBars = ({ days }: { days: DayRow[] }) => {
+ * dropped, because a column shorter than its own label would be a lie about how much ran that day.
+ *
+ * EVERY COLUMN IS A BUTTON, and that is a drill-down and an accessibility fix in the same change. The
+ * container used to be one `role="img"` with a single label, which made every column's own `title` -
+ * the day, the counts, the agent time - unreachable to a screen reader, since role="img" makes its
+ * children presentational. A button carries that same sentence as its accessible name and can also be
+ * pressed, which is what narrows the whole page to that day.
+ *
+ * `onPick` optional and the fallback a plain div: a column that looks pressable and does nothing is worse
+ * than a column that does not look pressable. */
+const DayBars = ({ days, onPick }: { days: DayRow[]; onPick?: (day: string) => void }) => {
   const tallest = Math.max(1, ...days.map((d) => d.runs));
   return (
-    <div className="flex h-24 items-end gap-px" role="img" aria-label="runs per day">
+    <div className="flex h-24 items-end gap-px">
       {days.map((day) => {
         const other = Math.max(0, day.runs - day.ok - day.failed);
         const height = (day.runs / tallest) * 100;
+        const said = `${fmtDay(day.day)} — ${day.runs} run${day.runs === 1 ? '' : 's'}, ${day.ok} finished, ${day.failed} failed, ${fmtSeconds(day.agentSeconds)} of agent time`;
+        const Column = onPick ? 'button' : 'div';
         return (
-          <div
+          <Column
             key={day.day}
-            className="flex min-w-[2px] flex-1 flex-col justify-end"
+            {...(onPick
+              ? {
+                type: 'button' as const,
+                onClick: () => onPick(day.day),
+                'aria-label': `${said}. Show this day only.`,
+              }
+              : {})}
+            className={cn(
+              'flex min-w-[2px] flex-1 flex-col justify-end',
+              onPick && 'rounded-sm transition-opacity duration-fast hover:opacity-70'
+                + ' focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1'
+                + ' focus-visible:outline-brand-primary',
+            )}
             style={{ height: '100%' }}
-            title={`${fmtDay(day.day)} — ${day.runs} run${day.runs === 1 ? '' : 's'}, ${day.ok} finished, ${day.failed} failed, ${fmtSeconds(day.agentSeconds)} of agent time`}
+            title={said}
           >
             <div className="flex flex-col justify-end rounded-sm overflow-hidden" style={{ height: `${height}%` }}>
               {day.failed > 0 && (
@@ -515,7 +742,7 @@ const DayBars = ({ days }: { days: DayRow[] }) => {
               * clips its own children, so a hairline in there was invisible and a quiet day looked the
               * same as a day the window does not cover. */}
             {day.runs === 0 && <div className="h-px bg-stroke" />}
-          </div>
+          </Column>
         );
       })}
     </div>
@@ -655,8 +882,14 @@ export const InsightsView = () => {
   const opening = asked ? openingQuestion(asked) : undefined;
   const navigate = useNavigate();
   /* 7 days, matching the only preset that remains. It was 30, which stopped being a preset and so would
-   * have opened the page on a range no button was showing as selected. */
-  const [window_, setWindow] = useState<Window>({ kind: 'days', days: 7 });
+   * have opened the page on a range no button was showing as selected.
+   *
+   * And the address wins over that default, for the same reason the team scope does: a slice of this page
+   * is worth sending to somebody, and a link that opens the last seven days instead of the day being
+   * discussed is a link that argues with its own sender. */
+  const [window_, setWindow] = useState<Window>(
+    () => windowFromAddress(window.location.search) ?? { kind: 'days', days: 7 },
+  );
 
   /* WHOSE numbers, kept in the address rather than only in state.
    *
@@ -678,6 +911,13 @@ export const InsightsView = () => {
     }
   });
 
+  /* WHOSE and WHICH WINDOW, both written back. One effect rather than two: they land in the same address,
+   * and two effects racing to replaceState the same URL is how one of them loses its parameter.
+   *
+   * The parameters written are exactly the ones the endpoint reads, so the address is not a second
+   * language - it is the request. `days` and `from`/`to` are mutually exclusive there, so the unused pair
+   * is deleted rather than left behind, or a switch from a custom range back to 7 days would leave the old
+   * dates in the link and reopen the range that was just dismissed. */
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
@@ -685,9 +925,18 @@ export const InsightsView = () => {
       else url.searchParams.delete('team');
       if (scope.kind === 'team' && scope.person) url.searchParams.set('person', scope.person);
       else url.searchParams.delete('person');
+      if (window_.kind === 'days') {
+        url.searchParams.set('days', String(window_.days));
+        url.searchParams.delete('from');
+        url.searchParams.delete('to');
+      } else {
+        url.searchParams.set('from', window_.from.toISOString());
+        url.searchParams.set('to', window_.to.toISOString());
+        url.searchParams.delete('days');
+      }
       window.history.replaceState(null, '', url.toString());
     } catch (_) { /* nothing on this page depends on the address being right */ }
-  }, [scope]);
+  }, [scope, window_]);
 
   /* The teams this person may point the page at: the ones they own or administer, and no others. A member
    * is not offered a switch at all, because the only thing it could do is be refused - and their own
@@ -890,6 +1139,85 @@ export const InsightsView = () => {
    * header never names somebody the endpoint did not actually count. */
   const personShown = teamShown?.person ?? null;
   const personName = personShown ? (personShown.name || personShown.email || 'one member') : null;
+
+  /* ------------------------------------------------------------------ the three behaviour blocks
+   *
+   * Shaped for drawing and nothing more: the shares, the boundaries and the comparison all arrive from the
+   * endpoint, and this turns them into the rows the bar and the legend take. The one piece of arithmetic
+   * here is the SUBTRACTION of two shares, and it is in points - see `points` above for why that is not a
+   * detail.
+   *
+   * Null when there is no measured time at all. A three-part bar of noughts is a bar that says a working
+   * day was zero seconds long, which is not what "no recordings in this window" means. */
+  const attention = data?.attention;
+  const prevAttention = data?.previousBehaviour?.attention;
+  const spent = useMemo(() => {
+    if (!attention || !(attention.measuredSeconds > 0)) return null;
+    const secs = (ms: number) => Math.round(ms / 1000);
+    const mins = (ms: number) => Math.round(ms / 60000);
+    /* The two boundaries in words, under the numbers they decide. A share of "waiting" is not readable
+     * until the reader knows how long a pause has to be before it counts as waiting. */
+    const under = `${secs(attention.activeUnderMs)}s`;
+    const over = `${mins(attention.awayOverMs)} min`;
+    return [
+      {
+        key: 'active',
+        label: 'doing',
+        fill: 'bg-brand-primary',
+        text: 'text-brand-primary',
+        value: fmtSeconds(attention.active.seconds),
+        share: asFraction(attention.active.share),
+        delta: points(asFraction(attention.active.share),
+          prevAttention ? asFraction(prevAttention.active.share) : null),
+        note: `pauses under ${under} count as inside an action`,
+      },
+      {
+        key: 'waiting',
+        label: 'waiting or reading',
+        fill: 'bg-fb-attention',
+        text: 'text-fb-attention',
+        value: fmtSeconds(attention.waiting.seconds),
+        share: asFraction(attention.waiting.share),
+        delta: points(asFraction(attention.waiting.share),
+          prevAttention ? asFraction(prevAttention.waiting.share) : null),
+        note: `between ${under} and ${over} of nothing happening`,
+      },
+      {
+        /* Grey, the same grey the applications table gives to time it cannot place - because this is the
+         * same kind of thing: measured, real, and not work. */
+        key: 'away',
+        label: 'away from the machine',
+        fill: 'bg-ink-inactive/45',
+        text: 'text-ink-secondary',
+        value: fmtSeconds(attention.away.seconds),
+        share: asFraction(attention.away.share),
+        delta: points(asFraction(attention.away.share),
+          prevAttention ? asFraction(prevAttention.away.share) : null),
+        note: `pauses over ${over}`,
+      },
+    ];
+  }, [attention, prevAttention]);
+
+  /* WHAT WAS PRESSED, with movement held out of the ranking and stated on its own.
+   *
+   * `tallest` is the largest kind EXCLUDING movement, because movement is 86% of events: measured against
+   * it every other bar is a hairline, and a chart where nothing is comparable is a chart nobody reads. */
+  const doing = useMemo(() => {
+    const a = data?.actions;
+    if (!a || !(a.total > 0)) return null;
+    const kinds = list(a.byKind).filter((k) => (num(k.count) ?? 0) > 0);
+    const tallest = Math.max(1, ...kinds.map((k) => num(k.count) ?? 0));
+    const top = list(a.top).filter((t) => (num(t.count) ?? 0) > 0);
+    const loudest = Math.max(1, ...top.map((t) => num(t.count) ?? 0));
+    return {
+      total: a.total,
+      moves: num(a.moves) ?? 0,
+      /* The share movement takes of everything, said once here rather than left for the reader to divide. */
+      moveShare: a.total > 0 ? (num(a.moves) ?? 0) / a.total : 0,
+      kinds: kinds.map((k) => ({ ...k, of: (num(k.count) ?? 0) / tallest })),
+      top: top.map((t) => ({ ...t, of: (num(t.count) ?? 0) / loudest })),
+    };
+  }, [data?.actions]);
 
   /* The agent time already spent on goals that ran more than once. Not a saving - see the tile. */
   const repeatCost = useMemo(
@@ -1155,7 +1483,28 @@ export const InsightsView = () => {
             <>
               {/* ------------------------------------------------------- the summary, first */}
               <section className="rounded-xl border-stroke border bg-surface-card p-4">
-                <div className="grid grid-cols-[minmax(0,1fr)] gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+                {/* Six, in two rows of three: what there is, then how it went. Three-up rather than
+                  * six-up because a tile is a number and a label and a note, and six of those across a
+                  * 1280px page leaves every note wrapping to three lines.
+                  *
+                  * EVERY ONE OF THEM IS THIS WINDOW, not all time, and each says so in its own note. The
+                  * page has one window and one scope; a lifetime total sitting in the same row as a
+                  * seven-day count is the tile somebody screenshots and misreads. */}
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+                  <Tile
+                    icon={<Film className="size-3.5" />}
+                    label="recordings"
+                    value={String(totals?.recordings ?? 0)}
+                    note="made in this window"
+                    title="Recordings whose creation date falls inside this window. A recording made earlier and edited now counts here, because the stored creation date is nullable and the endpoint places such a flow by when it was last written rather than dropping it."
+                  />
+                  <Tile
+                    icon={<Sparkles className="size-3.5" />}
+                    label="skills made"
+                    value={String(totals?.createdSkills ?? 0)}
+                    note="written from a goal, not recorded"
+                    title="Flows of kind 'created' — the ones written from a described goal in Create. Recordings are the tile beside this one; nothing is counted in both."
+                  />
                   <Tile
                     icon={<Timer className="size-3.5" />}
                     label="agent runs"
@@ -1333,7 +1682,16 @@ export const InsightsView = () => {
                   <Quiet>No runs fell inside this window.</Quiet>
                 ) : (
                   <>
-                    <DayBars days={byDay} />
+                    {/* A column narrows the whole page to that day - and to the column own UTC day
+                      * rather than to local midnight, so the window holds exactly the runs the column
+                      * counted. See dayWindow for why that asymmetry is the honest one. */}
+                    <DayBars
+                      days={byDay}
+                      onPick={(day) => {
+                        const only = dayWindow(day);
+                        if (only) setWindow(only);
+                      }}
+                    />
                     <Sparkline values={byDay.map((day) => day.agentSeconds)} />
                     <div className="mt-1 flex justify-between text-[0.76rem] text-ink-inactive">
                       <span>{fmtDay(byDay[0]?.day ?? '')}</span>
@@ -1342,6 +1700,142 @@ export const InsightsView = () => {
                   </>
                 )}
               </Section>
+
+              {/* ----------------------------------------- how the time went, and what was done
+                *
+                * Both read from the per-recording digests rather than from the runs, which is why they can
+                * be empty while the rest of the page is full: a window with runs but no RECORDINGS has
+                * nothing to summarise, and the empty state says that rather than "no data".
+                *
+                * Side by side because they are one question in two halves - how the time was spent, and
+                * what it was spent doing - and one under the other puts a screen between them. */}
+              {(spent || doing) && (
+                <div className="grid grid-cols-[minmax(0,1fr)] gap-4 xl:grid-cols-2">
+                  <Section
+                    title="How the time was spent"
+                    icon={<Hourglass className="size-4 text-ink-secondary" />}
+                    badge={attention ? fmtSeconds(attention.measuredSeconds) : null}
+                    badgeTitle="Every second inside a recording in this window. The three parts below add up to exactly this, by construction — each gap between two events falls into one of them and no other."
+                    note="Measured from the gaps between events inside your recordings. Not a working day: the hours when nothing was being recorded are stored nowhere, so this is the shape of the time that WAS captured."
+                  >
+                    {!spent ? (
+                      <Quiet>No recording in this window has been summarised yet.</Quiet>
+                    ) : (
+                      <>
+                        <Split parts={spent} />
+                        {/* The comparison, named rather than implied: a delta beside a share is unreadable
+                          * until the reader knows what it is a delta against. */}
+                        <Typography variant="p" className="mt-3 max-w-[70ch] text-ink-inactive text-[0.76rem]">
+                          {prevAttention && prevAttention.measuredSeconds > 0
+                            ? `Points are the change against the ${data.window.days === 1 ? 'day' : `${data.window.days} days`} before this window, which held ${fmtSeconds(prevAttention.measuredSeconds)} of recorded time.`
+                            : 'Nothing was recorded in the window before this one, so there is nothing to compare these shares with.'}
+                        </Typography>
+                        {/* WHAT THESE THREE BLOCKS ARE MADE OF. Printed once, and it says it covers all
+                          * three - the same sentence under each would read as three separate problems.
+                          *
+                          * A recording made a minute ago may not be summarised yet, and then these shares
+                          * are the truth about SOME of the window. On screen that looks exactly like the
+                          * truth about all of it, which is why the count is on the page and not in a log. */}
+                        {data.digest?.problem ? (
+                          <Typography variant="p" className="mt-1.5 max-w-[70ch] text-fb-red-text text-[0.76rem]">
+                            This block and the two beside it could not be brought up to date: {data.digest.problem}
+                          </Typography>
+                        ) : data.digest && data.digest.stale > 0 ? (
+                          <Typography variant="p" className="mt-1.5 max-w-[70ch] text-ink-inactive text-[0.76rem]">
+                            {data.digest.stale} recording{data.digest.stale === 1 ? ' is' : 's are'} not
+                            summarised yet, so this block, the actions beside it and the repeated processes
+                            below cover the rest. Up to {data.digest.perRequest} are caught up on each visit,
+                            so refreshing finishes it.
+                          </Typography>
+                        ) : null}
+                      </>
+                    )}
+                  </Section>
+
+                  {/* --------------------------------------------------------- what was done */}
+                  <Section
+                    title="What was actually done"
+                    icon={<MousePointerClick className="size-4 text-ink-secondary" />}
+                    /* No badge. Section renders one shrink-0 and deliberately so - a figure that wraps
+                      * beside a heading is worse than none - and "138,310 events" is not a figure that
+                      * fits beside a heading in the 236px this screen gets in the extension's panel. The
+                      * total is the first thing in the body instead, where the share of it that is
+                      * pointer movement can stand next to it. */
+                    note="By kind, and then the individual actions by name. Typed text is never stored — a key press is recorded as which key, so this can say how often Backspace was pressed and can never say what was written."
+                  >
+                    {!doing ? (
+                      <Quiet>No recording in this window has been summarised yet.</Quiet>
+                    ) : (
+                      <>
+                        {/* Movement first and on its own, because it is most of the total and belongs in
+                          * NEITHER list: ranked with the clicks it buries them, dropped from the total it
+                          * makes the parts disagree with the whole. */}
+                        <Typography variant="p" className="mb-2.5 text-ink-secondary text-[0.8rem]">
+                          <strong className="font-semibold text-ink-primary tabular-nums">{fmtCount(doing.total)}</strong>{' '}
+                          events, of which{' '}
+                          <strong className="font-semibold text-ink-primary tabular-nums">{fmtCount(doing.moves)}</strong>{' '}
+                          were the pointer moving — {pct(doing.moveShare)} of everything, and left out of both
+                          lists below.
+                        </Typography>
+
+                        {doing.kinds.length === 0 ? (
+                          <Quiet>Nothing but pointer movement was recorded here.</Quiet>
+                        ) : (
+                          <ul className="space-y-1.5">
+                            {doing.kinds.map((kind) => (
+                              /* Fixed label and count columns ABOVE md only, and no bar at all below it.
+                                * 5.5rem + 4.5rem is 160px of unshrinkable width, and this screen is handed
+                                * 236px in the extension's side panel - the width that has already put a
+                                * sideways scrollbar under this dashboard once. Down there the name and the
+                                * number are the whole of the information; twenty pixels of bar are not. */
+                              <li key={kind.kind} className="flex items-center gap-2">
+                                <span className="min-w-0 flex-1 truncate text-[0.82rem] text-ink-primary md:w-[5.5rem] md:flex-none">
+                                  {kind.kind}
+                                </span>
+                                <span className="hidden min-w-0 flex-1 md:block">
+                                  <Meter fraction={kind.of} fill="bg-brand-primary" />
+                                </span>
+                                <span className="shrink-0 text-right text-[0.78rem] text-ink-secondary tabular-nums md:w-[4.5rem]">
+                                  {fmtCount(kind.count)}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+
+                        {doing.top.length > 0 && (
+                          <>
+                            <Typography variant="span" className="mt-3.5 block text-[0.72rem] uppercase tracking-wide text-ink-inactive">
+                              the individual actions
+                            </Typography>
+                            <ul className="mt-1.5 space-y-1.5">
+                              {doing.top.map((row) => (
+                                <li key={row.action} className="flex items-center gap-2">
+                                  <span className="min-w-0 flex-1 truncate text-[0.82rem] text-ink-primary" title={row.action}>
+                                    {row.action}
+                                  </span>
+                                  <span className="hidden min-w-0 flex-1 md:block">
+                                    <Meter fraction={row.of} fill="bg-fb-attention" />
+                                  </span>
+                                  <span className="shrink-0 text-right text-[0.78rem] text-ink-secondary tabular-nums md:w-[4.5rem]">
+                                    {fmtCount(row.count)}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                            {data.caps?.actions && data.caps.actions.shown >= data.caps.actions.limit && (
+                              <Typography variant="p" className="mt-2.5 text-ink-inactive text-[0.76rem]">
+                                The {data.caps.actions.limit} commonest, per recording. The tail on a busy
+                                account is one press each.
+                              </Typography>
+                            )}
+                          </>
+                        )}
+                      </>
+                    )}
+                  </Section>
+                </div>
+              )}
 
               {/* ------------------------------------------- what wants a decision, next */}
               <div className="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-2">
@@ -1449,6 +1943,78 @@ export const InsightsView = () => {
                   <CapNote cap={data.caps?.failures} what="reasons" />
                 </Section>
               </div>
+
+              {/* --------------------------------------------- one process, done more than once
+                *
+                * "Worth automating" above asks this of the RUNS: a goal an agent was given twice. This asks
+                * it of the RECORDINGS, which is the earlier half of the same question - work being done by
+                * hand more than once, before anybody has written a skill for it. A pattern is the sequence
+                * of applications a recording moved through, consecutive repeats collapsed.
+                *
+                * ONLY THE REPEATS ARE LISTED. A pattern seen once is a recording, not a finding, and a list
+                * where one line in ten means something teaches people to skip the list. How many were seen
+                * once is still said, so a short list is not read as "nothing else happened".
+                *
+                * WHAT IT DOES NOT CLAIM. Two recordings with the same sequence of applications are not
+                * necessarily the same task - the same three applications in the same order can be two
+                * different jobs - which is why this offers a candidate to look at rather than a saving to
+                * count. The heading says "look alike" for that reason. */}
+              {data.patterns && data.patterns.total > 0 && (
+                <Section
+                  title="Processes that look alike"
+                  icon={<Route className="size-4 text-brand-primary" />}
+                  badge={data.patterns.repeated.length ? `${data.patterns.repeated.length} repeated` : null}
+                  badgeTitle="Sequences of applications that appear in more than one recording. A candidate to turn into a skill, not a measured saving."
+                  note="The applications a recording moved through, in order, with runs of the same application collapsed. Two recordings sharing a sequence is the sign that a process was done by hand twice — it is not proof they were the same task."
+                >
+                  {data.patterns.repeated.length === 0 ? (
+                    <Quiet>
+                      {data.patterns.total === 1
+                        ? 'One recording here, so nothing can repeat yet.'
+                        : `${data.patterns.total} recordings, and no two moved through the same applications in the same order.`}
+                    </Quiet>
+                  ) : (
+                    <>
+                      <ul className="space-y-2">
+                        {data.patterns.repeated.map((row) => (
+                          <li
+                            key={row.steps}
+                            className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border-stroke border bg-surface-chips px-3 py-2"
+                          >
+                            {/* The arrows are drawn rather than left as the endpoint own "->", so the
+                              * sequence reads as a path and wraps at a step instead of mid-arrow. */}
+                            {/* A MINIMUM WIDTH, and it is what makes the wrap work at all. `flex-1` is
+                              * `flex: 1 1 0%`, so the path shrinks to nothing before the row ever runs out
+                              * of space and the unshrinkable count beside it simply hangs over the edge.
+                              * With a floor on the path, the count is what wraps - onto its own line, which
+                              * is the readable answer in a narrow panel. */}
+                            <span className="flex min-w-[9rem] flex-1 flex-wrap items-center gap-x-1.5 gap-y-1">
+                              {row.steps.split('->').map((step, i) => (
+                                <span key={`${row.steps}:${i}`} className="flex items-center gap-1.5">
+                                  {i > 0 && <ArrowRight className="size-3 shrink-0 text-ink-inactive" />}
+                                  <span className="text-[0.85rem] text-ink-primary">{step.trim()}</span>
+                                </span>
+                              ))}
+                            </span>
+                            <span className="shrink-0 rounded-full bg-brand-primary/15 px-2 py-0.5 text-[0.72rem] font-semibold text-brand-primary tabular-nums">
+                              {row.recordings} recordings
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      <Typography variant="p" className="mt-2.5 max-w-[74ch] text-ink-inactive text-[0.76rem]">
+                        {data.patterns.once > 0
+                          ? `${data.patterns.once} other ${data.patterns.once === 1 ? 'sequence appeared' : 'sequences appeared'} once each and are left out.`
+                          : 'Every sequence in this window appeared more than once.'}
+                        {data.caps?.patterns
+                          ? ` A sequence is cut to ${data.caps.patterns.steps} steps, so two long processes that begin alike are counted as one.`
+                          : ''}
+                      </Typography>
+                      <CapNote cap={data.caps?.patterns} what="repeated sequences" />
+                    </>
+                  )}
+                </Section>
+              )}
 
               {/* Two halves of one question, side by side: where the time went, and what was slow while
                 * it went. One under the other puts a screen and a half between them, and comparing them is

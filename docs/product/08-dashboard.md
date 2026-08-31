@@ -25,7 +25,8 @@ derived in the browser.*
 
 | Control | Behaviour |
 |---|---|
-| **Today / 7 days / Custom** | The range. A control, not a filter buried in a menu — it is the first thing anyone changes. 30 and 90 were presets and were removed: three presets plus a calendar is four controls answering one question, and a quarter of runs is a range you pick with real dates. Custom still reaches the server cap of 365. |
+| **Today / 7 days / Custom** | The range. A control, not a filter buried in a menu — it is the first thing anyone changes. 30 and 90 were presets and were removed: three presets plus a calendar is four controls answering one question, and a quarter of runs is a range you pick with real dates. Custom still reaches the server cap of 365. **The window is in the address** (`?days=7`, or `?from=…&to=…`) — the same three parameters the endpoint itself reads, so a link is the request and not a second language. |
+| **A column of the day chart** | Narrows the whole page to that day. The window it writes is cut on **UTC** midnight, not local: that axis is UTC because `date_trunc` uses the database's zone, and cutting the drill-down locally would hand back a different set of runs from the ones the column counted, with nothing on the screen to explain the difference. Each column is a real `button` carrying the day, the counts and the agent time as its accessible name — it used to be one `role="img"` for the whole chart, which made every column's own label unreachable to a screen reader. |
 | **Refresh** | Re-reads the window. |
 | **Ask about this** | Brings the assistant panel back. It is only shown when there is no other way in: the panel carries its own minimise and close, and minimised it leaves a rail on the right edge. The state is remembered (`mouseflow.insights.assistant`: `open`, `min` or `closed`), and so is its width. |
 | **Mine / a team** | Whose numbers. Only shown to somebody who owns or administers a team; see [Whose numbers](#whose-numbers). |
@@ -109,8 +110,16 @@ the other, the Dashboard and a transcript will report different durations for th
 will look authoritative:
 
 - **`EVENT_GAP_MAX_MS` = 120 s.** A longer gap inside a recording is somebody away from the machine, not
-  time in an application. The part beyond it is **dropped**, not bucketed, and how much was dropped is
-  reported — so the drop is visible rather than quietly flattering.
+  time in an application. In the per-application split the part beyond it is **dropped**, not bucketed, and
+  how much was dropped is reported — so the drop is visible rather than quietly flattering. In *How the
+  time was spent* the same threshold is the boundary above which a pause is **away from the machine**, which
+  is why it now has exactly one definition (`api/_digest.mjs`) that `api/insights.js` imports: two copies of
+  it would let the applications table and the attention split disagree about the same two minutes.
+- **`ACTIVE_MAX_MS` = 5 s.** The boundary between doing and waiting, and **chosen rather than measured** —
+  worth saying, because it decides a headline share. Under five seconds a pause is inside an action (reading
+  a label, aiming); over it, between two actions. Two seconds would call half of ordinary work waiting; ten
+  would hide reading an email. Measured consequence on the live account, so the choice can be argued with:
+  45% doing, 25% waiting, 29% away, out of 20.9 hours.
 - **`RUN_MAX_SECONDS` = 12 h.** A longer run is two machines' clocks disagreeing, not a run.
 
 Anything that cannot be attributed to a named application goes in **one** bucket and is reported. Spreading
@@ -123,8 +132,11 @@ things that want a decision, then the flat tables.
 
 | Section | Holds |
 |---|---|
-| **Header cards** | Runs, and how they ended. Success rate = finished ÷ (finished + failed) — stopped and still-running are left out of **both** halves. Agent hours (wall clock). Recordings and created skills. A comparison against the previous window of the same length, which states whether there *was* one rather than inferring it from a zero. |
-| **Activity by day** | Runs per day, with the finished/failed split. Bars, scaled to the tallest day. |
+| **Header cards** | Six, in two rows of three: **recordings**, **skills made** and runs; then success rate, agent time and the count worth automating. Success rate = finished ÷ (finished + failed) — stopped and still-running are left out of **both** halves. Every one of them is *this window*, not all time, and each says so in its own note: a lifetime total in the same row as a seven-day count is the tile somebody screenshots and misreads. The comparison against the previous window states whether there *was* one rather than inferring it from a zero. |
+| **Activity by day** | Runs per day, with the finished/failed split. Bars, scaled to the tallest day. Each bar is also the drill-down into that day — see Controls. |
+| **How the time was spent** | The measured time inside recordings, split three ways: **doing**, **waiting or reading**, **away from the machine**. One bar rather than three tiles, because the three parts add up to the whole by construction and drawing them apart invites a reader to add them up and get something else. Both boundaries are printed under the numbers they decide — a share of "waiting" is unreadable until you know how long a pause has to be to count. The comparison with the previous window is in **points**, never as a percentage: 46% against 38% is eight points, and "+18%" is the commonest way a dashboard misleads without containing a false number. |
+| **What was actually done** | Events by kind, then the individual actions by name — `Key Backspace`, `Scroll Down`. Pointer movement is held out of both lists and stated on its own line: it is 86% of all events, and ranked beside the clicks it buries them. Typed text is never stored, so this can say how often Backspace was pressed and can never say what was written. |
+| **Processes that look alike** | The sequence of applications a recording moved through, consecutive repeats collapsed, listing only the sequences that appear in **more than one** recording. This is *Worth automating* asked of the recordings instead of the runs — work being done by hand twice, before anybody has written a skill for it. It claims a candidate, not a saving: the same three applications in the same order can be two different jobs, which is why the heading says *look alike*. |
 | **Worth automating** | Goals that ran more than once in the window, with the times and what those runs took. **Not a saving** — the tooltip says so, and so does the gaps list. Matching is on identical goal text (see the limit below). |
 | **What went wrong** | Failure reasons, grouped, with how often and an example run. |
 | **Where the time went** | Per application (or per origin for browser flows): recordings, runs, seconds and share. Plus the **unattributed** slice as a named row with its own explanation, so the shares add to one and a dataset where most time cannot be placed *looks* like one. |
@@ -134,7 +146,21 @@ things that want a decision, then the flat tables.
 
 Every list is capped and **every cap is reported with the total it was cut from**, so the page can say "top
 12 of 34" instead of implying it is everything: applications 12, repeated 10, slowest steps 10, failures 10,
-skills 20.
+skills 20, repeated sequences 8, individual actions 10.
+
+The denominator has to be the list the cap actually cut, which is subtler than it sounds: the patterns cap
+reports the number of **repeated** sequences, not the number of distinct ones. Reporting the latter would
+have the page print "showing the top 8 of 28 repeated sequences" on an account with eight repeats and twenty
+one-offs — a true number in a false sentence, with nothing on the screen to give it away. One cap merges
+rather than truncates and is named for that reason: a sequence is cut to **8 steps**, so two long processes
+that begin alike are counted as one.
+
+**Where the three behaviour blocks come from.** Not from the runs — from one derived row per recording
+(`flow_digest`, see [15 — Data model](15-data-model.md)). A recording made a minute ago may not have one
+yet, and then "46% doing" is the truth about *some* of the window, which looks identical on screen to the
+truth about all of it. So the count of recordings still to be summarised is **on the page**, once, saying it
+covers all three blocks; and if deriving fails outright the blocks say so in the endpoint's own words while
+the rest of the page carries on.
 
 ![Activity, the work worth automating, and what went wrong](../img/dashboard-sections.png)
 

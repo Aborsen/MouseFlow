@@ -122,6 +122,51 @@ An extension run's steps carry a per-step `ms` and the page each acted on, which
 timing anywhere in the schema**. A desktop run's steps carry `{ tool, input }` and no timing at all — which is
 why "where did the time go inside a desktop run" is in the Dashboard's gaps rather than on its chart.
 
+## `flow_digest` — what a recording amounts to, derived once
+
+`db/014_flow_digest.sql`, derived by `api/_digest.mjs`
+
+**A measurement, not a preference.** `/api/insights` used to answer by unnesting every event of every
+recording in the window. On the live account that is 44 recordings, 421,883 events and 28.5 MB of payload:
+2880 ms for the per-application query alone, and a second scan for the behaviour block added 1700 more. The
+cost is linear in recordings, so at 200 it is around thirteen seconds — and the inputs change only when a
+recording is written, which is the textbook case for deriving once and keeping the answer. Measured after:
+**60 ms instead of 1700**, and 44 rows occupy **32 KB against 28.5 MB**.
+
+**Not a second copy of the recording.** There is no event in here, no window title, no control name — counts,
+durations, and one sequence of application names, which is what the Dashboard already showed. Keeping the
+privacy rules in one place is the reason: a table added for speed that also held content would put them in
+two.
+
+| Column | Notes |
+|---|---|
+| `user_id`, `client_id` | composite primary key — **the same key `user_flow` uses**, because a client id is generated on the machine that made the recording and is unique to a person, not to the table |
+| `version` | **which formula produced this row.** The thresholds are chosen rather than discovered and will be argued with; bumping this re-derives every row on the next read, with no migration and no backfill script. A cache with no version needs a person to remember to clear it, which is the same as having no way to change the formula |
+| `events` | |
+| `active_ms`, `waiting_ms`, `away_ms` | three parts of one measured time, and they **add up to it by construction**: every millisecond of every gap lands in exactly one of them. `numeric`, because the source is a sum over hundreds of thousands of rows |
+| `by_kind` | jsonb — `{"click": 5125, "key": 23493, "move": 361241, …}`. Pointer movement is a key like any other here and is separated by the *reader*: 86% of events are movement, and a writer that dropped it would make `events` disagree with the sum of its own parts |
+| `top_actions` | jsonb — `[{"action": "Key Backspace", "n": 3631}, …]`, movement excluded, the tail cut. The kind says keys were pressed; the action says which |
+| `apps` | jsonb — where the time went **inside this recording**. The Dashboard's own per-application query keeps its own scan: it also attributes agent step time and handles the one-name-for-a-whole-recording case, and reproducing that here would be a second derivation of the same number |
+| `pattern` | text — `chrome -> explorer -> chrome`, consecutive repeats collapsed, capped at a few steps. The question is whether one process repeated, not what the recording contains |
+| `derived_at` | |
+
+### Staleness is a fact, not a hope
+
+A digest is recomputed when it is **missing**, **behind `version`**, or **older than the recording it
+describes**. The third case is the one that matters: a recording can be *edited* — `api/transcript.js` and
+the assistant's `remove_steps` both rewrite `user_flow.payload` — so without comparing `derived_at` against
+`updated_at`, the Dashboard would keep reporting steps somebody had deleted.
+
+Bringing rows up to date happens **before** the read-only transaction (it writes, so it cannot be inside
+one) and in a bounded portion, `TOP_UP_MAX` = 20, so a first read on an account with hundreds of recordings
+does not pay for all of them at once. A 44-recording account converged in three requests — 2423 ms, 357, 63
+— and then never runs again. Failure here does not break the page: the response carries `digest.stale`, and
+the Dashboard prints how many recordings its behaviour blocks do *not* cover.
+
+One join direction is load-bearing: the upsert joins **from the stale rows**, not from the aggregates. A
+recording with no events has no row in any grouping, and joining the other way would leave it stale for
+ever — recomputed on every request and never satisfying the counter.
+
 ## `run_queue` — work asked for in one place and done in another
 
 `db/007_run_queue.sql`, plus `db/010_run_queue_loop.sql`

@@ -290,6 +290,17 @@ These are not bugs and no amount of work inside the current design removes them.
 
 ---
 
+### The Dashboard drills into time, and not yet into anything else
+
+A slice of the Dashboard lives in the address and can be sent to somebody: the window, as `?days=7` or
+`?from=…&to=…`, and a column of the day chart writes one day into it. That is the whole of the drill-down
+today. **There is no `?app=chrome`** — narrowing every number on the page to one application would mean
+threading a filter through ten separate queries, and the honest question underneath it has not been answered
+yet: a run whose steps carry no page belongs to no application, so "runs in Chrome" is a definition before it
+is an implementation, and a filter that silently dropped those runs would report a smaller, confident,
+wrong number. `Where the time went` and `Processes that look alike` name the applications; nothing yet
+narrows the page to one.
+
 ## Not verified
 
 "It works" and "it was tested" are different claims, and this section keeps them apart.

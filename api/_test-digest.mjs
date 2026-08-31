@@ -25,6 +25,12 @@ const read = (p) => readFileSync(join(here, p), 'utf8').replace(/\r\n/g, '\n');
 const digest = read('_digest.mjs');
 const insights = read('insights.js');
 const migration = readFileSync(join(here, '..', 'db', '014_flow_digest.sql'), 'utf8');
+/* Читаются из web/ по той же причине, по которой этот файл читает db/: посчитанное поле, которого никто
+ * не показывает, - это не готовая работа, а фикстура, спорящая с собой, учит страницу рисовать состояние,
+ * которого не бывает. */
+const outside = (...parts) => readFileSync(join(here, '..', ...parts), 'utf8').replace(/\r\n/g, '\n');
+const page = outside('web', 'src', 'features', 'insights', 'InsightsView.tsx');
+const fixture = outside('web', 'src', 'dev', 'mock-api.ts');
 
 group('одно определение каждого порога');
 {
@@ -114,6 +120,112 @@ group('таблица не становится второй копией зап
     /version\s+integer\s+not null/.test(migration) && /derived_at\s+timestamptz/.test(migration));
   check('и ключ тот же, что у user_flow',
     /primary key \(user_id, client_id\)/.test(migration));
+}
+
+group('дашборд показывает то, что посчитал');
+{
+  /* Поле, которое отдаёт маршрут и не читает страница, - это работа, законченная на девяносто процентов
+   * и выглядящая как законченная целиком. Проверяется чтение КАЖДОГО из четырёх, а не наличие раздела:
+   * раздел можно оставить, потеряв в нём одно поле, и на экране это будет просто пустое место. */
+  for (const field of ['attention', 'actions', 'patterns', 'previousBehaviour', 'digest']) {
+    check('страница читает ' + field,
+      new RegExp('data(\\?)?\\.' + field + '\\b').test(page)
+        || new RegExp('data\\.' + field + '\\?').test(page), field);
+  }
+  /* Устаревшие записи названы вслух. «Делал 45%» по половине записей выглядит на экране точно так же, как
+   * по всем, и это единственное место, где число на дашборде может быть частичной правдой. */
+  check('и говорит, сколько записей ещё не разобрано',
+    /digest\.stale > 0/.test(page) && /not\n?\s*summarised yet/.test(page));
+  check('и отказ дайджеста показывается, а не проглатывается',
+    /digest\?\.problem \?/.test(page));
+  /* Разница долей - в ПУНКТАХ, и одним словом на всю страницу. Плитка успеха печатает «points»; второе
+   * написание той же единицы рядом читается как другая единица. */
+  check('разница долей считается в пунктах, а не в процентах',
+    /\$\{Math\.abs\(diff\)\} points`/.test(page) && !/\} pts`/.test(page));
+  /* Срез живёт в адресе - то же правило, что уже действует для команды. Иначе его нельзя ни переслать,
+   * ни вернуть перезагрузкой. */
+  check('окно живёт в адресе в обе стороны',
+    /const windowFromAddress = /.test(page)
+      && /windowFromAddress\(window\.location\.search\)/.test(page)
+      && /url\.searchParams\.set\('from', window_\.from\.toISOString\(\)\)/.test(page));
+  check('и взаимоисключающие параметры не остаются вдвоём',
+    /url\.searchParams\.delete\('days'\)/.test(page)
+      && /url\.searchParams\.delete\('from'\)/.test(page));
+  /* Столбик графика режется по UTC, потому что по UTC его и посчитали. Местная полночь вернула бы другой
+   * набор запусков, чем тот, который столбик показывал. */
+  check('провал в день режется по UTC, как и сама ось',
+    /T00:00:00\.000Z/.test(page) && /const dayWindow = /.test(page));
+}
+
+group('порог описывает тот список, который обрезал');
+{
+  /* `total` - это ВСЕ узоры, включая одиночные, а `shown` - повторные. Один как знаменатель другого дал бы
+   * «показаны 8 из 28 повторных» там, где повторных восемь: число верное, фраза ложная, и по экрану этого
+   * не видно. */
+  check('знаменатель у узоров - повторные, а не все',
+    /total: behaviourNow\.patterns\.repeatedTotal/.test(insights)
+      && !/patterns: \{ shown: behaviourNow\.patterns\.repeated\.length, total: behaviourNow\.patterns\.total/
+        .test(insights));
+  check('и он посчитан до обрезки',
+    /const repeatedAll = patternRows\.filter\(\(p\) => p\.recordings > 1\);/.test(insights)
+      && /repeated: repeatedAll\.slice\(0, PATTERNS_MAX\)/.test(insights)
+      && /repeatedTotal: repeatedAll\.length/.test(insights));
+}
+
+group('фикстура не противоречит сама себе');
+{
+  /* У этого файла своё правило, записанное в нём же: доли складываются в единицу, столбцы дней дают итог.
+   * Три новых блока живут по тому же правилу, и проверяется оно арифметикой, а не комментарием. */
+  const blockOf = (name) => {
+    const i = fixture.indexOf('      ' + name + ': {');
+    return i < 0 ? '' : fixture.slice(i, fixture.indexOf('\n      },', i));
+  };
+  const nums = (body, re) => [...body.matchAll(re)].map((m) => Number(m[1]));
+
+  for (const [what, body] of [['внимание', blockOf('attention')],
+    ['прошлое внимание', blockOf('previousBehaviour')]]) {
+    const measured = Number((body.match(/measuredSeconds: (\d+)/) || [])[1]);
+    const parts = nums(body, /seconds: (\d+), share:/g);
+    const shares = nums(body, /share: ([\d.]+) \}/g);
+    check(what + ': части складываются в измеренное время',
+      parts.length === 3 && parts.reduce((a, b) => a + b, 0) === measured,
+      parts.join('+') + ' vs ' + measured);
+    check(what + ': доли складываются в единицу',
+      shares.length === 3 && Math.abs(shares.reduce((a, b) => a + b, 0) - 1) < 1e-9, shares.join('+'));
+  }
+
+  const acts = blockOf('actions');
+  const moves = Number((acts.match(/moves: (\d+)/) || [])[1]);
+  const total = Number((acts.match(/total: (\d+)/) || [])[1]);
+  const kinds = new Map([...acts.matchAll(/kind: '(\w+)', count: (\d+)/g)].map((m) => [m[1], Number(m[2])]));
+  const named = new Map([...acts.matchAll(/action: '([^']+)', count: (\d+)/g)].map((m) => [m[1], Number(m[2])]));
+  check('действия: движение плюс рода дают итог',
+    moves + [...kinds.values()].reduce((a, b) => a + b, 0) === total,
+    moves + '+' + [...kinds.values()].reduce((a, b) => a + b, 0) + ' vs ' + total);
+  /* Имя не может быть больше своего рода: страница рисует список имён против списка родов, и имя,
+   * переросшее род, было бы столбиком длиннее шкалы. */
+  check('действия: имена не перерастают свой род',
+    named.get('Key Down') + named.get('Key Backspace') === kinds.get('key')
+      && named.get('Scroll Down') + named.get('Scroll Up') === kinds.get('scroll')
+      && named.get('Left Click Down') + named.get('Left Click Release') === kinds.get('click'));
+
+  const pat = blockOf('patterns');
+  const repeatedTotal = Number((pat.match(/repeatedTotal: (\d+)/) || [])[1]);
+  const onceSeen = Number((pat.match(/once: (\d+)/) || [])[1]);
+  const allSeen = Number((pat.match(/total: (\d+)/) || [])[1]);
+  check('узоры: повторные плюс одиночные дают все',
+    repeatedTotal + onceSeen === allSeen, repeatedTotal + '+' + onceSeen + ' vs ' + allSeen);
+  check('узоры: перечислено ровно столько, сколько повторных',
+    [...pat.matchAll(/steps: '/g)].length === repeatedTotal);
+  /* Не ноль нарочно - по той же причине, по которой в этом файле есть команда, существующая чтобы её
+   * отказали: фикстура, где всё полно, никогда не покажет фразу о неполноте. */
+  check('и в фикстуре есть неразобранные записи, иначе эта фраза не рисуется никогда',
+    /digest: \{ version: \d+, derived: \d+, stale: [1-9]/.test(fixture));
+  /* Окно, о котором спросили, и окно, о котором ответили, - одно окно. Иначе кнопка говорит «Aug 30», а
+   * строка под ней «24 авг - 31 авг», и страница спорит сама с собой. */
+  check('и фикстура отвечает тем окном, о котором спросили',
+    /window: \{ days, from, to, timeZone: 'UTC' \}/.test(fixture)
+      && /const ranged = /.test(fixture));
 }
 
 /* ------------------------------------------------------------------ капканы, а не дайджест */

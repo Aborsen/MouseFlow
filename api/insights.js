@@ -1037,8 +1037,18 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
      * и тот же процесс делался несколько раз? Больше одной записи на узор - кандидат в скилл. */
     const patternRows = of('pattern').map((r) => ({ steps: r.label, recordings: num(r.n) }))
       .sort((a, b) => b.recordings - a.recordings || String(a.steps).localeCompare(String(b.steps)));
+    /* Counted BEFORE the cap, and reported separately from `total`.
+     *
+     * `total` is every distinct pattern and `repeated` is the ones seen more than once - two different
+     * lists, and the cap belongs to the second. Sending only `total` as the cap's denominator would have
+     * the page print "showing the top 8 of 28 repeated sequences" on an account with eight repeats and
+     * twenty singletons: a true number, a false sentence, and no way to tell from the screen.
+     *
+     * once + repeatedTotal = total, by construction - a pattern is seen once or more than once. */
+    const repeatedAll = patternRows.filter((p) => p.recordings > 1);
     const patterns = {
-      repeated: patternRows.filter((p) => p.recordings > 1).slice(0, PATTERNS_MAX),
+      repeated: repeatedAll.slice(0, PATTERNS_MAX),
+      repeatedTotal: repeatedAll.length,
       once: patternRows.filter((p) => p.recordings === 1).length,
       total: patternRows.length,
     };
@@ -1097,7 +1107,11 @@ async function gather(sql, ids, fromIso, toIso, wantPeople, peopleIds) {
     gaps: gapsFor(t, idleSeconds),
     caps: {
       days: DAYS_MAX,
-      patterns: { shown: behaviourNow.patterns.repeated.length, total: behaviourNow.patterns.total,
+      /* The denominator is the repeated ones, which is the list `shown` came out of. `steps` is here
+       * because it is the cap that can MERGE two findings rather than cut one: two long processes that
+       * begin with the same eight applications are counted as one pattern, and that is not visible from
+       * the rows themselves. */
+      patterns: { shown: behaviourNow.patterns.repeated.length, total: behaviourNow.patterns.repeatedTotal,
         limit: PATTERNS_MAX, steps: PATTERN_STEPS },
       actions: { shown: behaviourNow.actions.top.length, limit: TOP_ACTIONS },
       applications: { shown: applications.length, total: appGroups, limit: APPS_MAX },
