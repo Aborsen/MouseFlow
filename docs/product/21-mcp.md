@@ -182,8 +182,8 @@ complaint.
 |---|---|---|
 | `mouseflow_help` | `question`: what the person wants to know · `page`: a page id, to read one whole | The sections of the documentation that answer it, each with the page it is on and that page's address. With neither argument, the list of pages. |
 
-**It reads mouseflow.ai, it does not carry a copy.** The site emits every documentation page as markdown at
-[`/docs/llms.json`](https://mouseflow.ai/docs/llms.json) — `scripts/prerender.mjs` in the `MouseLanding`
+**It reads the site, it does not carry a copy.** The site emits every documentation page as markdown at
+[`/docs/llms.json`](https://mouse-flow.vercel.app/docs/llms.json) — `scripts/prerender.mjs` in the `MouseLanding`
 repository — and `api/_help.mjs` fetches that, caching it for ten minutes. The convenient alternative was a
 copy of the same prose in this repository, and the reason against it is the reason the whole product argues
 for evidence: a copy drifts, and two texts disagreeing about what MouseFlow records is worse than one text

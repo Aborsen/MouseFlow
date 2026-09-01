@@ -69,7 +69,7 @@ export const MCP_TOOLS: McpTool[] = [
   {
     name: 'mouseflow_help',
     group: 'read',
-    what: 'The documentation itself, fetched from mouseflow.ai/docs, so an assistant answers "what does '
+    what: 'The documentation itself, fetched from mouse-flow.vercel.app/docs, so an assistant answers "what does '
       + 'MouseFlow record?" out of the page rather than out of memory. Needs no account, no agent and no '
       + 'data of yours.',
     args: 'question: what you want to know · page: a page id, to read one whole',

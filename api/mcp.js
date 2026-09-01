@@ -316,7 +316,7 @@ const DO_TOOL = {
  * It reads the site's own pages - see api/_help.mjs for why it is fetched rather than copied in here. */
 const HELP_TOOL = {
   name: 'mouseflow_help',
-  description: 'The MouseFlow documentation itself, fetched from mouseflow.ai/docs. Use it to answer any '
+  description: 'The MouseFlow documentation itself, fetched from mouse-flow.vercel.app/docs. Use it to answer any '
     + 'question about how MouseFlow works - what the recorder captures and what it never captures, skills '
     + 'and how they differ, the agent, the extension, teams, privacy, limits - INSTEAD of answering from '
     + 'memory. Ask a question to get the sections that answer it, name a page to read it whole, or call it '

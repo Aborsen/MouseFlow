@@ -7,7 +7,7 @@
  * is never captured, which half can replay what. A tool that returns the actual page is the difference
  * between an answer and a plausible one.
  *
- * WHERE THE TEXT COMES FROM, and this is the whole design: https://mouseflow.ai/docs, fetched. The site
+ * WHERE THE TEXT COMES FROM, and this is the whole design: https://mouse-flow.vercel.app/docs, fetched. The site
  * emits every page as markdown at /docs/llms.json (see scripts/prerender.mjs in the MouseLanding repo), and
  * this reads that. It is not the convenient choice - it is a network call, and a second system that can be
  * down - but the alternative is a copy of the same prose kept in this repository, and a copy drifts. Two
@@ -19,8 +19,12 @@
  * paraphrasing the docs on the way through is one more place for the answer to stop being true.
  */
 
-/** Where the corpus lives. Overridable so a deploy can point at its own build of the site. */
-export const DOCS_URL = process.env.MOUSEFLOW_DOCS_URL || 'https://mouseflow.ai/docs/llms.json';
+/* Where the corpus lives.
+ *
+ * The host is the site's own deployment, and it is written here as one constant because it is the thing
+ * most likely to change - the site is on a Vercel address today and will be on a domain later. Overridable
+ * with MOUSEFLOW_DOCS_URL so a deploy can point at its own build without waiting for this file. */
+export const DOCS_URL = process.env.MOUSEFLOW_DOCS_URL || 'https://mouse-flow.vercel.app/docs/llms.json';
 
 /* Ten minutes. The docs change when somebody deploys the site, which is not often; a serverless instance
  * lives for minutes anyway, so this is about not fetching the corpus again for every question in one
@@ -75,7 +79,13 @@ const STRIP_FRONTMATTER = /^---\n[\s\S]*?\n---\n/;
  * которого и был задан вопрос. Мелкий раздел и находится точнее, и влезает целиком.
  */
 export function sectionsOf(page) {
-  const body = String((page && page.markdown) || '').replace(STRIP_FRONTMATTER, '').trim();
+  const body = String((page && page.markdown) || '')
+    .replace(STRIP_FRONTMATTER, '')
+    /* Картинки выбрасываются. Ответ здесь читает модель, а строка «![Step one: ...](/docs/x.png)» несёт
+     * ей относительный путь, который никуда не ведёт, и подпись, повторяющую соседний абзац. На самой
+     * странице картинка на месте - за ней и дан адрес. */
+    .replace(/^!\[[^\]]*\]\([^)]*\)\s*$/gm, '')
+    .trim();
   const out = [];
   const head = (part) => {
     const nl = part.indexOf('\n');
@@ -207,7 +217,7 @@ export function answerText(corpus, question) {
 export async function help({ question = '', page = '' } = {}, options = {}) {
   const { corpus, why } = await readDocs(options);
   if (!corpus) {
-    return `${why} MouseFlow's documentation is at https://mouseflow.ai/docs and can be read there. `
+    return `${why} MouseFlow's documentation is at https://mouse-flow.vercel.app/docs and can be read there. `
       + 'Nothing about how the product works is answered from memory here, deliberately: an answer that was '
       + 'not read out of the documentation is a guess, and the questions people ask first are the ones '
       + 'about what is and is not recorded.';

@@ -4359,11 +4359,11 @@ group('вопрос о продукте отвечается страницей 
   /* Форма ровно та, которую сайт печатает в dist/docs/llms.json - см. scripts/prerender.mjs в MouseLanding.
    * Фикстура, которая лишь похожа на настоящий ответ, проверяет фикстуру. */
   const CORPUS = {
-    site: 'https://mouseflow.ai',
+    site: 'https://mouse-flow.vercel.app',
     pages: [
       {
         id: 'record-a-flow', slug: 'record-a-flow', path: '/docs/record-a-flow',
-        url: 'https://mouseflow.ai/docs/record-a-flow', title: 'Record a flow',
+        url: 'https://mouse-flow.vercel.app/docs/record-a-flow', title: 'Record a flow',
         description: 'What the recorder captures, and what it never captures.',
         markdown: '---\ntitle: Record a flow\n---\n\nThe lead-in, before any heading.\n\n'
           + '## What is captured\n\nEvery click, drag and scroll. What is never captured: which key you '
@@ -4371,7 +4371,7 @@ group('вопрос о продукте отвечается страницей 
           + '## Where a recording goes\n\nInto this browser as a draft and straight onto your account.\n',
       },
       {
-        id: 'skills', slug: 'skills', path: '/docs/skills', url: 'https://mouseflow.ai/docs/skills',
+        id: 'skills', slug: 'skills', path: '/docs/skills', url: 'https://mouse-flow.vercel.app/docs/skills',
         title: 'Skills', description: 'A recording you keep becomes a skill.',
         markdown: '## Making one\n\nPress Skill on a row and the wizard opens. It asks what was typed and '
           + 'what was picked.\n\n## The library\n\nEvery skill on your account, from both halves.\n',
@@ -4396,6 +4396,10 @@ group('вопрос о продукте отвечается страницей 
   const sections = helpMod.sectionsOf(CORPUS.pages[0]);
   check('вступление до первого заголовка не теряется',
     sections.length === 3 && sections[0].heading === '' && sections[0].text.includes('The lead-in'));
+  /* Картинку модель прочитать не может, а путь в ней относительный и никуда не ведёт. */
+  check('и картинки в ответ не уезжают - там от них только путь в никуда',
+    !helpMod.sectionsOf({ markdown: '## X\n\n![Step one](/docs/a.png)\n\nThe text.\n' })
+      .some((one) => one.text.includes('/docs/a.png')));
   check('а frontmatter в ответ не уезжает',
     !sections.map((one) => one.text).join(' ').includes('title: Record a flow'));
   check('заголовки - в порядке страницы',
@@ -4426,7 +4430,7 @@ group('вопрос о продукте отвечается страницей 
   check('в ответе - настоящий текст страницы, дословно',
     answer.includes('What is never captured: which key you pressed'));
   check('и адрес страницы, чтобы ответ можно было проверить, а не только прочитать',
-    answer.includes('https://mouseflow.ai/docs/record-a-flow'));
+    answer.includes('https://mouse-flow.vercel.app/docs/record-a-flow'));
 
   /* ---- страница целиком, по id и по slug ---- */
   check('страницу можно прочитать целиком по её id',
@@ -4458,7 +4462,7 @@ group('вопрос о продукте отвечается страницей 
   check('недоступная дока - это сказанная причина, а не молчание',
     said.includes('could not be read'));
   check('и адрес, по которому её прочитает человек',
-    said.includes('https://mouseflow.ai/docs'));
+    said.includes('https://mouse-flow.vercel.app/docs'));
   /* САМОЕ ВАЖНОЕ ЗДЕСЬ: не пересказать по памяти. Ответ, не прочитанный из доки, - это догадка, и первым
    * же вопросом бывает «что оно записывает», где догадка стоит дороже отсутствия ответа. */
   check('и ни одного утверждения о продукте из головы',

@@ -147,7 +147,7 @@ const STOP_TOOL = {
  * assistant with no way to look that up answers anyway, and gets the load-bearing parts wrong. */
 const HELP_TOOL = {
   name: 'mouseflow_help',
-  description: 'The MouseFlow documentation itself, fetched from mouseflow.ai/docs. Use it to answer any '
+  description: 'The MouseFlow documentation itself, fetched from mouse-flow.vercel.app/docs. Use it to answer any '
     + 'question about how MouseFlow works - what the recorder captures and what it never captures, skills '
     + 'and how they differ, the agent, the extension, privacy, limits - INSTEAD of answering from memory. '
     + 'Ask a question to get the sections that answer it, name a page to read it whole, or call it with '
