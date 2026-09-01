@@ -120,11 +120,20 @@ success until the day it is needed - and `--list` reads the bucket too. Leave *A
 unchecked (nothing here calls S3 `ListBuckets`; listing objects *inside* a bucket is a different right), and
 leave *Duration* empty - a key that expires turns a daily backup into a silent one.
 
-**Two traps that each cost a failed run:**
+**Three traps that each cost a failed run:**
+
+- **A bucket name with capitals cannot be addressed the usual way.** B2 lets you create `MouseFlow`; the
+  normal S3 address puts the name into the *hostname*, and hostnames are case-insensitive, so every request
+  comes back `NoSuchBucket` while the bucket plainly exists. The script detects a name that is not DNS-safe
+  and switches to path-style (`https://<endpoint>/<bucket>/<key>`), which keeps the case - B2 and R2 both
+  support it. A new bucket is still better named in lowercase; an existing one cannot be renamed.
 
 - **The account master key does not work with the S3-compatible API at all.** It answers
   `InvalidAccessKeyId`, which reads like a typo rather than a category error. Use *Add a New Application Key*.
-- **`keyID` and the key itself are two different values.** `BACKUP_S3_KEY_ID` wants the short one.
+- **`keyID` and the key itself are two different values.** `BACKUP_S3_KEY_ID` wants the short one. And they
+  must come from **the same** key: the keyID stays visible in the list forever while the key is shown once,
+  so pairing a fresh keyID with last attempt's key is the easy mistake. It answers `SignatureDoesNotMatch`,
+  which reads like a region problem and is not one.
 
 **A key that cannot delete is worth having, and the web interface cannot make one** - it offers only Read and
 Write / Read Only / Write Only. Granular capabilities need the CLI:
