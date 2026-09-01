@@ -72,8 +72,12 @@ export const SessionStrip = ({ sessions, onView, onForget }: {
                   </Typography>
                   <span className="truncate text-[0.76rem] text-ink-inactive tabular-nums">
                     {totals.parts} part{totals.parts === 1 ? '' : 's'} · {fmtMs(totals.ms)} ·{' '}
-                    {totals.events} events · {totals.clicks} click{totals.clicks === 1 ? '' : 's'} · a part
-                    every {session.everyMinutes} min
+                    {totals.events} events · {totals.clicks} click{totals.clicks === 1 ? '' : 's'} ·{' '}
+                    {/* Сессия, собранная постфактум из слишком большой записи, резалась не по часам - см.
+                        partsToFit. «a part every null min» была бы подписью, которую никто не выбирал. */}
+                    {session.everyMinutes === null
+                      ? 'cut to fit'
+                      : `a part every ${session.everyMinutes} min`}
                   </span>
                 </span>
 

@@ -4507,6 +4507,54 @@ group('вопрос о продукте отвечается страницей 
     /INSTEAD of answering from\s+'\s*\+\s*'memory/.test(mcpRoute) || /INSTEAD of answering from/.test(mcpRoute));
 }
 
+/* ---------------------------------------------------------------- ЗАПИСЬ, НЕ ВЛЕЗШАЯ ОДНОЙ СТРОКОЙ
+ *
+ * Живой случай: пять часов работы, 154 975 событий, и аккаунт отказал - «unpacks to more than 7813KB».
+ * События остались только в памяти вкладки, а кнопка «Put it back on my account» повторяла ту же отправку и
+ * получала тот же ответ - то есть повторяла то, что не сработало по причине, которая не изменится.
+ *
+ * Проверяется здесь, а не глазами по .tsx, потому что арифметика нарезки - это арифметика: сколько выйдет
+ * частей, влезает ли каждая в потолок api/_payload.mjs, не теряется ли последнее событие и не удвоятся ли
+ * строки при втором нажатии кнопки. */
+group('слишком большая запись уезжает частями, а не отказом по второму разу');
+{
+  const src = read('../web/src/features/record/long-session.ts');
+  const view = read('../web/src/features/record/RecordView.tsx');
+  const { PAYLOAD_MAX_BYTES } = await import('../api/_payload.mjs');
+
+  check('цель части меньше потолка аккаунта, с запасом на обёртку',
+    /export const FIT_TARGET_BYTES = 6_000_000/.test(src) && PAYLOAD_MAX_BYTES === 8_000_000);
+
+  /* Тот же расчёт, что в partsToFit: вес МЕРЯЕТСЯ, а не берётся из константы «69 байт на событие» - на этой
+   * записи выходит ~52, и оценка соврала бы в полтора раза. */
+  const perPart = (events, bytes, target) => Math.max(500, Math.floor(events * (target / Math.max(bytes, 1))));
+  const real = perPart(154_975, 8_100_000, 6_000_000);
+  const parts = Math.ceil(154_975 / real);
+  check('пять часов режутся, и каждая часть влезает в потолок',
+    parts >= 2 && (8_100_000 / 154_975) * real < PAYLOAD_MAX_BYTES,
+    `по ${real} событий, частей ${parts}`);
+  check('и ни одно событие не пропадает - последняя часть короче, а не отброшена',
+    parts * real >= 154_975);
+
+  /* Запись, которая влезает, по-прежнему едет одной строкой: резать то, что и так проходит, значило бы
+   * менять форму данных без причины. */
+  check('а обычная запись частями не едет',
+    view.includes('const fits = JSON.stringify(rec.events).length <= FIT_TARGET_BYTES')
+      && view.includes('if (fits) {'));
+  check('id частей детерминированные - второе нажатие перезапишет те же строки',
+    src.includes('id: `${rec.id}-p${n}`'));
+  check('часть - это запись, а не роль своего вида: её читает та же расшифровка',
+    src.includes('role: RECORDING_ROLE'));
+
+  /* Сессия, собранная постфактум, часов не имела - и не притворяется, что имела. */
+  check('нарезка по размеру не выдаёт себя за нарезку по времени',
+    src.includes('everyMinutes: null') && src.includes('everyMinutes: ChunkMinutes | null'));
+  check('и полоса сессий говорит это словами, а не «every null min»',
+    read('../web/src/features/record/SessionStrip.tsx').includes('cut to fit'));
+  check('человеку сказано, что запись стала частями, и сколько их',
+    view.includes('is on your account as ${flows.length} parts'));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
  * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has

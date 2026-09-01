@@ -83,9 +83,14 @@ export interface Session {
   startedAt: string;
   /** Null while it is still running. */
   endedAt: string | null;
-  everyMinutes: ChunkMinutes;
-  /** What the agent was sampling the pointer at, so a thin recording can say why it is thin. */
-  moveMs: number;
+  /* Null when the cuts were NOT by the clock.
+   *
+   * A session can also be assembled after the fact: a recording made as ONE recording that the account
+   * refuses - over PAYLOAD_MAX_BYTES - is cut into parts by SIZE, and claiming "a part every 30 min" about
+   * it would be a number nobody chose. See `partsToFit`. */
+  everyMinutes: ChunkMinutes | null;
+  /** What the agent was sampling the pointer at, so a thin recording can say why it is thin. Null: unknown. */
+  moveMs: number | null;
   parts: SessionPart[];
 }
 
@@ -115,10 +120,12 @@ export const partHeader = (text: string): { n: number | null; elapsedMs: number 
 /** Is it time to cut? Time OR size, whichever arrives first. */
 export const shouldCut = (
   { sinceLastCutMs, eventsBuffered, everyMinutes }:
-  { sinceLastCutMs: number; eventsBuffered: number; everyMinutes: ChunkMinutes },
+  { sinceLastCutMs: number; eventsBuffered: number; everyMinutes: ChunkMinutes | null },
 ): 'clock' | 'size' | null => {
   if (eventsBuffered >= EVENTS_MAX_PER_PART) return 'size';
-  if (sinceLastCutMs >= everyMinutes * 60_000) return 'clock';
+  /* Без интервала режет только размер: у сессии, собранной постфактум (partsToFit), часов не было, и
+   * притворяться, что был, значило бы резать живую запись по числу, которого никто не выбирал. */
+  if (everyMinutes !== null && sinceLastCutMs >= everyMinutes * 60_000) return 'clock';
   return null;
 };
 
@@ -255,3 +262,65 @@ export const partRecording = (
   events,
   windows,
 });
+
+/* ------------------------------------------------------------------ уже записанное, но не влезшее */
+
+/* Целевой вес одной части, РАЗВЁРНУТЫЙ. Потолок аккаунта 8МБ (api/_payload.mjs); шесть оставляют место
+ * обёртке - имени, окнам, флагам рекордера - и запас на то, что вес события в разных записях разный. */
+export const FIT_TARGET_BYTES = 6_000_000;
+
+/* ЗАПИСЬ, КОТОРАЯ НЕ ВЛЕЗЛА ОДНОЙ СТРОКОЙ, - в части того же вида.
+ *
+ * Живой случай: пять часов работы, 154 975 событий, и аккаунт отказал - «unpacks to more than 7813KB».
+ * События остались в памяти браузера (в localStorage они тоже не влезли), то есть пять часов держались
+ * открытой вкладкой. «Put it back on my account» повторял ту же отправку и упирался в тот же потолок.
+ *
+ * ПОЧЕМУ НЕ ПОДНЯТЬ ПОТОЛОК. Он и так поднят до 8МБ по замерам, и следующая запись, которая в него не
+ * влезет, будет просто длиннее. Резать - это то, что продукт уже умеет: длинные сессии режутся на части, и
+ * расшифровка, скиллы и дашборд читают части как обычные записи. Здесь то же самое, только резка не по
+ * часам, а по размеру - и постфактум.
+ *
+ * РАЗМЕР МЕРЯЕТСЯ, А НЕ БЕРЁТСЯ ИЗ ГОЛОВЫ. В long-session.ts стоит 69 байт на событие - оценка по прежним
+ * записям, и на этой она бы соврала: 8МБ на 155k событий это ~52 байта. Поэтому события сериализуются один
+ * раз, и число событий в части считается из ИХ веса, а не из константы.
+ *
+ * ID ЧАСТЕЙ ДЕТЕРМИНИРОВАННЫЕ - `<id записи>-p1`, `-p2`, ... Повторное нажатие кнопки перезапишет те же
+ * строки (api/sync.js делает upsert), а не создаст второй набор: кнопка, которую нажали дважды, не должна
+ * удваивать пять часов работы.
+ */
+export function partsToFit(
+  { rec, events, health, target = FIT_TARGET_BYTES }: {
+    rec: Pick<Recording, 'id' | 'name' | 'created' | 'startedAt' | 'windows'>;
+    events: RecordedEvent[];
+    health: AgentHealth | null;
+    target?: number;
+  },
+): { session: Session; flows: ReturnType<typeof partFlow>[]; perPart: number; bytes: number } {
+  const bytes = JSON.stringify(events).length;
+  const perPart = Math.max(500, Math.floor(events.length * (target / Math.max(bytes, 1))));
+
+  const session: Session = {
+    id: `fit_${rec.id}`,
+    startedAt: rec.startedAt ?? rec.created,
+    endedAt: rec.created,
+    /* Не по часам - см. заметку выше. */
+    everyMinutes: null,
+    /* Чем сэмплировался указатель, эта запись не сообщает: её делали как одну, без прореживания. */
+    moveMs: null,
+    parts: [],
+  };
+
+  const flows: ReturnType<typeof partFlow>[] = [];
+  let atMs = 0;
+  let n = 1;
+  for (let i = 0; i < events.length; i += perPart) {
+    const slice = events.slice(i, i + perPart);
+    const name = `${rec.name} · part ${n}`;
+    const part = ledgerEntry({ id: `${rec.id}-p${n}`, n, name, events: slice, atMs, onAccount: false });
+    session.parts.push(part);
+    flows.push(partFlow({ part, session, name, events: slice, windows: rec.windows ?? [], health }));
+    atMs += part.ms;
+    n += 1;
+  }
+  return { session, flows, perPart, bytes };
+}

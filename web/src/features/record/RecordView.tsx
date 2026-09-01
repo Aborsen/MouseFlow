@@ -40,7 +40,8 @@ import { hasSkillFor } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { SessionStrip } from './SessionStrip';
 import {
-  CHUNK_CHOICES, type ChunkMinutes, EVENTS_MAX_PER_PART, LONG_MOVE_MS, PENDING_MAX_EVENTS, type Session,
+  CHUNK_CHOICES, type ChunkMinutes, EVENTS_MAX_PER_PART, FIT_TARGET_BYTES, LONG_MOVE_MS, partsToFit,
+  PENDING_MAX_EVENTS, type Session,
   ledgerEntry, partFlow, partHeader, partName, sessionOf, shouldCut,
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
@@ -1047,8 +1048,27 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     if (!rec) throw new Error('this browser no longer holds that recording, so there is nothing to put back');
     const mine = claim([rec.id]);
     try {
-      const saved = await push({ flows: [flowFor(rec, health)] });
-      if (saved.problems.length) throw new Error(saved.problems.join('; '));
+      /* СЛИШКОМ БОЛЬШАЯ ЕДЕТ ЧАСТЯМИ, а не отказом по второму разу.
+       *
+       * Живой случай: пять часов, 154 975 событий, аккаунт отвечает «unpacks to more than 7813KB» - и эта
+       * кнопка повторяла ту же отправку и получала тот же ответ. Повторять то, что уже не сработало по
+       * причине, которая не изменится, - это не «попробовать ещё раз», это отнимать время.
+       *
+       * Резать продукт уже умеет: длинные сессии режутся на части, и расшифровка со скиллами читают части
+       * как обычные записи. partsToFit делает то же самое постфактум, по размеру. Части получают
+       * детерминированные id, поэтому второе нажатие перезапишет те же строки, а не удвоит пять часов. */
+      const fits = JSON.stringify(rec.events).length <= FIT_TARGET_BYTES;
+      if (fits) {
+        const saved = await push({ flows: [flowFor(rec, health)] });
+        if (saved.problems.length) throw new Error(saved.problems.join('; '));
+      } else {
+        const { flows, perPart, bytes } = partsToFit({ rec, events: rec.events, health });
+        const saved = await push({ flows });
+        if (saved.problems.length) throw new Error(saved.problems.join('; '));
+        setNote(`"${rec.name}" is ${(bytes / 1024 / 1024).toFixed(1)}MB of events — more than one row holds, `
+          + `so it is on your account as ${flows.length} parts of about ${perPart} events each. `
+          + 'Each part has its own transcript, and a skill can be made from any of them.');
+      }
       await reload();
     } finally {
       release(mine);
