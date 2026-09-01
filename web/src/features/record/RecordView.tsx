@@ -1023,9 +1023,23 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     if (!made.length) return;
     const mine = claim(made.map((rec) => rec.id));
     try {
-      const saved = await push({ flows: made.map((rec) => flowFor(rec, health)) });
+      /* ТОТ ЖЕ ПОТОЛОК, ЧТО И У ОСТАНОВКИ, и та же нарезка.
+       *
+       * Файл, выгруженный из записи, которая не влезла одной строкой, при импорте не влезет тоже - причина
+       * в весе событий, а не в том, каким путём они пришли. Ровно это и произошло: человек экспортировал
+       * пять часов, импортировал обратно и получил тот же отказ. Экспорт-импорт как способ спасти запись
+       * работает только если то, что импортировано, умеет уехать частями. */
+      const flows = made.flatMap((rec) => (
+        JSON.stringify(rec.events).length <= FIT_TARGET_BYTES
+          ? [flowFor(rec, health)]
+          : partsToFit({ rec, events: rec.events, health }).flows));
+      const cut = flows.length - made.length;
+      const saved = await push({ flows });
       if (saved.problems.length) {
         setNote(`Imported ${added}, but the account refused ${saved.problems.length}: ${saved.problems.join('; ')}`);
+      } else if (cut > 0) {
+        setNote(`Imported ${added}. One was too big for a single row, so it is on your account as `
+          + `${flows.length - (made.length - 1)} parts — each with its own transcript.`);
       }
       await reload();
     } catch (err) {

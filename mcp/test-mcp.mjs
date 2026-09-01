@@ -4553,6 +4553,13 @@ group('слишком большая запись уезжает частями,
     read('../web/src/features/record/SessionStrip.tsx').includes('cut to fit'));
   check('человеку сказано, что запись стала частями, и сколько их',
     view.includes('is on your account as ${flows.length} parts'));
+  /* И ИМПОРТ ТОЖЕ. Экспорт-импорт - это то, чем спасают запись, которую аккаунт отверг; если импорт грузит
+   * её одной строкой, спасение упирается в тот же потолок, что и остановка. Ровно так и вышло на живом
+   * случае: файл выгрузили, импортировали обратно, получили тот же отказ. */
+  check('импорт тоже режет слишком большой файл, а не упирается в тот же потолок',
+    view.includes('partsToFit({ rec, events: rec.events, health }).flows'));
+  check('и говорит, что импортированное стало частями',
+    view.includes('too big for a single row'));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
