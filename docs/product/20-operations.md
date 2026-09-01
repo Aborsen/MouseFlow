@@ -96,6 +96,8 @@ days is a few hundred megabytes - inside every free object-storage tier there is
 node scripts/backup.mjs                 # dump → encrypt → bucket → verify
 node scripts/backup.mjs --local         # dump to this folder, no bucket (before a migration)
 node scripts/backup.mjs --list          # what the bucket holds
+node scripts/backup.mjs --whoami        # what Backblaze says this key is for, instead of guessing
+BACKUP_AGE_IDENTITY=…/backup-key.txt   node scripts/backup.mjs --restore-check   # read the newest backup back
 ```
 
 Daily at 02:17 UTC by `.github/workflows/backup.yml`, and by hand from the Actions tab.
@@ -185,6 +187,19 @@ pg_restore --dbname "<target connection string>" --no-owner --no-privileges --cl
 **Restore into a fresh Neon branch, never over the live one**, until you have looked at what came back. A
 branch is free, and the difference between "the backup is fine" and "the backup was fine" is which database
 you found out on.
+
+**`--restore-check` is the rehearsal, and it touches no database.** It takes the newest object, checks it is
+an age file, decrypts it with **your** private key - which is why it is a local command and not a CI step;
+the job that writes backups must not be able to read them - and runs `pg_restore --list`, which reads the
+dump's table of contents and writes nothing anywhere. Then it deletes both temporary files, because they are
+the live account's real data. If the dump were truncated or corrupt, this is where it would say so.
+
+**`--whoami` exists because four runs in a row were spent guessing.** S3 errors deliberately do not
+distinguish "wrong bucket name" from "key issued for another bucket" - telling them apart would confirm the
+existence of other people's buckets. So this asks B2's native API instead: which bucket the key is bound to,
+its capabilities, its name prefix, and the account's real S3 endpoint. All three suspects at once, from the
+source. It is also a workflow step, with `continue-on-error`, so one run yields both that and the upload's
+own answer.
 
 > [!IMPORTANT]
 > **A backup nobody has restored is not a backup.** Same argument as the check nobody has watched fail: the

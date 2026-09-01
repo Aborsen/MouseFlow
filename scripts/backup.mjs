@@ -31,10 +31,12 @@
  *   node scripts/backup.mjs --local         только локально, без ведра
  *   node scripts/backup.mjs --plaintext     без шифрования (только с --local, и только руками)
  *   node scripts/backup.mjs --list          что лежит в ведре
+ *   node scripts/backup.mjs --whoami        что Backblaze говорит про этот ключ - вместо догадок
+ *   node scripts/backup.mjs --restore-check самый свежий бэкап скачать и прочитать pg_restore
  *
  * Переменные: DATABASE_URL, BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, BACKUP_S3_KEY_ID, BACKUP_S3_APP_KEY,
- * BACKUP_AGE_RECIPIENT и необязательный AGE_BIN. Читаются из окружения или из .env.local, который уже лежит рядом после
- * `vercel env pull`.
+ * BACKUP_AGE_RECIPIENT, необязательные AGE_BIN и BACKUP_AGE_IDENTITY (для --restore-check). Читаются из
+ * окружения или из .env.local, который уже лежит рядом после `vercel env pull`.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
@@ -317,6 +319,85 @@ if (has('--list')) {
     say(`${(Number(size) / 1024 / 1024).toFixed(2).padStart(7)} MB  ${when}  ${key}`);
   }
   say(`\n${keys.length} файл(ов).`);
+  process.exit(0);
+}
+
+/* ------------------------------------------------------------------ репетиция восстановления
+ *
+ * ТО, ЧТО ОТЛИЧАЕТ БЭКАП ОТ ФАЙЛА. Успешная выгрузка говорит, что байты доехали; она не говорит, что из них
+ * что-то восстановится. Пока никто не развернул ни один дамп, всё это - надежда, и ровно тем же доводом
+ * написана проверка обещаний рядом: проверка, которую никто не видел падающей, ничего не проверяет.
+ *
+ * НЕ ТРОГАЕТ НИ ОДНУ БАЗУ. `pg_restore --list` читает оглавление дампа и печатает, что в нём лежит - это
+ * доказывает, что файл целый и его понимает восстановитель, и при этом никуда ничего не пишет. Полное
+ * восстановление в свежую ветку Neon - следующий шаг, и он описан в 20-operations; здесь то, что можно
+ * сделать за минуту и без риска.
+ *
+ * ПРИВАТНЫЙ КЛЮЧ ОСТАЁТСЯ У ЧЕЛОВЕКА. Расшифровать может только тот, у кого он есть, поэтому это локальная
+ * команда, а не шаг в CI: задача, которая делает бэкапы, читать их не должна - на этом построено всё
+ * шифрование здесь. Без ключа проверяется меньшее: что объект на месте, что он не пуст и что это
+ * действительно файл age.
+ *
+ *   BACKUP_AGE_IDENTITY=путь/к/backup-key.txt node scripts/backup.mjs --restore-check
+ */
+if (has('--restore-check')) {
+  if (!BUCKET || !KEY_ID) die('Нужны BACKUP_S3_BUCKET, BACKUP_S3_KEY_ID, BACKUP_S3_APP_KEY.');
+  const xml = s3('GET', '?list-type=2&prefix=mouseflow%2F&max-keys=1000');
+  const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map((m) => m[1]).sort();
+  if (!keys.length) die('В ведре нет ни одного бэкапа - проверять нечего.');
+  const newest = keys[keys.length - 1];
+  say(`Самый свежий: ${newest}`);
+
+  const got = join(work, 'check.age');
+  s3('GET', newest, { out: got });
+  const size = statSync(got).size;
+  if (!size) die('Скачался пустой файл - в ведре лежит ноль байт.');
+  const head = readFileSync(got).subarray(0, 22).toString('latin1');
+  if (!head.startsWith('age-encryption.org/')) {
+    die(`Это не файл age: начинается с «${head.slice(0, 20)}». Ключ шифрования тут не поможет - `
+      + 'выгружено что-то другое.');
+  }
+  say(`скачан: ${(size / 1024 / 1024).toFixed(2)} MB, и это файл age`);
+
+  const identity = conf('BACKUP_AGE_IDENTITY');
+  if (!identity) {
+    unlinkSync(got);
+    say('\nДальше нужен ПРИВАТНЫЙ ключ, которого в CI нет и быть не должно:');
+    say('  BACKUP_AGE_IDENTITY=путь/к/backup-key.txt node scripts/backup.mjs --restore-check');
+    say('Тогда дамп будет расшифрован и прочитан pg_restore --list - без записи в какую-либо базу.');
+    process.exit(0);
+  }
+  if (!existsSync(identity)) die(`Файла с ключом нет: ${identity}`);
+
+  const plainOut = join(work, 'check.dump');
+  const dec = spawnSync(AGE, ['--decrypt', '--identity', identity, '--output', plainOut, got],
+    { encoding: 'utf8' });
+  if (dec.status !== 0) {
+    unlinkSync(got);
+    die('age не расшифровал: ' + (dec.stderr || '').slice(0, 300) + '\n'
+      + 'Обычно это НЕ ТОТ ключ - шифровалось для другого получателя.');
+  }
+  say(`расшифрован: ${(statSync(plainOut).size / 1024 / 1024).toFixed(2)} MB`);
+
+  /* pg_restore той же мажорной версии, что дамп; локально его может не быть - тогда образом, как и pg_dump. */
+  const tool = dumper(17);
+  const listing = tool.kind === 'local'
+    ? spawnSync('pg_restore', ['--list', plainOut], { encoding: 'utf8' })
+    : spawnSync('docker', ['run', '--rm', '-v', `${work}:/out`, 'postgres:17-alpine',
+      'pg_restore', '--list', '/out/check.dump'], { encoding: 'utf8' });
+  /* Файлы убираются в любом случае: это настоящие данные живого аккаунта, и оставлять их в temp - ровно то,
+   * от чего защищает шифрование в ведре. */
+  unlinkSync(got);
+  unlinkSync(plainOut);
+  if (listing.status !== 0) {
+    die('pg_restore не прочитал дамп: ' + (listing.stderr || '').slice(0, 400) + '\n'
+      + 'Вот это и был бы тот случай, ради которого проверка написана.');
+  }
+  const tables = [...(listing.stdout || '').matchAll(/TABLE DATA public (\S+)/g)].map((m) => m[1]);
+  say(`\npg_restore прочитал оглавление: ${tables.length} таблиц с данными`);
+  if (tables.length) say('  ' + tables.slice(0, 12).join(', ') + (tables.length > 12 ? ', …' : ''));
+  say('\nДамп восстановим. Временные файлы удалены.');
+  say('Полное восстановление - в свежую ветку Neon, никогда поверх живой: docs/product/20-operations.md.');
   process.exit(0);
 }
 
