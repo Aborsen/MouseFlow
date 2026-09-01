@@ -46,7 +46,15 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const args = process.argv.slice(2);
 const has = (flag) => args.includes(flag);
 
-const die = (message) => { console.error('\n' + message + '\n'); process.exit(1); };
+/* В Actions причина обязана попасть в АННОТАЦИЮ, а не только в лог шага. Первый неудачный запуск показал на
+ * странице запуска ровно «Process completed with exit code 1» - то есть человек, не полезший разворачивать
+ * шаг, не узнал ничего. `::error::` кладёт первую строку прямо на страницу. */
+const inActions = !!process.env.GITHUB_ACTIONS;
+const die = (message) => {
+  if (inActions) console.log('::error title=backup::' + message.split('\n')[0].replace(/::/g, ':'));
+  console.error('\n' + message + '\n');
+  process.exit(1);
+};
 const say = (...parts) => console.log(...parts);
 
 /* ------------------------------------------------------------------ настройки */
@@ -143,11 +151,26 @@ function s3(method, key, { upload, out } = {}) {
   const run = spawnSync('curl', argv, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (run.error) die('curl не запустился: ' + run.error.message);
   if (run.status !== 0) {
-    /* Тело ошибки B2/S3 - это XML с внятным кодом (SignatureDoesNotMatch, AccessDenied, NoSuchBucket), и
-     * его надо показать: без него «curl exited 22» не говорит, что именно не так с доступом. Ключи в
-     * argv, поэтому наружу идёт только команда без --user. */
-    die(`S3 ${method} ${key} не удался (curl ${run.status}).\n${(run.stdout || '').slice(0, 800)}\n`
-      + `Проверьте: ведро ${BUCKET}, endpoint ${ENDPOINT}, регион ${region}, и что у ключа есть writeFiles.`);
+    /* Тело ошибки B2/S3 - это XML с внятным кодом, и его надо не просто показать, а ПЕРЕВЕСТИ в действие:
+     * «SignatureDoesNotMatch» не говорит человеку, что чинить, а «регион в endpoint не тот» - говорит.
+     * Ключи лежат в argv, поэтому наружу уходит только код и текст ответа. */
+    const body = run.stdout || '';
+    const code = (body.match(/<Code>([^<]+)<\/Code>/) || [])[1] || '';
+    const hint = {
+      SignatureDoesNotMatch: `подпись не сошлась - обычно это РЕГИОН. Взят «${region}» из endpoint `
+        + `«${ENDPOINT}»; он должен совпадать с регионом ведра. Второй вариант - в ключ попал лишний `
+        + 'пробел или перевод строки при копировании в секрет.',
+      InvalidAccessKeyId: 'keyID не тот. В Backblaze это ДВА разных значения: keyID и сам ключ - и в '
+        + 'BACKUP_S3_KEY_ID нужен keyID.',
+      AccessDenied: 'доступа нет. У ключа должно быть writeFiles и listFiles ИМЕННО на это ведро. И учтите: '
+        + 'мастер-ключ аккаунта с S3-совместимым API не работает вовсе - нужен обычный Application Key.',
+      NoSuchBucket: `ведра «${BUCKET}» по адресу «${ENDPOINT}» нет - опечатка в имени или endpoint от `
+        + 'другого региона.',
+      RequestTimeTooSkewed: 'часы машины разошлись с сервером - подпись S3 действительна 15 минут.',
+    }[code];
+    die(`S3 ${method} ${key}: ${code || 'curl ' + run.status}${hint ? ' - ' + hint : ''}\n\n`
+      + `${body.slice(0, 800)}\n`
+      + `Ведро ${BUCKET}, endpoint ${ENDPOINT}, регион ${region}.`);
   }
   return run.stdout || '';
 }

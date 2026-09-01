@@ -52,6 +52,20 @@ jobs:
       - name: dependencies
         run: npm ci --omit=dev --no-audit --no-fund
 
+      # Какие секреты ВООБЩЕ заданы - до попытки что-либо сделать. Первый неудачный запуск стоил двух
+      # кругов ровно потому, что «exit code 1» не отличает «секрета нет» от «ключ не тот».
+      #
+      # Проверяются ВЫРАЖЕНИЯМИ, а не через toJSON(secrets): второе занесло бы значения всех секретов в
+      # переменную окружения ради того, чтобы посмотреть на их имена. Здесь в лог попадает только true/false.
+      - name: which secrets are set
+        run: |
+          echo "DATABASE_URL          ${{ secrets.DATABASE_URL != '' }}"
+          echo "BACKUP_S3_ENDPOINT    ${{ secrets.BACKUP_S3_ENDPOINT != '' }}"
+          echo "BACKUP_S3_BUCKET      ${{ secrets.BACKUP_S3_BUCKET != '' }}"
+          echo "BACKUP_S3_KEY_ID      ${{ secrets.BACKUP_S3_KEY_ID != '' }}"
+          echo "BACKUP_S3_APP_KEY     ${{ secrets.BACKUP_S3_APP_KEY != '' }}"
+          echo "BACKUP_AGE_RECIPIENT  ${{ secrets.BACKUP_AGE_RECIPIENT != '' }}"
+
       - name: back it up
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
