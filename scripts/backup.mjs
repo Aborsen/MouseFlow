@@ -80,7 +80,9 @@ const KEY_ID = conf('BACKUP_S3_KEY_ID');
 const APP_KEY = conf('BACKUP_S3_APP_KEY');
 const RECIPIENT = conf('BACKUP_AGE_RECIPIENT');
 
-if (!DATABASE_URL) die('DATABASE_URL не задан. `vercel env pull .env.local` или переменная окружения.');
+/* ПРОВЕРЯЕТСЯ НЕ ЗДЕСЬ, а там, где нужен, - и это была моя ошибка. Стояло наверху, поэтому `--list`, которому
+ * база не нужна вовсе, падал с «DATABASE_URL не задан» в шаге, где этой переменной и не передавали. Диагностика
+ * соврала о причине сбоя ровно в том запуске, который её и должен был назвать. */
 
 /* Регион вынимается из имени endpoint - s3.us-west-004.backblazeb2.com → us-west-004. Подпись SigV4 его
  * требует, и просить его отдельной переменной значило бы держать два способа сказать одно. */
@@ -160,8 +162,13 @@ function s3(method, key, { upload, out } = {}) {
       SignatureDoesNotMatch: `подпись не сошлась - обычно это РЕГИОН. Взят «${region}» из endpoint `
         + `«${ENDPOINT}»; он должен совпадать с регионом ведра. Второй вариант - в ключ попал лишний `
         + 'пробел или перевод строки при копировании в секрет.',
-      InvalidAccessKeyId: 'keyID не тот. В Backblaze это ДВА разных значения: keyID и сам ключ - и в '
-        + 'BACKUP_S3_KEY_ID нужен keyID.',
+      /* Порядок причин - по тому, как часто это случается в жизни, а первая пришла из настоящего запуска. */
+      InvalidAccessKeyId: 'ключ не опознан. Три причины, по убыванию вероятности:\n'
+        + '  1) это МАСТЕР-КЛЮЧ аккаунта. С S3-совместимым API он не работает вовсе - нужен обычный '
+        + 'Application Key, созданный через «Add a New Application Key» и ограниченный этим ведром.\n'
+        + '  2) в BACKUP_S3_KEY_ID попал сам ключ, а не keyID: в Backblaze это два разных значения, и '
+        + 'keyID - короткое, оно же в первой колонке списка ключей.\n'
+        + `  3) endpoint от другого региона: взят «${region}», и ключ к чужому региону не подойдёт.`,
       AccessDenied: 'доступа нет. У ключа должно быть writeFiles и listFiles ИМЕННО на это ведро. И учтите: '
         + 'мастер-ключ аккаунта с S3-совместимым API не работает вовсе - нужен обычный Application Key.',
       NoSuchBucket: `ведра «${BUCKET}» по адресу «${ENDPOINT}» нет - опечатка в имени или endpoint от `
@@ -229,6 +236,8 @@ if (!local && (!ENDPOINT || !BUCKET || !KEY_ID || !APP_KEY)) {
   die('Для выгрузки нужны BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, BACKUP_S3_KEY_ID, BACKUP_S3_APP_KEY.\n'
     + '  Только дамп на диск: --local.');
 }
+
+if (!DATABASE_URL) die('DATABASE_URL не задан. `vercel env pull .env.local` или переменная окружения.');
 
 const major = await serverMajorOf(DATABASE_URL);
 const tool = dumper(major);
