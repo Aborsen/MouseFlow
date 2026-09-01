@@ -40,8 +40,8 @@ import { hasSkillFor } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
 import { SessionStrip } from './SessionStrip';
 import {
-  CHUNK_CHOICES, type ChunkMinutes, EVENTS_MAX_PER_PART, FIT_TARGET_BYTES, LONG_MOVE_MS, partsToFit,
-  PENDING_MAX_EVENTS, type Session,
+  CHUNK_CHOICES, type ChunkMinutes, deliveredSession, EVENTS_MAX_PER_PART, FIT_TARGET_BYTES, LONG_MOVE_MS,
+  partsToFit, PENDING_MAX_EVENTS, type Session,
   ledgerEntry, partFlow, partHeader, partName, sessionOf, shouldCut,
 } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
@@ -1029,17 +1029,37 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
        * в весе событий, а не в том, каким путём они пришли. Ровно это и произошло: человек экспортировал
        * пять часов, импортировал обратно и получил тот же отказ. Экспорт-импорт как способ спасти запись
        * работает только если то, что импортировано, умеет уехать частями. */
-      const flows = made.flatMap((rec) => (
-        JSON.stringify(rec.events).length <= FIT_TARGET_BYTES
-          ? [flowFor(rec, health)]
-          : partsToFit({ rec, events: rec.events, health }).flows));
-      const cut = flows.length - made.length;
-      const saved = await push({ flows });
+      const singles: Recording[] = [];
+      const split: { rec: Recording; session: Session; flows: ReturnType<typeof partsToFit>['flows'] }[] = [];
+      for (const rec of made) {
+        if (JSON.stringify(rec.events).length <= FIT_TARGET_BYTES) { singles.push(rec); continue; }
+        const fit = partsToFit({ rec, events: rec.events, health });
+        split.push({ rec, session: fit.session, flows: fit.flows });
+      }
+      const saved = await push({
+        flows: [...singles.map((rec) => flowFor(rec, health)), ...split.flatMap((s) => s.flows)],
+      });
       if (saved.problems.length) {
         setNote(`Imported ${added}, but the account refused ${saved.problems.length}: ${saved.problems.join('; ')}`);
-      } else if (cut > 0) {
-        setNote(`Imported ${added}. One was too big for a single row, so it is on your account as `
-          + `${flows.length - (made.length - 1)} parts — each with its own transcript.`);
+      } else if (split.length) {
+        /* И В ЛЕДЖЕР, И ОРИГИНАЛ ДОЛОЙ - обе половины обязательны, и у каждой своя причина.
+         *
+         * Без леджера части невидимы: таблица исключает их намеренно, полосе сессий их неоткуда взять.
+         * А оставленный локально оригинал - это не безобидный дубль: реконсайлер перепосылает каждую
+         * локальную запись без штампа на каждом такте, отказ «too large» терминальным не считается, и
+         * штамп успеха ставится на весь батч разом - то есть девять мегабайт, которые никогда не влезут,
+         * отравляли бы синхронизацию всего остального. События при этом не теряются: они уже на аккаунте,
+         * частями, и их видно в полосе. */
+        update((prev) => ({
+          sessions: [
+            ...(prev.sessions as Session[]).filter((s) => !split.some((x) => x.session.id === s.id)),
+            ...split.map((x) => deliveredSession(x.session)),
+          ],
+          recordings: prev.recordings.filter((r) => !split.some((x) => x.rec.id === r.id)),
+        }));
+        setNote(`Imported ${added}. ${split.map((x) => `"${x.rec.name}" was too big for a single row and `
+          + `is on your account as ${x.session.parts.length} parts`).join('; ')} — they are in the `
+          + 'Sessions strip above the recordings, each with its own transcript.');
       }
       await reload();
     } catch (err) {
@@ -1076,18 +1096,35 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
         const saved = await push({ flows: [flowFor(rec, health)] });
         if (saved.problems.length) throw new Error(saved.problems.join('; '));
       } else {
-        const { flows, perPart, bytes } = partsToFit({ rec, events: rec.events, health });
+        const { session, flows, bytes } = partsToFit({ rec, events: rec.events, health });
         const saved = await push({ flows });
         if (saved.problems.length) throw new Error(saved.problems.join('; '));
+        /* И В ЛЕДЖЕР ТОЖЕ - иначе части доехали и пропали с глаз. Первая версия этого пути толкала строки
+         * на аккаунт и останавливалась; таблица записей исключает части сессий НАМЕРЕННО (см. orphans ниже),
+         * а полоса сессий читает state.sessions, куда никто не написал. Человек получил «it is on your
+         * account as 2 parts» - и пустой экран: правда про базу, ложь про интерфейс.
+         *
+         * Дальше - ровно то, что делает штатная длинная сессия: события живут на аккаунте, леджер держит
+         * счётчики, локального оригинала больше нет (он и не помещался - ради этого всё и было), а панель
+         * открывает первую часть, чтобы пять часов работы было видно сразу, а не после поисков. */
+        const delivered = deliveredSession(session);
+        update((prev) => ({
+          sessions: [
+            ...(prev.sessions as Session[]).filter((s) => s.id !== delivered.id),
+            delivered,
+          ],
+          recordings: prev.recordings.filter((r) => r.id !== rec.id),
+        }));
+        setViewing(delivered.parts[0]?.id ?? null);
         setNote(`"${rec.name}" is ${(bytes / 1024 / 1024).toFixed(1)}MB of events — more than one row holds, `
-          + `so it is on your account as ${flows.length} parts of about ${perPart} events each. `
-          + 'Each part has its own transcript, and a skill can be made from any of them.');
+          + `so it is on your account as ${flows.length} parts. They are in the Sessions strip above the `
+          + 'recordings; each part has its own transcript, and a skill can be made from any of them.');
       }
       await reload();
     } finally {
       release(mine);
     }
-  }, [state.recordings, health, reload]);
+  }, [state.recordings, health, reload, update]);
 
   /* Забрать осиротевшую запись в этот браузер — под ЕЁ id.
    *

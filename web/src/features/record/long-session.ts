@@ -288,6 +288,18 @@ export const FIT_TARGET_BYTES = 6_000_000;
  * строки (api/sync.js делает upsert), а не создаст второй набор: кнопка, которую нажали дважды, не должна
  * удваивать пять часов работы.
  */
+/* Сессия после успешной выгрузки: те же части, но каждая помечена доехавшей.
+ *
+ * Одним помощником для обоих путей - «положить обратно» и импорта - потому что первая версия сплита
+ * толкала строки на аккаунт и НЕ писала сессию в леджер: части доехали и пропали с глаз - таблица записей
+ * исключает их намеренно, а полоса сессий читает state.sessions, куда никто не написал. Человек получил
+ * «it is on your account as 2 parts» и пустой экран. Два места, пишущих леджер по-своему, разойдутся
+ * снова; одно - нет. */
+export const deliveredSession = (session: Session): Session => ({
+  ...session,
+  parts: session.parts.map((part) => ({ ...part, onAccount: true })),
+});
+
 export function partsToFit(
   { rec, events, health, target = FIT_TARGET_BYTES }: {
     rec: Pick<Recording, 'id' | 'name' | 'created' | 'startedAt' | 'windows'>;
