@@ -14,6 +14,24 @@ privacy complaint if paraphrased loosely.
 
 ---
 
+> **APPLIED, and this file is now history.** The whole order was carried out in `Aborsen/MouseLanding`
+> (branch `codex/mouseflow-landing`, which deploys to **mouse-flow.vercel.app** - not mouseflow.ai, which
+> does not resolve). Twenty-two docs pages now, including the three this order asked for - `agent-skills`,
+> `teams`, `connect-an-ai` - the privacy page states the page-address capture in the words this file asked
+> for, and all 35 screenshots are on the site.
+>
+> Added on 1 September, after the order was written and therefore not described below: the wizard's step
+> one also folds away clicks that land on the page itself and the press that starts or stops the recording,
+> and it now ASKS what was picked where the recording could not see it. Both are on `skills.md`, with the
+> pictures. `record-a-flow.md` says that pressing stop is never carried into a skill.
+>
+> Also new that day, and the reason this repository still cares about that one: the site emits every page
+> as markdown at `/docs/llms.json`, and `mouseflow_help` (see [21 - MCP server](product/21-mcp.md)) answers
+> out of it. **The public docs are now an input to the product**, so a page that goes stale is not only
+> read by people - it is quoted back by every assistant somebody connects.
+
+---
+
 ## Part 0 — Read this before you start
 
 Two things about the *previous* order:
@@ -55,13 +73,6 @@ The others still need re-shooting for the sidebar, exactly as the previous order
 ---
 
 ## Part 2 — The skill wizard, which is now a different screen
-
-> **DONE on 1 September 2026.** `skills.md` now carries the whole wizard - three steps, the fold and what is
-> in it, the typing chip, and the step that asks what was picked (added since this order was written, so it
-> is not described below). `record-a-flow.md` says that pressing stop is never carried into a skill. The
-> screenshots below were re-taken the same day by `node scripts/shoot-docs.mjs`, which now runs on Windows
-> too; four of them are on the site at `public/docs/`. **Everything else in this file is still outstanding**,
-> including the pages in Part 5 and Part 6 and the remaining images.
 
 This is the biggest single documentation job. `skills.md` and `record-a-flow.md` describe a wizard that no
 longer exists.
