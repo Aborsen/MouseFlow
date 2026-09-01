@@ -425,7 +425,20 @@ cancels part-way — the same shape as the existing suites, against a route that
 
 Reported rather than fixed, because documenting was the task. Each is small and each has a named site.
 
-### 0. The keyboard promise disagreed with the keyboard - both ways at once - **closed**
+### 0. There was no backup of the database at all - **closed, except the rehearsal**
+
+Asked as a question - *"do we even have backups? if it falls over do we lose everything?"* - and the answer
+was yes, everything. The only thing standing between the account and total loss was Neon's six-hour history
+window on the free plan: no snapshots, no schedule, nothing outside the project, no cron in `vercel.json`,
+no `pg_dump` anywhere in the repository. Six hours of undo, inside the system it was supposed to insure.
+
+Closed by `scripts/backup.mjs` and `.github/workflows/backup.yml` - a daily encrypted dump into object
+storage outside Neon, with the reasoning in
+[20 - Operations](20-operations.md#backup-and-restore). **What is still open is the part that makes it
+a backup rather than a file: nobody has restored one yet.** A dump that has never been through `pg_restore` is a hope. The
+rehearsal is a monthly job away and needs a Neon API key, which is a decision rather than a line of code.
+
+### 0b. The keyboard promise disagreed with the keyboard - both ways at once - **closed**
 
 The most-read claim in the product was wrong in the two places somebody reads first, and wrong in *opposite*
 directions. The public docs said *"what is never captured: which key you pressed"* and that the recorder

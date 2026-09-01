@@ -81,6 +81,87 @@ so a framework would be more machinery than the thing it manages. What it does h
 
 `DATABASE_URL` is read from the environment, or from `.env.local` if `vercel env pull` wrote one.
 
+### Backup and restore
+
+**What Neon gives you is not a backup.** On the free plan the *Restore from history* window is six hours,
+there are no snapshots and no schedule, and all of it lives inside the same project. It covers "I deleted the
+wrong rows half an hour ago". It does not cover a mistake noticed the next day, a deleted project, or an
+account that stops working. A copy that lives inside the system it insures is not insurance.
+
+Measured, so the numbers are not guesses: the database is **15 MB**, of which 5.4 MB is `user_flow` (166
+recordings). A compressed custom-format dump is a few megabytes, which means a daily backup kept for ninety
+days is a few hundred megabytes - inside every free object-storage tier there is.
+
+```bash
+node scripts/backup.mjs                 # dump → encrypt → bucket → verify
+node scripts/backup.mjs --local         # dump to this folder, no bucket (before a migration)
+node scripts/backup.mjs --list          # what the bucket holds
+```
+
+Daily at 02:17 UTC by `.github/workflows/backup.yml`, and by hand from the Actions tab.
+
+**Three decisions in it worth knowing:**
+
+- **It encrypts with a public key** (`age --recipient`), so the job that makes the backups cannot read them.
+  A passphrase in a secret would have given CI both write and read; the private key is in a password manager
+  and is needed only to restore. A dump carries what [17 - Privacy](17-privacy-security.md) calls sensitive -
+  window titles, control names, page addresses, the wording of goals - so this is the right asymmetry.
+- **It will not silently upload plaintext.** With no recipient configured it stops and says what is missing.
+  `--plaintext` exists, only alongside `--local`, and has to be typed.
+- **It dumps through the unpooled host.** `DATABASE_URL` from Vercel is the `-pooler` one; Neon's own advice
+  for `pg_dump` is a direct connection, so the script rewrites the host rather than making anybody keep a
+  second connection string.
+
+The bucket is Backblaze B2 (S3-compatible). Two settings there are load-bearing:
+
+| | |
+|---|---|
+| The application key has `listFiles` and `writeFiles` but **not `deleteFiles`** | a key leaked out of CI can add backups and cannot destroy the existing ones |
+| A lifecycle rule on the bucket deletes objects older than 90 days | expiry is done by the bucket, which is why the key does not need delete rights |
+
+#### The six secrets
+
+`Settings → Secrets and variables → Actions → New repository secret`, in `Aborsen/Mouse`:
+
+| Secret | Where it comes from |
+|---|---|
+| `DATABASE_URL` | `vercel env pull`, or the Neon connection string |
+| `BACKUP_S3_ENDPOINT` | the bucket's S3 endpoint, e.g. `s3.eu-central-003.backblazeb2.com` |
+| `BACKUP_S3_BUCKET` | the bucket name |
+| `BACKUP_S3_KEY_ID` | B2 *App Keys* → keyID |
+| `BACKUP_S3_APP_KEY` | the key itself, shown once |
+| `BACKUP_AGE_RECIPIENT` | the public half of `age-keygen -o backup-key.txt` (`age1…`) |
+
+The region is read out of the endpoint name; there is no seventh secret for it.
+
+#### Restoring
+
+Needs the **private** age key, which is deliberately not anywhere near CI.
+
+```bash
+node scripts/backup.mjs --list                      # pick the one you want
+curl --aws-sigv4 "aws:amz:<region>:s3" \
+  --user "$BACKUP_S3_KEY_ID:$BACKUP_S3_APP_KEY" \
+  -o backup.dump.age \
+  "https://<bucket>.<endpoint>/mouseflow/2026/09/2026-09-01T021700Z.dump.age"
+
+age --decrypt --identity backup-key.txt -o backup.dump backup.dump.age
+pg_restore --dbname "<target connection string>" --no-owner --no-privileges --clean backup.dump
+```
+
+**Restore into a fresh Neon branch, never over the live one**, until you have looked at what came back. A
+branch is free, and the difference between "the backup is fine" and "the backup was fine" is which database
+you found out on.
+
+> [!IMPORTANT]
+> **A backup nobody has restored is not a backup.** Same argument as the check nobody has watched fail: the
+> only evidence a dump is usable is a `pg_restore` that finished and a row count that matches. Do it once now,
+> into a throwaway branch, and once a quarter after that.
+
+**What is not automated yet:** that restore rehearsal. It could be a monthly job - restore the newest dump
+into a scratch Neon branch, compare row counts, drop the branch - and it needs a Neon API key, which is a
+decision rather than a line of code.
+
 ### Sign-in will not work until an origin is trusted
 
 Neon Auth is Better Auth behind a Neon endpoint, and it will only issue a sign-in redirect for a callback URL

@@ -1,0 +1,68 @@
+# Ежедневный бэкап базы за пределы Neon.
+#
+# ПОЧЕМУ НЕ АРТЕФАКТОМ. Дамп заливается прямо в ведро и никогда не остаётся в GitHub. Причина конкретная:
+# этот репозиторий может перестать быть приватным, а артефакты доступны всем, кто может читать репозиторий.
+# Секреты остаются секретами и на публичном репозитории - форкам их не выдают, - поэтому сам этот файл
+# публиковать безопасно, а дамп в артефактах был бы утечкой, отложенной до смены видимости.
+#
+# ЧТО ЭТА ЗАДАЧА МОЖЕТ И ЧЕГО НЕ МОЖЕТ. Шифрование - публичным ключом age, так что она создаёт бэкапы,
+# которые не может прочитать. Ключ доступа к ведру выдан без deleteFiles, так что она не может и удалить
+# ранее созданные. Устаревшие убирает правило хранения на стороне ведра.
+#
+# ПЕРВЫЙ ЗАПУСК - РУКАМИ, кнопкой «Run workflow»: расписание проверять нечем, пока ни один запуск не прошёл,
+# а «бэкап, который никто не видел работающим» - это надежда, а не бэкап.
+name: backup
+
+on:
+  schedule:
+    # 02:17 UTC. Не в круглый час: в :00 у GitHub очередь из всех расписаний мира, и запуск сдвигается.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+# Задаче не нужен ни один токен репозитория: она читает базу и пишет в ведро.
+permissions: {}
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # pg_dump той же мажорной версии, что сервер, берётся образом внутри скрипта - на раннере есть docker.
+      # Здесь ставится только age: он есть в universe и появляется за пару секунд.
+      - name: age
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
+      - name: dependencies
+        run: npm ci --omit=dev --no-audit --no-fund
+
+      - name: back it up
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_KEY_ID: ${{ secrets.BACKUP_S3_KEY_ID }}
+          BACKUP_S3_APP_KEY: ${{ secrets.BACKUP_S3_APP_KEY }}
+          # Публичный ключ - не секрет, но лежит рядом с остальными, чтобы не искать его в двух местах.
+          BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+        run: node scripts/backup.mjs
+
+      # Что теперь лежит в ведре - в логе запуска. Полезно ровно в тот день, когда бэкап понадобится:
+      # видно, за какие числа он есть, не заходя в консоль Backblaze.
+      - name: what is in the bucket
+        if: always()
+        env:
+          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_KEY_ID: ${{ secrets.BACKUP_S3_KEY_ID }}
+          BACKUP_S3_APP_KEY: ${{ secrets.BACKUP_S3_APP_KEY }}
+        run: node scripts/backup.mjs --list

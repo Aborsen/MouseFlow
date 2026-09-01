@@ -14,3 +14,9 @@ web/public/agent/
 
 # Built by web/vite.extension.config.ts — Chrome loads this, git does not carry it.
 extension/dist/
+
+# Дампы базы. Скрипт бэкапа умеет оставлять файл локально (--local), а открытый дамп живой базы в рабочей
+# папке - это утечка, ожидающая коммита.
+*.dump
+*.dump.age
+backup-key.txt
