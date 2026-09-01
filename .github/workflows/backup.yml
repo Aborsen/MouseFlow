@@ -60,17 +60,32 @@ jobs:
       - name: which secrets are set
         run: |
           echo "DATABASE_URL          ${{ secrets.DATABASE_URL != '' }}"
-          echo "BACKUP_S3_ENDPOINT    ${{ secrets.BACKUP_S3_ENDPOINT != '' }}"
-          echo "BACKUP_S3_BUCKET      ${{ secrets.BACKUP_S3_BUCKET != '' }}"
+          echo "BACKUP_S3_ENDPOINT    ${{ vars.BACKUP_S3_ENDPOINT || secrets.BACKUP_S3_ENDPOINT != '' }}"
+          echo "BACKUP_S3_BUCKET      ${{ vars.BACKUP_S3_BUCKET || secrets.BACKUP_S3_BUCKET != '' }}"
           echo "BACKUP_S3_KEY_ID      ${{ secrets.BACKUP_S3_KEY_ID != '' }}"
           echo "BACKUP_S3_APP_KEY     ${{ secrets.BACKUP_S3_APP_KEY != '' }}"
           echo "BACKUP_AGE_RECIPIENT  ${{ secrets.BACKUP_AGE_RECIPIENT != '' }}"
 
+      # СПРОСИТЬ ПРОВАЙДЕРА, А НЕ ГАДАТЬ. Четыре запуска подряд проверяли по одной догадке - мастер-ключ,
+      # регистр имени, регион, - потому что ошибки S3 намеренно не различают эти случаи. Нативный API B2
+      # говорит прямо: к какому ведру привязан ключ, какие у него права и какой S3-endpoint у аккаунта.
+      #
+      # continue-on-error, чтобы за ОДИН запуск было видно и это, и ответ самой выгрузки: диагностика,
+      # которая обрывает круг, стоит ещё одного круга.
+      - name: ask Backblaze what this key is
+        continue-on-error: true
+        env:
+          BACKUP_S3_ENDPOINT: ${{ vars.BACKUP_S3_ENDPOINT || secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ vars.BACKUP_S3_BUCKET || secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_KEY_ID: ${{ secrets.BACKUP_S3_KEY_ID }}
+          BACKUP_S3_APP_KEY: ${{ secrets.BACKUP_S3_APP_KEY }}
+        run: node scripts/backup.mjs --whoami
+
       - name: back it up
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
-          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ vars.BACKUP_S3_ENDPOINT || secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ vars.BACKUP_S3_BUCKET || secrets.BACKUP_S3_BUCKET }}
           BACKUP_S3_KEY_ID: ${{ secrets.BACKUP_S3_KEY_ID }}
           BACKUP_S3_APP_KEY: ${{ secrets.BACKUP_S3_APP_KEY }}
           # Публичный ключ - не секрет, но лежит рядом с остальными, чтобы не искать его в двух местах.
@@ -82,8 +97,8 @@ jobs:
       - name: what is in the bucket
         if: always()
         env:
-          BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
-          BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+          BACKUP_S3_ENDPOINT: ${{ vars.BACKUP_S3_ENDPOINT || secrets.BACKUP_S3_ENDPOINT }}
+          BACKUP_S3_BUCKET: ${{ vars.BACKUP_S3_BUCKET || secrets.BACKUP_S3_BUCKET }}
           BACKUP_S3_KEY_ID: ${{ secrets.BACKUP_S3_KEY_ID }}
           BACKUP_S3_APP_KEY: ${{ secrets.BACKUP_S3_APP_KEY }}
         run: node scripts/backup.mjs --list

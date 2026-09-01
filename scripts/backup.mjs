@@ -212,6 +212,73 @@ function s3(method, key, { upload, out } = {}) {
   return run.stdout || '';
 }
 
+/* ------------------------------------------------------------------ кто мы для Backblaze
+ *
+ * СПРАШИВАЕТ У ПРОВАЙДЕРА ВМЕСТО ГАДАНИЯ, и появилось это после четырёх неудачных запусков, каждый из
+ * которых проверял одну догадку: мастер-ключ? регистр имени? регион? Ошибки S3 намеренно не выдают, что
+ * именно не так - «NoSuchBucket» одинаков и для опечатки в имени, и для ключа, выданного на другое ведро,
+ * потому что иначе он подтверждал бы существование чужих ведёр.
+ *
+ * А НАТИВНЫЙ API B2 говорит прямо. b2_authorize_account по тому же keyID и ключу возвращает, к какому ведру
+ * ключ привязан, какие у него права, какой префикс имён ему разрешён - и КАКОЙ S3-ENDPOINT у этого аккаунта.
+ * То есть все три подозреваемых сразу, из первоисточника, одним запросом и без изменения чего-либо.
+ *
+ * Токен из ответа не печатается: он и есть учётные данные на следующие сутки. */
+async function whoami() {
+  if (!KEY_ID || !APP_KEY) die('Нужны BACKUP_S3_KEY_ID и BACKUP_S3_APP_KEY.');
+  const basic = Buffer.from(`${KEY_ID}:${APP_KEY}`).toString('base64');
+  let body;
+  try {
+    const res = await fetch('https://api.backblazeb2.com/b2api/v3/b2_authorize_account',
+      { headers: { authorization: 'Basic ' + basic } });
+    body = await res.json();
+    if (!res.ok) {
+      die(`Backblaze не принял ключ (HTTP ${res.status}): ${body && body.message ? body.message : ''}\n`
+        + 'Это про сам ключ, а не про ведро: keyID и applicationKey должны быть от одного ключа.');
+    }
+  } catch (err) {
+    die('Не удалось спросить Backblaze: ' + err.message);
+  }
+  /* v3 кладёт всё в apiInfo.storageApi, v2 - в allowed рядом с корнем. Обе формы читаются, потому что
+   * версия API - не то, из-за чего должна падать диагностика. */
+  const api = (body.apiInfo && body.apiInfo.storageApi) || {};
+  const allowed = body.allowed || api;
+  const s3 = api.s3ApiUrl || body.s3ApiUrl || '';
+  const caps = (allowed.capabilities || api.capabilities || []).join(', ');
+
+  say('\nЧто Backblaze говорит про этот ключ:');
+  say(`  ведро            ${allowed.bucketName || api.bucketName || '(ключ не привязан к одному ведру)'}`);
+  say(`  префикс имён     ${allowed.namePrefix || api.namePrefix || '(любой)'}`);
+  say(`  права            ${caps || '(не сообщены)'}`);
+  say(`  S3 endpoint      ${s3.replace(/^https?:\/\//, '') || '(не сообщён)'}`);
+
+  const theirs = s3.replace(/^https?:\/\//, '');
+  const bucket = allowed.bucketName || api.bucketName || '';
+  say('\nЧто настроено у нас:');
+  say(`  BACKUP_S3_BUCKET    ${BUCKET || '(пусто)'}`);
+  say(`  BACKUP_S3_ENDPOINT  ${ENDPOINT || '(пусто)'}   → регион «${region}»`);
+  say(`  стиль адреса        ${dnsSafe ? 'virtual-hosted' : 'path-style'}`);
+
+  const wrong = [];
+  if (theirs && ENDPOINT && theirs !== ENDPOINT) {
+    wrong.push(`endpoint: у аккаунта «${theirs}», а в BACKUP_S3_ENDPOINT «${ENDPOINT}»`);
+  }
+  if (bucket && BUCKET && bucket !== BUCKET) {
+    wrong.push(`имя ведра: ключ привязан к «${bucket}», а в BACKUP_S3_BUCKET «${BUCKET}»`
+      + (bucket.toLowerCase() === BUCKET.toLowerCase() ? ' - различие только в РЕГИСТРЕ' : ''));
+  }
+  if (caps && !/writeFiles/.test(caps)) wrong.push('у ключа нет writeFiles - выгружать он не сможет');
+  if (caps && !/readFiles/.test(caps)) wrong.push('у ключа нет readFiles - проверка после выгрузки не пройдёт');
+
+  if (wrong.length) {
+    say('');
+    die('Расхождения:\n  - ' + wrong.join('\n  - '));
+  }
+  say('\nВсё сходится. Если выгрузка всё равно падает - дело не в этих трёх значениях.');
+}
+
+if (has('--whoami')) { await whoami(); process.exit(0); }
+
 /* ------------------------------------------------------------------ шифрование */
 
 /* AGE_BIN, потому что на Windows этого не миновать: winget ставит age в
