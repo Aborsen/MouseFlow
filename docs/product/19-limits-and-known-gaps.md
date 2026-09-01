@@ -425,6 +425,25 @@ cancels part-way — the same shape as the existing suites, against a route that
 
 Reported rather than fixed, because documenting was the task. Each is small and each has a named site.
 
+### 0. The keyboard promise disagreed with the keyboard - both ways at once - **closed**
+
+The most-read claim in the product was wrong in the two places somebody reads first, and wrong in *opposite*
+directions. The public docs said *"what is never captured: which key you pressed"* and that the recorder
+*"reads a single flag per keystroke and nothing else"*. This repository said, in three strings a model reads,
+*"stores that a key was pressed and which key"*. The truth is narrower than the first and stricter than the
+second: a key that can produce a character is counted and never identified, and a key that cannot spell
+anything is recorded **by name** - see [17 - Privacy](17-privacy-security.md#the-keyboard-exactly).
+
+**Nothing could have caught it.** Five hundred checks asserted that the code does what the code does; not one
+compared the prose against it. It was found while reading the agent for an unrelated task, which is not a
+process.
+
+Closed by writing the rule out exactly, in both repositories, and by `agent/check-promises.mjs`, which
+compares the key names parsed out of both agents against the list printed in the privacy page, in both
+directions, and refuses either retired slogan in any string a model reads. It runs first in `npm test`, and
+`--site` extends it to the deployed public docs. **The pattern is worth reusing**: the next claim about the
+code that lives only in prose belongs in that file too.
+
 ### 1. `image/${format}` produces `image/image/jpeg` — three sites — **closed**
 
 Both agents send `format: "image/jpeg"` on `/shot` — a **full MIME type**, which is what

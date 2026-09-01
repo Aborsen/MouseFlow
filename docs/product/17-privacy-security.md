@@ -18,6 +18,46 @@ to get wrong.
 and the codes are the ones `VkFor()` already uses to **play** those keys, so the two directions cannot drift
 apart.
 
+**The whole list, exactly as the agents name it.** This block is not decoration: `agent/check-promises.mjs`
+parses it and compares it against both agents, in both directions, so a key added to the code with nothing
+written here fails the suite - and so does a key written here that the code does not name. The prose above
+may say "the arrows"; this is the machine-checkable copy.
+
+```
+Enter Tab Escape Backspace Delete Left Right Up Down PageUp PageDown Home End
+```
+
+A NAME IS NOT A CHARACTER, and that boundary is the promise: everything capable of producing one goes to the
+anonymous path, which is why `CaptureKey()` and `captureKey()` take **no argument at all**. That signature is
+checked too - a key identity could only reach the count by being passed in, and there is nowhere to pass it.
+
+### What checks this, and why it exists
+
+```bash
+node agent/check-promises.mjs          # in npm test
+node agent/check-promises.mjs --site   # plus the live public docs
+```
+
+**The class of bug it catches is "what we say about the code is no longer about this code".** The suite had
+five hundred checks that the code does what it does, and not one that compared the prose to it - so this
+discrepancy sat in the two places somebody reads first, in *both* directions, until it was found by accident.
+
+It is not a grep for a sentence. A phrase pin passes forever and knows nothing about the code; it only
+catches somebody deleting the paragraph. This parses the key names out of **both agents** and compares them
+with the fenced list above, **in both directions**, so:
+
+- a key added to `NamedKey()` with nothing written here fails the suite;
+- a key written here that neither agent names fails it too;
+- the two agents drifting apart fails it - they promise each other "same rule as the macOS agent" in their own
+  comments, and this is the check of those words;
+- `CaptureKey()` gaining a parameter fails it, because that signature *is* the promise;
+- either retired slogan reappearing in a string a **model** reads - the document prompt, the search module,
+  the assistant's tool description - fails it, since those are the ones that come back as an answer somebody
+  quotes.
+
+It was itself tested by being broken on purpose, four ways, and the first attempt got past it: a key called
+`F5` slipped through a name pattern that only allowed letters. A check nobody has watched fail is not a check.
+
 **Why the exception exists at all.** Without it a recording cannot know that the work ended by pressing
 **Send**, so a skill made from one types the message and never sends it. That is the whole of the reason, and
 it bounds the exception: a key that could be part of a password is never identified.
