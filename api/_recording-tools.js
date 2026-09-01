@@ -777,7 +777,8 @@ export function recordingTools({ sql, userId }) {
         + 'a control sat in, applications, page origins. Use it for "which recording was I working with X '
         + 'in" - it is the only way to reach the recordings by text, since search_runs searches what was '
         + 'typed at an agent instead. A substring match, so a stem finds its longer forms. IT CANNOT FIND '
-        + 'WHAT ANYBODY TYPED: the recorder stores that a key was pressed and which key, and no sentence '
+        + 'WHAT ANYBODY TYPED: the recorder stores that a key was pressed and when, plus the name of a key '
+        + 'that cannot spell anything (Enter, Tab, Ctrl+S) and never a character, and no sentence '
         + 'written by a person exists in this product at all - so this finds the name of a field somebody '
         + 'typed into, never the words they put in it. Take a flowId from the result into get_transcript to '
         + 'read what was actually done.',

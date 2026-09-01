@@ -2,6 +2,38 @@
 
 Read this before sharing the link, and before putting the agent on a machine that is not yours.
 
+## The keyboard, exactly
+
+Written out here because both this repository and the public docs had been saying it two different loose
+ways — "and which key" in one place, "never which key" in another — and it is the claim that costs the most
+to get wrong.
+
+| | What is read | What reaches the account |
+|---|---|---|
+| A key that can produce a character — every letter, digit, punctuation mark, and a letter with Shift | `flags` only, to tell an injected key from a person's. **`vkCode` is not touched** | `Key Down`, and nothing else. A count and a duration |
+| A key that cannot spell anything — Enter, Tab, Escape, Backspace, Delete, the arrows, Page Up / Down, Home / End | its virtual key, matched against a fixed list | `Key Enter`, `Key Tab` … — **the name** |
+| A letter or digit held under **Ctrl** (Windows) or **Command** (macOS) | its virtual key, which *is* the shortcut whatever the layout prints | `Key Ctrl+S` — the chord, by name |
+
+`NamedKey()` in `agent/mouseflow-agent.ps1` and `NAMED_KEYS` in `agent/mouseflow-agent.swift` hold the list,
+and the codes are the ones `VkFor()` already uses to **play** those keys, so the two directions cannot drift
+apart.
+
+**Why the exception exists at all.** Without it a recording cannot know that the work ended by pressing
+**Send**, so a skill made from one types the message and never sends it. That is the whole of the reason, and
+it bounds the exception: a key that could be part of a password is never identified.
+
+**Alt is not a command modifier on Windows.** On many layouts AltGr is Ctrl+Alt and composes characters —
+Polish, Ukrainian, Hungarian — so a chord holding both is somebody typing, and reading it would read the
+text. Ctrl without Alt, or the Windows key.
+
+Two consequences worth stating where somebody will find them:
+
+- **A replay presses the named keys**, through the same press path `/do` uses (`agent/mouseflow-agent.ps1`,
+  the `Key ` branch of the replay switch), and the anonymous `Key Down` is excluded there by name first —
+  parsed as a name it would read as a key called "Down" and press the down arrow once per keystroke.
+- **The phrase to use in prose** is *"that a key was pressed and when, and the name of a key that cannot
+  spell anything"*. Neither "which key" nor "never which key" is true on its own.
+
 ## What is searchable, and what does not exist to be searched
 
 `flow_text` (see [15 — Data model](15-data-model.md)) makes recordings findable by the **names of things
@@ -10,7 +42,8 @@ origins. All of that was already on screen — in the transcript, in `list_recor
 on the team dashboard. Indexing it changes findability, not visibility.
 
 **Typed text is not indexed because it is not recorded.** The recorder stores that a key was pressed and
-which key; no sentence written by a person exists anywhere in this product. So a search finds the name of
+when, and the name of a key that cannot spell anything - see **The keyboard, exactly** below; no sentence
+written by a person exists anywhere in this product. So a search finds the name of
 the field somebody typed into and can never find what they put in it — and the assistant's search tool
 states this in its description and in every result it returns, so a model cannot report "not found" where
 the truthful answer is "that is not stored".
@@ -24,7 +57,7 @@ rule in two places.
 
 | | Captured | Not captured |
 |---|---|---|
-| **Desktop agent** | Every click, drag, scroll and pointer movement as screen coordinates; the application, window, control name and control type under each click; **that** a key was pressed and when; the foreground window changing; screenshots (only when asked) | **Which key was pressed.** No typed text of any kind. No screenshots except when a run or a panel asks for one. |
+| **Desktop agent** | Every click, drag, scroll and pointer movement as screen coordinates; the application, window, control name and control type under each click; **that** a key was pressed and when, plus the NAME of a key that cannot spell anything (see above); the foreground window changing; screenshots (only when asked) | **Which character key was pressed.** No typed text of any kind. No screenshots except when a run or a panel asks for one. |
 | **Extension** | Clicks, scrolls and the pointer path inside the watched tab; the selector, tag and visible text of what was clicked; the page each event happened on | **Typed text.** No other page text, no screenshots. |
 
 **The hooks stay installed while the agent runs, but events are only stored between `/record/start` and

@@ -29,6 +29,7 @@ commit `17bbcc5` (agents 0.8.2, extension 0.16.2, web app on React 19 / Vite / T
 | [20 — Operations](20-operations.md) | Deploy, migrate, develop, test |
 | [21 — MCP](21-mcp.md) | Connecting an AI to an account: every tool, how it signs in, how it comes to be allowed to act on your computer, what it refuses, and what to do when an answer says something did not happen |
 | [22 — Teams](22-teams.md) | Who may see whose work, the three roles, and the much longer list of what a team deliberately does not open |
+| [23 — Process documents](23-documents.md) | A procedure written from one recording, every line citing its step, kept as an object somebody can correct |
 
 ## Two conventions this documentation keeps
 

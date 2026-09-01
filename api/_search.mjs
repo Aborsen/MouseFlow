@@ -7,7 +7,8 @@
  *
  * WHAT IT CAN AND CANNOT FIND. Window titles, control names, the container a control sat in, application
  * names, page origins - every one of them already shown by the transcript and by list_recordings. It can
- * never find what somebody typed: the recorder stores that a key was pressed and which key, and no sentence
+ * never find what somebody typed: the recorder stores that a key was pressed and when - plus the name of a key
+ * that cannot spell anything, never a character - and no sentence
  * anybody wrote exists anywhere in this product to be indexed. So "find where I typed the invoice number"
  * has no answer here, and "find the recording with the Invoice field in it" has one.
  *

@@ -445,6 +445,34 @@ async function main() {
         await page.shot('gallery-collection.png');
       }
 
+      /* ---- process documents ----
+       *
+       * They live behind the Gallery's second shelf rather than on a page of their own, so the tab is
+       * part of the picture: a screenshot of a document list with no clue how to reach it documents
+       * nothing. Reached by its address (?tab=documents), which is what makes it linkable at all. */
+      await page.goto(SITE + '/gallery?tab=documents', 3000);
+      await page.shot('documents.png');
+      /* The row IS the button - the whole card opens the document - so this clicks by the title the
+         fixture carries rather than by a control that does not exist. */
+      if (!await page.eval("window.__mf.clickText('Reply that the invoice is approved', 'button')")) {
+        console.log('  SKIPPED document.png - no way into a document from the list');
+      } else {
+        await wait(2000);
+        if (!await page.until("document.body.innerText.includes('Correct it')", 20)) {
+          console.log('  SKIPPED document.png - the document never opened');
+        } else {
+          await page.shot('document.png');
+          /* And its history, which is the half that makes correcting one safe: every save keeps what was
+           * there before, so the picture worth having is the one showing both. */
+          if (await page.eval("window.__mf.clickText('version', 'button')")) {
+            await wait(800);
+            await page.shot('document-versions.png');
+          } else {
+            console.log('  SKIPPED document-versions.png - no versions button');
+          }
+        }
+      }
+
       /* ---- dashboard ---- */
       await page.goto(SITE + '/dashboard', 3500);
       await page.shot('dashboard.png');

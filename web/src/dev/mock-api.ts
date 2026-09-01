@@ -864,7 +864,8 @@ Most of the eleven runs took between forty seconds and a minute. The longest str
 Zoho lookup, not the writing [steps 5-10].
 
 ## What this document cannot tell you
-- **Nothing anybody typed is stored.** The recorder keeps that a key was pressed and which key, never the
+- **Nothing anybody typed is stored.** The recorder keeps that a key was pressed and when - and the name of a
+  key that cannot spell anything, never a character - never the
   words. So the invoice number, the search text and the wording of the reply are all absent, and no step
   above should be read as containing them.
 - Why the amount was accepted rather than queried. The recording shows the windows and the presses, not the
