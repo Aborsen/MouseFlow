@@ -132,6 +132,12 @@ The bucket is Backblaze B2 (S3-compatible). Two settings there are load-bearing:
 | `BACKUP_S3_APP_KEY` | the key itself, shown once |
 | `BACKUP_AGE_RECIPIENT` | the public half of `age-keygen -o backup-key.txt` (`age1…`) |
 
+**On Windows, `winget install FiloSottile.age` does not put it on `PATH`** - `age-keygen` answers *"is not
+recognized as the name of a cmdlet"* while the package is installed. The binaries land in
+`%LOCALAPPDATA%\Microsoft\WinGet\Packages\FiloSottile.age_*\age\`. Call `age-keygen.exe` there by its
+full path once to make the key, and give the script `AGE_BIN=<path to age.exe>` rather than editing `PATH`.
+The GitHub runner installs it from apt, where it is on the path like anything else.
+
 The region is read out of the endpoint name; there is no seventh secret for it.
 
 #### Restoring

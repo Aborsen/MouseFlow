@@ -33,7 +33,7 @@
  *   node scripts/backup.mjs --list          что лежит в ведре
  *
  * Переменные: DATABASE_URL, BACKUP_S3_ENDPOINT, BACKUP_S3_BUCKET, BACKUP_S3_KEY_ID, BACKUP_S3_APP_KEY,
- * BACKUP_AGE_RECIPIENT. Читаются из окружения или из .env.local, который уже лежит рядом после
+ * BACKUP_AGE_RECIPIENT и необязательный AGE_BIN. Читаются из окружения или из .env.local, который уже лежит рядом после
  * `vercel env pull`.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -154,13 +154,21 @@ function s3(method, key, { upload, out } = {}) {
 
 /* ------------------------------------------------------------------ шифрование */
 
+/* AGE_BIN, потому что на Windows этого не миновать: winget ставит age в
+ * %LOCALAPPDATA%\\Microsoft\\WinGet\\Packages\\FiloSottile.age_…\\age\\age.exe и НЕ добавляет его в PATH:
+ * `age-keygen` в консоли отвечает «не распознан как имя командлета», хотя пакет установлен. Полный путь
+ * в переменной решает это без правки PATH, которую человек не просил. */
+const AGE = conf('AGE_BIN') || 'age';
+
 function encrypt(from, to) {
-  const age = spawnSync('age', ['--version'], { encoding: 'utf8' });
+  const age = spawnSync(AGE, ['--version'], { encoding: 'utf8' });
   if (age.error || age.status !== 0) {
     die('BACKUP_AGE_RECIPIENT задан, а age не найден - зашифровать нечем, и открытый дамп я не выгружу.\n'
-      + '  Ubuntu: apt-get install -y age    macOS: brew install age    Windows: winget install FiloSottile.age');
+      + '  Ubuntu: apt-get install -y age    macOS: brew install age\n'
+      + '  Windows: winget install FiloSottile.age - в PATH он после этого НЕ появляется,\n'
+      + '           так что путь к age.exe положите в AGE_BIN');
   }
-  const run = spawnSync('age', ['--encrypt', '--recipient', RECIPIENT, '--output', to, from],
+  const run = spawnSync(AGE, ['--encrypt', '--recipient', RECIPIENT, '--output', to, from],
     { encoding: 'utf8' });
   if (run.status !== 0) die('age не смог зашифровать: ' + (run.stderr || '').slice(0, 400));
 }
