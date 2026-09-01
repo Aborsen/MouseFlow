@@ -690,6 +690,17 @@ const invented = [...described].filter((n) => !served.has(n));
 check('every tool the server offers is described on the page', missing.length === 0, missing.join(', '));
 check('and nothing is described that the server does not offer', invented.length === 0, invented.join(', '));
 check('twelve of them, so a count in prose can be trusted', served.size === 12, String(served.size));
+/* ПЕРЕИМЕНОВАНИЕ, У КОТОРОГО ЕСТЬ ЦЕНА. mouseflow_runs стало mouseflow_run_history, потому что рядом
+ * стоит mouseflow_run, который двигает настоящую мышь: имена на одну `s` - плохая пара для того, что
+ * выбирают по имени. Клиент забирает список инструментов один раз при подключении, поэтому старое имя
+ * обязано ещё работать в tools/call - и не обязано появляться в списке, иначе оно читается как второй
+ * инструмент. */
+check('старое имя не предлагается', !served.has('mouseflow_runs'), [...served].join(', '));
+check('но всё ещё принимается - у подключённого клиента в кэше стоит оно',
+  /const RETIRED_RUNS = 'mouseflow_runs'/.test(mcpRoute)
+    && /asked === RUNS_TOOL\.name \|\| asked === RETIRED_RUNS/.test(mcpRoute));
+check('и читающий тул называется тем, что отдаёт, а не глаголом',
+  /name: 'mouseflow_run_history'/.test(mcpRoute));
 /* Число на странице считается по таблице. Стояло «Ten tools» при одиннадцати - слово расходится с
  * таблицей под ним при первом же добавленном инструменте, и уже расходилось. */
 check('и количество инструментов на странице берётся из таблицы, а не набрано словом',

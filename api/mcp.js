@@ -206,10 +206,17 @@ const TRANSCRIPT_TOOL = {
   },
 };
 
+/* НЕ `mouseflow_runs`, и переименовано именно из-за соседа. Рядом стоит mouseflow_run, который двигает
+ * настоящую мышь на чьём-то компьютере и не отменяется снаружи; имена, отличающиеся на одну `s`, - плохая
+ * пара для инструмента, который выбирают по имени. Читающий тул теперь называется тем, что он отдаёт.
+ *
+ * Старое имя всё ещё ПРИНИМАЕТСЯ в tools/call - см. RETIRED ниже: клиент кэширует tools/list с момента
+ * подключения, и переименование без синонима означает «no such tool» у всех, кто ещё не переподключался. */
 const RUNS_TOOL = {
-  name: 'mouseflow_runs',
-  description: 'Runs on this account: what was asked for, which model drove it, how it ended and how long it '
-    + 'took. The record of what has actually been automated, as opposed to what could be.',
+  name: 'mouseflow_run_history',
+  description: 'The history of runs on this account: what was asked for, which model drove it, how it ended '
+    + 'and how long it took. The record of what has actually been automated, as opposed to what could be. '
+    + 'This only READS - mouseflow_run is the one that runs a skill.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -348,6 +355,13 @@ const AGENT_JOBS = {
   [START_TOOL.name]: '#record.start',
   [STOP_RECORDING_TOOL.name]: '#record.stop',
 };
+
+/* ИМЯ, КОТОРОЕ БОЛЬШЕ НЕ ПРЕДЛАГАЕТСЯ, но ещё принимается. Список инструментов клиент забирает один раз
+ * при подключении и держит до следующего: в момент переименования у всех, кто уже подключён, в кэше стоит
+ * старое имя, и вызов по нему обязан сработать, а не вернуть «нет такого инструмента». В tools/list его
+ * нет - синоним не должен выглядеть как второй инструмент. Убрать можно тогда, когда не жаль сломать
+ * сохранённый где-то промпт с этим словом. */
+const RETIRED_RUNS = 'mouseflow_runs';
 
 const READ_TOOLS = [RECORDINGS_TOOL, TRANSCRIPT_TOOL, RUNS_TOOL, ACTIVITY_TOOL];
 
@@ -655,7 +669,7 @@ async function callTool(sql, who, params, req) {
 
   if (asked === RECORDINGS_TOOL.name) return readRecordings(sql, who, args);
   if (asked === TRANSCRIPT_TOOL.name) return readTranscript(sql, who, args);
-  if (asked === RUNS_TOOL.name) return readRuns(sql, who, args);
+  if (asked === RUNS_TOOL.name || asked === RETIRED_RUNS) return readRuns(sql, who, args);
   if (asked === ACTIVITY_TOOL.name) return readActivity(sql, who, args);
 
   /* No account, no database and no machine: the documentation is public, and a question about how the

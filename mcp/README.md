@@ -134,7 +134,7 @@ Both `server.mjs` and `worker.mjs` read the same environment:
 |---|---|
 | `mouseflow_recordings` | what is on the account: recordings and skills, sizes, where and when |
 | `mouseflow_transcript` | one recording step by step in words, and what it cannot answer |
-| `mouseflow_runs` | what was asked for, which model drove it, how it ended, how long it took |
+| `mouseflow_run_history` | what was asked for, which model drove it, how it ended, how long it took |
 | `mouseflow_activity` | the account in numbers over a window, and which applications the work was in |
 
 **Doing — needs a machine that is taking work:**

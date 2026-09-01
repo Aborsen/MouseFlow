@@ -160,13 +160,21 @@ tool that hands over raw events.**
 |---|---|---|
 | `mouseflow_recordings` | `kind`: `all` \| `recording` \| `skill` (all) · `limit`: 1–200 (50) | One line per row: id, name, what it is, where it came from, event count, the applications it happened in, the date, and its description. Newest first, and it says how many of how many are shown. |
 | `mouseflow_transcript` | `recording`: id **(required)** · `steps`: 1–400 (120) | The recording as prose steps, grouped by the place they happened, from the same `transcribe()` the app's own panel uses — plus, at the end, **what the recording cannot answer**. Truncation is stated rather than silent. |
-| `mouseflow_runs` | `days`: 1–365 (30) · `outcome`: `any` \| `ok` \| `failed` \| `stopped` · `limit`: 1–200 (50) | When it started, how it ended, how long it took, what kind of run it was, which model drove it, the goal, and the error if there was one. |
+| `mouseflow_run_history` | `days`: 1–365 (30) · `outcome`: `any` \| `ok` \| `failed` \| `stopped` · `limit`: 1–200 (50) | When it started, how it ended, how long it took, what kind of run it was, which model drove it, the goal, and the error if there was one. |
 | `mouseflow_activity` | `days`: 1–365 (30) | Totals for the window: recordings and skills made, events between them, runs by outcome, minutes of running time, and the applications the work happened in. It also says the numbers are counted from what the account holds *now*. |
 
 `mouseflow_transcript` is the same derivation you can read yourself in the app, which is the point —
 the model is not given a different account of what happened than you are:
 
 ![The transcript panel](../img/record-transcript.png)
+
+**`mouseflow_run_history` used to be `mouseflow_runs`.** Renamed because of its neighbour: `mouseflow_run`
+drives a real mouse on somebody's machine and cannot be undone from here, and two tools whose names differ
+by one `s` - one of them read-only - is a bad pair for something chosen by name. The old name is **still
+accepted** in `tools/call` and is **not** advertised in `tools/list`: a client fetches the tool list once
+when it connects and holds it, so at the moment of a rename every already-connected client has the old name
+cached, and a call by it has to work rather than answer "no such tool". It can go when breaking a saved
+prompt that spells it is acceptable.
 
 ### The documentation itself
 

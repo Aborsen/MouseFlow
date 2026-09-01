@@ -89,9 +89,12 @@ export const MCP_TOOLS: McpTool[] = [
     args: 'recording: id (required) · steps: 1–400 (120)',
   },
   {
-    name: 'mouseflow_runs',
+    /* Называлось mouseflow_runs - на одну `s` меньше, чем mouseflow_run, который двигает мышь на чьём-то
+       компьютере. Инструмент выбирают по имени, и такая пара - это промах, который дорого стоит. */
+    name: 'mouseflow_run_history',
     group: 'read',
-    what: 'What was actually run: the goal, the model that drove it, how it ended and how long it took.',
+    what: 'What was actually run: the goal, the model that drove it, how it ended and how long it took. '
+      + 'This one only reads.',
     args: 'days: 1–365 (30) · outcome: any | ok | failed | stopped · limit: 1–200 (50)',
   },
   {
