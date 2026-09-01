@@ -19,8 +19,15 @@ on:
     - cron: '17 2 * * *'
   workflow_dispatch:
 
-# Задаче не нужен ни один токен репозитория: она читает базу и пишет в ведро.
-permissions: {}
+# contents: read - ровно столько, сколько нужно, и НИ БАЙТА БОЛЬШЕ.
+#
+# Первый запуск упал именно здесь, с `permissions: {}`: я решил, что задаче не нужен токен репозитория -
+# она читает базу и пишет в ведро, - и забыл, что сначала ей надо забрать сам репозиторий. У приватного
+# репозитория checkout без contents:read отвечает «repository not found» и git выходит с 128, то есть
+# отказ в доступе выглядит как несуществующий репозиторий. Тот же ответ, что и для чужого репозитория, -
+# по той же причине, по которой наш /api/docs отвечает 404 на чужой документ.
+permissions:
+  contents: read
 
 concurrency:
   group: backup
@@ -31,9 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
 
