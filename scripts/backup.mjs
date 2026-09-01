@@ -71,7 +71,11 @@ const fromFile = (() => {
   }
   return out;
 })();
-const conf = (name) => process.env[name] || fromFile[name] || '';
+/* .trim() НЕ косметика. Секрет в GitHub набирается вставкой, и перевод строки в конце вставленного ключа
+ * невидим в поле ввода, а подпись S3 с ним не сходится - ответ приходит «SignatureDoesNotMatch», то есть
+ * ровно тот же, что и при неверном ключе. Пробел по краям не может быть частью ни одного из этих
+ * значений, поэтому срезать его безопаснее, чем однажды искать его глазами. */
+const conf = (name) => String(process.env[name] || fromFile[name] || '').trim();
 
 const DATABASE_URL = conf('DATABASE_URL');
 const ENDPOINT = conf('BACKUP_S3_ENDPOINT').replace(/^https?:\/\//, '').replace(/\/$/, '');
@@ -159,9 +163,14 @@ function s3(method, key, { upload, out } = {}) {
     const body = run.stdout || '';
     const code = (body.match(/<Code>([^<]+)<\/Code>/) || [])[1] || '';
     const hint = {
-      SignatureDoesNotMatch: `подпись не сошлась - обычно это РЕГИОН. Взят «${region}» из endpoint `
-        + `«${ENDPOINT}»; он должен совпадать с регионом ведра. Второй вариант - в ключ попал лишний `
-        + 'пробел или перевод строки при копировании в секрет.',
+      /* Порядок - по тому, что случалось на самом деле. keyID уже принят (иначе был бы InvalidAccessKeyId),
+       * значит подпись не сошлась из-за САМОГО ключа, а не из-за того, кто его предъявил. */
+      SignatureDoesNotMatch: 'подпись не сошлась, а keyID при этом принят - значит дело в самом ключе.\n'
+        + '  1) keyID и applicationKey взяты от РАЗНЫХ ключей. Пара показывается вместе только один раз, '
+        + 'при создании; keyID виден в списке всегда, и его легко соединить с ключом от прошлой попытки. '
+        + 'Создайте ключ заново и обновите ОБА секрета значениями с одного экрана.\n'
+        + '  2) значение обрезано при копировании - applicationKey длинный и начинается с K005.\n'
+        + `  3) регион: взят «${region}» из endpoint, и он должен совпадать с регионом ведра.`,
       /* Порядок причин - по тому, как часто это случается в жизни, а первая пришла из настоящего запуска. */
       InvalidAccessKeyId: 'ключ не опознан. Три причины, по убыванию вероятности:\n'
         + '  1) это МАСТЕР-КЛЮЧ аккаунта. С S3-совместимым API он не работает вовсе - нужен обычный '
@@ -210,7 +219,10 @@ mkdirSync(work, { recursive: true });
 
 if (has('--list')) {
   if (!BUCKET || !KEY_ID) die('Для --list нужны BACKUP_S3_BUCKET, BACKUP_S3_KEY_ID, BACKUP_S3_APP_KEY.');
-  const xml = s3('GET', '?list-type=2&prefix=mouseflow/&max-keys=1000');
+  /* prefix=mouseflow%2F, а не с косой чертой: канонический запрос SigV4 требует значения параметров
+   * закодированными, и «/» в них - это %2F. curl подписывает то, что дали; сервер канонизирует по
+   * правилу. Разойдись они - и получится SignatureDoesNotMatch, который не про ключи. */
+  const xml = s3('GET', '?list-type=2&prefix=mouseflow%2F&max-keys=1000');
   const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>\s*<LastModified>([^<]+)<\/LastModified>\s*(?:<ETag>[^<]*<\/ETag>\s*)?<Size>(\d+)</g)];
   if (!keys.length) { say('В ведре пока ничего нет по префиксу mouseflow/.'); process.exit(0); }
   for (const [, key, when, size] of keys) {
