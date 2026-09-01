@@ -112,12 +112,30 @@ Daily at 02:17 UTC by `.github/workflows/backup.yml`, and by hand from the Actio
   for `pg_dump` is a direct connection, so the script rewrites the host rather than making anybody keep a
   second connection string.
 
-The bucket is Backblaze B2 (S3-compatible). Two settings there are load-bearing:
+The bucket is Backblaze B2 (S3-compatible), and the key it is reached with matters as much as the bucket.
 
-| | |
-|---|---|
-| The application key has `listFiles` and `writeFiles` but **not `deleteFiles`** | a key leaked out of CI can add backups and cannot destroy the existing ones |
-| A lifecycle rule on the bucket deletes objects older than 90 days | expiry is done by the bucket, which is why the key does not need delete rights |
+**In the B2 web interface, make the key *Read and Write*.** Not *Write Only*: the script `HEAD`s the object
+it has just uploaded and compares the size, because an upload that answered 200 and stored nothing looks like
+success until the day it is needed - and `--list` reads the bucket too. Leave *Allow List All Bucket Names*
+unchecked (nothing here calls S3 `ListBuckets`; listing objects *inside* a bucket is a different right), and
+leave *Duration* empty - a key that expires turns a daily backup into a silent one.
+
+**Two traps that each cost a failed run:**
+
+- **The account master key does not work with the S3-compatible API at all.** It answers
+  `InvalidAccessKeyId`, which reads like a typo rather than a category error. Use *Add a New Application Key*.
+- **`keyID` and the key itself are two different values.** `BACKUP_S3_KEY_ID` wants the short one.
+
+**A key that cannot delete is worth having, and the web interface cannot make one** - it offers only Read and
+Write / Read Only / Write Only. Granular capabilities need the CLI:
+
+```bash
+b2 key create --bucket mouseflow-db-backups mouseflow-backup listBuckets,listFiles,readFiles,writeFiles
+```
+
+No `deleteFiles`, so a key leaked out of CI can add backups and cannot destroy the ones already there. Do it
+once the first run has succeeded; expiry is then handled by a **lifecycle rule on the bucket** (delete after
+90 days), which is server-side and needs no delete rights on any key.
 
 #### The six secrets
 
