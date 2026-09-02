@@ -38,12 +38,7 @@ import { useAccount } from '@/shell/AccountProvider';
 import { Page } from '@/shell/Surface';
 import { hasSkillFor } from './save-as-skill';
 import { RecordingsTable, replayOf } from './RecordingsTable';
-import { SessionStrip } from './SessionStrip';
-import {
-  CHUNK_CHOICES, type ChunkMinutes, deliveredSession, EVENTS_MAX_PER_PART, FIT_TARGET_BYTES, LONG_MOVE_MS,
-  partsToFit, PENDING_MAX_EVENTS, type Session,
-  ledgerEntry, partFlow, partHeader, partName, sessionOf, shouldCut,
-} from './long-session';
+import { CUT_AT_EVENTS, FIT_TARGET_BYTES, splitIntoRecordings } from './long-session';
 import { TranscriptPanel } from './TranscriptPanel';
 import { SkillWizard } from './SkillWizard';
 import type { GoalSkillSource } from './save-as-skill';
@@ -246,33 +241,26 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
    * the press and the stop must not lose it. Null until something is being recorded. */
   const startedAt = useRef<string | null>(null);
 
-  /* A long session, while one is running, and the parts that have not reached the account yet.
-   *
-   * The ledger is in the store, because it has to survive a reload - a session is hours long and a browser
-   * that was refreshed halfway must still show what it recorded. The unsent parts are NOT in the store: they
-   * carry events, and events in localStorage is the thing the whole mechanism exists to avoid. So a reload
-   * loses an unsent part, and the ledger says so rather than pretending it arrived. */
-  const [session, setSession] = useState<Session | null>(null);
-  const pending = useRef<{ part: ReturnType<typeof ledgerEntry>; name: string; events: RecordedEvent[]; windows: { title: string; process: string }[] }[]>([]);
-  /** Chosen before the recording starts; it cannot change while one is running. */
-  const [everyMinutes, setEveryMinutes] = useState<ChunkMinutes | null>(null);
-  /** The session clock at the last cut, so "how long since" is asked of the agent rather than of wall time. */
+  /* СЕССИЙ БОЛЬШЕ НЕТ, и на этом месте стоит сказать, что здесь было. Запись, которая могла выйти длинной,
+   * требовала выбрать ДО старта «резать каждые 30/60 минут»; части ехали с меткой session, таблица их
+   * намеренно не показывала, показывала отдельная полоса, читавшая леджер в localStorage. Пять часов,
+   * записанные обычной записью, эту конструкцию опровергли: выбирать было уже поздно, а нарезанные части
+   * «доехали и пропали» - леджер никто не записал. Теперь причина резать одна - размер, - решение принимает
+   * не человек заранее, а счётчик по ходу, и отрезанное - обычная запись в общем списке. */
+  /** The agent's clock at the last automatic cut, so the card's timer restarts from zero. */
   const lastCutAt = useRef(0);
   /** One cut at a time. The poller runs four times a second and a drain is not instant. */
   const cutting = useRef(false);
-  /** Earliest moment collectHeld may try the account again - see the pacing note inside it. */
-  const retryAt = useRef(0);
   /* What the poller needs, held where its dependencies cannot reach.
    *
    * The effect below is keyed on WHETHER a recording is live and nothing else - there is a paragraph on it
    * there, because it once depended on the object it was itself rewriting four times a second, rebuilt both
-   * intervals every tick, and the one-second window sampler never lived to its first tick. Adding `session`,
-   * `cut` and `end` to those dependencies would bring the same illness back more slowly: `end` changes
-   * identity with every recording made, `cut` with every account reload. So they travel by ref, like
-   * everything else that effect only writes. It also settles the ordering question - `end` is declared below
-   * the effect and cannot be named from inside it. */
-  const sessionNow = useRef<Session | null>(null);
-  const cutNow = useRef<((why: 'clock' | 'size' | 'stop', current: Session) => Promise<{ session: Session; note: string | null; stop: boolean }>) | null>(null);
+   * intervals every tick, and the one-second window sampler never lived to its first tick. Adding `autoCut`
+   * and `end` to those dependencies would bring the same illness back more slowly: `end` changes identity
+   * with every recording made, `autoCut` with every account reload. So they travel by ref, like everything
+   * else that effect only writes. It also settles the ordering question - `end` is declared below the
+   * effect and cannot be named from inside it. */
+  const autoCutNow = useRef<((agentElapsedMs: number) => Promise<void>) | null>(null);
   const endNow = useRef<(() => Promise<void>) | null>(null);
 
   const port = state.port;
@@ -284,122 +272,87 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       return;
     }
     if (health.recording) { setNote('Already recording.'); return; }
-    /* `pending` can now hold the ONLY copy of a collected recording - a held tail whose agent-side spill
-     * was already taken and whose push has not landed yet. Wiping it below would silently destroy the exact
-     * thing "Stop and Save" promised to keep, so starting waits until the retry gets it onto the account. */
-    if (pending.current.length) {
-      setNote('Parts of the last session are still on their way to the account — retrying. '
-        + 'Wait a moment, then press Record again.');
-      return;
-    }
     try {
-      /* A long session thins the pointer path, and that is not a preference - it is what makes the parts fit.
-       * See long-session.ts: movement is 93.75% of the events and 88.6% of the bytes, and at the agent's
-       * 10ms default a half-hour chunk is several times the size the account accepts. */
-      const long = everyMinutes !== null && health.canDrain === true;
-      await recordStart(port, long ? LONG_MOVE_MS : undefined);
+      await recordStart(port);
       /* The one moment this answer exists. Read at the press rather than reckoned at the stop - see the note
        * on `startedAt` in store.ts. */
       startedAt.current = new Date().toISOString();
       seenWindows.current = [];
-      pending.current = [];
       lastCutAt.current = 0;
-      setSession(long && everyMinutes
-        ? {
-          id: `ses_${uid()}`,
-          startedAt: new Date().toISOString(),
-          endedAt: null,
-          everyMinutes,
-          moveMs: LONG_MOVE_MS,
-          parts: [],
-        }
-        : null);
       setLive({ count: 0, elapsedMs: 0 });
-      setNote(long
-        ? `Recording as a session — a part is written every ${everyMinutes} minutes, so this can run all day.`
-        : null);
+      setNote(null);
       refreshAgent();
     } catch (err) {
       setNote(err instanceof Error ? err.message : 'could not start recording');
     }
-  }, [everyMinutes, health, navigate, port]);
+  }, [health, navigate, port]);
 
-  /* Cut one part off a running session.
+  /* Отрезать полную часть от живой записи, не останавливая её.
    *
-   * The order matters and is the opposite of tempting: the events are taken from the agent FIRST and the
-   * account is asked SECOND. Draining is the irreversible half - once the agent has handed them over they
-   * exist nowhere else - so a failed push keeps the part in memory and retries, rather than a failed push
-   * meaning the drain never happened. */
-  const cut = useCallback(async (why: 'clock' | 'size' | 'stop', current: Session) => {
-    const text = why === 'stop' ? await recordStop(port) : await recordDrain(port);
+   * Порядок прежний, и он важен: события забираются у агента ПЕРВЫМИ, аккаунт спрашивается ВТОРЫМ. Дрейн
+   * необратим - после него события существуют только здесь, - поэтому неудачная отправка оставляет их
+   * обычной НЕсинхронизированной записью в сторе: Reconciler и так перепосылает всякую локальную запись без
+   * штампа, и отдельного механизма повторов у отрезов больше нет.
+   *
+   * Отрезанное - обычная запись: имя по моменту отреза, как у всякой остановки. На успехе локальная строка
+   * едет в стор БЕЗ событий (eventsOnAccount) - события уже на аккаунте, а держать 6МБ здесь значило бы
+   * воспроизвести нехватку места, ради которой отрез и существует. Таймер и счётчик начинаются с нуля сами:
+   * буфер агента пустеет от дрейна, часы карточки считаются от lastCutAt. */
+  const autoCut = useCallback(async (agentElapsedMs: number) => {
+    /* Дрейн есть только у агента 0.8.0+. Старый резать на ходу не умеет - его запись просто копится, а
+     * слишком большую разрежет остановка: end() ниже режет всё, что не влезает одной строкой. */
+    if (health?.canDrain !== true) return;
+    const text = await recordDrain(port);
     const { events } = parseMacro(text);
-    const head = partHeader(text);
-    /* The agent's own part number, and the ledger's length as the fallback: an agent that does not write the
-     * `#part` line still produces countable parts. */
-    const n = head.n ?? current.parts.length + 1;
-    const atMs = head.elapsedMs ?? 0;
-
-    /* The windows seen DURING this part, not since the session began. A part is a slice of time and its
-     * window list should describe that slice - otherwise part sixteen claims every application of the day. */
+    /* Окна, увиденные ЗА ЭТУ ЧАСТЬ, не с начала записи: часть - это срез времени, и её список окон должен
+     * описывать срез, иначе шестнадцатая часть дня заявляет все приложения смены. */
     const where = seenWindows.current.slice();
     seenWindows.current = [];
-    lastCutAt.current = atMs;
+    lastCutAt.current = agentElapsedMs;
+    if (!events.length) return;
 
-    if (!events.length) {
-      /* Half an hour with nothing in it is a real answer - the machine was idle - and writing an empty row
-       * for it would put a recording of nothing on the account every half hour. */
-      return { session: current, note: null as string | null, stop: false };
-    }
+    const at = new Date();
+    const two = (v: number) => String(v).padStart(2, '0');
+    const name = `MouseFlow ${two(at.getDate())}/${two(at.getMonth() + 1)} ${
+      two(at.getHours())}:${two(at.getMinutes())}:${two(at.getSeconds())}`;
+    const made: Recording = {
+      id: uid(),
+      name,
+      created: at.toISOString(),
+      startedAt: startedAt.current ?? undefined,
+      events,
+      windows: where,
+    };
+    /* «Таймер с нуля» - это и startedAt следующей части: она началась сейчас. */
+    startedAt.current = at.toISOString();
 
-    const id = uid();
-    const name = partName({ windows: where, n, startedAt: current.startedAt });
-    const entry = ledgerEntry({ id, n, name, events, atMs, onAccount: false });
-
-    /* Everything not yet delivered, oldest first, so a part that failed an hour ago is not overtaken by the
-     * one just cut. */
-    pending.current.push({ part: entry, name, events, windows: where });
-
-    let sent: string[] = [];
-    let problem: string | null = null;
-    /* Части заявляются так же, как целая запись: два прохода Reconciler'а могут наехать друг на друга
-     * ровно тем же способом. */
-    const mine = claim(pending.current.map((p) => p.part.id));
+    const mine = claim([made.id]);
     try {
-      const flows = pending.current.map((p) => partFlow({
-        part: p.part, session: current, name: p.name, events: p.events, windows: p.windows, health,
+      const saved = await push({ flows: [flowFor(made, health)] });
+      if (saved.problems.length) throw new Error(saved.problems.join('; '));
+      const said = saved.stamped?.find((one) => one.id === made.id)?.updated;
+      update((prev) => ({
+        recordings: [...prev.recordings, {
+          ...made,
+          events: [],
+          eventsOnAccount: true,
+          summary: summarize(events),
+          syncedAt: said ?? new Date().toISOString(),
+        }],
       }));
-      const saved = await push({ flows });
-      if (saved.problems.length) problem = saved.problems.join('; ');
-      else sent = pending.current.map((p) => p.part.id);
-      if (sent.length) pending.current = [];
+      setNote(`Full — “${name}” saved to your account (${events.length} events). Recording carries on from zero.`);
       await reload();
     } catch (err) {
-      problem = err instanceof Error ? err.message : 'the account could not be reached';
+      /* События остаются в сторе несинхронизированной записью - Reconciler перепошлёт. Каждая часть по
+       * построению меньше потолка, так что этот повтор не может отравить батч, как отравляла бы одна
+       * слишком большая строка. */
+      update((prev) => ({ recordings: [...prev.recordings, made] }));
+      setNote(`Full — “${name}” is cut and kept here (${events.length} events); the account did not take it `
+        + `yet (${err instanceof Error ? err.message : 'network'}). It retries on its own; recording carries on.`);
     } finally {
       release(mine);
     }
-
-    const delivered = new Set(sent);
-    const parts = [...current.parts, entry].map((p) => (
-      delivered.has(p.id) ? { ...p, onAccount: true } : p
-    ));
-    const next = { ...current, parts };
-
-    const waitingEvents = pending.current.reduce((sum, p) => sum + p.events.length, 0);
-    /* Past this the session stops rather than holding a whole shift in memory - which is the thing being
-     * avoided. Said as what it is, with the count, because the parts are still recoverable until the tab
-     * closes. */
-    const tooMuch = waitingEvents > PENDING_MAX_EVENTS;
-
-    return {
-      session: next,
-      note: problem
-        ? `Part ${n} is recorded but has not reached your account (${problem}). It will be retried with the next part.${
-          tooMuch ? ' Stopping the session — too much is waiting to be sent.' : ''}`
-        : `Part ${n} saved — ${events.length} events${where.length ? ` in ${where.length} window${where.length === 1 ? '' : 's'}` : ''}.`,
-      stop: tooMuch,
-    };
-  }, [health, port, reload]);
+  }, [health, port, reload, update]);
 
   /* Whether a recording is running, which is not the same as whether THIS component knows about it: the
    * agent keeps recording across a remount, a reload and a tab left for an hour, and `health` is how the
@@ -435,56 +388,32 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     const counter = setInterval(async () => {
       try {
         const s = await recordStatus(port);
-        if (!s.recording && (s.count > 0 || sessionNow.current)) {
+        if (!s.recording && s.count > 0) {
           /* The agent ended this recording itself - the macOS menu bar's "Stop and Save" - and HOLDS the
            * events: recording:false with count>0 is a state a stop from this page never leaves behind.
            * Collected through the same door as the Stop button, so it lands on the account identically,
-           * without the user ever bringing this tab forward. A running SESSION goes through the same door
-           * even when the count is zero: an empty tail is a real answer, but "the session finished" still
-           * has to be said and its pending parts still have to be flushed. end() carries its own mutex. */
+           * without the user ever bringing this tab forward. end() carries its own mutex. */
           if (endNow.current) await endNow.current();
           return;
         }
-        setLive({ count: s.count, elapsedMs: s.elapsedMs });
+        /* ЧАСЫ С НУЛЯ ПОСЛЕ КАЖДОГО ОТРЕЗА. Агент ведёт один свой счётчик на всю запись; карточка
+         * показывает время ЭТОЙ части - вычитанием, а не вторым таймером, которому было бы с чего
+         * разъезжаться. Счётчик событий обнуляется сам: дрейн опустошает буфер агента. */
+        setLive({ count: s.count, elapsedMs: Math.max(0, s.elapsedMs - lastCutAt.current) });
         if (!s.recording) setLive(null);
 
-        /* The cut rides the poller that is already asking. `count` is the agent's buffer - what is in THIS
-         * part - and `elapsedMs` is the session clock, so "how long since the last cut" is a subtraction
-         * rather than a second timer that could drift away from the recording it is timing.
+        /* Отрез едет на том же опросе, который и так спрашивает. Одна причина резать - РАЗМЕР: `count` -
+         * буфер агента, и когда он дорос до порога, часть отрезается сама, без выбора заранее. Часы были
+         * прокси размера и умерли вместе с выбором «каждые 30/60 минут».
          *
          * The guard is a ref, not state: this runs four times a second, a drain takes longer than that, and
          * two overlapping drains would hand the same events to two parts. */
-        const running = sessionNow.current;
-        if (running && !cutting.current && cutNow.current) {
-          const why = shouldCut({
-            sinceLastCutMs: s.elapsedMs - lastCutAt.current,
-            eventsBuffered: s.count,
-            everyMinutes: running.everyMinutes,
-          });
-          if (why) {
-            let mustStop = false;
-            let after: Session | null = null;
-            cutting.current = true;
-            try {
-              const out = await cutNow.current(why, running);
-              setSession(out.session);
-              if (out.note) setNote(out.note);
-              mustStop = out.stop;
-              after = out.session;
-            } finally {
-              cutting.current = false;
-            }
-            /* Too much waiting to be sent: stop rather than hold a whole shift in memory. The stop takes
-             * the tail with it, so nothing recorded so far is lost by stopping. AFTER the mutex is
-             * released, because end() takes the same one - held across this call, the emergency stop was a
-             * silent no-op and the session it existed to end recorded on. And the ref is flushed BY HAND
-             * first: setSession only reaches sessionNow at the next React commit, which cannot happen
-             * before this same-task call - end() would cut against the pre-cut session and drop the part
-             * just written from the ledger, orphaning its row on the account. */
-            if (mustStop && endNow.current) {
-              if (after) sessionNow.current = after;
-              await endNow.current();
-            }
+        if (s.count >= CUT_AT_EVENTS && !cutting.current && autoCutNow.current) {
+          cutting.current = true;
+          try {
+            await autoCutNow.current(s.elapsedMs);
+          } finally {
+            cutting.current = false;
           }
         }
       } catch (_) {
@@ -523,35 +452,6 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     if (cutting.current) return;
     cutting.current = true;
     try {
-    /* A session ends by cutting its tail, not by making a recording out of it.
-     *
-     * What /record/stop returns during a session is only what happened since the last cut - everything
-     * before it has already been handed over - so treating it as a whole recording would leave sixteen parts
-     * plus one row that looks like a seventeenth and behaves like something else. */
-    const running = sessionNow.current;
-    if (running) {
-      try {
-        const out = await cut('stop', running);
-        const done = { ...out.session, endedAt: new Date().toISOString() };
-        setSession(null);
-        setLive(null);
-        update((prev) => ({
-          sessions: [...(prev.sessions as Session[]).filter((x) => x.id !== done.id), done],
-        }));
-        const totals = done.parts.reduce((n, p) => n + p.events, 0);
-        const waiting = done.parts.filter((p) => !p.onAccount).length;
-        setNote(done.parts.length
-          ? `Session finished — ${done.parts.length} part${done.parts.length === 1 ? '' : 's'}, ${totals} events.${
-            waiting ? ` ${waiting} could not be sent and is only in this tab.` : ''}`
-          : 'Session finished, and nothing was captured in it.');
-      } catch (err) {
-        setLive(null);
-        setSession(null);
-        setNote(err instanceof Error ? err.message : 'could not stop the session');
-      }
-      return;
-    }
-
     try {
       const text = await recordStop(port);
       setLive(null);
@@ -576,6 +476,38 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
         events,
         windows: where,
       };
+
+      /* СТОП ТОЖЕ РЕЖЕТ. Автоотрез требует агента с дрейном; со старым агентом - или когда отрез по любой
+       * причине не успел - остановка встречает больше событий, чем аккаунт берёт одной строкой. Раньше это
+       * был отказ «unpacks to more than 7813KB» в момент, когда выбирать уже поздно, - пять часов работы,
+       * повисшие на открытой вкладке. Теперь то же лезвие, что у «положить обратно» и импорта. */
+      if (JSON.stringify(events).length > FIT_TARGET_BYTES) {
+        const { recs, flows: partFlows } = splitIntoRecordings({ rec: made, events, health });
+        const mine = claim(recs.map((r) => r.id));
+        setNote(`Sending ${s.count} events to your account as ${recs.length} parts…`);
+        try {
+          const saved = await push({ flows: partFlows });
+          if (saved.problems.length) throw new Error(saved.problems.join('; '));
+          update((prev) => ({
+            recordings: [...prev.recordings, ...recs.map((r) => ({
+              ...r, events: [], eventsOnAccount: true, syncedAt: new Date().toISOString(),
+            }))],
+          }));
+          setNote(`${s.count} events captured (${fmtMs(s.durationMs)}) — more than one row holds, so they `
+            + `are on your account as ${recs.length} recordings, “${made.name} · part 1…${recs.length}”.`);
+          await reload();
+        } catch (err) {
+          /* Части остаются здесь С событиями, несинхронизированными: каждая меньше потолка, Reconciler
+           * перепошлёт их поодиночке. Целая запись на их месте отравляла бы каждый батч синхронизации. */
+          update((prev) => ({ recordings: [...prev.recordings, ...recs] }));
+          setNote(`Captured ${s.count} events as ${recs.length} parts, but syncing failed: ${
+            err instanceof Error ? err.message : 'unknown error'}. They retry on their own.`);
+        } finally {
+          release(mine);
+        }
+        return;
+      }
+
       update((prev) => ({ recordings: [...prev.recordings, made] }));
       /* Счёт событий - НЕ здесь, а после того, как аккаунт подтвердит. Раньше эта строка говорила «54157
        * events captured» ровно в тот момент, когда загрузка ещё не начиналась, и читалась как «готово»:
@@ -646,139 +578,32 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
      * canName:false/canKeys:false - the transcript then asserts "the keyboard was not watched" about an
      * agent that watched it fine. The refs-effect below re-points endNow on every change, so the poller
      * keeps a stable ref regardless. */
-  }, [port, state.recordings.length, update, cut, health]);
+  }, [port, state.recordings.length, update, health, reload]);
 
   /* The refs the poller reads, pointed at this render's functions. In an effect rather than inline, so a
    * render that is thrown away cannot leave a ref aimed at a closure that never committed. */
   useEffect(() => {
-    sessionNow.current = session;
-    cutNow.current = cut;
+    autoCutNow.current = autoCut;
     endNow.current = end;
-  }, [session, cut, end]);
+  }, [autoCut, end]);
 
   /* A recording the agent ended while this page was away - the menu bar's "Stop and Save" with the tab
    * closed or elsewhere - is still HELD by the agent (spilled to its disk, so even an agent restart keeps
-   * it), and /record/start answers 409 until somebody takes delivery.
-   *
-   * A SESSION's held tail is filed into its session, never as a standalone recording: the ledger row with
-   * endedAt:null is the session it belongs to, the tail is pushed as that session's final parts - sliced
-   * under the payload cap, which is the entire reason sessions exist - and the row is finally stamped
-   * ended. Without the slicing, an overnight tail would be one giant push the account refuses. A dangling
-   * session with nothing held is stamped too: "still running" would otherwise be pinned on this page
-   * forever. Plain recordings go through end(), the same door as the Stop button. */
+   * it), and /record/start answers 409 until somebody takes delivery. Collected through end(), the same
+   * door as the Stop button - which also means a huge overnight tail is SPLIT there rather than pushed as
+   * one giant row the account refuses. Сессий с их леджером здесь больше нет: хвост - это просто запись. */
   const collectHeld = useCallback(async () => {
     if (cutting.current) return;
-    /* Paced by a timestamp, not by the effect: a failed push below calls update(), update() remakes
-     * state.sessions, that remakes this callback, and the effect re-runs it AT ONCE - an unpaced hot loop
-     * hammering an account that may be down precisely because it is overloaded. The stamp makes every
-     * retry wait its three seconds no matter how many times the effect fires. */
-    if (Date.now() < retryAt.current) return;
     let s;
     try { s = await recordStatus(port); } catch { return; }
-    if (s.recording) return;
-    /* The NEWEST dangling session, not the first: a row orphaned by an old crash must not swallow a tail
-     * that belongs to yesterday evening's session. */
-    const dangling = ((state.sessions as Session[] | undefined) ?? [])
-      .filter((x) => !x.endedAt)
-      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0] ?? null;
-    if (s.count > 0 && !dangling) {
-      if (endNow.current) await endNow.current();
-      return;
-    }
-    if (!dangling) return;
-    cutting.current = true;
-    try {
-      let sess = dangling;
-
-      /* Taking delivery is irreversible - the agent deletes its spill - so the events are staged into
-       * `pending` BEFORE the account is asked, exactly the order cut() documents: a failed push keeps the
-       * part in memory and retries on the next tick, rather than a failed push meaning the delivery never
-       * happened. The ledger rows are written at once (onAccount:false) so retries never duplicate them. */
-      if (s.count > 0) {
-        const text = await recordStop(port);
-        const { events } = parseMacro(text);
-        const head = partHeader(text);
-        if (events.length) {
-          let n = head.n ?? sess.parts.length + 1;
-          const atMs = head.elapsedMs ?? s.elapsedMs
-            ?? sess.parts.reduce((m, p) => Math.max(m, p.atMs), 0);
-          for (let i = 0; i < events.length; i += EVENTS_MAX_PER_PART) {
-            const slice = events.slice(i, i + EVENTS_MAX_PER_PART);
-            const name = partName({ windows: [], n, startedAt: sess.startedAt });
-            const entry = ledgerEntry({ id: uid(), n, name, events: slice, atMs, onAccount: false });
-            pending.current.push({ part: entry, name, events: slice, windows: [] });
-            sess = { ...sess, parts: [...sess.parts, entry] };
-            n += 1;
-          }
-        }
-      }
-
-      /* Everything waiting - the tail just taken AND any parts an earlier cut failed to send - in one push.
-       * The session is stamped finished only when nothing is left waiting; until then it stays honestly
-       * open and this same check retries every few seconds. */
-      let problem: string | null = null;
-      let flipped = false;
-      if (pending.current.length) {
-        const mine = claim(pending.current.map((p) => p.part.id));
-        try {
-          const flows = pending.current.map((p) => partFlow({
-            part: p.part, session: sess, name: p.name, events: p.events, windows: p.windows, health,
-          }));
-          const saved = await push({ flows });
-          if (saved.problems.length) {
-            problem = saved.problems.join('; ');
-          } else {
-            const sent = new Set(pending.current.map((p) => p.part.id));
-            pending.current = [];
-            sess = { ...sess, parts: sess.parts.map((p) => (sent.has(p.id) ? { ...p, onAccount: true } : p)) };
-            flipped = true;
-          }
-        } catch (err) {
-          problem = err instanceof Error ? err.message : 'the account could not be reached';
-        } finally {
-          release(mine);
-        }
-      }
-      const finished = problem === null;
-      retryAt.current = finished ? 0 : Date.now() + 3000;
-      /* The store is written when something material changed - new ledger entries, a delivery, the stamp.
-       * A retry that failed AGAIN changed nothing, and writing an identical session with a fresh identity
-       * would both churn localStorage and re-arm the effect that calls this. */
-      const staged = sess !== dangling;
-      if (!staged && !flipped && !finished) return;
-      const done = finished ? { ...sess, endedAt: new Date().toISOString() } : sess;
-      update((prev) => ({
-        sessions: [...((prev.sessions as Session[]) ?? []).filter((x) => x.id !== done.id), done],
-      }));
-      /* СКОЛЬКО ДОЕХАЛО, а не сколько их было в реестре.
-       *
-       * `finished` - это `problem === null`, и оно верно ещё и тогда, когда отправлять было НЕЧЕГО: часть,
-       * чьи события остались во вкладке, которая её записала, в pending не попадает, и цикл выше её не
-       * трогает. Реестр при этом её помнит. Печаталось `done.parts.length` - вся длина реестра, - так что
-       * сессия, из которой на аккаунт уехало две части из пяти, сообщала «5 parts on the account», и это
-       * последнее, что человек про неё слышал.
-       *
-       * Считается по onAccount. Когда сходится - прежняя фраза; когда нет - названы обе цифры, потому что
-       * «часть работы потеряна» это ровно то, о чём говорят вслух. */
-      const landed = done.parts.filter((p) => p.onAccount).length;
-      setNote(finished
-        ? (landed === done.parts.length
-          ? `A session stopped at the agent was collected — ${landed} part${
-            landed === 1 ? '' : 's'} on the account.`
-          : `A session stopped at the agent was collected — ${landed} of ${done.parts.length} parts `
-            + 'reached your account. The rest were only ever in the tab that recorded them, and that tab '
-            + 'is gone.')
-        : `Collected from the agent, but the account did not take it: ${problem}. Kept here — retrying.`);
-      if (finished) await reload();
-    } finally {
-      cutting.current = false;
-    }
-  }, [port, state.sessions, health, update, reload]);
+    if (s.recording || s.count === 0) return;
+    if (endNow.current) await endNow.current();
+  }, [port]);
 
   /* Checked every few seconds while this page is open and nothing is live here - not only on the agent's
-   * first appearance, because a held recording can arrive at any moment (the poller dies with its own
-   * error handling, the agent restarts, the menu is pressed while this page shows idle). The check is one
-   * status read; collection is guarded by the same mutex as every other stop. */
+   * first appearance, because a held recording can arrive at any moment (the poller dies with its own error
+   * handling, the agent restarts, the menu is pressed while this page shows idle). The check is one status
+   * read; collection is guarded by the same mutex as every other stop. */
   const agentUp = health != null;
   useEffect(() => {
     if (!agentUp || recording) return;
@@ -786,44 +611,6 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     const check = setInterval(() => { void collectHeld(); }, 3000);
     return () => clearInterval(check);
   }, [agentUp, recording, collectHeld]);
-
-  /* The ledger, kept in the store on every change rather than at the end.
-   *
-   * A session runs for hours. A browser reloaded in the middle of one must still show the parts it already
-   * wrote - they are on the account, and a receipt that only appears when the session ends would make eight
-   * hours of recording look like nothing until the moment it finished. */
-  useEffect(() => {
-    if (!session) return;
-    update((prev) => ({
-      sessions: [
-        ...(prev.sessions as Session[]).filter((s) => s.id !== session.id),
-        session,
-      ],
-    }));
-  }, [session, update]);
-
-  /* Remove a session: its parts off the account, then the receipt.
-   *
-   * That order, because the reverse loses the only list of what to delete. If the tombstones fail the ledger
-   * stays and the row can be pressed again - which is recoverable - whereas a ledger dropped first would
-   * leave sixteen rows on the account that nothing on this page knows how to name. */
-  const forgetSession = useCallback(async (gone: Session) => {
-    const ids = gone.parts.filter((p) => p.onAccount).map((p) => p.id);
-    try {
-      if (ids.length) {
-        const saved = await push({ deleted: ids });
-        if (saved.problems.length) throw new Error(saved.problems.join('; '));
-        await reload();
-      }
-      update((prev) => ({
-        sessions: (prev.sessions as Session[]).filter((x) => x.id !== gone.id),
-      }));
-      setNote(`Session removed — ${ids.length} part${ids.length === 1 ? '' : 's'} deleted from your account.`);
-    } catch (err) {
-      setNote(`The session is still on your account: ${
-        err instanceof Error ? err.message : 'the account could not be reached'}`);
-    }
-  }, [reload, update]);
 
   /* Which recording's transcript is open. One at a time, and owned here rather than in the table, because the
    * panel is a sibling of the whole page rather than of a row. */
@@ -834,9 +621,9 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
    * Written out three times before this, and the third copy is what a fourth reader would have copied. */
   const viewingName = useMemo(() => (viewing
     ? state.recordings.find((rec) => rec.id === viewing)?.name
-      ?? (state.sessions as Session[]).flatMap((s) => s.parts).find((p) => p.id === viewing)?.name
+      ?? flows.find((flow) => flow.id === viewing)?.name
       ?? 'Recording'
-    : 'Recording'), [viewing, state.recordings, state.sessions]);
+    : 'Recording'), [viewing, state.recordings, flows]);
 
   /* Play one recording now. A row is a one-step flow, which is why its repeat and speed are the step's - the
    * alternative was a second replay path that could disagree with the flow builder's. */
@@ -1023,18 +810,19 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     if (!made.length) return;
     const mine = claim(made.map((rec) => rec.id));
     try {
-      /* ТОТ ЖЕ ПОТОЛОК, ЧТО И У ОСТАНОВКИ, и та же нарезка.
+      /* ТОТ ЖЕ ПОТОЛОК, ЧТО И У ОСТАНОВКИ, и то же лезвие.
        *
        * Файл, выгруженный из записи, которая не влезла одной строкой, при импорте не влезет тоже - причина
-       * в весе событий, а не в том, каким путём они пришли. Ровно это и произошло: человек экспортировал
-       * пять часов, импортировал обратно и получил тот же отказ. Экспорт-импорт как способ спасти запись
-       * работает только если то, что импортировано, умеет уехать частями. */
+       * в весе событий, а не в том, каким путём они пришли. Слишком большой файл становится обычными
+       * записями «· part N» - в общем списке, безо всяких сессий. Оригинал в стор не попадает вовсе: его
+       * события уезжают частями, а девять мегабайт, которые никогда не влезут одной строкой, отравляли бы
+       * каждый батч синхронизации (штамп успеха ставится на батч целиком). */
       const singles: Recording[] = [];
-      const split: { rec: Recording; session: Session; flows: ReturnType<typeof partsToFit>['flows'] }[] = [];
+      const split: { rec: Recording; recs: Recording[]; flows: ReturnType<typeof splitIntoRecordings>['flows'] }[] = [];
       for (const rec of made) {
         if (JSON.stringify(rec.events).length <= FIT_TARGET_BYTES) { singles.push(rec); continue; }
-        const fit = partsToFit({ rec, events: rec.events, health });
-        split.push({ rec, session: fit.session, flows: fit.flows });
+        const fit = splitIntoRecordings({ rec, events: rec.events, health });
+        split.push({ rec, recs: fit.recs, flows: fit.flows });
       }
       const saved = await push({
         flows: [...singles.map((rec) => flowFor(rec, health)), ...split.flatMap((s) => s.flows)],
@@ -1042,24 +830,17 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       if (saved.problems.length) {
         setNote(`Imported ${added}, but the account refused ${saved.problems.length}: ${saved.problems.join('; ')}`);
       } else if (split.length) {
-        /* И В ЛЕДЖЕР, И ОРИГИНАЛ ДОЛОЙ - обе половины обязательны, и у каждой своя причина.
-         *
-         * Без леджера части невидимы: таблица исключает их намеренно, полосе сессий их неоткуда взять.
-         * А оставленный локально оригинал - это не безобидный дубль: реконсайлер перепосылает каждую
-         * локальную запись без штампа на каждом такте, отказ «too large» терминальным не считается, и
-         * штамп успеха ставится на весь батч разом - то есть девять мегабайт, которые никогда не влезут,
-         * отравляли бы синхронизацию всего остального. События при этом не теряются: они уже на аккаунте,
-         * частями, и их видно в полосе. */
         update((prev) => ({
-          sessions: [
-            ...(prev.sessions as Session[]).filter((s) => !split.some((x) => x.session.id === s.id)),
-            ...split.map((x) => deliveredSession(x.session)),
+          recordings: [
+            ...prev.recordings.filter((r) => !split.some((x) => x.rec.id === r.id)),
+            ...split.flatMap((x) => x.recs.map((r) => ({
+              ...r, events: [], eventsOnAccount: true, syncedAt: new Date().toISOString(),
+            }))),
           ],
-          recordings: prev.recordings.filter((r) => !split.some((x) => x.rec.id === r.id)),
         }));
         setNote(`Imported ${added}. ${split.map((x) => `"${x.rec.name}" was too big for a single row and `
-          + `is on your account as ${x.session.parts.length} parts`).join('; ')} — they are in the `
-          + 'Sessions strip above the recordings, each with its own transcript.');
+          + `is on your account as ${x.recs.length} recordings, “… · part N”`).join('; ')} — right here in `
+          + 'the list, each with its own transcript.');
       }
       await reload();
     } catch (err) {
@@ -1086,39 +867,32 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
        *
        * Живой случай: пять часов, 154 975 событий, аккаунт отвечает «unpacks to more than 7813KB» - и эта
        * кнопка повторяла ту же отправку и получала тот же ответ. Повторять то, что уже не сработало по
-       * причине, которая не изменится, - это не «попробовать ещё раз», это отнимать время.
-       *
-       * Резать продукт уже умеет: длинные сессии режутся на части, и расшифровка со скиллами читают части
-       * как обычные записи. partsToFit делает то же самое постфактум, по размеру. Части получают
+       * причине, которая не изменится, - это не «попробовать ещё раз», это отнимать время. Части получают
        * детерминированные id, поэтому второе нажатие перезапишет те же строки, а не удвоит пять часов. */
       const fits = JSON.stringify(rec.events).length <= FIT_TARGET_BYTES;
       if (fits) {
         const saved = await push({ flows: [flowFor(rec, health)] });
         if (saved.problems.length) throw new Error(saved.problems.join('; '));
       } else {
-        const { session, flows, bytes } = partsToFit({ rec, events: rec.events, health });
+        const { recs, flows, bytes } = splitIntoRecordings({ rec, events: rec.events, health });
         const saved = await push({ flows });
         if (saved.problems.length) throw new Error(saved.problems.join('; '));
-        /* И В ЛЕДЖЕР ТОЖЕ - иначе части доехали и пропали с глаз. Первая версия этого пути толкала строки
-         * на аккаунт и останавливалась; таблица записей исключает части сессий НАМЕРЕННО (см. orphans ниже),
-         * а полоса сессий читает state.sessions, куда никто не написал. Человек получил «it is on your
-         * account as 2 parts» - и пустой экран: правда про базу, ложь про интерфейс.
-         *
-         * Дальше - ровно то, что делает штатная длинная сессия: события живут на аккаунте, леджер держит
-         * счётчики, локального оригинала больше нет (он и не помещался - ради этого всё и было), а панель
-         * открывает первую часть, чтобы пять часов работы было видно сразу, а не после поисков. */
-        const delivered = deliveredSession(session);
+        /* Части - обычные записи в общем списке, оригинал уходит: его события теперь на аккаунте, а
+         * девять мегабайт, которые никогда не влезут одной строкой, отравляли бы каждый батч
+         * синхронизации. Панель открывает первую часть - пять часов работы видно сразу, а не после
+         * поисков. */
         update((prev) => ({
-          sessions: [
-            ...(prev.sessions as Session[]).filter((s) => s.id !== delivered.id),
-            delivered,
+          recordings: [
+            ...prev.recordings.filter((r) => r.id !== rec.id),
+            ...recs.map((r) => ({
+              ...r, events: [], eventsOnAccount: true, syncedAt: new Date().toISOString(),
+            })),
           ],
-          recordings: prev.recordings.filter((r) => r.id !== rec.id),
         }));
-        setViewing(delivered.parts[0]?.id ?? null);
+        setViewing(recs[0]?.id ?? null);
         setNote(`"${rec.name}" is ${(bytes / 1024 / 1024).toFixed(1)}MB of events — more than one row holds, `
-          + `so it is on your account as ${flows.length} parts. They are in the Sessions strip above the `
-          + 'recordings; each part has its own transcript, and a skill can be made from any of them.');
+          + `so it is on your account as ${recs.length} recordings, “${rec.name} · part 1…${recs.length}” — `
+          + 'right here in the list, each with its own transcript.');
       }
       await reload();
     } finally {
@@ -1235,38 +1009,21 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
                     + 'window titles and control names — is saved to your account.'}
               </Typography>
 
-              {session ? (
-                <span className="shrink-0 text-[0.8rem] text-ink-secondary tabular-nums">
-                  Session · part {session.parts.length + 1} · {session.parts.length} written · a cut every{' '}
-                  {session.everyMinutes} min
-                </span>
-              ) : recording ? null : health?.canDrain !== true ? (
-                /* Said rather than hidden. An agent older than 0.8.0 has no way to hand over events without
-                  * stopping, so a session cannot be offered at all - and a control that simply is not there
-                  * reads as a feature this product does not have. */
+              {recording ? null : health?.canDrain === true ? (
+                /* Одна строка вместо выбора «резать каждые 30/60 минут». Выбор требовал знать ДО старта,
+                 * что запись выйдет длинной, - пять часов, записанные обычной записью, показали, что этого
+                 * не знает никто. Теперь решает размер: дошли до лимита - отрезали в обычную запись, таймер
+                 * с нуля, запись продолжается. Сообщать тут нечего, кроме того, что можно не думать. */
                 <span className="shrink-0 text-[0.8rem] text-ink-inactive">
-                  {health
-                    ? 'Long sessions need agent 0.8.0 — this one stops to hand over what it recorded.'
-                    : ''}
+                  Cuts itself into ordinary recordings when full — it can run all day.
                 </span>
               ) : (
-                <span className="flex shrink-0 items-center gap-1.5">
-                  <span className="text-[0.8rem] text-ink-inactive">Write a part every</span>
-                  {([null, ...CHUNK_CHOICES] as (ChunkMinutes | null)[]).map((choice) => (
-                    <button
-                      key={String(choice)}
-                      type="button"
-                      onClick={() => setEveryMinutes(choice)}
-                      className={cn(
-                        'rounded-md border px-2 py-1 text-[0.78rem] transition-colors duration-base',
-                        everyMinutes === choice
-                          ? 'border-brand-primary/40 bg-brand-primary/15 font-semibold text-brand-primary'
-                          : 'border-stroke text-ink-secondary hover:bg-state-hover',
-                      )}
-                    >
-                      {choice === null ? 'One recording' : `${choice} min`}
-                    </button>
-                  ))}
+                /* Said rather than hidden. An agent older than 0.8.0 has no way to hand over events without
+                  * stopping - its recording is split when you stop instead. */
+                <span className="shrink-0 text-[0.8rem] text-ink-inactive">
+                  {health
+                    ? 'This agent hands events over only on stop — a recording too big for one row is split then.'
+                    : ''}
                 </span>
               )}
             </div>
@@ -1350,14 +1107,6 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       </>
       )}
 
-      {/* Sessions above the recordings table: a session is the bigger object, and its parts are on the
-        * account rather than in this browser, so they do not appear in the table below at all. */}
-      <SessionStrip
-        sessions={state.sessions as Session[]}
-        onView={(partId) => setViewing((was) => (was === partId ? null : partId))}
-        onForget={(gone) => { void forgetSession(gone); }}
-      />
-
       <RecordingsTable
         viewing={viewing}
         /* Answered here because this is the half that can see the account. Save as skill writes a separate
@@ -1372,14 +1121,6 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
           && roleOf(flow) !== SKILL_ROLE
           && !flow.id.startsWith('dr_')
           && !state.recordings.some((rec) => rec.id === flow.id)
-          /* A session part is on the account and not in this browser BY DESIGN - that is the whole mechanism -
-           * so calling it a stray is technically true and substantively wrong. Worse, the strip offers to
-           * "bring them here", which for sixteen parts is exactly the several megabytes of events that made
-           * eight hours impossible in the first place. */
-          /* Из СВОДКИ, когда payload не приехал: список перестал везти события записей, а без этой второй
-           * половины ни одна часть длинной сессии не опознавалась бы как часть - и полоса предложила бы
-           * «забрать сюда» те самые несколько мегабайт, ради которых сессии и режутся. */
-          && !sessionOf(flow.payload ?? (flow.summary?.session ? { session: flow.summary.session } : null))
         ))}
         onAdopt={(flow) => { void adoptOrphan(flow); }}
         onImport={(files) => { void importFiles(files); }}

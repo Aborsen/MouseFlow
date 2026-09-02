@@ -28,7 +28,6 @@
 import type { Flow } from '@/lib/api';
 import type { Recording } from '@/lib/store';
 import { SKILL_ROLE, roleOf } from '@/lib/flow-role';
-import { sessionOf } from './long-session';
 
 /* How much of the account to hold in this browser.
  *
@@ -79,21 +78,15 @@ const sizeOf = (flow: Flow): number => {
   return flow.summary?.bytes ?? 0;
 };
 
-const sessionOfFlow = (flow: Flow) => {
-  if (flow.payload && !flow.payloadOmitted) return sessionOf(flow.payload);
-  return sessionOf(flow.summary?.session ? { session: flow.summary.session } : null);
-};
-
 /* Rows that are recordings, as opposed to everything else sharing the table.
  *
- * A skill is not a recording, a session part lives on the account BY DESIGN - that is the whole point of the
- * chunking - and a row with no events has nothing to bring. Each exclusion is a different reason and none of
- * them is "kind of like a recording". */
+ * A skill is not a recording, and a row with no events has nothing to bring. Части сессий здесь больше НЕ
+ * исключаются: сессии умерли, часть - обычная запись, и строки, оставшиеся на аккаунтах с меткой session в
+ * payload, должны быть видимы как всё остальное - иначе они снова «доехали и пропали», в этот раз навсегда. */
 const isRecording = (flow: Flow): boolean => (
   flow.kind === 'recorded'
   && roleOf(flow) !== SKILL_ROLE
   && !flow.id.startsWith('dr_')
-  && !sessionOfFlow(flow)
   && countOf(flow) > 0
 );
 
