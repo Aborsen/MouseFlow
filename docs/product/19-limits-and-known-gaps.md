@@ -370,7 +370,7 @@ narrows the page to one.
 
 | Area | State |
 |---|---|
-| Web app, Windows agent (pre-0.8.2) | **Verified** on real machines. 94 contract checks, plus suites for the transcript, the sessions, the reconciliation and the gallery. |
+| Web app, Windows agent (pre-0.8.2) | **Verified** on real machines. 94 contract checks, plus suites for the transcript, the split of oversized recordings, the reconciliation and the gallery. |
 | Windows tray + held recordings (0.8.2) | **Verified** on a real Windows machine, 2026-08-21 — items 1–5 of the DEBUG-WINDOWS checklist. |
 | Windows: naming rate at 0.8.2 | **Not re-measured.** The 70.8% / 146-of-151 baseline predates the tray work. |
 | Windows: the tray's failure paths | **Untested rather than disproved** — a tray that fails to appear, a held recording surviving a restart of the agent, the 409 that refuses to record over one. |

@@ -17,7 +17,7 @@ started or stopped, and what moved was the whole list underneath it.
 | Readout | `mm:ss`, the screen size, and while live the event count and window count |
 | Live signal | Sixteen bars driven by the **event count**, not by a clock — so a still meter over a running clock means the recorder is seeing nothing, which is worth noticing. Deterministic in the count, so the movement is data changing rather than an animation running. |
 | The disc | 56px idle (green, play triangle), 80px live (red, stop square), inside a fixed 128px box so the row cannot resize with it. Three staggered ping rings while live, dropped under `prefers-reduced-motion` while the red ring and the clock stay. |
-| Footer | The session chooser when idle, the session readout while live, or whatever the recorder needs to warn about |
+| Footer | One line: while idle, whether this agent cuts a full recording itself; otherwise whatever the recorder needs to warn about |
 
 **Record stays enabled with no agent.** Pressing it navigates to Connections and says so. A disabled
 button is a dead end: it says no and not why.
@@ -56,14 +56,14 @@ In priority order:
    of work is cheap to redo, nine minutes is not.
 3. `canKeys === false` — the agent is current but the keyboard hook failed to install, so time spent
    typing will read as a pause. Everything else records normally.
-4. Otherwise the ordinary caption, plus the session control.
+4. Otherwise the ordinary caption, plus one line about the automatic cut.
 
 ## Recording, moment by moment
 
 Pressing Record calls `POST /record/start` and starts **two pollers at different cadences on purpose**:
 
 - **250 ms** — `GET /record/status`: the count and the elapsed clock, so the meter feels live. This is
-  also where a long session decides to cut, and where a recording ended at the agent is noticed.
+  also where a full recording decides to cut itself, and where a recording ended at the agent is noticed.
 - **1000 ms** — `GET /windows`: the foreground window, appended to a first-touched list. One sample a
   second at most; an application you passed through for half a second is not what the flow is about.
 
@@ -84,73 +84,48 @@ On stop:
 4. What travelled is said plainly: the events, the window titles and the control names go to the user's own
    account. That is what makes the transcript and the Dashboard possible at all.
 
-## Long sessions
+## A recording that outgrows one row
 
-A recording that lasts a working day. Chosen in the footer before recording starts — **One recording** /
-**30 min** / **60 min** — and not changeable while one is running. Requires `canDrain` (agent 0.8.0+);
-when the agent is older the control is replaced by a sentence saying so, because a control that simply is
-not there reads as a feature the product does not have.
+There used to be a whole apparatus here — **sessions**: a 30/60-minute chooser in the footer, parts pushed
+with a `session` mark, a ledger in localStorage, and a Sessions strip above the table. It is gone, and the
+reason is worth the paragraph, because the same forces will offer to bring it back.
 
-### The numbers, and where they come from
+The apparatus rested on one premise: that a person knows *before pressing Record* that the recording will
+come out long. A five-hour recording made as an ordinary recording disproved it — the account refused the
+push at stop (`unpacks to more than 7813KB`), when choosing a session was hours too late. And when the
+rescue cut it into session parts, they arrived and vanished: the recordings table excluded session parts by
+design, and the strip read a ledger nothing had written. The product owner's verdict was the right one:
+no separate block — the recording should cut *itself* when full, into ordinary recordings.
 
-| Constant | Value | Why |
-|---|---|---|
-| `CHUNK_CHOICES` | 30, 60 minutes | Both fit; 30 leaves more room, so it leads. |
-| `LONG_MOVE_MS` | 250 ms | Pointer sampling for a session. **Per session, not global** — a plain start records at the default again. |
-| `EVENTS_MAX_PER_PART` | 4,500 | Cut early at this many, whichever comes first. 400 KB over the measured 69 bytes an event is about 5,700; 4,500 leaves the payload's own wrapper a fifth of a budget it will never need. |
-| `PENDING_MAX_EVENTS` | 12,000 | Past this much *undelivered* recording the session stops rather than hold a whole shift in memory. Two failed half-hour parts at the thinned rate, roughly. |
-| `PULL_BUDGET_BYTES` | 3,000,000 | How much of the account this browser will hold. |
+### How it works now
 
-Thinning the pointer path is the other half of fitting, and it is not a preference: movement is **93.75%
-of the events and 88.6% of the bytes** (measured, not assumed). At the agent's 10 ms default that is up to
-a hundred samples a second of a path nothing reads — the transcript, the story and the analytics all read
-clicks, scrolls, keys and the change of window. At 250 ms the "was somebody at this machine" signal
-survives and a 30-minute part fits inside the 400 KB cap. Replay of a thinned recording is coarser,
-deliberately: a day-long session is recorded to be **read**, not replayed.
+One reason to cut — **size** (the clock was only its proxy) — and one blade behind four doors,
+`splitIntoRecordings` in `long-session.ts`:
 
-### The cut, in order
+| Door | When it cuts |
+|---|---|
+| **Live** | the status poller watches the agent's buffer; at `CUT_AT_EVENTS` (75,000) it drains and saves an ordinary recording, named by the moment like any stop. The card's timer restarts from zero — by subtraction from the agent's own clock, never a second timer. Needs `canDrain` (agent 0.8.0+) |
+| **Stop** | anything too big for one row (`FIT_TARGET_BYTES`, 6MB against the account's 8MB cap) is split right there — this is also what covers an old agent that cannot drain |
+| **Put it back** | the recovery button splits instead of repeating a refusal that cannot change |
+| **Import** | a file exported from a too-big recording splits on the way in |
 
-The order matters and is the opposite of tempting:
+A part is an **ordinary recording**: deterministic id (`<id>-pN`, so a retry rewrites rather than doubles),
+a local row without events (`eventsOnAccount` — the same mechanism recordings already use when the browser
+is full), `summary` precomputed so the table has numbers to show. On a failed push the parts stay local
+*with* events — each under the cap, so the reconciler retries them one by one, and none can poison a sync
+batch the way one oversized row did (the success stamp is all-or-nothing per batch).
 
-1. `POST /record/drain` — takes what has piled up and **keeps recording**. This is the irreversible half:
-   once the agent has handed the events over they exist nowhere else.
-2. The part is staged in memory and written into the ledger at once, as `onAccount: false`.
-3. *Then* the account is asked. A failed push keeps the part and retries it with the next one, rather than
-   a failed push meaning the drain never happened.
+**Why 75,000 events.** The poller only knows the buffer's event count, so the threshold must hold at the
+worst *measured* event weight: 75,000 × 69 bytes ≈ 5.2MB, inside the 6MB target. The number this replaced —
+4,500 — was sized for the old 400KB cap and would cut twenty times too often. Where the events are already
+in hand (stop, restore, import), the weight is not estimated at all: they are serialised once and the
+per-part count comes from their actual size — the five-hour recording weighed ~52 bytes an event, and the
+69-byte constant would have been off by half.
 
-The `#part` line above the events —
-`#part  n=3  elapsedMs=5400123  events=812  moveMs=250  dropped=0` — carries the agent's own part number
-and the **session** clock, so a part knows how far into the session it is without trusting the order the
-parts happened to sync in.
-
-Each part's window list describes **that slice of time**, not the session; otherwise part sixteen claims
-every application of the day. An empty part is not written at all: half an hour with nothing in it is a
-real answer (the machine was idle), and writing a row for it would put a recording of nothing on the
-account every half hour.
-
-### The ledger, and the Sessions strip
-
-The browser keeps counts, never events:
-`{ id, n, name, events, clicks, ms, atMs, cutAt, onAccount }` per part. Written to `localStorage` on every
-change rather than at the end, because a session runs for hours and a browser reloaded halfway must still
-show what it already wrote.
-
-The **Sessions** strip lists them, newest first with a running one always on top:
-
-- Header row: parts, duration, events, clicks and the cut interval, plus `N not sent` in amber when
-  something is waiting. Only that one state gets a colour — a green "all synced" badge on every row is a
-  decoration; this is the state that can lose something.
-- **Parts (n)** expands the list: part number, name, `at <session clock>`, events, clicks, activity, and
-  either *on your account* or **"only in this tab — a reload loses it"**. Said in exactly those words,
-  because "not synced" reads like something that will sort itself out.
-- **View** opens that part's transcript, enabled only when the part is on the account — that is where its
-  events are.
-- **Remove** deletes the session: its parts come off the account **first**, then the ledger row. The
-  reverse order would lose the only list of what to delete.
-
-Session duration is the session clock at the last cut, **not** the sum of the parts: the parts measure the
-gaps between their own events, so summing them loses the gap across every cut — about a second each time,
-and always downward.
+**What was deliberately not kept:** the `LONG_MOVE_MS` pointer thinning (it existed so time-based parts
+would fit; size-based parts fit by construction, so a long recording now keeps full replay fidelity), and
+the session grouping on the account. Rows from the old world still carry `payload.session`; they are simply
+visible now, like everything else — the reconciler no longer hides them.
 
 ## Recordings table
 
