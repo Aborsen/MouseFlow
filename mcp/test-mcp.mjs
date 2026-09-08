@@ -499,7 +499,7 @@ check('a notification gets 202 and no body', /startsWith\('notifications\/'\)[\s
  * fell into it and the in-app banner silently never appeared, which is what a route that swallows unknown
  * queries looks like from the outside: fine. */
 check('the info document does not swallow the other GETs',
-  /const aGetForSomethingElse = req\.query && \(req\.query\.worker \|\| req\.query\.pending\)/.test(route));
+  /const aGetForSomethingElse = req\.query && \(req\.query\.worker \|\| req\.query\.pending \|\| req\.query\.live\)/.test(route));
 const getQueries = [...route.matchAll(/req\.method === 'GET' && req\.query && req\.query\.(\w+)/g)]
   .map((m) => m[1]);
 check('and every GET query it does have is one of them',
@@ -4816,6 +4816,59 @@ group('цель, назвавшая время, откладывается в р
     /insert into user_pref \(user_id, key, value\) values \(\$\{userId\}, 'zone'/.test(appRoute)
       && /insert into user_pref \(user_id, key, value\) values \(\$\{who\.id\}, 'zone'/.test(route));
   check('без зоны часы говорят UTC и говорят, что это UTC', /clockSaid\(Date\.now\(\), loop\.zone \|\| 'UTC'\)/.test(step));
+}
+
+/* --------------------------------------------------- ПРОГОН, КОТОРЫЙ МАШИНА ДЕЛАЕТ САМА, ВИДЕН В ПРИЛОЖЕНИИ
+ *
+ * «В 20:10 открой аутлук» стало расписанием, и в 20:10 агент выполнил его через облачный путь - мимо страницы.
+ * В приложении не было ничего: ни ленты шагов, ни объявления, ни возврата вкладки, о котором человек просил
+ * галочкой, ни строки в истории до перезагрузки. Он прочитал это как «сделал молча», и был прав. Здесь
+ * проверяется проводка, которой страница узнаёт о прогонах, которых не начинала. */
+group('прогон, который машина делает сама, виден на странице Create и объявляется как свой');
+{
+  const route = read('../api/mcp.js');
+  const create = read('../web/src/features/create/CreateView.tsx');
+  const client = read('../web/src/lib/api.ts');
+  const mock = read('../web/src/dev/mock-api.ts');
+
+  check('у маршрута есть ответ «что машина делает сама» - идущее и только что законченное',
+    /req\.query\.live/.test(route)
+      && /q\.state in \('queued', 'claimed'\) or q\.finished_at > now\(\) - interval '3 minutes'/.test(route));
+  check('и он не проваливается в документ о сервере, как когда-то ?pending',
+    /req\.query\.worker \|\| req\.query\.pending \|\| req\.query\.live/.test(route));
+  check('шаги идущего берутся из loop, законченного - из журнала; ни один не выдумывается',
+    /\(loop && Array\.isArray\(loop\.steps\) && loop\.steps\)\s*\n\s*\|\| \(Array\.isArray\(q\.run_steps\) && q\.run_steps\) \|\| \[\]/.test(route));
+  check('и только строки этого человека', /from run_queue q[\s\S]{0,400}?where q\.user_id = \$\{who\.id\}/.test(route));
+
+  check('страница спрашивает это по таймеру, а не один раз',
+    create.includes('const timer = setInterval(() => { void look(); }, 5000);') && client.includes("call<{ ok: true; jobs: LiveJob[] }>('/api/mcp?live=1')"));
+  check('и рисует чужой прогон той же карточкой, с подписью, что он сам по себе',
+    create.includes("byItself: { scheduleId: job.scheduleId }")
+      && /by itself, from a schedule/.test(create) && /by itself, asked from a chat/.test(create));
+  check('окончание на глазах объявляется теми же тремя путями и перечитывает историю',
+    /if \(finished && before !== undefined && before !== job\.state\) \{[\s\S]{0,400}?announceFinished\(\{[\s\S]{0,300}?bringForward,[\s\S]{0,200}?void reload\(\);/.test(create));
+  check('а законченное до того, как страница его увидела, не рисуется - оно уже история',
+    /if \(before === undefined && finished\) \{ seenJobs\.current\.set\(job\.id, job\.state\); continue; \}/.test(create));
+  check('мок отвечает «ничего», а не 404', mock.includes("if (url.startsWith('/api/mcp?live=1'))"));
+}
+
+/* ---------------------------------------------------------------- ОТМЕНИТЬ ОТЛОЖЕННОЕ - С ТОЙ ЖЕ КАРТОЧКИ
+ *
+ * «А как отменить флоу, который уже стал в очередь?» - спросил человек, глядя на карточку, которая говорила
+ * ему «расписание на странице Skills». Ответ «сходи на другую страницу» - это ответ, но не кнопка; отменять
+ * надо там, где только что поставили. */
+group('отложенное отменяется с той же карточки, где было поставлено');
+{
+  const create = read('../web/src/features/create/CreateView.tsx');
+  check('карточка помнит id поставленного расписания',
+    create.includes('scheduled?: { id: string; nextSaid: string }')
+      && /scheduled: \{ id: made\.schedule\.id, nextSaid: made\.schedule\.nextSaid \?\? at \}/.test(create));
+  check('и предлагает отменить, пока оно не сработало',
+    /turn\.scheduled && turn\.state === 'ok'/.test(create) && /const was = turn\.scheduled!;\s*\n\s*try \{\s*\n\s*await scheduleRemove\(was\.id\);/.test(create));
+  check('после отмены сказано, что ничего не запустится, - и кнопка исчезает',
+    /Cancelled — nothing will run at/.test(create) && /scheduled: undefined/.test(create));
+  check('а сработавшее отменить уже нельзя - карточка это знает по live-ответу',
+    /seenJobs/.test(create));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

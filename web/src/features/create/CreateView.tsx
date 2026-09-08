@@ -41,7 +41,7 @@ import {
 } from '@/components/chat';
 import { AGENT_WANTS, localMachine, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
-import { push, scheduleAdd } from '@/lib/api';
+import { type LiveJob, liveJobs, push, scheduleAdd, scheduleRemove } from '@/lib/api';
 import {
   type GateAnswer,
   MAX_WAVES,
@@ -114,6 +114,10 @@ interface Turn {
   plan?: Plan;
   /** Работа была ограничена окном, которое было впереди — и каким именно. */
   pinned?: string | null;
+  /** Прогон, которого эта страница НЕ начинала: машина взяла его сама - по расписанию или из чата. */
+  byItself?: { scheduleId: string | null };
+  /** Цель отложена, и вот расписание, которым: чтобы отменить можно было ЗДЕСЬ, а не на другой странице. */
+  scheduled?: { id: string; nextSaid: string };
 }
 
 const SUGGESTIONS = [
@@ -291,6 +295,76 @@ export const CreateView = () => {
     return () => clearInterval(timer);
   }, [target, running, pollExtension]);
 
+  /* ПРОГОНЫ, КОТОРЫЕ МАШИНА ДЕЛАЕТ САМА.
+   *
+   * «В 20:10 открой аутлук» стало расписанием, и в 20:10 агент выполнил его - через облачный путь, мимо этой
+   * страницы. В приложении при этом не было ничего: ни ленты, ни объявления, ни возврата вкладки, о котором
+   * человек просил галочкой, ни строки в истории до перезагрузки. Он прочитал это как «сделал молча», и был
+   * прав. Отсюда опрос: каждые несколько секунд страница спрашивает, что машина взяла сама, рисует это той же
+   * карточкой, что и свой прогон, и когда оно кончается - объявляет теми же тремя путями и перечитывает
+   * историю. Пять секунд: агент сам спрашивает работу каждые три, а у маршрута общий потолок в минуту на
+   * аккаунт, и две открытые вкладки не должны его исчерпать. */
+  const seenJobs = useRef<Map<string, LiveJob['state']>>(new Map());
+  useEffect(() => {
+    let stop = false;
+    const look = async () => {
+      let jobs: LiveJob[];
+      try {
+        jobs = (await liveJobs()).jobs;
+      } catch (_) {
+        return; // сеть не ответила - карточки остаются какими были
+      }
+      if (stop) return;
+      for (const job of jobs) {
+        const turnId = `q_${job.id}`;
+        const feed: RunEvent[] = job.steps.map((step) => ({
+          type: 'tool' as const, name: step.tool, input: step.input,
+          spent: step.ms ? { shot: step.ms.shot, model: step.ms.model } : undefined,
+        }));
+        const finished = job.state === 'done' || job.state === 'failed';
+        const before = seenJobs.current.get(job.id);
+        /* Законченное до того, как страница его увидела идущим, - не показывается: это история, и она уже
+         * в списке справа. Карточка - для того, что происходит или только что произошло НА ГЛАЗАХ. */
+        if (before === undefined && finished) { seenJobs.current.set(job.id, job.state); continue; }
+        seenJobs.current.set(job.id, job.state);
+
+        const turnState: Turn['state'] = !finished ? 'running' : job.ok ? 'ok' : 'failed';
+        const note = finished ? (job.said ?? (job.ok ? 'Done.' : 'It stopped without finishing.')) : undefined;
+        setTurns((prev) => {
+          const have = prev.find((t) => t.id === turnId);
+          if (!have) {
+            return [...prev, {
+              id: turnId,
+              goal: job.goal ?? job.name,
+              target: 'desktop',
+              at: job.startedAt ?? new Date().toISOString(),
+              feed,
+              state: turnState,
+              note,
+              byItself: { scheduleId: job.scheduleId },
+            }];
+          }
+          return prev.map((t) => (t.id === turnId ? { ...t, feed, state: turnState, note } : t));
+        });
+
+        /* Кончилось на глазах - сказать вслух и перечитать историю. Один раз: состояние сравнивается с тем,
+         * что было увидено раньше, а не с «finished». */
+        if (finished && before !== undefined && before !== job.state) {
+          void announceFinished({
+            outcome: job.ok ? 'ok' : 'failed',
+            said: job.said,
+            port: state.port,
+            bringForward,
+          });
+          void reload();
+        }
+      }
+    };
+    void look();
+    const timer = setInterval(() => { void look(); }, 5000);
+    return () => { stop = true; clearInterval(timer); };
+  }, [bringForward, reload, state.port]);
+
   /* Намерение, до цикла.
    *
    * Один вызов, ничего не выполняется. Скриншот прикладывается только если человек попросил ограничить работу
@@ -433,6 +507,9 @@ export const CreateView = () => {
               note = `Set aside until ${made.schedule.nextSaid ?? at}. It runs then, if this computer is awake `
                 + 'and the agent is running — the schedule is on the Skills page, and a time that passes with '
                 + 'nothing listening is recorded there as missed.';
+              updateLive((t) => ({
+                ...t, scheduled: { id: made.schedule.id, nextSaid: made.schedule.nextSaid ?? at },
+              }));
             } catch (err) {
               ok = false;
               note = `The goal asked to wait until ${at}, but it could not be scheduled: `
@@ -685,7 +762,9 @@ export const CreateView = () => {
             return (
               <div key={turn.id} className="flex flex-col gap-3">
                 <UserTurn
-                  meta={`${turn.target === 'desktop' ? 'on this computer' : 'in this browser'} · ${
+                  meta={`${turn.byItself
+                    ? (turn.byItself.scheduleId ? 'by itself, from a schedule' : 'by itself, asked from a chat')
+                    : turn.target === 'desktop' ? 'on this computer' : 'in this browser'} · ${
                     new Date(turn.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                   }`}
                 >
@@ -793,6 +872,43 @@ export const CreateView = () => {
                     >
                       {turn.note}
                     </Typography>
+                  )}
+
+                  {/* ОТМЕНИТЬ - ЗДЕСЬ. «А как отменить флоу, который уже стал в очередь?» - спросил человек,
+                    * глядя на карточку, которая отсылала его на страницу Skills. Отсылка - не кнопка. Отмена
+                    * снимает расписание тем же DELETE, что и корзина на Skills; скилл-цель остаётся, и это
+                    * сказано. Кнопки нет, когда расписание уже сработало: карточка прогона тогда - другая. */}
+                  {turn.scheduled && turn.state === 'ok' && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        leftSlot={<Square className="size-4" />}
+                        onClick={async () => {
+                          const was = turn.scheduled!;
+                          try {
+                            await scheduleRemove(was.id);
+                            setTurns((prev) => prev.map((t) => (t.id === turn.id ? {
+                              ...t,
+                              scheduled: undefined,
+                              note: `Cancelled — nothing will run at ${was.nextSaid}. The skill it would have `
+                                + 'run stays on the Skills page.',
+                            } : t)));
+                          } catch (err) {
+                            setTurns((prev) => prev.map((t) => (t.id === turn.id ? {
+                              ...t,
+                              note: `It could not be cancelled: ${err instanceof Error ? err.message : 'the account did not answer'}. `
+                                + 'It can also be removed on the Skills page.',
+                            } : t)));
+                          }
+                        }}
+                      >
+                        Cancel it
+                      </Button>
+                      <Typography variant="span" className="text-[0.8rem] text-ink-inactive">
+                        or pause and resume it on the Skills page
+                      </Typography>
+                    </div>
                   )}
 
                   {/* Появляется только на доказанном прогоне - и исчезает, когда скилл уже сделан, потому

@@ -432,6 +432,31 @@ nothing to say what had been decided. So it is announced through the same three 
 logged with its single `defer_until` step. `ok`, because the run ended as it should have; not a false green,
 because the first thing the row says is *Set aside until …* — that the goal has not been carried out yet.
 
+**Cancelling one.** The card that says *Set aside until …* carries a **Cancel it** button, which removes
+the schedule with the same `DELETE` the trash button on the Skills page uses; the goal skill stays. The first
+version of the card only said "the schedule is on the Skills page", and the first question asked about it
+was how to cancel — a pointer to another page is an answer, not a control. Once the time has come and the
+run has happened, the button is gone: that card is a run's, and a run is not cancelled, it is stopped
+(`mouseflow_stop`, or the Stop button while it is live). From a chat, `mouseflow_unschedule` does the same.
+
+## Runs the machine does by itself show up here too
+
+A scheduled run — or one asked for from a chat through MCP — is driven by the agent through the cloud path
+(`?worker=step`), not by this page. The first time one fired, the page showed nothing: Outlook opened and
+closed at 20:10, and in the app there was no feed, no announcement, no tab brought forward despite the box
+being ticked, and no history row until a reload. "It did it silently" was the right description.
+
+So the page asks. Every five seconds while it is open, `GET /api/mcp?live=1` answers with what the machine
+is working on and what finished in the last three minutes — steps from the queue row's `loop` while it runs,
+from `user_run` once it is done. A job the page has not seen becomes a turn card like any other, captioned
+*by itself, from a schedule* (or *asked from a chat*), its feed rebuilt from the steps on every poll. When a
+job the page watched finish changes state, it is announced through the same three paths as a run the page
+drove, honouring the same **switch to this tab** box, and the history is reloaded. A job that was already
+finished the first time the page saw it is not drawn — that is history, and it is already in the list.
+
+Five seconds because the agent's own poll is three, the route has one ceiling per account, and two open tabs
+should not spend it.
+
 ## What is logged
 
 A desktop run is pushed to `user_run` as `kind: 'agent'` with the goal, the model, the outcome, the step

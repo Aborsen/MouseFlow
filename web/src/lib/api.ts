@@ -369,6 +369,22 @@ export interface Schedule {
 
 export const schedules = () => call<{ ok: true; schedules: Schedule[] }>('/api/schedules');
 
+/* Прогоны, которые машина делает САМА - по расписанию или по просьбе из чата, - и о которых страница иначе
+ * не узнала бы. Шаги в форме десктопного цикла: {tool, input, ms}. */
+export interface LiveJob {
+  id: string;
+  state: 'queued' | 'claimed' | 'done' | 'failed';
+  ok: boolean | null;
+  said: string | null;
+  name: string;
+  goal: string | null;
+  scheduleId: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  steps: { tool: string; input: Record<string, unknown>; ms?: { shot: number; model: number; act: number } }[];
+}
+export const liveJobs = () => call<{ ok: true; jobs: LiveJob[] }>('/api/mcp?live=1');
+
 export const scheduleAdd = (body: {
   flowId: string;
   label?: string;

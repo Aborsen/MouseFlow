@@ -890,6 +890,12 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
   /* РАСПИСАНИЯ. Ведёт себя, а не отвечает: постановка возвращает строку, пауза - ту же строку с новым
    * состоянием, удаление подтверждает. Фикстура, которая приняла бы постановку и вернула прежний список,
    * показывала бы работающий экран сломанным - та же ошибка, что однажды сделал мок выхода из аккаунта. */
+  /* Страница Create спрашивает это каждые несколько секунд. У мока нет машины - и ответ говорит «ничего»,
+   * а не 404, который в консоли читался бы как поломка. */
+  if (url.startsWith('/api/mcp?live=1')) {
+    return json(res, 200, { ok: true, jobs: [] });
+  }
+
   if (url.startsWith('/api/schedules')) {
     const asked = new URLSearchParams(url.split('?')[1] || '').get('schedule') || '';
     if (method === 'DELETE') return json(res, 200, { ok: true, id: asked, deleted: true });

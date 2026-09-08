@@ -1869,7 +1869,7 @@ async function handler(req, res) {
    * instead of the thing that was asked for. `?pending=1` fell into it and returned `{name, version}` - no
    * error, no 401, just the wrong answer - and the banner that reads `waiting` from it silently never
    * appeared. A route that swallows unknown queries fails exactly like this: quietly, and looking fine. */
-  const aGetForSomethingElse = req.query && (req.query.worker || req.query.pending);
+  const aGetForSomethingElse = req.query && (req.query.worker || req.query.pending || req.query.live);
   if (req.method === 'GET' && !aGetForSomethingElse) {
     const host = req.headers['x-forwarded-host'] || req.headers.host || 'mouseflowapp.vercel.app';
     res.status(200).json({
@@ -1919,6 +1919,49 @@ async function handler(req, res) {
       waiting: rows.length,
       oldest: rows.length ? rows[0].created_at : null,
       tools: rows.map((r) => r.tool_name).filter(Boolean),
+    });
+    return;
+  }
+
+  /* «ЧТО МАШИНА ДЕЛАЕТ САМА» - спрашивает приложение, открытое на том же экране.
+   *
+   * Прогон по расписанию ведёт агент через ?worker=step, и страница Create о нём не знает ничего: в 20:10
+   * Outlook открылся и закрылся, а в приложении - ни ленты шагов, ни объявления, ни строки в истории до
+   * перезагрузки. Человек прочитал это как «сделал молча». Этот ответ - то, чем страница узнаёт о прогонах,
+   * которых не начинала: что идёт сейчас (шаги - из loop, где облачный цикл их держит между ходами) и что
+   * закончилось только что (шаги - из user_run, потому что loop у законченного обнулён). Три минуты назад -
+   * чтобы окончание, случившееся между двумя опросами, не пропало. Только строки этого человека. */
+  if (req.method === 'GET' && req.query && req.query.live) {
+    const rows = await sql`
+      select q.id, q.flow_id, q.tool_name, q.state, q.ok, q.said, q.loop, q.schedule_id,
+             q.created_at, q.claimed_at, q.finished_at,
+             f.name as flow_name, r.steps as run_steps, r.goal as run_goal, r.started_at as run_started
+      from run_queue q
+      left join user_flow f on f.user_id = q.user_id and f.client_id = q.flow_id
+      left join user_run r on r.user_id = q.user_id and r.client_id = q.id
+      where q.user_id = ${who.id}
+        and (q.state in ('queued', 'claimed') or q.finished_at > now() - interval '3 minutes')
+      order by q.created_at desc limit 5
+    `;
+    res.status(200).json({
+      ok: true,
+      jobs: rows.map((q) => {
+        const loop = q.loop && typeof q.loop === 'object' ? q.loop : null;
+        return {
+          id: q.id,
+          state: q.state,
+          ok: q.ok,
+          said: q.said || null,
+          name: q.flow_name || q.tool_name || q.flow_id,
+          goal: (loop && loop.goal) || q.run_goal || null,
+          scheduleId: q.schedule_id || null,
+          startedAt: (loop && loop.startedAt) || q.run_started || q.claimed_at || q.created_at,
+          finishedAt: q.finished_at,
+          /* Идущий - из loop; законченный - из журнала. Ни один не выдумывается. */
+          steps: (loop && Array.isArray(loop.steps) && loop.steps)
+            || (Array.isArray(q.run_steps) && q.run_steps) || [],
+        };
+      }),
     });
     return;
   }

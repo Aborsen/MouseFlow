@@ -132,6 +132,12 @@ saved as a goal skill so there is something to point at. The whole story is in
 [05 — Create](05-create.md#a-goal-that-names-a-time); the instant is `deferInstant()` in
 `api/_schedule.mjs`, tested beside the rest.
 
+## Watching one run
+
+A scheduled run is driven by the agent, not by a page — so the Create page polls for it and draws it as a
+turn card of its own, captioned *by itself, from a schedule*, with the steps as they happen and the same
+finish announcement a run you started gets. See [05 — Create](05-create.md#runs-the-machine-does-by-itself-show-up-here-too).
+
 ## The three tools
 
 Named separately rather than one tool with an `action` field, for the reason every other tool here is:
