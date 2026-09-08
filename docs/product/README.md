@@ -59,6 +59,9 @@ how a transcript, a dashboard or a document starts asserting things nobody can s
 
 - [`README.md`](../../README.md) — the original project readme. Parts of it predate the React rewrite; where
   it disagrees with these documents, these documents were written from the code.
+- [`docs/QA-ROADMAP.md`](../QA-ROADMAP.md) — where this goes next: the eight items that take the agent from
+  "reliable on short tasks" to nightly regression testing, each with files, schema, tests, docs and a definition
+  of done. Written to be executed by whoever picks it up.
 - [`agent/PROTOCOL.md`](../../agent/PROTOCOL.md) — the normative agent contract. If you are writing a third
   agent, that file is the specification and [10 — Agent protocol](10-agent-protocol.md) is the guided tour.
 - [`docs/DEBUG-MAC.md`](../DEBUG-MAC.md), [`docs/DEBUG-WINDOWS.md`](../DEBUG-WINDOWS.md) — per-platform
