@@ -345,6 +345,57 @@ export const push = async (payload: {
     return body;
   });
 
+/* ------------------------------------------------------------------ расписания
+ *
+ * Тонкие обёртки над /api/schedules. Форму строки задаёт сервер (см. `row` там), потому что местное время
+ * следующего запуска считается по зоне РАСПИСАНИЯ, а не по зоне браузера, который его показывает: человек,
+ * поставивший «09:00 Europe/Kiev» и открывший приложение в Лондоне, должен видеть киевские девять. */
+export interface Schedule {
+  id: string;
+  flowId: string;
+  label: string;
+  rule: string;
+  zone: string;
+  nextAt: string | null;
+  nextSaid: string | null;
+  paused: boolean;
+  pausedWhy: string | null;
+  lastAt: string | null;
+  lastSaid: string | null;
+  runs: number;
+  misses: number;
+  fails: number;
+}
+
+export const schedules = () => call<{ ok: true; schedules: Schedule[] }>('/api/schedules');
+
+export const scheduleAdd = (body: {
+  flowId: string;
+  label?: string;
+  every?: string;
+  at?: string;
+  days?: 'all' | 'weekdays';
+  once?: string;
+  zone?: string;
+  arguments?: Record<string, unknown>;
+}) => call<{ ok: true; schedule: Schedule }>('/api/schedules', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+export const schedulePause = (id: string, paused: boolean) =>
+  call<{ ok: true; schedule: Schedule }>(`/api/schedules?schedule=${encodeURIComponent(id)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ paused }),
+  });
+
+export const scheduleRemove = (id: string) =>
+  call<{ ok: true; deleted: true }>(`/api/schedules?schedule=${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+
 export const devices = () => call<{ ok: true; devices: Device[] }>('/api/sync?tokens=1');
 
 export const mintDeviceToken = (label: string) =>

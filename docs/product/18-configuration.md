@@ -136,23 +136,24 @@ definition.
 | Settle poll / quiet frames / ceiling | 1.5 s / 2 / 120 s | `desktop-engine.ts` |
 | Plan model / timeout / checkpoints | `claude-opus-5` / 45 s / max 6 | `plan.ts` |
 
-### Long sessions (`web/src/features/record/`)
+### Cutting a long recording (`web/src/features/record/`)
 
-| Constant | Value |
-|---|---|
-| `CHUNK_CHOICES` | 30, 60 minutes |
-| `LONG_MOVE_MS` | 250 ms |
-| `EVENTS_MAX_PER_PART` | 4,500 |
-| `PENDING_MAX_EVENTS` | 12,000 |
-| `PULL_BUDGET_BYTES` | 3,000,000 |
-| Held-recording check | every 3 s while the page is open and idle |
-| Retry pacing after a failed push | 3 s |
+Sessions are gone; a recording that will not fit one row cuts itself into ordinary recordings. See
+[04 — Record](04-record.md).
+
+| Constant | Value | File |
+|---|---|---|
+| `FIT_TARGET_BYTES` | 6,000,000 — six of the account's eight, leaving room for the wrapper | `long-session.ts` |
+| `CUT_AT_EVENTS` | 75,000 — where a **live** recording cuts itself, measured against the worst observed 69 bytes an event | `long-session.ts` |
+| `PULL_BUDGET_BYTES` | 3,000,000 | `reconcile.ts` |
+| Held-recording check | every 3 s while the page is open and idle | `RecordView.tsx` |
+| Retry pacing after a failed push | 3 s | `RecordView.tsx` |
 
 ### The server (`api/`)
 
 | Constant | Value | Route |
 |---|---|---|
-| `PAYLOAD_MAX_BYTES` | 400,000 | `sync.js` |
+| `PAYLOAD_MAX_BYTES` | 8,000,000 unpacked | `_payload.mjs`, enforced by `sync.js` |
 | `FLOWS_MAX` / `RUNS_MAX` / `RUNS_RETURNED` | 300 / 100 / 60 | `sync.js` |
 | `PAYLOAD_BUDGET_BYTES` / `HISTORY_MAX` | 380,000 / 5 | `transcript.js` |
 | `BODY_MAX_BYTES` / `STEPS_MAX` | 100,000 / 5,000 | `transcript.js` |
@@ -184,6 +185,10 @@ definition.
 | `ACCESS_TTL_MS` / `REFRESH_TTL_MS` | 30 days / 180 days | `oauth.js` |
 | `CLIENTS_MAX_URIS` | 10 | `oauth.js` |
 | `NAME_MAX` / `TEAMS_PER_PERSON` / `MEMBERS_MAX` | 60 / 20 / 200 | `team.js` |
+| `MIN_EVERY_MINUTES` / `MAX_EVERY_MINUTES` | 15 / 43,200 (30 days) | `_schedule.mjs` — the floor is about a machine somebody is sitting at, not about load |
+| `CATCH_UP_MS` | 1,800,000 (30 min) | `_schedule.mjs` — later than this, a due time is **missed** rather than run |
+| `FAILS_BEFORE_PAUSE` | 3 | `_schedule.mjs` — consecutive failures that stop a schedule by itself |
+| Due schedules per claim tick | 8 | `mcp.js` — `dueNow()` |
 
 ### Pairs that must change together
 
@@ -192,7 +197,8 @@ definition.
 | `IDLE_MAX_MS` (`_transcript.js`) and `EVENT_GAP_MAX_MS` (`insights.js`) | Otherwise the Dashboard and a transcript report different durations for the same recording, and both look authoritative |
 | `RUN_MAX_SECONDS` (`insights.js`) and `hoursOf()` (`web/src/lib/api.ts`) | Same reason, for hours |
 | `PAYLOAD_BUDGET_BYTES` (`transcript.js`) and `PAYLOAD_MAX_BYTES` (`sync.js`) | The edit history has to leave room for the recording, or editing a large recording silently stops it syncing |
-| `EVENTS_MAX_PER_PART` (`long-session.ts`) and `PAYLOAD_MAX_BYTES` | A part must fit the cap |
+| `FIT_TARGET_BYTES` / `CUT_AT_EVENTS` (`long-session.ts`) and `PAYLOAD_MAX_BYTES` (`_payload.mjs`) | A cut piece must fit the cap, or the recording the app just said it saved is one the account refused |
+| `MIN_EVERY_MINUTES` (`_schedule.mjs`) and the interval buttons in `Schedules.tsx` | A button offering something the server refuses is a form that argues with itself |
 | The edit stamp shape | `transcript.js` and `_recording-tools.js` — otherwise "revision 3" means two things and an undo restores the wrong one |
 | `CALL_WAIT_MS` (`mcp.js`) and what an MCP client will hold a request open for | Longer, and a call that is working reports itself as a dropped connection — which is what happened at 110 seconds |
 | The tool table in `mcp.js` and `web/src/features/mcp/facts.ts` | The page and the panel describe what the server offers; the suite checks both directions |

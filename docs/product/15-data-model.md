@@ -238,6 +238,7 @@ anything.
 | `created_at` | |
 | `loop` | jsonb — the decision loop's conversation, for a goal driven from the cloud |
 | `stepping` | boolean — that the cloud path is driving this job |
+| `schedule_id` | the schedule that queued this, if a schedule did (`db/018`). A column rather than a field inside `args`, because `args` is what the person passed to the skill and a service field in there would one day arrive as a parameter |
 
 **Nothing goes back.** A job a machine took and lost is expired by the claim age, never returned to the
 pool: a run that may be half-done must not be repeated blind.
@@ -262,6 +263,39 @@ A queued job that runs writes `user_run` like any other run. Two things identify
 > read. This is a QUEUE — what has been asked for and has not happened yet. One table would mean every
 > reader of the log filtering out work that may never occur, and the first reader to forget would report a
 > request as an action.
+
+## `user_schedule` — a run nobody is there to ask for
+
+`db/018_user_schedule.sql`
+
+A **deferred `run_queue` row**: the same `flow_id`, `tool_name` and `args`, plus when. Deliberately the same
+three columns rather than a shape of its own, so anything that can be queued can be scheduled and nothing
+has to learn a second vocabulary. When one comes due, the check inserts an ordinary queue row — see
+[24 — Schedules](24-schedules.md) for why the clock is the agent's own poll and not a cron.
+
+| Column | Notes |
+|---|---|
+| `id`, `user_id` | `sch_…`, minted on the server |
+| `flow_id`, `tool_name`, `args` | what to run, in `run_queue`'s own words. **Not a foreign key**, for the same reason as above — and a schedule whose skill was deleted pauses itself with that as the reason |
+| `label` | what somebody called it; the skill's name is the fallback. Two schedules on one skill need telling apart |
+| `kind` | `once` \| `every` \| `daily` |
+| `every_minutes` | for `every`. Floor 15, ceiling 30 days |
+| `at_minutes` | minutes from **local** midnight, for `daily` |
+| `days` | `all` \| `weekdays` — two values because those are the two people ask for |
+| `zone` | IANA name, **captured when the schedule is made**. The only timezone stored anywhere in this product: the browser knows its own, the server knows none, and `09:00` with no zone silently means 09:00 UTC |
+| `next_at` | the next instant this is due, in UTC. Everything reduces to this column: the due check is `next_at <= now()` |
+| `paused`, `paused_why` | by hand, or by three failures in a row. Separate from `deleted_at` because "stop for now" and "forget this" are different intentions |
+| `last_at`, `last_said` | what happened last time it came due, in words |
+| `runs`, `misses`, `fails` | |
+| `created_at`, `updated_at`, `deleted_at` | |
+
+**Why the outcome is kept here and not only in the run history.** The most important outcome a schedule has
+— *the machine was asleep, so this did not run* — **never becomes a run**. There is nothing in `user_run` to
+find, so a schedule that silently does nothing would be undiscoverable; `misses` and `last_said` are what
+make it visible.
+
+The one query the due check makes, four times a minute per machine, is served by a partial index:
+`user_schedule_due on (user_id, next_at) where paused = false and deleted_at is null`.
 
 ## `device_token` — pairing the extension
 

@@ -293,6 +293,62 @@ const GALLERY = [
   listing('sk_dev_14', 'Archive finished tickets', 'recorded', 'Moves everything marked done into the archive project.', 'Tomas L.', 0, 8, ['Backlog - Jira - Google Chrome'], 74),
 ];
 
+/* РАСПИСАНИЯ. Три строки, и каждая - отдельное СОСТОЯНИЕ, потому что интересное в этом экране не
+ * «расписание есть», а что с ним стало: одно ждёт своего часа, второе пропустило срок (машина спала - самый
+ * частый исход у любого домашнего расписания, и он обязан быть видимым), третье остановилось само после
+ * трёх неудач подряд. Фикстура, где все три «ждут», учила бы страницу рисовать состояние, которого в жизни
+ * меньше всего. */
+const SCHEDULES = [
+  {
+    id: 'sch_dev_1',
+    flowId: 'dr_dev_1',
+    label: 'Reply that the invoice is approved',
+    rule: 'every day at 09:00 Europe/Kiev',
+    zone: 'Europe/Kiev',
+    nextAt: new Date(Date.now() + 14 * 3_600_000).toISOString(),
+    nextSaid: 'Thu 2026-09-03 09:00 (Europe/Kiev)',
+    paused: false,
+    pausedWhy: null,
+    lastAt: new Date(Date.now() - 10 * 3_600_000).toISOString(),
+    lastSaid: 'ran - Sent the note.',
+    runs: 11,
+    misses: 1,
+    fails: 0,
+  },
+  {
+    id: 'sch_dev_2',
+    flowId: 'dr_dev_2',
+    label: 'Weekly Jira export',
+    rule: 'every 4 hours',
+    zone: 'Europe/Kiev',
+    nextAt: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+    nextSaid: 'Wed 2026-09-02 18:00 (Europe/Kiev)',
+    paused: false,
+    pausedWhy: null,
+    lastAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+    lastSaid: 'missed by 214 minutes - nothing was listening when it was due',
+    runs: 6,
+    misses: 3,
+    fails: 0,
+  },
+  {
+    id: 'sch_dev_3',
+    flowId: 'dr_dev_3',
+    label: 'Archive finished tickets',
+    rule: 'weekdays at 18:30 Europe/Kiev',
+    zone: 'Europe/Kiev',
+    nextAt: null,
+    nextSaid: null,
+    paused: true,
+    pausedWhy: 'stopped after 3 failures in a row',
+    lastAt: new Date(Date.now() - 26 * 3_600_000).toISOString(),
+    lastSaid: 'failed - the window it needed was not open',
+    runs: 4,
+    misses: 0,
+    fails: 3,
+  },
+];
+
 const json = (res: Parameters<Connect.NextHandleFunction>[1], status: number, body: unknown) => {
   res.statusCode = status;
   res.setHeader('content-type', 'application/json');
@@ -831,6 +887,61 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
    *
    * Две ревизии, и вторая - человеческая: у документа, где правок не было, не видно разницы между «как
    * написала модель» и «как поправил тот, кто это делает», а вся страница про эту разницу. */
+  /* РАСПИСАНИЯ. Ведёт себя, а не отвечает: постановка возвращает строку, пауза - ту же строку с новым
+   * состоянием, удаление подтверждает. Фикстура, которая приняла бы постановку и вернула прежний список,
+   * показывала бы работающий экран сломанным - та же ошибка, что однажды сделал мок выхода из аккаунта. */
+  if (url.startsWith('/api/schedules')) {
+    const asked = new URLSearchParams(url.split('?')[1] || '').get('schedule') || '';
+    if (method === 'DELETE') return json(res, 200, { ok: true, id: asked, deleted: true });
+    if (method === 'POST') {
+      /* Тело читается с потока: `req.body` - удобство Vercel, которого в Connect-мидлваре нет. */
+      let text = '';
+      req.on('data', (chunk) => { text += chunk; });
+      req.on('end', () => {
+        let body: Record<string, unknown> = {};
+        try {
+          body = text ? JSON.parse(text) : {};
+        } catch (_) {
+          return json(res, 400, { error: { type: 'schedule_error', message: 'that body is not JSON' } });
+        }
+        if (asked) {
+          const paused = body.paused !== false;
+          return json(res, 200, {
+            ok: true,
+            schedule: {
+              ...SCHEDULES.find((one) => one.id === asked) ?? SCHEDULES[0],
+              id: asked,
+              paused,
+              pausedWhy: paused ? 'paused by hand' : null,
+              nextSaid: paused ? null : 'Thu 2026-09-03 09:00 (Europe/Kiev)',
+            },
+          });
+        }
+        return json(res, 200, {
+          ok: true,
+          schedule: {
+            id: 'sch_dev_new',
+            flowId: String(body.flowId || 'dr_dev_1'),
+            label: String(body.label || 'A skill'),
+            rule: body.every ? `every ${body.every}` : `every day at ${body.at} ${body.zone}`,
+            zone: String(body.zone || 'UTC'),
+            nextAt: new Date(Date.now() + 3_600_000).toISOString(),
+            nextSaid: 'Thu 2026-09-03 09:00 (Europe/Kiev)',
+            paused: false,
+            pausedWhy: null,
+            lastAt: null,
+            lastSaid: null,
+            runs: 0,
+            misses: 0,
+            fails: 0,
+          },
+        });
+      });
+      return;
+    }
+    return json(res, 200, { ok: true, schedules: SCHEDULES });
+  }
+
   if (url.startsWith('/api/docs')) {
     const asked = new URLSearchParams(url.split('?')[1] || '');
     const id = (asked.get('doc') || '').trim();

@@ -405,6 +405,36 @@ than saying plainly that it is not ours. Signing out afterwards is the client's 
 
 ---
 
+## `/api/schedules`
+
+```
+GET    /api/schedules                    the account's schedules, paused ones last
+POST   /api/schedules                    create one
+POST   /api/schedules?schedule=<id>      pause it ({ paused: true }) or resume it ({ paused: false })
+DELETE /api/schedules?schedule=<id>      soft-delete it
+```
+
+Serves the **Skills page** and nothing else. The three actions also exist as MCP tools, and this is not a
+duplicate of them: the two have different bearers — the page arrives with a session cookie, MCP with a device
+token or an OAuth access token — and `whoIsCalling` is the only thing that decides whose schedules these are.
+One route for two kinds of trust would be one permission check for two different ways in.
+
+| | |
+|---|---|
+| Create body | `flowId` **(required)** · `label` · `arguments` · `zone` · and one of `every` (`"1h"`), `at` (`"09:00"`) with `days`, or `once` (an ISO instant) |
+| Rule parsing | `readRule` / `firstAt` from `api/_schedule.mjs` — **the same functions the MCP tools and the due check use**, so a schedule set on the page and one set by voice mean the same thing |
+| A time of day with no `zone` | **400.** The server has no zone; the browser sends its own |
+| A skill that is not on the account | 404 at creation, rather than a schedule that pauses itself an hour later |
+| A time already past | 400 |
+| Resume | **recomputes** `next_at` — the saved one leaked into the past while it was paused |
+| Scoping | every statement filters on the caller's id **inside the `WHERE`**; a foreign id and a missing one get the same 404, so a different answer cannot confirm an id exists |
+| Without `db/018_user_schedule.sql` | 503 naming the migration, not a 500 that looks like a broken page |
+
+The whole feature — what ticks it, what it does when the machine was asleep, and why there is no cron — is
+[24 — Schedules](24-schedules.md).
+
+---
+
 ## `/api/mcp`
 
 ```

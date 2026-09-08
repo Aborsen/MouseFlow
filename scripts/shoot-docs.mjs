@@ -412,6 +412,22 @@ async function main() {
       await wait(500);
       await page.shot('skills-structure.png');
 
+      /* ---- schedules ----
+         Полосой, а не всей страницей: она стоит НАД библиотекой, поэтому в skills.png её видно и так, но
+         на снимке всей страницы это верхняя четверть, где не читаются ни пропуски, ни последний исход - а
+         они и есть то, ради чего этот экран существует (см. Schedules.tsx). */
+      await page.goto(SITE + '/skills', 2500);
+      if (await page.eval("window.__mf.mark('Runs by itself', 'section', 'schedules')")) {
+        await page.shotElement('schedules.png', '[data-shot=\"schedules\"]', 90);
+      }
+      /* И форма - единственное место в продукте, где сказано вслух, в КАКОЙ зоне будет это «09:00». */
+      if (await page.eval("window.__mf.clickAttr('aria-label', 'Schedule ')")) {
+        await wait(700);
+        await page.eval("document.querySelector('[aria-label=\"Time of day\"]')?.scrollIntoView({ block: 'center' })");
+        await wait(400);
+        await page.shot('schedule-form.png');
+      }
+
       await page.goto(SITE + '/skills', 2500);
       if (await page.eval("window.__mf.clickText('Connect extension')")) {
         await wait(1200);

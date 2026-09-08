@@ -146,7 +146,7 @@ connector where half the tools work looks like an intermittent fault rather than
 
 ## What you can ask for
 
-Twelve built-in tools. (There used to be one more for every skill on the account; that is gone - see
+Fifteen built-in tools. (There used to be one more for every skill on the account; that is gone - see
 **Skills as tools** below.)
 
 ![The tools, on the product page](../img/mcp-tools.png)
@@ -224,6 +224,25 @@ What a stop looks like from the other side, verbatim:
 
 > Saved as "MouseFlow 22/08 13:10:16" (r3ft71w43): 46 events, 12 clicks, in MouseFlow, YouTube Music.
 > Nothing about what was typed is in it, by design.
+
+### Running by itself
+
+A schedule is set through these and shows up on the Skills page; the whole of it — what ticks it, what it
+does when the machine was asleep, and why there is no cron — is [24 — Schedules](24-schedules.md).
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `mouseflow_schedule` | `skill` **(required)** · `arguments` · `every`: `"30m"`/`"1h"`/`"1d"` · `at`: `"09:00"` · `days`: `all` \| `weekdays` · `once`: an ISO instant · `zone`: IANA, **required with `at`** · `label` | Sets it up and answers with the rule in words and the next run in the person's own zone. |
+| `mouseflow_schedules` | — | What is set to run by itself: the rule, the next run, and what happened last time — including "missed, nothing was listening". |
+| `mouseflow_unschedule` | `schedule` **(required)** · `pause`: true pauses, false resumes; omit to remove | Stops one. The skill itself is untouched either way. |
+
+Three tools rather than one with an `action`, for the same reason **start** and **stop** are two: an
+instrument is chosen by its name.
+
+**`zone` is required with `at`, and refused without.** The server has no time zone and cannot invent one;
+`"09:00"` with no zone means 09:00 UTC, which for the person who asked for nine in the morning is the middle
+of the night. Every confirmation also states the condition out loud — that a scheduled run happens only
+while that machine is awake and taking work — so a chat cannot promise a run on a closed laptop.
 
 ### The machinery itself
 

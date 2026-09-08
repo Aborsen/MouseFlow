@@ -216,11 +216,10 @@ both landing on the account identically:
 - **While the page was away** — a three-second check runs whenever the agent is up and nothing is live
   here, so a hold made with the tab closed is collected on arrival.
 
-A held **session tail** is filed into its session rather than as a standalone recording: it is sliced under
-`EVENTS_MAX_PER_PART` (which is the entire reason sessions exist — an overnight tail would be one giant
-push the account refuses), pushed as that session's final parts, and the session is stamped finished **only
-when nothing is left waiting**. A dangling session with nothing held is stamped too, or "still running"
-would be pinned on the page forever.
+A held recording goes to the account **the same way a stopped one does**, through the same blade: if its
+events do not fit one row it becomes ordinary recordings named `· part N`, and if they do it is one
+recording. There is no separate filing for a tail — an overnight hold is just a large recording, and large
+is the case the cut already handles.
 
 Guards that matter here, each from a real failure:
 

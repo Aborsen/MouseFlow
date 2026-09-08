@@ -3282,9 +3282,12 @@ group('в api/ нет ничего, что не должно быть маршр
    * а это HTTP-поверхность, которой раньше не было. Писать документ этот маршрут НЕ умеет - написание
    * означает чтение расшифровки, вызов модели и плату за него, и живёт там, где уже действуют правила и
    * потолки ассистента (api/_recording-tools.js, write_process_doc). */
+  /* schedules.js - по той же причине, и это не дубль тулов из mcp.js: у страницы и у MCP разные предъявители
+   * (сессионная кука против токена устройства), а `whoIsCalling` - единственное, что решает, чьи это
+   * расписания. Один маршрут на два доверия означал бы одну проверку прав на два разных входа. */
   const expected = ['account.js', 'admin.js', 'auth.js', 'chat.js', 'chats.js', 'claude.js', 'compose.js',
-    'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js', 'skill-md.js',
-    'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
+    'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js', 'schedules.js',
+    'skill-md.js', 'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
   const unexpected = routes.filter((n) => !expected.includes(n));
   check('и новых маршрутов не появилось незамеченными', unexpected.length === 0, unexpected.join(', '));
   /* И наоборот - что каждый ожидаемый на месте: список, из которого файл пропал, молча перестаёт его
@@ -4661,6 +4664,82 @@ group('расписания тикают опросом агента, а не к
       && served.has('mouseflow_unschedule'));
   check('и условие исполнения сказано в подтверждении, а не в мелком шрифте',
     /only while that machine is awake and taking work/.test(route));
+}
+
+/* ------------------------------------------------------- РАСПИСАНИЯ: ВТОРАЯ ДВЕРЬ И ЕДИНСТВЕННАЯ ЗОНА
+ *
+ * Тулы - половина; у всего в этом продукте есть экран, и у расписания он несёт то, чего не несёт больше
+ * никто: ЧТО С НИМ СТАЛО. Прогон по расписанию случается только пока машина не спит, значит самый частый
+ * исход - «срок прошёл, никто не слушал», и он НЕ становится прогоном: в истории прогонов его нет. Молчащее
+ * расписание - это поломка, которую замечают через неделю, поэтому проверяется, что пропуски названы.
+ *
+ * И ЗОНА. Единственное, чего сервер знать не может: у него нет ни одной, а «09:00» без зоны молча значит
+ * 09:00 UTC - для просившего девять утра это середина ночи. Знает её браузер, поэтому проверяется, что
+ * страница присылает СВОЮ и показывает, какую. */
+group('у расписания есть экран, и он говорит о пропусках и о зоне');
+{
+  const strip = read('../web/src/features/skills/Schedules.tsx');
+  const page = read('../web/src/features/skills/SkillsView.tsx');
+  const client = read('../web/src/lib/api.ts');
+  const appRoute = read('../api/schedules.js');
+
+  check('зону присылает браузер, а не подставляет сервер',
+    /Intl\.DateTimeFormat\(\)\.resolvedOptions\(\)\.timeZone/.test(strip)
+      && /zone,/.test(strip));
+  check('и она показана человеку, а не только отправлена',
+    /Times are read in <strong>\{zone\}<\/strong>/.test(strip));
+
+  /* Пропуск виден только здесь - в истории прогонов его нет. */
+  check('пропуски и неудачи сказаны в строке рядом с запусками',
+    /\{one\.misses\} missed/.test(strip) && /\{one\.fails\} failed/.test(strip));
+  check('и последний исход - словами, теми же, что у тулов',
+    strip.includes('one.lastSaid') && appRoute.includes('lastSaid: one.last_said'));
+  check('условие исполнения - над строками, а не в подсказке под курсором',
+    /only while that computer is awake and taking work/.test(strip));
+
+  /* Время - в зоне РАСПИСАНИЯ, и считает его сервер: браузер, открытый в Лондоне, не имеет права
+   * пересказать киевские девять как семь. */
+  check('следующий срок печатает сервер в зоне расписания, а не браузер в своей',
+    appRoute.includes('nextSaid: one.paused ? null : whenSaid(')
+      && !/toLocaleString|toLocaleTimeString/.test(strip));
+
+  /* Отказ отдельным состоянием: «ничего не запланировано» и «спросить не удалось» - разные факты. */
+  check('неудачный запрос не выглядит как пустой список',
+    strip.includes('The schedules could not be read'));
+  check('а пустой список не рисует рамку с обещанием',
+    strip.includes('if (!rows || !rows.length) return null;'));
+
+  /* Полоса - НАД библиотекой: расписание единственное здесь происходит без человека. */
+  check('полоса стоит над библиотекой, а не под таблицей из сорока строк',
+    page.indexOf('<Schedules reloadKey') > 0
+      && page.indexOf('<Schedules reloadKey') < page.indexOf('Library · '));
+  check('поставленное сразу видно в полосе - ключ, а не надежда на перерисовку',
+    page.includes('setSchedKey((n) => n + 1)') && strip.includes('[load, reloadKey]'));
+  check('и кнопка расписания - в строке скилла, а не под «…»',
+    /aria-label=\{`Schedule \$\{flow\.name\}`\}/.test(page));
+
+  /* Cron-строку никто не ВВОДИТ - ни на экране, ни в теле запроса. Проверяется отсутствие поля и
+   * отсутствие пятизвёздочной строки, а не отсутствие слова: в заголовке файла сказано, почему её нет, и
+   * запретить объяснение значило бы запретить причину. */
+  check('нигде не спрашивается cron-строка - правило читается словами',
+    !/cron\s*[:?]/i.test(strip) && !/\* \* \* \* \*/.test(strip)
+      && !/cron\s*[:?]/i.test(client));
+  check('и выбор назван человеческими словами, а не полями расписания',
+    strip.includes('At a time of day') && strip.includes('Every so often'));
+
+  /* Удаление расписания не имеет права выглядеть как удаление скилла. */
+  check('удаление говорит, что скилл остаётся',
+    strip.includes('The skill itself stays; only the schedule goes.'));
+
+  /* Маршрут страницы отвечает на сессионную куку, а не на токен MCP, и чужое - тем же 404, что и
+   * несуществующее. */
+  check('маршрут страницы спрашивает whoIsCalling и фильтрует по нему в каждом условии',
+    appRoute.includes('await whoIsCalling(req, sql)')
+      && (appRoute.match(/user_id = \$\{userId\}/g) || []).length >= 6);
+  check('чужое расписание и несуществующее - один и тот же ответ',
+    (appRoute.match(/no schedule with that id on this account/g) || []).length >= 2);
+  check('и без применённой миграции страница говорит про миграцию, а не «500»',
+    appRoute.includes('db/018_user_schedule.sql'));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
