@@ -1,7 +1,8 @@
 # MouseFlow → regression QA: the roadmap, in enough detail to be executed
 
 Written 2026-09-09 from the code as it stands at `8eb5c68`, for whoever picks this up next — including a
-smaller model. Every item says what exists today (with file names), what to build, in which order, what the
+smaller model. Every file, function and constant named below was checked against that commit by grep before
+handing over; §0 still says to grep again before trusting any of them, because the code moves. Every item says what exists today (with file names), what to build, in which order, what the
 tests must pin, what the docs must say, and what "done" means. Read §0 first; it is the part that keeps the
 rest from going wrong.
 
@@ -26,7 +27,7 @@ fast, safe and web-first.
 | `web/src/lib/desktop-engine.ts` | The browser driver: the same loop, run from the Create page against the local agent | **Both drivers must change together.** A tool handled in one and not the other is a bug the suite is written to catch. |
 | `api/mcp.js` | MCP over HTTP: tools, the queue (`?worker=claim`, `?worker=step`, `?worker=report`), schedules (`dueNow`), `?live=1`, `?pending=1` | The biggest file. Read the header comments before editing. |
 | `api/_schedule.mjs` | Time arithmetic for schedules and `defer_until` | Executable test `api/_test-schedule.mjs`. |
-| `agent/mouseflow-agent.ps1`, `agent/mouseflow-agent.swift` | The two local agents (Windows, macOS) | **Any new agent behaviour is declared by a capability flag in `/health`** (see `agent/PROTOCOL.md` → "The capability flags"), never inferred from a version. Old agents stay valid. Both implementations, or the new one gated. |
+| `agent/mouseflow-agent.ps1`, `agent/mouseflow-agent.swift` | The two local agents (Windows, macOS) | **Any new agent behaviour is declared by a flat boolean flag in `/health`** — `canSee`, `canWindows`, `canName`, `canKeys`, `canDrain` exist today (see `agent/PROTOCOL.md` → "The capability flags"; the web type is `AgentHealth` in `web/src/lib/agent.ts`, the wanted version is `AGENT_WANTS` there). Never inferred from a version; absent means "too old to say". Old agents stay valid. Both implementations, or the new one gated on its flag. |
 | `agent/PROTOCOL.md` | The normative loopback contract | Change it *with* the agent, in the same commit. |
 | `extension/` | The Chrome extension: element-level recording/replay, `page/run` goals, `skills.js` (selectors, params) | The web half. Selectors, not coordinates. |
 | `db/NNN_*.sql` | Migrations, applied by `npm run migrate` (reads `.env.local`) | Next free number: **019**. Applying to production is the owner's decision — ask, never run unasked. |
@@ -111,9 +112,9 @@ Suggested sequence for one person: **1 → 2 → 5 (v1, end-of-run checks) → 8
    - Where to put the shared logic: a new dependency-free `api/_expect.mjs` exporting `judge({ check, text }, findAnswer) → { pass, how: 'tree', evidence: string }` and `expectSaid(result)` for the tool_result text. Import it from `_step.mjs` and `desktop-engine.ts` (add `api/_expect.d.mts`).
    - The step entry: `{ tool: 'expect', input, outcome: { pass, how, evidence } }`. Extend `RunStep` with `outcome?`.
    - The tool_result to the model: `PASS (tree): "Send" is present at 1074,159` / `FAIL (tree): "Saved" is not on the window in front; visible controls: …` (include the first ~10 names from the find answer's "did you mean" if the agent provides them; otherwise omit).
-3. **Run-level summary.** Migration `db/019_run_checks.sql`: `alter table user_run add column if not exists checks jsonb;` shaped `{ passed: n, failed: n, tiers: { tree: n, dom: n, ocr: n, picture: n } }`. Both drivers compute it from steps at finish (`logRun` in `api/mcp.js`; the `push({ runs })` in `CreateView.tsx` — extend `api/sync.js`'s run upsert to accept `checks`). **Outcome stays the agent's (`ok` = procedure completed); `checks` is the product's.** A run can be `ok` with `checks.failed > 0` — that is a *product* failure and is what item 5 reports as a failed case.
+3. **Run-level summary.** Migration `db/019_run_checks.sql`: `alter table user_run add column if not exists checks jsonb;` shaped `{ passed: n, failed: n, tiers: { tree: n, dom: n, ocr: n, picture: n } }`. Both drivers compute it from steps at finish (`logRun` in `api/mcp.js`; the `push({ runs })` in `CreateView.tsx` — extend the `insert into user_run (…)` in `api/sync.js` (around line 511) *and* its `on conflict … do update set` list to carry `checks`; the `Run` interface in `web/src/lib/api.ts` gets `checks?`). **Outcome stays the agent's (`ok` = procedure completed); `checks` is the product's.** A run can be `ok` with `checks.failed > 0` — that is a *product* failure and is what item 5 reports as a failed case.
 4. **Prompt rule** in `SYSTEM`: *"When the goal says to check, verify, make sure or confirm something, call expect for it — do not decide it from the picture. What expect cannot see (a colour, a layout) you may still describe in note, and finish will say it was seen, not proven."*
-5. **v2 (agent change, capability `assert`)**: `action=assert check=enabled|disabled|checked|unchecked title=<name>` reading `IsEnabled` / `ToggleState` (UIA) and `AXEnabled` / `AXValue` (AX). Gate the extra `check` values on `health.caps.assert`; without it the driver answers "this agent cannot check enabled/disabled; use present/text".
+5. **v2 (agent change, flag `canAssert`)**: `action=assert check=enabled|disabled|checked|unchecked title=<name>` reading `IsEnabled` / `ToggleState` (UIA) and `AXEnabled` / `AXValue` (AX). Gate the extra `check` values on `health.canAssert`; without it the driver answers "this agent cannot check enabled/disabled; use present/text".
 
 **Tests.**
 - `api/_test-expect.mjs` (new, add to `npm test`): `judge()` over every check kind and every find-answer shape (found, not found, several, value present/absent).
@@ -155,13 +156,13 @@ Suggested sequence for one person: **1 → 2 → 5 (v1, end-of-run checks) → 8
    );
    create index if not exists run_artifact_run on run_artifact (user_id, run_id, step_no);
    ```
-   Caps, named in one place (`api/_artifact.mjs`): `ARTIFACT_MAX_BYTES = 250_000` (downscale to ≤1280 wide, JPEG q≈0.6 — the browser driver already has a canvas downscale in `scripts/shoot-docs.mjs`'s approach; the agent sends JPEG already), `ARTIFACTS_PER_RUN = 12` (oldest `expect` pictures dropped first, `failure`/`final` kept), `ARTIFACT_KEEP_DAYS = 30` (pruned lazily on insert for that user — the same "lazy cron" idea as schedules; no Vercel cron).
+   Caps, named in one place (`api/_artifact.mjs`): `ARTIFACT_MAX_BYTES = 250_000` (the agent already sends JPEG at the loop's `shotWidth`, usually 1280 wide; if a frame is over the cap, downscale it on a canvas in the browser driver or refuse it on the cloud path rather than store it — `scripts/shoot-docs.mjs` has an in-browser canvas downscale to copy from), `ARTIFACTS_PER_RUN = 12` (oldest `expect` pictures dropped first, `failure`/`final` kept), `ARTIFACT_KEEP_DAYS = 30` (pruned lazily on insert for that user — the same "lazy cron" idea as schedules; no Vercel cron).
 2. **When to save** (both drivers): on every `expect` (pass or fail — a passing check with its picture is what makes a green report trustworthy), on a `finish ok:false`, on `STILL_GIVE_UP`, on the step-ceiling and out-of-waves endings, and one `final` frame on `finish ok:true` when the goal contained a check word. Never on plain steps.
 3. **Route** `api/artifacts.js` (add to the expected-routes pin): `POST` (session or device token; body `{ runId, stepNo, kind, mime, bytes, w, h, said }`) and `GET ?run=<id>` (list without bytes) / `GET ?id=<id>` (one, with bytes, `Cache-Control: private, max-age=86400`). Scoped by `whoIsCalling` inside every `WHERE`, same 404 for foreign and missing (copy the pattern from `api/schedules.js`).
    - Cloud driver: insert directly from `?worker=step` in `api/mcp.js` (it has `body.shot`), no HTTP hop.
    - Browser driver: `POST /api/artifacts` from `desktop-engine.ts` via a callback `onArtifact` supplied by `CreateView.tsx` (keep the engine free of fetches to app routes, as it is today).
-4. **UI.** In the History card (`Earlier.tsx`): a thumbnail strip per run — one per artifact, labelled by kind and step; click opens full size in the existing dialog style (`@radix-ui/react-dialog` is already used by `SaveDictatedSkill.tsx`). In `mouseflow_run_history` answers: "N pictures kept — see the app".
-5. **Privacy line** in docs: artifacts are pictures of the user's own screen, stored under their account, deleted with the account (`api/account.js` erase must add `run_artifact` — and the pin that counts erased tables).
+4. **UI.** Two places draw a run's steps, both through `describe(asDid(step))`: the History side panel `web/src/features/create/EarlierPanel.tsx` (the list on the right of the Create page, `stepsOf(run)`) and the "created earlier" strip `Earlier.tsx` at the top of the thread. Add a thumbnail strip per run in `EarlierPanel.tsx` — one per artifact, labelled by kind and step; click opens full size in the existing dialog style (`@radix-ui/react-dialog` is already used by `SaveDictatedSkill.tsx`). In `mouseflow_run_history` answers: "N pictures kept — see the app".
+5. **Privacy line** in docs: artifacts are pictures of the user's own screen, stored under their account, deleted with the account — `api/account.js`'s erase deletes every table that holds a person's content and answers with a count per table (see `eraseAccount` in `web/src/lib/api.ts`, whose `deleted` shape lists them); add `run_artifact` to both the route and that type, and to the sentence in `14-http-api.md` → `/api/account`.
 
 **Tests.** `api/_test-artifact.mjs` for the cap/keep logic (pure: which of N artifacts survive). Pins: both drivers save on `expect` and on failure endings; never on plain steps (a regex asserting no artifact call in the ordinary action branch); route in the expected list; erase deletes the table.
 
@@ -180,13 +181,13 @@ Suggested sequence for one person: **1 → 2 → 5 (v1, end-of-run checks) → 8
 **Exists today.**
 - Events: `{ x, y, delayMs, action, context? }` where `context` (from the agent's `#ctx` comment line, click-down only) carries `app`, `window`, `control`, `type`, `role`, `subrole`, `container`, `containerName`, `url` (origin+path). See `web/src/lib/store.ts` → `RecordedEvent` and `agent/PROTOCOL.md` → "`#ctx` — where a click landed".
 - The agent hit-tests the point and climbs for a name; it **never walks the tree** (measured 0.6–4.4 s per window). It already has the element's bounding rectangle in hand during the hit-test (UIA `BoundingRectangle`; AX `AXFrame`) and can get the window rect cheaply (`GetWindowRect` / `AXWindow` frame).
-- Replay: `flowBody` (`web/src/lib/macro.ts`) turns events into the five-column body sent to `/replay`; `#` lines are skipped by every reader. Replay is coordinate-only.
+- Replay: `flowBody` in `api/_macro.mjs` (dependency-free; the web reaches it through the shim `web/src/lib/macro.ts`, and `api/mcp.js` imports it for queued replays) turns events into the five-column body sent to `/replay`; `#` lines are skipped by every reader. Replay is coordinate-only.
 - `find_element` can resolve a name to a centre at replay time.
 
 **Build.**
 
-1. **Record more, in the comment line** (both agents, capability flag `anchors`): extend `#ctx` with `wx wy ww wh` (window rect, screen px) and `ex ey ew eh` (element rect, screen px). Unknown keys are already ignored by old readers. Do it on the same worker resolution that produces `control` — no second traversal (the protocol's rule).
-2. **Parse and keep** them: `RecordedEvent.context.anchor?: { win: [x,y,w,h], el?: [x,y,w,h] }` in `store.ts`; the `#ctx` parser (find it by grepping `#ctx` in `web/src/lib`) keeps them; the transcript ignores them.
+1. **Record more, in the comment line** (both agents, flag `canAnchor`): extend `#ctx` with `wx wy ww wh` (window rect, screen px) and `ex ey ew eh` (element rect, screen px). Unknown keys are already ignored by old readers. Do it on the same worker resolution that produces `control` — no second traversal (the protocol's rule). The Windows agent already reads UIA `BoundingRectangle` during the hit-test; the macOS agent reads `AXFrame`/`AXPosition`.
+2. **Parse and keep** them: `RecordedEvent.context.anchor?: { win: [x,y,w,h], el?: [x,y,w,h] }` in `web/src/lib/store.ts`; the `#ctx` parser is in `web/src/lib/agent.ts` (grep `#ctx`; `RecordView.tsx` also reads the lines) — keep the new keys; the transcript (`api/_transcript.js`) ignores them.
 3. **Re-anchor before replay, in the web (v1)** — a pure module `web/src/features/record/anchor.ts`:
    ```ts
    export function reanchor(ev, nowWin /* current rect of the same window */, hit? /* find result centre */)
@@ -194,7 +195,7 @@ Suggested sequence for one person: **1 → 2 → 5 (v1, end-of-run checks) → 8
    //           → window-relative → raw x,y.  Returns { x, y, how: 'element'|'window'|'raw' }.
    ```
    Before sending a replay body, the Record page asks the agent `/windows` once, matches each click's `context.window`/`app` to a current window, and for clicks with `control` asks `action=find … process=<app> title=<control>` (batched, one per distinct control), then rewrites coordinates. The body sent to `/replay` is unchanged in *format* — old agents replay it as before.
-4. **Agent-side re-anchoring (v2)**: the agent reads `#ctx` in `/replay` and re-resolves per click just-in-time (handles windows that move *during* the replay). Gate on capability `anchoredReplay`. Only after v1 has shown where the drift actually happens.
+4. **Agent-side re-anchoring (v2)**: the agent reads `#ctx` in `/replay` and re-resolves per click just-in-time (handles windows that move *during* the replay). Gate on flag `canAnchoredReplay`. Only after v1 has shown where the drift actually happens.
 5. **Say what happened.** The replay's run record gets `anchored: { element: n, window: n, raw: n }`; the Record page's replay note reads "12 clicks re-anchored to their controls, 3 to their windows, 1 replayed as recorded" — because a replay that silently used raw coordinates is the fragility this is removing.
 
 **Tests.** `web` has no executable tests today; put `reanchor()` under `agent/test-contract.mjs`'s style of executable checks or add `api/_test-anchor.mjs` importing the `.ts` via a tiny `.mjs` twin (mirror the `_schedule.mjs` + `.d.mts` pattern: write `anchor.mjs` dependency-free in `api/`, import it from the web). Pins: `#ctx` keys documented in PROTOCOL; parser keeps unknown keys; both agents emit `wx…eh` behind the flag; the replay note names the three counts.
@@ -216,7 +217,7 @@ Suggested sequence for one person: **1 → 2 → 5 (v1, end-of-run checks) → 8
 
 **Build.**
 
-1. **Segment the body.** `flowBody` already takes a list; add `segmentsOf(events)` in `macro.ts` that splits at each click-down (moves + the click + its release form one segment). Replay segment by segment from the Record page (`replaySteps()` in a new `web/src/features/record/hybrid.ts`), taking a shot before and after each segment that contains a click (`/shot` is cheap; the brain's `gridStirred` decides "changed").
+1. **Segment the body.** `flowBody` already takes a list; add `segmentsOf(events)` beside it in `api/_macro.mjs` (and its `.d.mts`) that splits at each click-down (moves + the click + its release form one segment). Replay segment by segment from the Record page (`replaySteps()` in a new `web/src/features/record/hybrid.ts`), taking a shot before and after each segment that contains a click (`/shot` is cheap; the brain's `gridStirred` decides "changed").
 2. **Repair, bounded.** When a click segment produced no change and the event has `context.control`: start a *mini-goal* through `runOnDesktop` with `goal = "The recorded step meant to click "<control>" (a <role>) in "<window>". The click at x,y changed nothing. Find that control and click it once, then finish."`, `WAVE_TURNS` overridden to 3 (add an `options.turnCap` to `runOnDesktop`), no plan, no checkpoints. Success → continue with the next segment; failure → stop the replay with the reason.
 3. **Mark it.** Each repaired segment is recorded in the run as `{ step, repaired: true, by: 'model', from: [x,y], to: [x',y'] }`; the History card shows a small "repaired" badge; `checks`/report treat a run with repairs as **passed with repairs** (item 5 shows it in amber, never green).
 4. **Learn it, optionally.** Offer "Update the skill with the repaired targets" after a successful repaired run — writes the new `#ctx`/anchors into the recording. Do not do it silently: a recording is evidence of what the person did.
@@ -284,11 +285,11 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
 
 **Levers, in order of certainty.**
 
-1. **Prompt caching** (highest certainty, one file). In `api/_vision.mjs` `callModel`, mark the system prompt and the tools array with `cache_control: { type: 'ephemeral' }`. `SYSTEM` + `TOOLS` are several thousand tokens re-sent every turn; caching cuts time-to-first-token and cost on every turn after the first. Verify with the API's `cache_read_input_tokens` in the response usage; log it into `ms`.
-2. **One action instead of two turns for the commonest pair.** Today "find the button, then click it" is two turns because `click` is aimed at the picture. Add `click_named` (agent action `action=clickname title=<name> [process=]`, capability `clickName`): the agent resolves and clicks in ~30 ms. Expect a third of turns on form-heavy goals to disappear. Both agents; brain tool gated on the flag.
+1. **Prompt caching** (highest certainty, one file). In `api/_vision.mjs`, `payloadFor(body)` is the one place both drivers' requests pass through (`api/_step.mjs` calls `callModel` directly; the browser driver posts to `/api/claude`, which calls the same `callModel`). There, turn `system` into `[{ type: 'text', text, cache_control: { type: 'ephemeral' } }]` and put `cache_control` on the last tool in `tools`. `SYSTEM` + `TOOLS` are several thousand tokens re-sent every turn; caching cuts time-to-first-token and cost on every turn after the first. Nothing sets `cache_control` today (checked). Verify with `usage.cache_read_input_tokens` in the response; log it into `ms`.
+2. **One action instead of two turns for the commonest pair.** Today "find the button, then click it" is two turns because `click` is aimed at the picture. Add `click_named` (agent action `action=clickname title=<name> [process=]`, flag `canClickName`): the agent resolves and clicks in ~30 ms. Expect a third of turns on form-heavy goals to disappear. Both agents; brain tool offered only when the flag is present (`toolsFor` already filters tools by situation — extend it).
 3. **Smaller pictures after a successful read.** `MIN_SHOT_W` and `shotWidth` already exist on the loop (`shrink`). Policy: after any turn in which the model used `read_window`/`find_element`/`expect` successfully, request the next frame at 960 px; go back to `DEFAULT_SHOT_W` after a click that changed the screen.
 4. **Model per turn kind** — only after 1–3, and only where it cannot cause a wrong click: use `claude-haiku-4-5-20251001` for `askForHandoff` (the wave summary) and for the plan preview (`model.plan` setting already exists; make haiku the default there). Do **not** route action turns by heuristics — a cheaper model deciding coordinates is the wrong trade.
-5. **Parallelise in the browser driver**: `shot` and `openWindows` are awaited sequentially in `runWave`; `Promise.all` them.
+5. **Parallelise in the browser driver**: in `runWave`, the frame is fetched and then `openWindows(machine, frame)` is awaited — but only the *conversion* of window rectangles into screenshot pixels needs the frame; the `/windows` request itself does not. Split `openWindows` into fetch and convert, start the fetch alongside `shot`, convert after both arrive.
 
 **Tests.** A pin that `callModel` sets `cache_control` on system and tools; a pin that `click_named` is gated on the capability; the executable step test asserting the shot-width policy.
 
@@ -309,7 +310,7 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
 
 **Build.**
 
-1. **Loopback key** (capability `auth`): at start the agent generates a random 32-byte key, keeps it in memory and in its per-user config, and shows "Copy pairing key" in the tray/menu. Every mutating loopback endpoint (`/do`, `/replay`, `/record/*`, `/account`) requires `X-MouseFlow-Key`; `/health`, `/windows`, `/shot` stay open (discovery and pictures the person can already see — decide `/shot` explicitly and write the reason down). The web keeps the key per port in `localStorage` and, when a 401 comes back, shows "Paste the key from the agent's tray" once. Both agents; the web tolerates agents without the flag.
+1. **Loopback key** (flag `canAuth`, reported by `/health` which stays open): at start the agent generates a random 32-byte key, keeps it in memory and in its per-user config, and shows "Copy pairing key" in the tray/menu. Every mutating loopback endpoint (`/do`, `/replay`, `/record/*`, `/account`) requires `X-MouseFlow-Key`; `/health`, `/windows`, `/shot` stay open (discovery and pictures the person can already see — decide `/shot` explicitly and write the reason down). The web keeps the key per port in `localStorage` and, when a 401 comes back, shows "Paste the key from the agent's tray" once. Both agents; the web tolerates agents without the flag.
 2. **Pin a case to a machine.** Device tokens already have a `label`; the agent sends its label in the claim body (`machine=<label>`); `run_queue` gets `machine` (from `user_case.machine` when queued); `?worker=claim` filters `and (machine is null or machine = ${label})`. A case pinned to "QA-VM" never runs on the owner's laptop.
 3. **The QA machine recipe** (docs, not code): a Windows VM (Hyper-V or Parallels) with the agent autostarted, paired with its own device token labelled "QA-VM", screen never locked (regression needs a desktop), and every case pinned to it. Cost note: one mouse per machine ⇒ cases run serially; 100 cases × 2 min ≈ 3.5 h a night is fine, 1000 is not — a second VM is a second label.
 4. **Stop everything on that machine** stays `mouseflow_stop`; add `mouseflow_stop` per machine label when 2 lands.
@@ -327,7 +328,7 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
 **Goal.** For web products the extension is the primary QA surface: `dom`-tier assertions, artifacts, cases — reusing items 1, 2 and 5's schema.
 
 **Exists today.**
-- The extension records by **selector** (`ev.selector` in `extension/skills.js`), replays by selector, runs free goals (`page/run`, `mouseflow_do`) with a DOM-aware loop in `extension/agent.js`, and logs runs to the account with `extension: <version>`.
+- The extension records by **selector** (`ev.selector` in `extension/skills.js`), replays by selector, runs free goals (`page/run`, received in `extension/background.js` and forwarded by `bridge.js`; `mouseflow_do` from MCP) with its own DOM-aware model loop in `extension/agent.js` (tool_use handling around line 770), and logs runs to the account with `extension: <version>`.
 - Skills of `source: 'web'` are listed and can be queued; the extension claims them (`claimerIsBrowser` in `api/mcp.js`).
 
 **Build.**
@@ -360,7 +361,7 @@ Electron names almost nothing in the accessibility tree, so `tree`-tier `expect`
 ## Appendix B. Checklist for every item
 
 - [ ] Both drivers (`api/_step.mjs`, `web/src/lib/desktop-engine.ts`) — or the extension's loop for item 8.
-- [ ] Both agents, behind a capability flag, with `agent/PROTOCOL.md` updated in the same commit.
+- [ ] Both agents, behind a flat `can*` flag in `/health`, with `agent/PROTOCOL.md` ("The capability flags" and the action table) updated in the same commit, and `AgentHealth` in `web/src/lib/agent.ts` extended.
 - [ ] `api/_brain.d.mts` (and any new `.d.mts`) updated for the web build; `npx tsc --noEmit -p web/tsconfig.json` clean.
 - [ ] Executable test for anything computable; pins in `mcp/test-mcp.mjs` for wiring; `npm test` all green; `npm run build` in `web/`.
 - [ ] Migration numbered, not applied without approval; the expected-routes pin updated for any new `api/*.js`.
