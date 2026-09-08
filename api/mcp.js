@@ -59,6 +59,9 @@ import { fillGoal, missingParams } from '../extension/skills.js';
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, reportSaid, wrap } from './_report.js';
 import { help } from './_help.mjs';
+import {
+  FAILS_BEFORE_PAUSE, decide, firstAt, readRule, ruleOf, ruleSaid, whenSaid,
+} from './_schedule.mjs';
 /* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
 import { overSpend, spentWhy } from './_spend.mjs';
 /* Потолок на вес записи - тот же, что у api/sync.js: два писателя одной колонки не могут иметь два. */
@@ -347,6 +350,99 @@ const HELP_TOOL = {
   },
 };
 
+/* ------------------------------------------------------------------------------- расписания как тулы
+ *
+ * «Юзер говорит, что сделать, и когда» - это буквально разговор, поэтому расписание обязано ставиться
+ * голосом, а не только галочкой на экране. Три тула, а не один с полем `action`: инструмент выбирают по
+ * имени, и «schedule» с action:'delete' - это способ удалить расписание, думая, что создаёшь его.
+ *
+ * ВРЕМЯ ГОВОРИТСЯ СЛОВАМИ, А НЕ CRON-СТРОКОЙ: `every: "1h"`, `at: "09:00"`, `days: "weekdays"`,
+ * `once: "2026-09-03T09:00:00Z"`. Модели проще сказать «каждый час», чем `0 * * * *`, а человеку - проверить.
+ *
+ * ЗОНА ОБЯЗАТЕЛЬНА У ВРЕМЕНИ СУТОК, и это не придирка: у сервера нет часового пояса, у аккаунта тоже, и
+ * «09:00» без зоны молча значит девять утра по UTC - для того, кто просил, середина ночи. Модель знает, где
+ * человек, чаще, чем сервер: она видела это в разговоре. Поэтому тул её СПРАШИВАЕТ, а `readRule` отказывает,
+ * если зона незнакомая, вместо того чтобы посчитать по UTC.
+ */
+const SCHEDULE_TOOL = {
+  name: 'mouseflow_schedule',
+  description: 'Have a skill run by itself, later or repeatedly: "run this every hour", "every weekday at '
+    + '09:00", "once tomorrow at 8". Say the time in words - every: "30m"/"1h"/"1d", or at: "09:00" with '
+    + 'days: "all"/"weekdays", or once: an ISO instant - and pass the person\'s IANA time zone with `at`, '
+    + 'because 09:00 with no zone means 09:00 UTC. A scheduled run only happens while their machine is '
+    + 'awake and taking work; missed times are recorded, never run hours late.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      skill: {
+        type: 'string',
+        description: 'The skill id from mouseflow_recordings. Its exact name works when only one has it.',
+      },
+      arguments: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'What the skill asks for, by the input names mouseflow_recordings listed.',
+      },
+      every: { type: 'string', description: 'Interval: "30m", "1h", "6h", "1d". Minimum 15 minutes.' },
+      at: { type: 'string', description: 'Time of day, "09:00" or "17:30". Needs `zone`.' },
+      days: { type: 'string', enum: ['all', 'weekdays'], description: 'Which days `at` applies to.' },
+      once: { type: 'string', description: 'A single ISO instant, e.g. "2026-09-03T09:00:00Z".' },
+      zone: {
+        type: 'string',
+        description: 'IANA time zone of the person asking, e.g. "Europe/Kiev". Required with `at`.',
+      },
+      label: { type: 'string', description: 'What to call this schedule, if the skill has more than one.' },
+    },
+    required: ['skill'],
+    additionalProperties: false,
+  },
+};
+
+const SCHEDULES_TOOL = {
+  name: 'mouseflow_schedules',
+  description: 'The schedules on this account: what runs, when it next runs, and what happened last time - '
+    + 'including "missed, nothing was listening". Use it before adding another, and to answer "what is set '
+    + 'to run by itself?".',
+  inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+};
+
+const UNSCHEDULE_TOOL = {
+  name: 'mouseflow_unschedule',
+  description: 'Stop a schedule: pause it or remove it. Ask mouseflow_schedules for the ids. Pausing keeps '
+    + 'it for later; removing forgets it. The skill itself is untouched either way.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      schedule: { type: 'string', description: 'The schedule id from mouseflow_schedules.' },
+      pause: {
+        type: 'boolean',
+        description: 'True pauses it, false resumes it. Omit to remove it entirely.',
+      },
+    },
+    required: ['schedule'],
+    additionalProperties: false,
+  },
+};
+
+const scheduleId = () => `sch_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+/* Строка расписания словами - один формат для перечня и для подтверждения, чтобы человек читал то же, что
+ * прочитала модель. */
+const scheduleSaid = (row) => {
+  const rule = ruleOf(row);
+  const bits = [
+    `${row.id}  ${row.label || row.tool_name || row.flow_id}`,
+    `  ${ruleSaid(rule)}`,
+    `  next: ${row.paused ? `paused - ${row.paused_why || 'by hand'}` : whenSaid(
+      row.next_at ? new Date(row.next_at).getTime() : null, rule.zone)}`,
+  ];
+  if (row.last_at) {
+    bits.push(`  last: ${new Date(row.last_at).toISOString()} - ${row.last_said || 'no note'}`);
+  }
+  if (row.runs || row.misses) bits.push(`  ${row.runs} run(s), ${row.misses} missed`);
+  return bits.join('\n');
+};
+
 const BROWSER_GOAL = '#goal.browser';
 
 /* A queue job that is an instruction to the agent rather than a skill. Marked by the flow id, so the claim
@@ -506,6 +602,105 @@ async function agentIsListening(sql, userId) {
     /* Unknown means "no", which leaves the worker able to take goals - the behaviour that existed before
      * any of this. A precedence rule must not be the thing that stops work happening. */
     return false;
+  }
+}
+
+/* ------------------------------------------------------------------------------- расписания
+ *
+ * ЧАСАМИ СЛУЖИТ ОПРОС АГЕНТА, и это главное решение всей функции. Прогон двигает настоящую мышь на чьей-то
+ * машине, значит он может случиться только пока эта машина не спит и берёт работу. Крон в облаке, который
+ * срабатывает в 03:00, срабатывает в пустоту - а курьер агента спрашивает этот аккаунт каждые три секунды и
+ * самим фактом вопроса сообщает, что машина жива. Поэтому «что пора» проверяется здесь, по пути, и второго
+ * планировщика, который может сломаться отдельно, в системе нет.
+ *
+ * ЧТО ЭТО СТАВИТ В ОЧЕРЕДЬ: обычную строку run_queue. Дальше прогон неотличим от того, который попросили
+ * руками, - тот же claim, тот же отчёт, та же история, те же потолки расхода. Ни одной ветки «а это по
+ * расписанию» нигде ниже.
+ */
+async function dueNow(sql, who) {
+  let rows;
+  try {
+    rows = await sql`
+      select id, flow_id, tool_name, args, label, kind, every_minutes, at_minutes, days, zone,
+             next_at, fails
+      from user_schedule
+      where user_id = ${who.id} and deleted_at is null and paused = false
+        and next_at is not null and next_at <= now()
+      order by next_at limit 8
+    `;
+  } catch (_) {
+    /* Таблицы может не быть - миграция не применена на этом деплое. Расписания тогда просто не работают, и
+     * это НЕ повод отказать агенту в работе, которую он пришёл забрать: claim обслуживает ручные запуски и
+     * без них. Молча, потому что сказать здесь некому - это ответ машине, а не человеку. */
+    return;
+  }
+  if (!rows.length) return;
+
+  /* Занято - это состояние аккаунта, а не расписания: одна мышь на все расписания и на ручной запуск тоже.
+   * Спрашивается один раз на такт. */
+  const busyRows = await sql`
+    select id from run_queue where user_id = ${who.id} and state in ('queued', 'claimed') limit 1
+  `;
+  let busy = busyRows.length > 0;
+
+  const nowMs = Date.now();
+  for (const row of rows) {
+    const rule = ruleOf(row);
+    const dueMs = new Date(row.next_at).getTime();
+    const verdict = decide({ rule, dueMs, nowMs, busy });
+
+    if (verdict.do === 'run') {
+      /* Скилл, на который расписание показывает, мог быть удалён. Ставить строку, которая гарантированно
+       * провалится, и делать это каждый час - это шум и расход; расписание останавливается и говорит, что
+       * стало с целью. Команды на '#' проверять не надо - у них нет строки. */
+      if (!String(row.flow_id).startsWith('#')) {
+        const alive = await sql`
+          select 1 from user_flow
+          where user_id = ${who.id} and client_id = ${row.flow_id} and deleted_at is null limit 1
+        `;
+        if (!alive.length) {
+          await sql`
+            update user_schedule set paused = true,
+                   paused_why = 'the skill it runs was deleted',
+                   last_at = now(), last_said = 'the skill it runs no longer exists',
+                   updated_at = now()
+            where id = ${row.id}
+          `;
+          continue;
+        }
+      }
+      const id = jobId();
+      await sql`
+        insert into run_queue (id, user_id, flow_id, tool_name, args, schedule_id)
+        values (${id}, ${who.id}, ${row.flow_id}, ${row.tool_name},
+                ${JSON.stringify(row.args || {})}, ${row.id})
+      `;
+      await sql`
+        update user_schedule
+        set next_at = ${verdict.nextAt ? new Date(verdict.nextAt).toISOString() : null},
+            paused = ${verdict.nextAt === null},
+            paused_why = ${verdict.nextAt === null ? 'it was a one-off, and it has run' : null},
+            last_at = now(), last_said = ${`queued - ${verdict.why}`},
+            runs = runs + 1, fails = 0, updated_at = now()
+        where id = ${row.id}
+      `;
+      /* Одна мышь: остальные подошедшие расписания на этом такте уступают, а не выстраиваются в очередь. */
+      busy = true;
+      continue;
+    }
+
+    /* Пропущено или уступлено - записывается ТАМ, ГДЕ ЧЕЛОВЕК УВИДИТ. Ни то, ни другое не становится
+     * прогоном, поэтому в истории прогонов их нет, и расписание, которое молча ничего не делает, было бы
+     * ровно тем провалом, с которым эта функция иначе уехала бы в продукт. */
+    await sql`
+      update user_schedule
+      set next_at = ${verdict.nextAt ? new Date(verdict.nextAt).toISOString() : null},
+          paused = ${verdict.pause ? true : false},
+          paused_why = ${verdict.pause || null},
+          last_at = now(), last_said = ${verdict.why},
+          misses = misses + ${verdict.do === 'miss' ? 1 : 0}, updated_at = now()
+      where id = ${row.id}
+    `;
   }
 }
 
@@ -676,6 +871,128 @@ async function callTool(sql, who, params, req) {
    * product works should be answerable while a person is still deciding whether to attach a computer. */
   if (asked === HELP_TOOL.name) {
     return say(await help({ question: String(args.question || ''), page: String(args.page || '') }));
+  }
+
+  /* ------------------------------------------------------------------ расписания */
+
+  if (asked === SCHEDULES_TOOL.name) {
+    const rows = await sql`
+      select id, flow_id, tool_name, label, kind, every_minutes, at_minutes, days, zone,
+             next_at, paused, paused_why, last_at, last_said, runs, misses
+      from user_schedule
+      where user_id = ${who.id} and deleted_at is null
+      order by paused, next_at nulls last
+    `;
+    if (!rows.length) {
+      return say('Nothing is scheduled on this account. mouseflow_schedule sets one up - a skill plus when.');
+    }
+    /* Условие исполнения названо ЗДЕСЬ, а не только в описании тула: перечень расписаний - это то место,
+     * где человек спрашивает «почему не сработало», и ответ должен стоять рядом с ответом. */
+    return say(`${rows.length} schedule${rows.length === 1 ? '' : 's'}:\n\n`
+      + rows.map(scheduleSaid).join('\n\n')
+      + '\n\nA scheduled run happens only while that machine is awake and taking work; a time missed '
+      + 'because nothing was listening is recorded as missed rather than run late.');
+  }
+
+  if (asked === SCHEDULE_TOOL.name) {
+    const wanted = String((args && args.skill) || '').trim();
+    if (!wanted) return say('Which skill? Pass the id from mouseflow_recordings as `skill`.', true);
+
+    /* Правило разбирается ДО поиска скилла: «каждые пять минут» отвергается одинаково, существует скилл или
+     * нет, и человеку не приходится сначала узнавать про опечатку в имени, а потом про интервал. */
+    const read = readRule(args);
+    if (read.why) return say(read.why, true);
+    const rule = read.rule;
+    if (rule.kind === 'daily' && !args.zone) {
+      return say('`at` needs `zone` - an IANA name like "Europe/Kiev". Without it "09:00" means 09:00 UTC, '
+        + 'which is the middle of the night for most of the people who ask for nine in the morning.', true);
+    }
+
+    const { skills } = await skillsOf(sql, who.id);
+    let entry = skills.find((f) => f.id === wanted) || null;
+    if (!entry) {
+      const named = skills.filter((f) => String(f.name || '').trim() === wanted);
+      if (named.length > 1) {
+        return say(`${named.length} skills are called "${wanted}". Pass one of these ids instead: `
+          + `${named.map((f) => f.id).join(', ')}.`, true);
+      }
+      if (named.length === 1) entry = named[0];
+    }
+    if (!entry) {
+      return say(`There is no skill "${wanted}" on this account. Ask mouseflow_recordings for what there is.`,
+        true);
+    }
+
+    const at = firstAt(rule, Date.now());
+    if (at == null || at < Date.now() - 60_000) {
+      return say(`That time has already passed (${new Date(at ?? Date.now()).toISOString()}). Pass a moment `
+        + 'in the future, or use `every`/`at` for something that repeats.', true);
+    }
+
+    const id = scheduleId();
+    try {
+      await sql`
+        insert into user_schedule (
+          id, user_id, flow_id, tool_name, args, label,
+          kind, every_minutes, at_minutes, days, zone, next_at
+        ) values (
+          ${id}, ${who.id}, ${entry.id}, ${RUN_TOOL.name},
+          ${JSON.stringify((args && args.arguments) || {})},
+          ${String((args && args.label) || entry.name || '').slice(0, 80)},
+          ${rule.kind}, ${rule.everyMinutes ?? null}, ${rule.atMinutes ?? null},
+          ${rule.days || 'all'}, ${rule.zone}, ${new Date(at).toISOString()}
+        )
+      `;
+    } catch (err) {
+      /* Таблицы нет - миграция не применена. Сказать прямо: «не удалось» без причины отправляет человека
+       * искать ошибку в своём запросе. */
+      return say(`The schedule could not be saved: ${err.message}. If this deployment has not had `
+        + 'db/018_user_schedule.sql applied yet, that is the reason.', true);
+    }
+
+    /* Условие исполнения - в подтверждении, а не в мелком шрифте: расписание, о котором человек думает, что
+     * оно сработает при закрытом ноутбуке, хуже отсутствующего. */
+    const listening = await workerSeen(sql, who.id);
+    return say(`Scheduled: "${entry.name}" ${ruleSaid(rule)}.\n`
+      + `Next run ${whenSaid(at, rule.zone)}. Its id is ${id}.\n\n`
+      + (listening === null
+        ? 'No computer has ever taken work for this account, so nothing will run this until one does: '
+          + `${WHERE}.`
+        : 'It runs only while that machine is awake and taking work. A time missed because nothing was '
+          + 'listening is recorded as missed rather than run hours late, and three failures in a row pause '
+          + 'the schedule.'));
+  }
+
+  if (asked === UNSCHEDULE_TOOL.name) {
+    const id = String((args && args.schedule) || '').trim();
+    if (!id) return say('Which schedule? Pass the id from mouseflow_schedules as `schedule`.', true);
+    const rows = await sql`
+      select id, label, kind, every_minutes, at_minutes, days, zone, next_at
+      from user_schedule where id = ${id} and user_id = ${who.id} and deleted_at is null
+    `;
+    if (!rows.length) return say(`There is no schedule "${id}" on this account.`, true);
+    const row = rows[0];
+
+    if (args.pause === undefined) {
+      await sql`update user_schedule set deleted_at = now(), updated_at = now() where id = ${id}`;
+      return say(`Removed. "${row.label || id}" will not run by itself again; the skill itself is untouched.`);
+    }
+    const pausing = args.pause !== false;
+    /* Снятие с паузы обязано пересчитать срок: сохранённый next_at за время паузы утёк в прошлое, и без
+     * пересчёта расписание сработало бы сразу - или, при большом опоздании, отметилось пропущенным в тот же
+     * миг, что и возобновилось. */
+    const rule = ruleOf(row);
+    const next = pausing ? row.next_at : firstAt(rule, Date.now());
+    await sql`
+      update user_schedule
+      set paused = ${pausing}, paused_why = ${pausing ? 'paused by hand' : null},
+          next_at = ${next ? new Date(typeof next === 'number' ? next : next).toISOString() : null},
+          updated_at = now()
+      where id = ${id}
+    `;
+    return pausing
+      ? say(`Paused. "${row.label || id}" keeps its ${ruleSaid(rule)} and runs nothing until resumed.`)
+      : say(`Resumed. Next run ${whenSaid(typeof next === 'number' ? next : null, rule.zone)}.`);
   }
 
   if (asked === STATUS_TOOL.name) {
@@ -929,6 +1246,10 @@ async function workerRoute(action, req, res, sql, who) {
   if (action === 'claim') {
     if (req.method !== 'POST') return res.status(405).json({ error: 'POST' });
     await stampWorker(sql, who.id);
+
+    /* ЧАСЫ РАСПИСАНИЙ - ЗДЕСЬ. Этот запрос и есть доказательство, что машина жива и берёт работу, так что
+     * подошедшее по расписанию ставится в очередь ровно перед тем, как из неё берут. См. dueNow. */
+    await dueNow(sql, who);
 
     /* Anything a worker took and never came back from. Failed rather than requeued: a run that may be
      * half-done must not be repeated blind, and a person can ask for it again knowing what happened. */
@@ -1371,6 +1692,40 @@ async function workerRoute(action, req, res, sql, who) {
       where id = ${id} and user_id = ${who.id} and state = 'claimed'
       returning id
     `;
+    /* ИСХОД ВОЗВРАЩАЕТСЯ РАСПИСАНИЮ, если прогон завёлся им.
+     *
+     * Иначе расписание, чей скилл перестал работать, будет запускать его каждый час вечно - и у целевого
+     * скилла каждый такой запуск это ещё один платный вызов модели. Три неудачи подряд останавливают его
+     * самого, с причиной; удачный прогон обнуляет счёт, потому что «три подряд» - это про подряд.
+     *
+     * Отдельным запросом и после основного: отчёт о прогоне обязан записаться, даже если расписание за это
+     * время удалили, а таблицы может не быть вовсе на деплое без миграции. */
+    if (done.length === 1) {
+      try {
+        const [job] = await sql`select schedule_id from run_queue where id = ${id}`;
+        if (job && job.schedule_id) {
+          if (ok) {
+            await sql`
+              update user_schedule set fails = 0, last_at = now(),
+                     last_said = ${`ran - ${(said || 'done').slice(0, 200)}`}, updated_at = now()
+              where id = ${job.schedule_id} and user_id = ${who.id}
+            `;
+          } else {
+            await sql`
+              update user_schedule
+              set fails = fails + 1, last_at = now(),
+                  last_said = ${`failed - ${(said || 'no reason given').slice(0, 200)}`},
+                  paused = (fails + 1 >= ${FAILS_BEFORE_PAUSE}),
+                  paused_why = case when fails + 1 >= ${FAILS_BEFORE_PAUSE}
+                    then ${`stopped after ${FAILS_BEFORE_PAUSE} failures in a row`} else paused_why end,
+                  updated_at = now()
+              where id = ${job.schedule_id} and user_id = ${who.id}
+            `;
+          }
+        }
+      } catch (_) { /* см. выше: отчёт уже записан, и это важнее */ }
+    }
+
     /* A job cancelled while it ran is not 'claimed' any more, so nothing is updated - and that is the right
      * answer, not an error: the cancellation is what the person asked for and it stands. */
     return res.status(200).json({ ok: true, recorded: done.length === 1 });
@@ -1547,6 +1902,7 @@ async function handler(req, res) {
         tools: [
           ...READ_TOOLS,
           HELP_TOOL,
+          SCHEDULE_TOOL, SCHEDULES_TOOL, UNSCHEDULE_TOOL,
           START_TOOL, STOP_RECORDING_TOOL,
           STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL, RUN_TOOL, DO_TOOL,
         ],

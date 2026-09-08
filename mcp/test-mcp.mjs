@@ -689,7 +689,7 @@ const missing = [...served].filter((n) => !described.has(n));
 const invented = [...described].filter((n) => !served.has(n));
 check('every tool the server offers is described on the page', missing.length === 0, missing.join(', '));
 check('and nothing is described that the server does not offer', invented.length === 0, invented.join(', '));
-check('twelve of them, so a count in prose can be trusted', served.size === 12, String(served.size));
+check('fifteen of them, so a count in prose can be trusted', served.size === 15, String(served.size));
 /* ПЕРЕИМЕНОВАНИЕ, У КОТОРОГО ЕСТЬ ЦЕНА. mouseflow_runs стало mouseflow_run_history, потому что рядом
  * стоит mouseflow_run, который двигает настоящую мышь: имена на одну `s` - плохая пара для того, что
  * выбирают по имени. Клиент забирает список инструментов один раз при подключении, поэтому старое имя
@@ -4588,6 +4588,79 @@ group('запись режется сама, в обычные записи - с
     !rec.includes('sessionOfFlow') && !rec.includes("from './long-session'"));
   check('выбора «каждые 30/60 минут» больше нет - решает размер, а не человек заранее',
     !view.includes('CHUNK_CHOICES') && !src.includes('CHUNK_CHOICES'));
+}
+
+/* ---------------------------------------------------------------- РАСПИСАНИЯ: ЧЕМ ОНИ ТИКАЮТ
+ *
+ * Арифметика времени проверяется исполнением в api/_test-schedule.mjs - 42 проверки, включая переход на
+ * летнее время в Киеве и полночь. Здесь проверяется ПРОВОДКА, которую вычислить нельзя: чем служат часы, во
+ * что превращается подошедший срок, и куда попадает исход.
+ *
+ * Главное утверждение всей функции: КРОНА НЕТ. Часами служит опрос агента - он и есть доказательство, что
+ * машина жива, - и если кто-нибудь однажды добавит крон в vercel.json, он будет срабатывать в 03:00 в
+ * пустоту, а расписания начнут «работать» на спящем ноутбуке только в отчётах. */
+group('расписания тикают опросом агента, а не кроном в облаке');
+{
+  const route = read('../api/mcp.js');
+  const migration = read('../db/018_user_schedule.sql');
+  const vercel = read('../vercel.json');
+
+  check('часы - это claim: подошедшее ставится в очередь там, где машина спрашивает работу',
+    /await stampWorker\(sql, who\.id\);\s*\n\s*\n\s*\/\*[\s\S]{0,400}?await dueNow\(sql, who\);/.test(route));
+  check('и никакого крона в деплое - он бы срабатывал в пустоту',
+    !/"crons"/.test(vercel) && !/crons:/.test(vercel));
+
+  /* Подошедшее становится ОБЫЧНОЙ строкой очереди - на этом стоит всё остальное: тот же claim, тот же
+   * отчёт, та же история, те же потолки расхода, ни одной ветки «а это по расписанию». */
+  check('срок превращается в обычную строку run_queue, а не в свой вид прогона',
+    route.includes('insert into run_queue (id, user_id, flow_id, tool_name, args, schedule_id)'));
+  check('и очередь помнит расписание отдельной колонкой, а не полем в args',
+    migration.includes('alter table run_queue add column if not exists schedule_id text')
+      && !/args[\s\S]{0,80}schedule_id/.test(migration));
+
+  /* Одна мышь - то же правило, что у ручного запуска: пока машина занята, второй прогон не ставится. */
+  check('занятая машина: подошедшее уступает такт, а не выстраивается в очередь',
+    route.includes("select id from run_queue where user_id = ${who.id} and state in ('queued', 'claimed')")
+      && route.includes('busy = true;'));
+
+  /* Пропуск - самый частый исход у любого домашнего расписания, и он обязан быть виден. */
+  check('пропуск записывается в само расписание - прогоном он не становится, а молчать нельзя',
+    route.includes('misses = misses + ') && migration.includes('last_said'));
+  check('и колонка для этого объяснена тем, что прогоном пропуск не станет',
+    /never becomes a run/.test(migration));
+
+  /* Три неудачи подряд - и оно останавливается само: иначе расписание будет каждый час запускать то, что
+   * каждый час не работает, и у целевого скилла платить за это моделью. */
+  check('исход прогона возвращается расписанию, и три неудачи подряд ставят его на паузу',
+    route.includes('fails = fails + 1') && route.includes('paused = (fails + 1 >= ${FAILS_BEFORE_PAUSE})'));
+  check('а удачный прогон обнуляет счёт - «три подряд» это про подряд',
+    route.includes('set fails = 0, last_at = now()'));
+
+  /* Удалённый скилл: расписание останавливается с причиной, а не ставит в очередь то, что провалится. */
+  check('расписание на удалённый скилл останавливается, а не запускает провал каждый час',
+    route.includes("paused_why = 'the skill it runs was deleted'"));
+
+  /* Отсутствие таблицы (деплой без миграции) не имеет права ломать ручные запуски. */
+  check('без применённой миграции claim продолжает работать',
+    /catch \(_\) \{[\s\S]{0,400}?return;\s*\n\s*\}\s*\n\s*if \(!rows\.length\) return;/.test(route));
+
+  /* Зона - единственное, чего сервер знать не может. Тул её ТРЕБУЕТ, а не подставляет UTC молча. */
+  check('время суток без зоны отвергается, а не считается по UTC',
+    route.includes("if (rule.kind === 'daily' && !args.zone)")
+      && /means 09:00 UTC/.test(route));
+  check('и зона хранится с расписанием, а не берётся у сервера в момент запуска',
+    migration.includes('zone         text        not null default'));
+
+  /* Снятие с паузы обязано пересчитать срок: сохранённый next_at за время паузы утёк в прошлое. */
+  check('снятие с паузы пересчитывает срок, а не срабатывает мгновенно',
+    route.includes('const next = pausing ? row.next_at : firstAt(rule, Date.now());'));
+
+  /* Три тула, а не один с полем action: инструмент выбирают по имени. */
+  check('три отдельных тула - создать, перечислить, остановить',
+    served.has('mouseflow_schedule') && served.has('mouseflow_schedules')
+      && served.has('mouseflow_unschedule'));
+  check('и условие исполнения сказано в подтверждении, а не в мелком шрифте',
+    /only while that machine is awake and taking work/.test(route));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

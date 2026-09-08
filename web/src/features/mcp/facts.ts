@@ -104,6 +104,31 @@ export const MCP_TOOLS: McpTool[] = [
       + 'and which applications the work happened in.',
     args: 'days: 1–365 (30)',
   },
+  /* РАСПИСАНИЯ - в «Doing», и это не мелочь классификации: они происходят ТОЛЬКО пока машина не спит и
+     берёт работу. Часами служит её собственный опрос аккаунта, а не таймер в облаке - см. dueNow в
+     api/mcp.js. */
+  {
+    name: 'mouseflow_schedule',
+    group: 'machine',
+    what: 'Has a skill run by itself - every hour, every weekday at 09:00, or once tomorrow morning. The '
+      + 'time is said in words rather than as a cron line, and a time of day needs your zone: 09:00 with no '
+      + 'zone means 09:00 UTC.',
+    args: 'skill: id (required) · arguments · every: "1h" · at: "09:00" · days: all | weekdays · once: ISO '
+      + '· zone: IANA · label',
+  },
+  {
+    name: 'mouseflow_schedules',
+    group: 'machine',
+    what: 'What is set to run by itself: the rule, the next run in your own time zone, and what happened '
+      + 'last time - including "missed, nothing was listening".',
+    args: '',
+  },
+  {
+    name: 'mouseflow_unschedule',
+    group: 'machine',
+    what: 'Pauses a schedule, resumes it, or removes it. The skill itself is untouched.',
+    args: 'schedule: id (required) · pause: true | false (omit to remove)',
+  },
   {
     name: 'mouseflow_start_recording',
     group: 'machine',
