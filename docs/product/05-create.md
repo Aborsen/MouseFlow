@@ -416,9 +416,12 @@ the Save-as-skill button uses — and the schedule points at that. On the cloud 
 run, and the goal is carried out by a model that is now told it is 19:41.
 
 The instant is computed by `deferInstant()` in `api/_schedule.mjs`, never by the model: `"19:41"` is the
-next 19:41 in the user's zone; a time that is now, within the last thirty minutes, or within the next minute
+next 19:41 in the user's zone; a time that is now, within the last thirty minutes, or within the next ten seconds
 is refused with the current time and *carry on* — so a run started by the schedule at 19:41 does not defer
-itself to tomorrow.
+itself to tomorrow. The forward tolerance was a minute at first, and *"at 19:54"* said at 19:53:29 was carried
+out on the spot — thirty-one seconds early and never queued; a time that has not arrived is *later* however
+little of it is left, and the prompt now says so too: the model does not judge that a time is close enough,
+the tool answers whether it is now.
 
 **It ends like any other run**, and both halves of that were wrong when this first shipped. The deferral
 returned early: past the announcement, so somebody who set a task for 19:41 and went to another window got

@@ -578,10 +578,11 @@ async function runWave(o: {
         const zone = hereZone();
         const when = deferInstant({ at: use.input?.at, zone });
         if (when.atMs == null) {
-          results.push({
-            type: 'tool_result', tool_use_id: use.id, is_error: true,
-            content: when.why ?? 'that is not a time I can read',
-          });
+          const why = when.why ?? 'that is not a time I can read';
+          results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: why });
+          /* В фид, а не только модели: «в 19:54», исполненное в 19:53, читалось как прогон, который время
+           * проигнорировал, - а он его СПРОСИЛ и получил ответ. Ответ должен видеть и человек. */
+          onEvent({ type: 'text', text: why });
           cut = true;
           continue;
         }

@@ -4764,6 +4764,11 @@ group('цель, назвавшая время, откладывается в р
     /name: 'defer_until'/.test(brain));
   check('и правило сказано прямо: никаких таймеров, скриптов и серий ожиданий ради времени',
     /NEVER BUILD A TIMER/.test(brain) && /no repeated waits/.test(brain));
+  /* «В 19:54» в 19:53:29 исполнилось сразу: модель сама решила, что это «почти сейчас». Решает не она. */
+  check('и модель не решает сама, что «почти сейчас»: любое ненаступившее время идёт в defer_until',
+    /ANY time that has not arrived yet goes to defer_until/.test(brain) && /You do not judge that it is close enough/.test(brain));
+  check('а отказ «это сейчас» показывается в фиде, а не только модели',
+    /onEvent\(\{ type: 'text', text: why \}\);/.test(engine));
   check('и время суток больше не читается с такс-бара - оно приходит с каждым снимком',
     /clock \? ` It is \$\{clock\}\.` : ''/.test(brain) && /Never read it off a taskbar/.test(brain));
 

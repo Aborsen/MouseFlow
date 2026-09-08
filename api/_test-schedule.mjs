@@ -13,7 +13,7 @@
  * Запуск: node api/_test-schedule.mjs
  */
 import {
-  CATCH_UP_MS, DEFER_GRACE_MS, FAILS_BEFORE_PAUSE, MAX_EVERY_MINUTES, MIN_EVERY_MINUTES,
+  CATCH_UP_MS, DEFER_GRACE_MS, DEFER_NOW_MS, FAILS_BEFORE_PAUSE, MAX_EVERY_MINUTES, MIN_EVERY_MINUTES,
   clockOf, clockSaid, decide, deferInstant, firstAt, instantOf, minutesOf, nextAfter, readRule, ruleSaid,
   whenSaid,
 } from './_schedule.mjs';
@@ -204,8 +204,13 @@ group('цель, назвавшая время впереди, откладыв�
   check('время, прошедшее давно, значит завтра', iso(morning.atMs) === '2026-09-09T06:00:00.000Z', iso(morning.atMs));
   const instant = deferInstant({ at: '2026-09-08T16:20:00Z', zone: KIEV, nowMs: now });
   check('ISO-мгновение берётся как есть', instant.atMs === Date.parse('2026-09-08T16:20:00Z'));
-  const within = deferInstant({ at: '2026-09-08T16:13:40Z', zone: KIEV, nowMs: now });
-  check('мгновение в пределах минуты - тоже «сейчас»', within.now === true);
+  /* «В 19:54» в 19:53:29 было исполнено сразу, на тридцать одну секунду раньше: допуск вперёд был минутой.
+   * Ещё не наступившее время - «потом», сколько бы до него ни оставалось. */
+  const halfMinute = deferInstant({ at: '2026-09-08T16:13:40Z', zone: KIEV, nowMs: now });
+  check('тридцать три секунды вперёд - это «потом», а не «сейчас»', typeof halfMinute.atMs === 'number' && !halfMinute.now);
+  const seconds = deferInstant({ at: '2026-09-08T16:13:12Z', zone: KIEV, nowMs: now });
+  check('пять секунд вперёд - «сейчас»: запас на разницу часов драйвера и базы', seconds.now === true);
+  check('и этот запас назван числом, меньшим минуты', DEFER_NOW_MS === 10_000);
 
   check('нечитаемое время - отказ словами, а не NaN',
     /is not a time I can read/.test(deferInstant({ at: 'soon', zone: KIEV, nowMs: now }).why));
