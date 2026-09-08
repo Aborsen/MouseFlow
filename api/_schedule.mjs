@@ -266,6 +266,73 @@ export function decide({ rule, dueMs, nowMs, busy }) {
   };
 }
 
+/* --------------------------------------------------------------------- цель, назвавшая время
+
+/* НАСКОЛЬКО ДАВНО НАЗВАННОЕ ВРЕМЯ ЕЩЁ ЗНАЧИТ «СЕЙЧАС». То же окно, что у догона пропущенного расписания, и по
+ * той же причине: «в 19:41 отправь» в 19:50 - это ещё та самая просьба, в 14:00 следующего дня - уже нет. */
+export const DEFER_GRACE_MS = CATCH_UP_MS;
+
+/**
+ * Момент, на который цель просит отложить работу, - или отказ, если откладывать нечего.
+ *
+ * ЗАЧЕМ ЭТО ЗДЕСЬ, А НЕ В ЦИКЛЕ РЕШЕНИЙ. Прогон, получивший «в 19:41 открой ChatGPT и напиши Continue», не
+ * имеет ни часов, ни понятия «позже»: единственное ожидание в его словаре - `wait` до двух минут, «пока
+ * экран не успокоится». Он честно строит таймер из того, что видит на экране, - PowerShell и цикл с
+ * Get-Date, - и дёргает компьютер каждые четыреста миллисекунд до назначенного часа. Правильный ответ на
+ * «сделай в 19:41» - не ждать, а стать разовым расписанием на 19:41 и отпустить мышь; это оно и считает.
+ *
+ * `at` - «HH:MM» в зоне человека или ISO-мгновение. Время суток без даты значит ближайшее: сегодня, если
+ * оно впереди, иначе завтра. Время, которое уже наступило или наступит в пределах минуты, - это не «потом»,
+ * это «сейчас», и вызывающий получает `now: true`, чтобы продолжить работу, а не ставить расписание на
+ * секунду вперёд. Время, прошедшее не дальше DEFER_GRACE_MS, - тоже «сейчас»: человек, сказавший «в 19:41»
+ * в 19:45, ждёт письма, а не следующего дня.
+ *
+ * @returns {{atMs: number} | {now: true, why: string} | {why: string}}
+ */
+export function deferInstant({ at, zone, nowMs = Date.now() }) {
+  const said = String(at == null ? '' : at).trim();
+  if (!said) return { why: 'when? pass `at` as "HH:MM" in the user\'s zone, or an ISO instant' };
+  const tz = String(zone || 'UTC');
+  try { partsIn(nowMs, tz); } catch (_) {
+    return { why: `"${tz}" is not a time zone this system knows` };
+  }
+
+  let atMs;
+  const clock = clockOf(said);
+  if (clock != null) {
+    const today = instantOf({ ...dayIn(nowMs, tz), minutes: clock }, tz);
+    /* Сегодня, если впереди; если оно только что прошло - «сейчас» (см. ниже); иначе завтра. */
+    atMs = today >= nowMs - DEFER_GRACE_MS ? today : instantOf({ ...dayIn(nowMs, tz, 1), minutes: clock }, tz);
+  } else {
+    atMs = Date.parse(said);
+    if (!Number.isFinite(atMs)) {
+      return { why: `"${said}" is not a time I can read. Pass "HH:MM" like "19:41", or an ISO instant.` };
+    }
+  }
+
+  if (atMs <= nowMs + 60_000) {
+    return {
+      now: true,
+      why: `${whenSaid(atMs, tz)} is now - it is ${clockSaid(nowMs, tz)}. Do not wait for it; carry out `
+        + 'the rest of the goal.',
+    };
+  }
+  if (atMs > nowMs + MAX_EVERY_MINUTES * 60_000) {
+    return { why: 'That is more than thirty days away, which is a reminder rather than a run. Say so and finish.' };
+  }
+  return { atMs };
+}
+
+/** Который час, словами для модели: «19:13:07 on Tue 2026-09-08 (Europe/Kiev)». */
+export function clockSaid(utcMs, zone) {
+  const p = partsIn(utcMs, zone);
+  const hh = String(p.hour).padStart(2, '0');
+  const mm = String(p.minute).padStart(2, '0');
+  const ss = String(p.second).padStart(2, '0');
+  return `${hh}:${mm}:${ss} on ${p.weekday} ${p.year}-${String(p.month).padStart(2, '0')}-`
+    + `${String(p.day).padStart(2, '0')} (${zone})`;
+}
+
 /* --------------------------------------------------------------------------- как это читается */
 
 /** Правило словами - для списка, для ответа модели и для строки в интерфейсе. */

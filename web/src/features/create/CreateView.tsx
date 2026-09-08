@@ -41,7 +41,7 @@ import {
 } from '@/components/chat';
 import { AGENT_WANTS, localMachine, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
-import { push } from '@/lib/api';
+import { push, scheduleAdd } from '@/lib/api';
 import {
   type GateAnswer,
   MAX_WAVES,
@@ -51,7 +51,9 @@ import {
   runOnDesktop,
 } from '@/lib/desktop-engine';
 import { useAgent, useConsole } from '@/lib/store';
-import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
+import {
+  type DictatedRun, dictatedSkillIdFor, hasSkillForRun, saveDictatedAsGoalSkill,
+} from '@/features/record/save-as-skill';
 import { langName, useDictation } from './dictation';
 import { SaveDictatedSkill } from './SaveDictatedSkill';
 import { useAccount } from '@/shell/AccountProvider';
@@ -407,6 +409,44 @@ export const CreateView = () => {
         isAborted: () => abort.current,
       })
         .then(async (result) => {
+          /* ОТЛОЖЕНО, А НЕ СДЕЛАНО. Цель назвала время впереди («в 19:41 …»), и модель вместо таймера из
+           * PowerShell позвала defer_until. Здесь у цели ещё нет скилла - она надиктована, - поэтому она
+           * сохраняется как скилл-цель тем же saveDictatedAsGoalSkill, что и кнопка «Save as skill», и на
+           * него ставится разовое расписание. В журнал прогонов не пишется: прогона не было, и зелёная
+           * строка о нём была бы ложью того вида, против которого написан весь цикл. Дальше работает
+           * расписание: в назначенный час курьер агента ставит обычный прогон, если машина не спит. */
+          if (result.deferred) {
+            const { at, zone } = result.deferred;
+            const runId = `dr_${startedAt.replace(/\D/g, '').slice(-12)}`;
+            const label = text.split('\n')[0].trim().slice(0, 80) || 'Scheduled goal';
+            try {
+              const where = await windows(state.port)
+                .then((r) => r.windows.map((w) => w.title).filter(Boolean))
+                .catch(() => [] as string[]);
+              await saveDictatedAsGoalSkill(
+                { runId, windows: where, steps: result.steps, at: startedAt },
+                { name: label, goal: text, params: [] },
+              );
+              const made = await scheduleAdd({ flowId: dictatedSkillIdFor(runId), once: at, zone, label });
+              await reload();
+              updateLive((t) => ({
+                ...t,
+                state: 'ok',
+                note: `Set aside until ${made.schedule.nextSaid ?? at}. It runs then, if this computer is awake `
+                  + 'and the agent is running — the schedule is on the Skills page, and a time that passes with '
+                  + 'nothing listening is recorded there as missed.',
+              }));
+            } catch (err) {
+              updateLive((t) => ({
+                ...t,
+                state: 'failed',
+                note: `The goal asked to wait until ${at}, but it could not be scheduled: `
+                  + `${err instanceof Error ? err.message : 'the account did not answer'}. Nothing was done.`,
+              }));
+            }
+            return;
+          }
+
           updateLive((t) => ({
             ...t,
             state: result.ok ? 'ok' : 'failed',

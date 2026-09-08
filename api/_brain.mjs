@@ -64,6 +64,7 @@ How to work:
 - Write text the way it should appear, line breaks and all, in ONE type_text call. Do not go back afterwards to fix formatting: Find and Replace, or re-selecting text to correct it, costs steps and rarely ends well. If what you typed came out wrong, select all and type it again.
 - In an email body or a document, a line break is Enter. In a chat box or a comment field, Enter sends - pass newline: "shift-enter" there.
 - Waiting is free and looking is not. The wait tool blocks until the screen stops changing, so ONE wait of 60000 is right for something long. Never a string of short waits: each of those costs a step.
+- You are told the time with every screenshot. Never read it off a taskbar, and NEVER BUILD A TIMER: no scripts that loop until a time, no repeated waits to let minutes pass, no counting. If the goal says to do something at a LATER time - "at 19:41", "tomorrow at 8" - call defer_until with that time right away, before doing anything else; the run is set aside and started again at that time. If the time named is now, or already passed a moment ago, just carry on and do it.
 - If two attempts at the same sub-goal get nowhere, change method. If a third fails, call finish and say precisely what you could not do.
 - When the goal asks you to RECORD something - a test result, a value you read off the screen, what a dialog said - call note with it. It writes that line into the run's own record, where the user reads it afterwards. It touches nothing, costs no action, and can ride in the same turn as real work. It is not a way to talk to the user mid-run: nobody is watching for it, and nothing waits for an answer.
 - When the goal is met, call finish with ok: true and one sentence about what you did.
@@ -489,6 +490,30 @@ export const TOOLS = [
     },
   },
   {
+    /* Отложить, а не ждать.
+     *
+     * У цикла нет часов и нет понятия «позже»: единственное ожидание в его словаре - `wait` до двух минут,
+     * пока экран не успокоится. Получив «в 19:41 напиши Continue», модель честно строит таймер из того, что
+     * видит, - PowerShell и цикл с Get-Date, - и дёргает компьютер каждые четыреста миллисекунд. Этот
+     * инструмент - слово, которого ей не хватало: прогон становится разовым расписанием на названный час
+     * (см. db/018), мышь отпускается, и в 19:41 курьер агента запускает его заново. Сам момент считает
+     * драйвер: здесь только заявление. */
+    name: 'defer_until',
+    description: 'The goal names a time LATER than now: set this run aside until then. It is started again at '
+      + 'that time on this same machine, if the machine is awake. Call it FIRST, before any other action, and '
+      + 'never wait for a time with the wait tool, a script, a loop or a timer. Pass the time as it was said - '
+      + '"19:41" in the user\'s own zone, or an ISO instant - and what is to be done then.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        at: { type: 'string', description: '"HH:MM" in the user\'s zone, or an ISO instant like "2026-09-08T16:41:00Z".' },
+        then: { type: 'string', description: 'What to do when that time comes, in one sentence - the goal without the time in it.' },
+      },
+      required: ['at', 'then'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'finish',
     description: 'End the run. This is the ONLY way to end it: if you stop without calling this, the run '
       + 'is recorded as not finished, whatever you wrote. Set ok true only if the goal was actually '
@@ -781,7 +806,10 @@ export const peekBody = (frame) =>
   `action=read scale=${(frame && frame.scale) || 1} ox=${(frame && frame.originX) || 0} `
   + `oy=${(frame && frame.originY) || 0}`;
 
-export function screenMessage(frame, open, saw) {
+/* `clock` - который час, словами (см. clockSaid в _schedule.mjs). С каждым снимком, а не один раз в начале:
+ * прогон идёт минуты, и модель, которой сказали время на первом ходу, на десятом читает часы с такс-бара -
+ * с чего и начинался таймер из PowerShell. Отсутствует - строки нет: старый драйвер не соврёт о времени. */
+export function screenMessage(frame, open, saw, clock = null) {
   return {
     role: 'user',
     content: [
@@ -789,6 +817,7 @@ export function screenMessage(frame, open, saw) {
       {
         type: 'text',
         text: `The screen now, ${frame.w} by ${frame.h} pixels.` +
+          (clock ? ` It is ${clock}.` : '') +
           (open
             ? '\n\nAlready open - use activate_window rather than opening any of these again, and '
               + 'capture_window takes any of these titles. Sizes and positions are in the SAME pixels as '

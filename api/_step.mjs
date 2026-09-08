@@ -61,6 +61,9 @@ import {
   stillStopped,
   waitReport,
 } from './_brain.mjs';
+/* Момент, на который цель просит отложиться, считается там же, где считаются расписания, - одним и тем
+ * же способом для этого драйвера, для браузерного и для проверки на claim. */
+import { clockSaid, deferInstant } from './_schedule.mjs';
 import { DEFAULT_SHOT_W } from './_brain.mjs';
 import { callModel } from './_vision.mjs';
 
@@ -78,11 +81,15 @@ export const MAX_STEPS = WAVE_TURNS * MAX_WAVES;
 export const MODEL_TIMEOUT_MS = 75_000;
 
 /** A run at its first step: the goal, and nothing seen yet. */
-export function startLoop({ goal, model, success = null, earlier = null }) {
+export function startLoop({ goal, model, success = null, earlier = null, zone = null }) {
   return {
     v: LOOP_VERSION,
     goal: String(goal || ''),
     model: String(model || ''),
+    /* Зона человека, чтобы сказать модели, который час, - и чтобы «в 19:41» значило его 19:41. Единственное,
+     * чего сервер знать не может: приезжает с расписанием, с аргументами прогона или из настроек аккаунта;
+     * без неё часы честно говорят UTC, и это сказано в строке. */
+    zone: zone ? String(zone) : null,
     /* When the run really began, stamped once.
      *
      * The row cannot answer this: `claimed_at` is moved on with every step so that staleness means "not
@@ -227,6 +234,9 @@ export async function advance({ loop, shot, windows, results, ask }) {
       ok: out.ok === true,
       said: out.said || null,
       error: out.ok === true ? null : (out.error || out.said || 'it stopped without saying why'),
+      /* Отложенный прогон - не сделанный: драйвер маршрута видит это поле и ставит расписание вместо того,
+       * чтобы записать зелёный прогон, которого не было. */
+      deferred: out.deferred || null,
       steps: loop.steps,
       saidAll: loop.said,
       stepNo: loop.stepNo,
@@ -325,7 +335,7 @@ export async function advance({ loop, shot, windows, results, ask }) {
   }
 
   forgetOldPictures(loop.messages);
-  loop.messages.push(screenMessage(shot, openList(windows, shot), saw));
+  loop.messages.push(screenMessage(shot, openList(windows, shot), saw, clockSaid(Date.now(), loop.zone || 'UTC')));
   loop.stepNo += 1;
   loop.turn += 1;
 
@@ -422,6 +432,33 @@ export async function advance({ loop, shot, windows, results, ask }) {
        * finish and happen first, exactly as they would in the browser loop, and the ending waits. */
       if (!actions.length) return over(ending);
       loop.ending = ending;
+      break;
+    }
+
+    /* ОТЛОЖИТЬ - это окончание, а не действие, и решается оно ЗДЕСЬ, а не моделью: она называет время, драйвер
+     * считает момент. Время, которое уже наступило, - не повод ставить расписание на секунду вперёд: модели
+     * говорят, который час, и просят продолжать. После обрезанного хода отказано по той же причине, что и
+     * finish: заявление, опёртое на действия, которых не было. */
+    if (use.name === 'defer_until') {
+      if (cut) {
+        loop.mine.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: AFTER_CUT });
+        continue;
+      }
+      const when = deferInstant({ at: use.input && use.input.at, zone: loop.zone || 'UTC' });
+      if (when.why) {
+        loop.mine.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: when.why });
+        /* Ход закрыт: что бы ни стояло за этим в том же ходу, оно планировалось на «потом». */
+        cut = true;
+        continue;
+      }
+      const then = String((use.input && use.input.then) || '').trim() || loop.goal;
+      loop.steps.push({ tool: 'defer_until', input: { at: new Date(when.atMs).toISOString(), then } });
+      if (!actions.length) {
+        return over({ ok: true, said: `set aside until ${new Date(when.atMs).toISOString()}`,
+          deferred: { at: new Date(when.atMs).toISOString(), zone: loop.zone || 'UTC', then } });
+      }
+      loop.ending = { ok: true, said: `set aside until ${new Date(when.atMs).toISOString()}`,
+        deferred: { at: new Date(when.atMs).toISOString(), zone: loop.zone || 'UTC', then } };
       break;
     }
 

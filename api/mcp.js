@@ -929,6 +929,15 @@ async function callTool(sql, who, params, req) {
         + 'in the future, or use `every`/`at` for something that repeats.', true);
     }
 
+    /* Зона запоминается на аккаунте, чтобы облачный прогон мог сказать модели, который час у человека
+     * (см. startLoop в api/_step.mjs). Фон: не записалось - расписание всё равно ставится. */
+    if (args.zone) {
+      await sql`
+        insert into user_pref (user_id, key, value) values (${who.id}, 'zone', ${String(args.zone).slice(0, 64)})
+        on conflict (user_id, key) do update set value = excluded.value, updated_at = now()
+      `.catch(() => {});
+    }
+
     const id = scheduleId();
     try {
       await sql`
@@ -1494,7 +1503,7 @@ async function workerRoute(action, req, res, sql, who) {
     const body = req.body || {};
     const id = String(body.id || '');
     const [job] = await sql`
-      select id, flow_id, tool_name, args, state, loop, claimed_at
+      select id, flow_id, tool_name, args, state, loop, claimed_at, schedule_id
       from run_queue where id = ${id} and user_id = ${who.id}
     `;
     const fail = async (why) => {
@@ -1603,7 +1612,22 @@ async function workerRoute(action, req, res, sql, who) {
         startedAt: r.started_at,
         finishedAt: r.finished_at,
       })));
-      loop = startLoop({ goal, model, success: payload.success || null, earlier });
+      /* ЗОНА ЧЕЛОВЕКА, чтобы цикл мог сказать модели, который час, - и чтобы «в 19:41» в цели значило его
+       * 19:41, а не UTC. Сервер её не знает; берётся у расписания, которое этот прогон поставило, иначе из
+       * настроек аккаунта (страница Skills и тул расписания записывают туда зону, которую прислал браузер).
+       * Ничего нет - часы честно говорят UTC, и это сказано в строке. Фон, а не условие: не нашлось -
+       * прогон идёт. */
+      const zone = await (async () => {
+        try {
+          if (job.schedule_id) {
+            const [sch] = await sql`select zone from user_schedule where id = ${job.schedule_id} and user_id = ${who.id}`;
+            if (sch && sch.zone) return sch.zone;
+          }
+          const [pref] = await sql`select value from user_pref where user_id = ${who.id} and key = 'zone'`;
+          return (pref && pref.value) || null;
+        } catch (_) { return null; }
+      })();
+      loop = startLoop({ goal, model, success: payload.success || null, earlier, zone });
       /* Who is driving. A worker runs the loop itself and never writes here; recorded so that a machine
        * with both cannot end up driving one mouse twice. */
       await sql`update run_queue set stepping = true where id = ${id} and user_id = ${who.id}`;
@@ -1631,6 +1655,49 @@ async function workerRoute(action, req, res, sql, who) {
     }
 
     const out = await advance({ loop, shot: body.shot, windows: body.windows, results: body.results });
+
+    /* ОТЛОЖЕНО, А НЕ СДЕЛАНО. Цель назвала время впереди, и модель вместо таймера из PowerShell позвала
+     * defer_until. Прогон становится разовым расписанием на этот момент - с тем же flow_id, tool_name и
+     * args, чтобы в назначенный час dueNow() поставил обычную строку очереди, - а эта строка закрывается и
+     * отпускает мышь. В журнал прогонов не пишется: прогона не было, и зелёная строка о нём была бы ложью
+     * того самого вида, против которого написан весь цикл. */
+    if (out.done && out.done.deferred) {
+      const when = out.done.deferred;
+      const at = new Date(when.at);
+      const [named] = await sql`
+        select name from user_flow where user_id = ${who.id} and client_id = ${job.flow_id} and deleted_at is null
+      `.catch(() => []);
+      const sid = scheduleId();
+      let said;
+      try {
+        await sql`
+          insert into user_schedule (
+            id, user_id, flow_id, tool_name, args, label, kind, zone, next_at, last_at, last_said
+          ) values (
+            ${sid}, ${who.id}, ${job.flow_id}, ${job.tool_name}, ${JSON.stringify(job.args || {})},
+            ${String((named && named.name) || when.then || '').slice(0, 80)}, 'once', ${when.zone},
+            ${at.toISOString()}, now(), ${'set aside by a run that was asked to wait until then'}
+          )
+        `;
+        said = `Set aside until ${whenSaid(at.getTime(), when.zone)} (${sid}). It runs then, if this `
+          + 'machine is awake and taking work; the time passing with nothing listening is recorded as missed.';
+      } catch (err) {
+        /* Таблицы может не быть - миграция не применена. Сказать это, а не изобразить зелёный прогон. */
+        said = `The goal asked to wait until ${whenSaid(at.getTime(), when.zone)}, but this deployment cannot `
+          + `schedule it: ${/user_schedule/.test(String(err.message)) ? 'db/018_user_schedule.sql is not applied' : err.message}. `
+          + 'Nothing was done.';
+        await sql`
+          update run_queue set state = 'failed', ok = false, said = ${said}, finished_at = now(), loop = null
+          where id = ${id} and user_id = ${who.id} and state = 'claimed'
+        `;
+        return res.status(200).json({ ok: true, done: true, outcome: { ok: false, said } });
+      }
+      await sql`
+        update run_queue set state = 'done', ok = true, said = ${said}, finished_at = now(), loop = null
+        where id = ${id} and user_id = ${who.id} and state = 'claimed'
+      `;
+      return res.status(200).json({ ok: true, done: true, outcome: { ok: true, said } });
+    }
 
     if (out.done) {
       const done = out.done;

@@ -91,6 +91,16 @@ async function add(req, res, sql, userId) {
     return fail(res, 400, 'that time has already passed');
   }
 
+  /* Зона запоминается на аккаунте - единственный способ для облачного прогона узнать, который час у
+   * человека (см. startLoop в api/_step.mjs). Настройка, а не колонка: одна строка user_pref, перезаписывается
+   * последней присланной. Фон: не записалось - расписание всё равно поставлено. */
+  if (body.zone) {
+    await sql`
+      insert into user_pref (user_id, key, value) values (${userId}, 'zone', ${String(body.zone).slice(0, 64)})
+      on conflict (user_id, key) do update set value = excluded.value, updated_at = now()
+    `.catch(() => {});
+  }
+
   const id = `sch_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   await sql`
     insert into user_schedule (

@@ -390,6 +390,36 @@ other windows by design. So a finish is **announced**, in three escalating ways
 The notification carries the model's own closing sentence when there is one. "Finished" alone sends somebody
 back to the tab to find out what it did, which is the trip this exists to save.
 
+## A goal that names a time
+
+*"At 19:41, open ChatGPT and send Continue."* Before September 2026 this produced a run that opened
+PowerShell and pasted `while((Get-Date) -lt (Get-Date "19:40:40")) { … }` — a busy loop that polled the
+clock every 400 ms for half an hour, photographing the screen at every step. Not the model being foolish:
+the loop had **no clock and no word for "later"**. The only waiting in its vocabulary was `wait`, capped at
+two minutes and meaning "until the screen stops changing", and the only clock it could find was the taskbar
+in the screenshot (`noted "Taskbar clock reads 19:13"`).
+
+Two things fixed it, both in `api/_brain.mjs` and used identically by both drivers:
+
+- **The time rides with every screenshot** — `It is 19:13:07 on Tue 2026-09-08 (Europe/Kiev).` With
+  every one, not once at the start: a run lasts minutes, and a model told the time on turn one reads the
+  taskbar on turn ten. The zone is the browser's on the Create page and the schedule's or the account's on
+  the cloud path; with none known it says UTC, and says that it is UTC.
+- **`defer_until`** — "the goal names a time later than now: set this run aside until then." The rule beside
+  it is blunt: *never build a timer — no scripts that loop until a time, no repeated waits, no counting.*
+
+What the driver does with the call is what makes it more than a prompt rule: the run **becomes a one-off
+schedule** ([24 — Schedules](24-schedules.md)) for that instant and ends, freeing the mouse. On the Create
+page the goal has no skill yet, so it is saved as a goal skill first — the same `saveDictatedAsGoalSkill`
+the Save-as-skill button uses — and the schedule points at that. On the cloud path the queue row's own
+`flow_id` and `args` are copied into the schedule. At the appointed time the agent's poll queues an ordinary
+run, and the goal is carried out by a model that is now told it is 19:41.
+
+The instant is computed by `deferInstant()` in `api/_schedule.mjs`, never by the model: `"19:41"` is the
+next 19:41 in the user's zone; a time that is now, within the last thirty minutes, or within the next minute
+is refused with the current time and *carry on* — so a run started by the schedule at 19:41 does not defer
+itself to tomorrow. It is not logged as a run, because no run happened.
+
 ## What is logged
 
 A desktop run is pushed to `user_run` as `kind: 'agent'` with the goal, the model, the outcome, the step

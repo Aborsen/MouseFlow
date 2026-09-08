@@ -1438,7 +1438,7 @@ group('на застрявшем ходу окно читается само, о
 
   /* Это НЕ ответ на вызов инструмента: под него нет tool_use, а API отвергает результат без вызова. */
   check('и оно не выдаётся за ответ на вызов инструмента',
-    !/loop\.pending\.push\(\{ id: PEEK_ID/.test(cloud) && /screenMessage\(shot, openList\(windows, shot\), saw\)/.test(cloud));
+    !/loop\.pending\.push\(\{ id: PEEK_ID/.test(cloud) && /screenMessage\(shot, openList\(windows, shot\), saw, clockSaid\(/.test(cloud));
   /* И не становится шагом: человек читает в журнале СВОИ намерения, а этого он не заказывал. */
   check('и не попадает в журнал прогона отдельной строкой',
     !/loop\.steps\.push\(\{ tool: 'read_window'/.test(cloud));
@@ -1452,7 +1452,8 @@ group('на застрявшем ходу окно читается само, о
    * двум разным привычкам. */
   check('слова про прочитанное складывает мозг',
     /Nothing on screen moved when the last actions ran/.test(brain)
-      && /export function screenMessage\(frame, open, saw\)/.test(brain));
+      /* Четвёртый аргумент - часы (см. defer_until): время едет с каждым снимком, и тоже из мозга. */
+      && /export function screenMessage\(frame, open, saw, clock = null\)/.test(brain));
   /* И тип для TS-половины - иначе локальный драйвер просто не соберётся. */
   check('и TypeScript-половина объявлена',
     /export function shouldPeek\(still: number\): boolean;/.test(read('api/_brain.d.mts')));

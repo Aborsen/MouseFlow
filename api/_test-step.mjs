@@ -1220,5 +1220,65 @@ group('the model can ASK for a modified gesture, not only replay one');
     out.actions[0]?.body);
 }
 
+/* ---------------------------------------------------------------- отложить, а не ждать
+ *
+ * Прогон, получивший «в 19:41 …», строил таймер из PowerShell и дёргал компьютер каждые 400 мс. Теперь у него
+ * есть часы в каждом ходе и слово defer_until; здесь проверяется, что слово заканчивает прогон ОТЛОЖЕННЫМ, а
+ * не сделанным, и что «уже наступило» возвращается отказом с часами, а не расписанием. */
+group('a goal that names a later time is set aside, not waited for');
+const hhmm = (ms, zone) => new Intl.DateTimeFormat('en-GB', {
+  timeZone: zone, hour: '2-digit', minute: '2-digit', hour12: false,
+}).format(new Date(ms));
+{
+  const soon = Date.now() + 2 * 3600_000;                       // two hours ahead, whatever the hour
+  const at = hhmm(soon, 'Europe/Kiev');
+  const ask = scripted([answer([use('defer_until', { at, then: 'open ChatGPT and send Continue' }, 'd1')])]);
+  const loop = startLoop({ goal: `at ${at} open ChatGPT and send Continue`, model: 'claude-opus-5', zone: 'Europe/Kiev' });
+  const out = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the run ends', !!out.done);
+  check('as DEFERRED, with the instant and the zone, not as a finished run',
+    !!(out.done && out.done.deferred && out.done.deferred.zone === 'Europe/Kiev'
+      && Math.abs(Date.parse(out.done.deferred.at) - soon) < 61_000), JSON.stringify(out.done && out.done.deferred));
+  check('and with what is to be done then', !!(out.done && out.done.deferred && out.done.deferred.then === 'open ChatGPT and send Continue'));
+  check('the model was told the time with the screenshot, in the zone it was given',
+    /It is \d\d:\d\d:\d\d on \w\w\w \d{4}-\d\d-\d\d \(Europe\/Kiev\)\./.test(JSON.stringify(ask.seen[0].messages)));
+  check('nothing was sent to the machine', !out.actions || out.actions.length === 0);
+  check('the deferral is in the step trace, so the record says why the run stopped',
+    !!(out.done && out.done.steps.some((s) => s.tool === 'defer_until')));
+}
+{
+  /* «Сейчас» - отказ, и прогон продолжается: модель получает часы в ответе и следующий снимок. */
+  const now = hhmm(Date.now(), 'Europe/Kiev');
+  const ask = scripted([
+    answer([use('defer_until', { at: now, then: 'send it' }, 'd2')]),
+    answer([use('finish', { ok: true, said: 'Sent it.' }, 'f1')]),
+  ]);
+  const loop = startLoop({ goal: `at ${now} send it`, model: 'claude-opus-5', zone: 'Europe/Kiev' });
+  const first = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a time that is now does not end the run', !first.done);
+  const second = await advance({ loop: first.loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  const told = JSON.stringify(ask.seen[1].messages);
+  check('the model is told it is now and to carry on', /is now - it is \d\d:\d\d:\d\d/.test(told) && /carry out the rest/.test(told));
+  check('and the run then finishes as usual', !!(second.done && second.done.ok === true && !second.done.deferred));
+}
+{
+  const ask = scripted([
+    answer([use('defer_until', { at: 'later', then: 'x' }, 'd3')]),
+    answer([use('finish', { ok: false, said: 'gave up' }, 'f2')]),
+  ]);
+  const loop = startLoop({ goal: 'later, do x', model: 'claude-opus-5', zone: 'Europe/Kiev' });
+  const first = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  await advance({ loop: first.loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('an unreadable time is refused in words, not scheduled for NaN',
+    /is not a time I can read/.test(JSON.stringify(ask.seen[1].messages)));
+}
+{
+  /* Без зоны часы честно говорят UTC - и говорят, что UTC. */
+  const ask = scripted([answer([use('finish', { ok: true, said: 'ok' }, 'f3')])]);
+  await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('a loop with no zone is told the time in UTC, and told that it is UTC',
+    /\(UTC\)\./.test(JSON.stringify(ask.seen[0].messages)));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -122,6 +122,16 @@ outcome, and the counts — runs, missed, failed.
 A refusal from the server is shown *in the form*, not as a banner at the top of the page, because it is
 almost always about the field just chosen ("every 5 minutes is too often").
 
+## A goal that says "at 19:41"
+
+A run can turn itself into a schedule. When a goal given to the decision loop names a later time, the model
+is told to call `defer_until` rather than wait — the loop has no clock of its own and used to build one out
+of PowerShell — and the driver makes a `once` schedule for that instant with the run's own `flow_id`,
+`tool_name` and `args`, then ends the run without logging it. On the Create page the dictated goal is first
+saved as a goal skill so there is something to point at. The whole story is in
+[05 — Create](05-create.md#a-goal-that-names-a-time); the instant is `deferInstant()` in
+`api/_schedule.mjs`, tested beside the rest.
+
 ## The three tools
 
 Named separately rather than one tool with an `action` field, for the reason every other tool here is:

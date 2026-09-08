@@ -13,8 +13,9 @@
  * Запуск: node api/_test-schedule.mjs
  */
 import {
-  CATCH_UP_MS, FAILS_BEFORE_PAUSE, MAX_EVERY_MINUTES, MIN_EVERY_MINUTES,
-  clockOf, decide, firstAt, instantOf, minutesOf, nextAfter, readRule, ruleSaid, whenSaid,
+  CATCH_UP_MS, DEFER_GRACE_MS, FAILS_BEFORE_PAUSE, MAX_EVERY_MINUTES, MIN_EVERY_MINUTES,
+  clockOf, clockSaid, decide, deferInstant, firstAt, instantOf, minutesOf, nextAfter, readRule, ruleSaid,
+  whenSaid,
 } from './_schedule.mjs';
 
 let pass = 0;
@@ -177,6 +178,43 @@ check('момент печатается местным временем рас�
   whenSaid(winter, KIEV) === 'Fri 2026-01-16 09:00 (Europe/Kiev)', whenSaid(winter, KIEV));
 check('и «больше никогда» - это тоже ответ', whenSaid(null, KIEV) === 'never again');
 check('порог неудач назван числом, а не спрятан', FAILS_BEFORE_PAUSE === 3);
+
+/* ---------------------------------------------------------------- цель, назвавшая время
+ *
+ * Прогон, получивший «в 19:41 открой ChatGPT и напиши Continue», строил таймер из PowerShell: у него не было
+ * ни часов, ни слова «позже». Здесь проверяется слово - и то, что «уже наступило» не становится расписанием
+ * на секунду вперёд. */
+group('цель, назвавшая время впереди, откладывается на этот момент - а не ждёт его таймером');
+{
+  const now = Date.UTC(2026, 8, 8, 16, 13, 7);   // 19:13:07 в Киеве, лето
+  const later = deferInstant({ at: '19:41', zone: KIEV, nowMs: now });
+  check('«19:41» сегодня в Киеве - это 16:41Z сегодня', iso(later.atMs) === '2026-09-08T16:41:00.000Z', iso(later.atMs));
+  check('часы для модели - местные, с секундами, днём и зоной',
+    clockSaid(now, KIEV) === '19:13:07 on Tue 2026-09-08 (Europe/Kiev)', clockSaid(now, KIEV));
+
+  const sameMinute = deferInstant({ at: '19:13', zone: KIEV, nowMs: now });
+  check('время, которое сейчас, - не «потом»: отказ с часами, а не расписание на секунду вперёд',
+    sameMinute.now === true && /is now - it is 19:13:07/.test(sameMinute.why), sameMinute.why);
+  const justPassed = deferInstant({ at: '19:00', zone: KIEV, nowMs: now });
+  check('время, прошедшее тринадцать минут назад, - ещё «сейчас»: просивший «в 19:00» ждёт письма, а не завтра',
+    justPassed.now === true);
+  check('и окно этой поблажки - то же, что у догона расписания', DEFER_GRACE_MS === CATCH_UP_MS);
+
+  const morning = deferInstant({ at: '09:00', zone: KIEV, nowMs: now });
+  check('время, прошедшее давно, значит завтра', iso(morning.atMs) === '2026-09-09T06:00:00.000Z', iso(morning.atMs));
+  const instant = deferInstant({ at: '2026-09-08T16:20:00Z', zone: KIEV, nowMs: now });
+  check('ISO-мгновение берётся как есть', instant.atMs === Date.parse('2026-09-08T16:20:00Z'));
+  const within = deferInstant({ at: '2026-09-08T16:13:40Z', zone: KIEV, nowMs: now });
+  check('мгновение в пределах минуты - тоже «сейчас»', within.now === true);
+
+  check('нечитаемое время - отказ словами, а не NaN',
+    /is not a time I can read/.test(deferInstant({ at: 'soon', zone: KIEV, nowMs: now }).why));
+  check('пустое - вопрос «когда?»', /when\?/.test(deferInstant({ at: '', zone: KIEV, nowMs: now }).why));
+  check('неизвестная зона - отказ, а не UTC молча',
+    /not a time zone/.test(deferInstant({ at: '19:41', zone: 'Mars/Olympus', nowMs: now }).why));
+  check('дальше тридцати суток - напоминание, а не прогон',
+    /thirty days/.test(deferInstant({ at: '2026-11-01T10:00:00Z', zone: KIEV, nowMs: now }).why));
+}
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

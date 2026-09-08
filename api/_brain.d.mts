@@ -72,7 +72,7 @@ export function openList(windows: WindowLike[] | null | undefined, frame?: ShotF
 export const PEEK_ID: string;
 export function shouldPeek(still: number): boolean;
 export function peekBody(frame: ShotFrame): string;
-export function screenMessage(frame: ShotLike, open: string | null, saw?: string | null): Message;
+export function screenMessage(frame: ShotLike, open: string | null, saw?: string | null, clock?: string | null): Message;
 export function forgetOldPictures<T extends { content?: unknown }>(messages: T[]): T[];
 /** What one action did, in the words both drivers use. `moved === false` means the screen stood still. */
 export function actionReport(moved: boolean | undefined, streak?: number): string;

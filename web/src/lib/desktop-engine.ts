@@ -67,6 +67,9 @@ import {
   waitReport,
 } from '../../../api/_brain.mjs';
 import type { ShotFrame } from '../../../api/_brain.d.mts';
+/* Тот же расчёт момента, что у облачного драйвера и у расписаний: «в 19:41» обязано значить одно и то же,
+ * откуда бы прогон ни шёл. */
+import { clockSaid, deferInstant } from '../../../api/_schedule.mjs';
 
 /* Re-exported so nothing else has to know the brain moved: the Create page counts waves, and the plan
  * preview and the checkpoint gate's thumbnail normalise a picture's format through mediaType. */
@@ -108,6 +111,8 @@ export interface RunResult {
   said?: string;
   error?: string;
   steps: RunStep[];
+  /** Цель назвала время впереди, и прогон отложен до него: страница ставит расписание, а не пишет прогон. */
+  deferred?: { at: string; zone: string; then: string };
 }
 
 /** One decided action, and what it cost. `ms` is absent on any run recorded before it was measured. */
@@ -229,6 +234,11 @@ async function ask(body: unknown, signal?: AbortSignal) {
 }
 
 /* ----------------------------------------------------------------------------------- the run */
+
+/** Зона этого браузера - он и есть та машина, которую ведёт прогон. Отказ Intl - UTC, и часы так и скажут. */
+const hereZone = () => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (_) { return 'UTC'; }
+};
 
 interface Options {
   goal: string;
@@ -374,7 +384,7 @@ async function runWave(o: {
     }
 
     forgetOldPictures(messages as { content?: unknown }[]);
-    messages.push(screenMessage(frame, await openWindows(machine, frame), saw));
+    messages.push(screenMessage(frame, await openWindows(machine, frame), saw, clockSaid(Date.now(), hereZone())));
     saw = null;
 
     stepNo++;
@@ -555,6 +565,34 @@ async function runWave(o: {
          * в картинку, которой человек уже не видит. */
         cut = true;
         continue;
+      }
+
+      /* ОТЛОЖИТЬ - окончание, не действие; длинная версия «почему» в api/_step.mjs, который делает ровно то
+       * же. Момент считает deferInstant: время, которое уже наступило, - отказ с часами, а не расписание на
+       * секунду вперёд. */
+      if (use.name === 'defer_until') {
+        if (cut) {
+          results.push({ type: 'tool_result', tool_use_id: use.id, is_error: true, content: AFTER_CUT });
+          continue;
+        }
+        const zone = hereZone();
+        const when = deferInstant({ at: use.input?.at, zone });
+        if (when.atMs == null) {
+          results.push({
+            type: 'tool_result', tool_use_id: use.id, is_error: true,
+            content: when.why ?? 'that is not a time I can read',
+          });
+          cut = true;
+          continue;
+        }
+        const at = new Date(when.atMs).toISOString();
+        const then = String(use.input?.then ?? '').trim();
+        onEvent({ type: 'tool', name: 'defer_until', input: { at, then } });
+        steps.push({ tool: 'defer_until', input: { at, then } });
+        return {
+          stepNo,
+          result: { ok: true, said: `set aside until ${at}`, steps, deferred: { at, zone, then } },
+        };
       }
 
       if (use.name === 'finish') {

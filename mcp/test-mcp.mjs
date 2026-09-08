@@ -4742,6 +4742,64 @@ group('у расписания есть экран, и он говорит о п
     appRoute.includes('db/018_user_schedule.sql'));
 }
 
+/* ------------------------------------------------------------- ЦЕЛЬ, НАЗВАВШАЯ ВРЕМЯ: ОТЛОЖИТЬ, А НЕ ЖДАТЬ
+ *
+ * «В 19:41 открой ChatGPT и напиши Continue» дало прогон, который открыл PowerShell, вставил
+ * `while((Get-Date) -lt …)` и дёргал компьютер каждые 400 мс полчаса, фотографируя экран на каждом шаге. Не
+ * глупость модели - дыра в словаре: у цикла не было ни часов (он читал такс-бар со снимка), ни слова «позже»
+ * (единственное ожидание - wait до двух минут «пока экран не успокоится»). Арифметика момента проверяется
+ * исполнением в api/_test-schedule.mjs и api/_test-step.mjs; здесь - проводка: что оба драйвера говорят одно
+ * и то же и что отложенный прогон становится расписанием, а не зелёной строкой. */
+group('цель, назвавшая время, откладывается в расписание, а не ждёт таймером');
+{
+  const brain = read('../api/_brain.mjs');
+  const step = read('../api/_step.mjs');
+  const engine = read('../web/src/lib/desktop-engine.ts');
+  const create = read('../web/src/features/create/CreateView.tsx');
+  const route = read('../api/mcp.js');
+  const appRoute = read('../api/schedules.js');
+
+  check('у цикла есть слово для «позже» - тул defer_until',
+    /name: 'defer_until'/.test(brain));
+  check('и правило сказано прямо: никаких таймеров, скриптов и серий ожиданий ради времени',
+    /NEVER BUILD A TIMER/.test(brain) && /no repeated waits/.test(brain));
+  check('и время суток больше не читается с такс-бара - оно приходит с каждым снимком',
+    /clock \? ` It is \$\{clock\}\.` : ''/.test(brain) && /Never read it off a taskbar/.test(brain));
+
+  /* Момент считает драйвер, а не модель, - одной функцией на оба драйвера и на расписания. */
+  check('облачный драйвер считает момент той же функцией, что и расписания',
+    step.includes("import { clockSaid, deferInstant } from './_schedule.mjs';")
+      && step.includes("if (use.name === 'defer_until')"));
+  check('браузерный драйвер - той же самой, а не своей копией',
+    engine.includes("from '../../../api/_schedule.mjs'") && engine.includes("if (use.name === 'defer_until')"));
+  check('и оба передают часы в сообщение со снимком',
+    /screenMessage\(shot, openList\(windows, shot\), saw, clockSaid\(/.test(step)
+      && /screenMessage\(frame, await openWindows\(machine, frame\), saw, clockSaid\(/.test(engine));
+
+  /* Отложено - не сделано. */
+  check('отложенный прогон возвращается отдельным полем, а не как ok',
+    step.includes('deferred: out.deferred || null'));
+  check('в облаке он становится разовым расписанием с тем же flow_id, tool_name и args',
+    /if \(out\.done && out\.done\.deferred\)/.test(route)
+      && /\$\{job\.flow_id\}, \$\{job\.tool_name\}, \$\{JSON\.stringify\(job\.args \|\| \{\}\)\},[\s\S]{0,200}'once'/.test(route));
+  check('и НЕ пишется в журнал прогонов - прогона не было',
+    /if \(out\.done && out\.done\.deferred\) \{[\s\S]*?return res\.status\(200\)[\s\S]*?\}\s*\n\s*if \(out\.done\) \{\s*\n\s*const done = out\.done;\s*\n\s*await logRun/.test(route)
+      && !/if \(out\.done && out\.done\.deferred\) \{[\s\S]*?logRun\([\s\S]*?if \(out\.done\) \{/.test(route));
+  check('на странице Create надиктованная цель сначала становится скиллом, потом расписанием',
+    create.includes('if (result.deferred)') && create.includes('await saveDictatedAsGoalSkill(')
+      && /scheduleAdd\(\{ flowId: dictatedSkillIdFor\(runId\), once: at, zone, label \}\)/.test(create));
+  check('и о прогоне на аккаунт при этом не сообщается', /if \(result\.deferred\) \{[\s\S]*?return;\s*\n\s*\}\s*\n\s*updateLive/.test(create));
+
+  /* Зона - единственное, чего сервер не знает; теперь ему говорят. */
+  check('цикл несёт зону, и облачный драйвер берёт её у расписания или из настроек аккаунта',
+    step.includes('zone: zone ? String(zone) : null') && /select zone from user_schedule where id = \$\{job\.schedule_id\}/.test(route)
+      && /key = 'zone'/.test(route));
+  check('а страница и тул записывают присланную браузером зону в настройки',
+    /insert into user_pref \(user_id, key, value\) values \(\$\{userId\}, 'zone'/.test(appRoute)
+      && /insert into user_pref \(user_id, key, value\) values \(\$\{who\.id\}, 'zone'/.test(route));
+  check('без зоны часы говорят UTC и говорят, что это UTC', /clockSaid\(Date\.now\(\), loop\.zone \|\| 'UTC'\)/.test(step));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
  * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has
