@@ -418,7 +418,16 @@ run, and the goal is carried out by a model that is now told it is 19:41.
 The instant is computed by `deferInstant()` in `api/_schedule.mjs`, never by the model: `"19:41"` is the
 next 19:41 in the user's zone; a time that is now, within the last thirty minutes, or within the next minute
 is refused with the current time and *carry on* — so a run started by the schedule at 19:41 does not defer
-itself to tomorrow. It is not logged as a run, because no run happened.
+itself to tomorrow.
+
+**It ends like any other run**, and both halves of that were wrong when this first shipped. The deferral
+returned early: past the announcement, so somebody who set a task for 19:41 and went to another window got
+no notification and no tab brought forward — the thing they had ticked a box for; and past the log, on the
+argument that "no run happened". That argument does not survive contact: a run *did* happen — the model was
+handed a screenshot, decided, and cost money for the decision — and a person looking at their history found
+nothing to say what had been decided. So it is announced through the same three paths as any finish, and
+logged with its single `defer_until` step. `ok`, because the run ended as it should have; not a false green,
+because the first thing the row says is *Set aside until …* — that the goal has not been carried out yet.
 
 ## What is logged
 

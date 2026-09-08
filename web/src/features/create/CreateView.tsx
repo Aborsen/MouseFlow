@@ -419,6 +419,8 @@ export const CreateView = () => {
             const { at, zone } = result.deferred;
             const runId = `dr_${startedAt.replace(/\D/g, '').slice(-12)}`;
             const label = text.split('\n')[0].trim().slice(0, 80) || 'Scheduled goal';
+            let note: string;
+            let ok = true;
             try {
               const where = await windows(state.port)
                 .then((r) => r.windows.map((w) => w.title).filter(Boolean))
@@ -428,21 +430,56 @@ export const CreateView = () => {
                 { name: label, goal: text, params: [] },
               );
               const made = await scheduleAdd({ flowId: dictatedSkillIdFor(runId), once: at, zone, label });
-              await reload();
-              updateLive((t) => ({
-                ...t,
-                state: 'ok',
-                note: `Set aside until ${made.schedule.nextSaid ?? at}. It runs then, if this computer is awake `
-                  + 'and the agent is running — the schedule is on the Skills page, and a time that passes with '
-                  + 'nothing listening is recorded there as missed.',
-              }));
+              note = `Set aside until ${made.schedule.nextSaid ?? at}. It runs then, if this computer is awake `
+                + 'and the agent is running — the schedule is on the Skills page, and a time that passes with '
+                + 'nothing listening is recorded there as missed.';
             } catch (err) {
-              updateLive((t) => ({
-                ...t,
-                state: 'failed',
-                note: `The goal asked to wait until ${at}, but it could not be scheduled: `
-                  + `${err instanceof Error ? err.message : 'the account did not answer'}. Nothing was done.`,
-              }));
+              ok = false;
+              note = `The goal asked to wait until ${at}, but it could not be scheduled: `
+                + `${err instanceof Error ? err.message : 'the account did not answer'}. Nothing was done.`;
+            }
+            updateLive((t) => ({ ...t, state: ok ? 'ok' : 'failed', note }));
+
+            /* СКАЗАТЬ ВСЛУХ - по тем же трём путям, что и всякое другое окончание, и это исправление.
+             *
+             * Отложенный прогон возвращался здесь раньше времени, минуя и объявление, и запись: человек
+             * ставил задачу на 19:41, уходил в другое окно и не получал ни уведомления, ни возврата
+             * вкладки, о котором сам же попросил галочкой. Окончание - оно и есть окончание, каким бы
+             * коротким ни было: прогон посмотрел на экран, назвал час и остановился. */
+            void announceFinished({
+              outcome: ok ? 'ok' : 'failed',
+              said: note,
+              port: state.port,
+              bringForward,
+            });
+
+            /* И В ИСТОРИЮ. Прогон был: модель получила снимок, приняла решение и стоила денег за него -
+             * поэтому в журнале ему место, со своим единственным шагом. Не записывать его значило потерять
+             * единственное свидетельство того, ЧТО было решено и почему прогон кончился ничем; в фиде это
+             * жило до перезагрузки страницы, и человек, вернувшийся к «58 runs», нового не находил.
+             *
+             * `ok`, и это не выдача отложенного за выполненное: summary начинается с «Set aside until …»,
+             * то есть первое, что читается в строке, - что цель ещё не сделана. Ложным зелёным был бы
+             * прогон, назвавший успехом недостигнутую цель молча. */
+            try {
+              await push({
+                runs: [{
+                  id: runId,
+                  kind: 'agent',
+                  goal: text,
+                  model: await desktopModel().catch(() => 'claude-opus-5'),
+                  outcome: ok ? 'ok' : 'failed',
+                  summary: note,
+                  error: ok ? null : note,
+                  steps: result.steps,
+                  said: commentary.slice(0, 200),
+                  startedAt,
+                  finishedAt: new Date().toISOString(),
+                }],
+              });
+              await reload();
+            } catch (_) {
+              // Расписание поставлено, и это важнее строки в журнале.
             }
             return;
           }

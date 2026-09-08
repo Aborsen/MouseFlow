@@ -4758,6 +4758,7 @@ group('цель, назвавшая время, откладывается в р
   const create = read('../web/src/features/create/CreateView.tsx');
   const route = read('../api/mcp.js');
   const appRoute = read('../api/schedules.js');
+  const describes = read('../web/src/features/create/describe.ts');
 
   check('у цикла есть слово для «позже» - тул defer_until',
     /name: 'defer_until'/.test(brain));
@@ -4782,15 +4783,27 @@ group('цель, назвавшая время, откладывается в р
   check('в облаке он становится разовым расписанием с тем же flow_id, tool_name и args',
     /if \(out\.done && out\.done\.deferred\)/.test(route)
       && /\$\{job\.flow_id\}, \$\{job\.tool_name\}, \$\{JSON\.stringify\(job\.args \|\| \{\}\)\},[\s\S]{0,200}'once'/.test(route));
-  check('и НЕ пишется в журнал прогонов - прогона не было',
-    /if \(out\.done && out\.done\.deferred\) \{[\s\S]*?return res\.status\(200\)[\s\S]*?\}\s*\n\s*if \(out\.done\) \{\s*\n\s*const done = out\.done;\s*\n\s*await logRun/.test(route)
-      && !/if \(out\.done && out\.done\.deferred\) \{[\s\S]*?logRun\([\s\S]*?if \(out\.done\) \{/.test(route));
+  /* ПРОГОН БЫЛ - и в журнале ему место. Сначала здесь не писалось ничего под предлогом «прогона не было»;
+   * это неверно: модель получила снимок, приняла решение и стоила за него денег, а человек с пустой историей
+   * не может узнать, ЧТО было решено и почему прогон кончился ничем. Выдачей недостигнутой цели за успех это
+   * не становится - первое, что читается в строке, «Set aside until …». */
+  check('отложенный прогон попадает в журнал - со своим единственным шагом',
+    route.includes("await logRun({ ...loop, steps: out.done.steps, said: out.done.saidAll }, 'ok', said, null);"));
+  check('и его строка начинается с «отложено до», а не с обещания сделанного',
+    /said = `Set aside until \$\{whenSaid\(/.test(route));
   check('на странице Create надиктованная цель сначала становится скиллом, потом расписанием',
     create.includes('if (result.deferred)') && create.includes('await saveDictatedAsGoalSkill(')
       && /scheduleAdd\(\{ flowId: dictatedSkillIdFor\(runId\), once: at, zone, label \}\)/.test(create));
-  check('и о прогоне на аккаунт при этом не сообщается', /if \(result\.deferred\) \{[\s\S]*?return;\s*\n\s*\}\s*\n\s*updateLive/.test(create));
-
-  /* Зона - единственное, чего сервер не знает; теперь ему говорят. */
+  /* ОКОНЧАНИЕ - ОНО И ЕСТЬ ОКОНЧАНИЕ, каким бы коротким ни было. Ранний return проходил мимо объявления, и
+   * человек, поставивший задачу на 19:41 и ушедший в другое окно, не получал ни уведомления, ни возврата
+   * вкладки, о котором сам же просил галочкой. */
+  check('об отложенном говорится вслух теми же тремя путями, что и о всяком другом окончании',
+    /if \(result\.deferred\)[\s\S]{0,3200}?void announceFinished\(\{[\s\S]{0,240}?bringForward,/.test(create));
+  check('и он тоже пишется в журнал, строкой, начинающейся с «Set aside until»',
+    /if \(result\.deferred\)[\s\S]{0,3600}?await push\(\{\s*\n\s*runs: \[\{/.test(create)
+      && /note = `Set aside until \$\{made\.schedule\.nextSaid/.test(create));
+  check('а в фиде шаг назван на когда отложено, а не машинным именем инструмента',
+    describes.includes("case 'defer_until': {") && describes.includes('set the run aside until ${when}'));
   check('цикл несёт зону, и облачный драйвер берёт её у расписания или из настроек аккаунта',
     step.includes('zone: zone ? String(zone) : null') && /select zone from user_schedule where id = \$\{job\.schedule_id\}/.test(route)
       && /key = 'zone'/.test(route));

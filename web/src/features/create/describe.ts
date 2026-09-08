@@ -117,6 +117,16 @@ export function describe(did: Did, on: On = undefined): string {
       const written = String(input.text ?? '').trim();
       return written ? `noted "${written.length > 72 ? `${written.slice(0, 72)}…` : written}"` : 'noted';
     }
+    /* Отложено. В фиде это читалось как «defer_until» - машинное имя из ветки default, - а человек, глядящий
+     * на прогон, который назвал время и остановился, обязан прочитать НА КОГДА. Местным временем, потому что
+     * в этой же зоне он назвал час; ISO в строке фида не читает никто. */
+    case 'defer_until': {
+      const at = new Date(String(input.at ?? ''));
+      const when = Number.isFinite(at.getTime())
+        ? at.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+        : String(input.at ?? 'later');
+      return `set the run aside until ${when}`;
+    }
     case 'reached_checkpoint':
       return `announced checkpoint ${input.n ?? '?'}`;
     case 'finish':

@@ -1692,6 +1692,13 @@ async function workerRoute(action, req, res, sql, who) {
         `;
         return res.status(200).json({ ok: true, done: true, outcome: { ok: false, said } });
       }
+      /* И В ЖУРНАЛ ПРОГОНОВ - с единственным шагом, которым этот прогон и был.
+       *
+       * Сначала здесь не писалось ничего: «прогона не было». Это неверно - прогон был: модель получила
+       * снимок, приняла решение и стоила за него денег, - а человек, у которого в истории пусто, не может
+       * узнать, ЧТО было решено. `ok`, потому что прогон закончился тем, чем должен был; выдачей
+       * недостигнутой цели за успех это не становится, так как summary начинается с «Set aside until …». */
+      await logRun({ ...loop, steps: out.done.steps, said: out.done.saidAll }, 'ok', said, null);
       await sql`
         update run_queue set state = 'done', ok = true, said = ${said}, finished_at = now(), loop = null
         where id = ${id} and user_id = ${who.id} and state = 'claimed'
