@@ -66,6 +66,7 @@ How to work:
 - Waiting is free and looking is not. The wait tool blocks until the screen stops changing, so ONE wait of 60000 is right for something long. Never a string of short waits: each of those costs a step.
 - You are told the time with every screenshot. Never read it off a taskbar, and NEVER BUILD A TIMER: no scripts that loop until a time, no repeated waits to let minutes pass, no counting. If the goal says to do something at a LATER time - "at 19:41", "tomorrow at 8" - call defer_until with that time right away, before doing anything else; the run is set aside and started again at that time. ANY time that has not arrived yet goes to defer_until - one minute ahead included. You do not judge that it is close enough: the tool answers whether it is now, and only when it says so do you carry on and do the task.
 - If two attempts at the same sub-goal get nowhere, change method. If a third fails, call finish and say precisely what you could not do.
+- WHEN THE GOAL ASKS YOU TO CHECK, VERIFY, MAKE SURE OR CONFIRM something, call expect for it - do not decide it from the picture. expect asks the machine and records PASS or FAIL as evidence; a claim you made by looking is an opinion, and this product's whole argument is that an opinion nobody can check is worthless. A failed expect does not end the run: say what you will do about it, or finish with ok false. What expect cannot see - a colour, a layout, whether something looks right - you may still describe with note, and that is reported as seen rather than proven.
 - When the goal asks you to RECORD something - a test result, a value you read off the screen, what a dialog said - call note with it. It writes that line into the run's own record, where the user reads it afterwards. It touches nothing, costs no action, and can ride in the same turn as real work. It is not a way to talk to the user mid-run: nobody is watching for it, and nothing waits for an answer.
 - When the goal is met, call finish with ok: true and one sentence about what you did.
 
@@ -514,6 +515,44 @@ export const TOOLS = [
     },
   },
   {
+    /* ПРОВЕРКА, КОТОРУЮ РЕШАЕТ МАШИНА.
+     *
+     * Отдельный инструмент, а не «посмотри и скажи»: на этом стоит регрессионное тестирование, а тест,
+     * прошедший потому, что модель посмотрела и решила, не стоит того, чтобы его гонять ночью. Вердикт
+     * выносит разбор ответа дерева доступности (api/_expect.mjs), и он попадает в шаг прогона как
+     * доказательство - с уровнем: `tree` сильнее, чем `picture`.
+     *
+     * ПОЧЕМУ ЭТО НЕ find_element С ДРУГИМ ОПИСАНИЕМ. find отвечает «вот где это» и ничего не утверждает;
+     * его ответ живёт один ход и нигде не остаётся. expect УТВЕРЖДАЕТ, и утверждение записывается: именно
+     * это делает прогон отчётом, который можно читать через неделю, а не разговором. */
+    name: 'expect',
+    description: 'Check something and RECORD the answer as evidence. Decided by the machine from the '
+      + 'accessibility tree, never from the picture, so it is proof rather than an opinion - and it is kept '
+      + 'in the run for somebody to read afterwards. Call it for anything the goal asked you to verify, and '
+      + 'before finish. A failed check does NOT end the run: decide what it means for the goal. Names are '
+      + 'matched as find_element matches them - exactly first, then case-insensitively as part of a name.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        check: {
+          type: 'string',
+          enum: ['present', 'absent', 'value_is', 'value_contains', 'enabled', 'disabled'],
+          description: 'present/absent: is it on the window at all. value_is/value_contains: what a field '
+            + 'holds (needs `text`). enabled/disabled: whether it can be used.',
+        },
+        name: { type: 'string', description: 'The control, as it appears on screen' },
+        text: { type: 'string', description: 'For value_is and value_contains' },
+        process: { type: 'string', description: 'Narrow to a process instead of the window in front' },
+        why: {
+          type: 'string',
+          description: 'What this proves, in the goal\'s own words - it is what the person reads in the report',
+        },
+      },
+      required: ['check', 'name', 'why'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'finish',
     description: 'End the run. This is the ONLY way to end it: if you stop without calling this, the run '
       + 'is recorded as not finished, whatever you wrote. Set ok true only if the goal was actually '
@@ -666,7 +705,14 @@ export function actionBody(name, input, frame) {
     return `action=read ${geometry()}${process ? ` process=${process}` : ''}`
       + (title ? ` title=${title}` : '');
   }
-  if (name === 'find_element') {
+  /* expect ЕЗДИТ НА find, И ЭТО НАРОЧНО.
+   *
+   * Проверке не нужно нового действия на проводе: `find` уже отвечает всем, что нужно вынести вердикт, -
+   * есть ли такое имя на окне, сколько их, что лежит в поле, включено ли оно (см. Line() в агенте, который
+   * печатает `= "…"` и `(disabled)`). Значит проверки работают на КАЖДОМ агенте, который умеет find, без
+   * обновления на чьей-то машине - а обновление агента это самая дорогая просьба, какая у нас есть.
+   * Вердикт выносит api/_expect.mjs, разбирая эту же строку. */
+  if (name === 'find_element' || name === 'expect') {
     /* The NAME goes in `title=`, which is the wire's one field that may contain spaces - so `find` cannot
      * also take a window title, and looks at the window in front unless narrowed by process. The agent's
      * WindowToRead comment has the long version. */
@@ -1039,7 +1085,23 @@ export const stillStopped = (streak) =>
  * because of them - which makes "click, then find the thing that appeared" one turn rather than two. */
 const BATCHABLE = new Set([
   'type_text', 'press_key', 'wait', 'clipboard_read', 'clipboard_write', 'read_window', 'find_element',
+  /* expect только СМОТРИТ - как read_window и find_element, - поэтому «сделай и проверь» это один ход, а не
+   * два. Ради этого он и батчуемый: проверка, стоящая отдельного хода, стоит восьми секунд, и модель,
+   * которой это дорого, начнёт проверять реже. */
+  'expect',
 ]);
+
+/* ДЕЙСТВИЯ, КОТОРЫЕ ТОЛЬКО СМОТРЯТ, - и почему это отдельное множество, а не BATCHABLE.
+ *
+ * Агент сообщает `moved` про КАЖДОЕ действие, включая чтение окна: снял отпечаток до, снял после, ответил
+ * «не сдвинулось». Для клика это тот самый сигнал, ради которого всё писалось; для взгляда это шум - взгляд
+ * и не должен ничего сдвигать. А счётчик неподвижности, дойдя до STILL_GIVE_UP, ПРЕКРАЩАЕТ прогон.
+ *
+ * Пока проверок не было, это было незаметно: шесть чтений подряд никто не делал. У QA-прогона форма ровно
+ * такая - «сделай одно, проверь пять» - и он упирался бы в потолок на статичном экране, то есть ровно тогда,
+ * когда всё работает правильно. Поэтому ход, в котором ничего, кроме взглядов, не было, счёт не трогает
+ * вовсе: судить о неподвижности по действию, которое не собиралось ничего двигать, - это судить не о том. */
+export const LOOKS_ONLY = new Set(['read_window', 'find_element', 'expect']);
 
 /** And the ones nothing may follow: they change the screen by definition, or can quietly not happen. */
 /* open_url and open_app join for the same reason activate_window is here, only more so: a window is about

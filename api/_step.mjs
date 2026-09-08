@@ -33,6 +33,7 @@
 import {
   HANDOFF_ASK,
   HANDOFF_SYSTEM,
+  LOOKS_ONLY,
   MAX_TOKENS,
   PEEK_ID,
   MAX_WAVES,
@@ -64,6 +65,9 @@ import {
 /* Момент, на который цель просит отложиться, считается там же, где считаются расписания, - одним и тем
  * же способом для этого драйвера, для браузерного и для проверки на claim. */
 import { clockSaid, deferInstant } from './_schedule.mjs';
+/* Вердикт по проверке - одним разбором на оба драйвера, потому что «прошло» обязано значить одно и то же,
+ * откуда бы прогон ни шёл. См. api/_expect.mjs. */
+import { checksOf, expectSaid, judge } from './_expect.mjs';
 import { DEFAULT_SHOT_W } from './_brain.mjs';
 import { callModel } from './_vision.mjs';
 
@@ -162,7 +166,11 @@ function resultBlocks(pending, said, loop) {
   let stirred = false;
   for (const p of pending) {
     const got = bySaid.get(String(p.id));
-    if (!got || p.name === 'wait') continue;
+    /* ВЗГЛЯД НЕ СУДИТ О НЕПОДВИЖНОСТИ. Агент отвечает `moved` про каждое действие, включая чтение окна, и
+     * до появления проверок это было незаметно: шесть чтений подряд никто не делал. У QA-прогона форма
+     * ровно такая - «сделай одно, проверь пять», - и на статичном экране он упирался бы в STILL_GIVE_UP
+     * именно тогда, когда всё работает правильно. См. LOOKS_ONLY в _brain.mjs. */
+    if (!got || p.name === 'wait' || LOOKS_ONLY.has(String(p.name))) continue;
     if (got.moved === true) { judged = true; stirred = true; } else if (got.moved === false) judged = true;
   }
   if (judged) loop.still = stirred ? 0 : loop.still + 1;
@@ -189,6 +197,18 @@ function resultBlocks(pending, said, loop) {
     /* actionSaid rather than the three-way conditional this used to be. The rule - output when there is
      * one, the stirred/inert sentence when there is not - now lives in the brain beside actionReport,
      * because the browser driver has to apply exactly the same one and did not. */
+    /* ПРОВЕРКА: вердикт выносится ЗДЕСЬ, когда ответ машины уже есть, и записывается в тот шаг, который
+     * его заказал - `at` несёт его индекс, потому что шаг был добавлен ходом раньше.
+     *
+     * `is_error` остаётся ложным даже у FAIL, и это не мелочь: инструмент СРАБОТАЛ, ответ получен, не
+     * сошлось утверждение. Пометить это ошибкой инструмента значило бы научить модель, что проверять
+     * ломается, - а ей надо решить, что означает несошедшееся утверждение для цели. */
+    if (p.name === 'expect') {
+      const verdict = judge(p.input || {}, got.output, got.isError === true);
+      const step = loop.steps[p.at];
+      if (step) step.outcome = verdict;
+      return { type: 'tool_result', tool_use_id: p.id, content: expectSaid(p.input || {}, verdict) };
+    }
     const content = p.name === 'wait' && got.quiet !== undefined
       ? waitReport(got)
       : actionSaid(got.output, got.moved === false ? false : undefined, got.streak || 0);
@@ -233,6 +253,13 @@ export async function advance({ loop, shot, windows, results, ask }) {
     done: {
       ok: out.ok === true,
       said: out.said || null,
+      /* СВОДКА ПРОВЕРОК, отдельно от исхода прогона, и это разделение - весь смысл.
+       *
+       * `ok` отвечает «процедура выполнена», `checks` - «утверждения сошлись». Прогон может быть `ok` с
+       * провалившейся проверкой: агент сделал всё, о чём просили, а продукт повёл себя не так. Схлопнуть их
+       * в одно значило бы либо назвать сломанный продукт успехом, либо назвать неудачей агента то, что он
+       * как раз и обнаружил. Тест-кейс (пункт 5 плана) читает именно эти два числа. */
+      checks: checksOf(loop.steps),
       error: out.ok === true ? null : (out.error || out.said || 'it stopped without saying why'),
       /* Отложенный прогон - не сделанный: драйвер маршрута видит это поле и ставит расписание вместо того,
        * чтобы записать зелёный прогон, которого не было. */
@@ -529,7 +556,12 @@ export async function advance({ loop, shot, windows, results, ask }) {
       continue;
     }
     actions.push({ id: use.id, kind: 'do', name: use.name, body: line });
-    loop.pending.push({ id: use.id, name: use.name });
+    /* `at` - индекс шага, который это действие заказало: ответ придёт ходом позже, и вердикт проверки надо
+     * будет записать именно в тот шаг. `input` возится только у проверки - ей есть что судить. */
+    loop.pending.push({
+      id: use.id, name: use.name, at: loop.steps.length - 1,
+      ...(use.name === 'expect' ? { input: use.input || {} } : {}),
+    });
     ran.push(String(use.name || ''));
   }
 

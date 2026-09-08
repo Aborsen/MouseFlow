@@ -1280,5 +1280,100 @@ const hhmm = (ms, zone) => new Intl.DateTimeFormat('en-GB', {
     /\(UTC\)\./.test(JSON.stringify(ask.seen[0].messages)));
 }
 
+/* ---------------------------------------------------------------- проверки в цикле
+ *
+ * Арифметика вердикта проверена исполнением в api/_test-expect.mjs. Здесь - ПРОВОДКА, которую вычислить
+ * нельзя: что проверка едет на find, что вердикт попадает в тот шаг, который его заказал (ответ приходит
+ * ходом позже!), что FAIL не выдаётся модели за ошибку инструмента, и что шесть проверок подряд не
+ * прекращают прогон, хотя каждая из них честно сообщает «экран не сдвинулся». */
+group('a check rides on find, and its verdict lands in the step that ordered it');
+const FOUND = 'found button "Send" at 1074,159 240x32, centre 1194,175 - click the centre';
+const MISSING = 'nothing on that window is called "Saved". Read the window to see what it does call things, '
+  + 'or look at the screenshot - it may not be there at all';
+{
+  const ask = scripted([
+    answer([use('expect', { check: 'present', name: 'Send', why: 'the mail can be sent' }, 'e1')]),
+    answer([use('finish', { ok: true, said: 'Checked.' }, 'f1')]),
+  ]);
+  const loop = start('make sure the mail can be sent');
+  const first = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  check('the machine is asked to find, not something new on the wire',
+    first.actions.length === 1 && first.actions[0].body === 'action=find scale=0.5 ox=0 oy=0 title=Send',
+    first.actions[0] && first.actions[0].body);
+  check('the step is recorded before the answer exists, with no verdict yet',
+    first.loop.steps.length === 1 && first.loop.steps[0].tool === 'expect' && !first.loop.steps[0].outcome);
+  check('and the pending entry remembers WHICH step to write the verdict into',
+    first.loop.pending[0].at === 0 && first.loop.pending[0].input.check === 'present',
+    JSON.stringify(first.loop.pending[0]));
+
+  const second = await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS, ask,
+    results: [{ id: 'e1', output: FOUND, moved: false }],
+  });
+  const done = second.done;
+  check('the run ends ok', done && done.ok === true);
+  check('and the step now carries the verdict',
+    done.steps[0].outcome && done.steps[0].outcome.pass === true && done.steps[0].outcome.how === 'tree',
+    JSON.stringify(done.steps[0].outcome));
+  check('the model was told PASS, and NOT as a tool error',
+    /PASS \(tree\)/.test(JSON.stringify(ask.seen[1].messages))
+      && !/"is_error":true/.test(JSON.stringify(ask.seen[1].messages)));
+  check('the summary counts it, apart from the outcome',
+    done.checks && done.checks.passed === 1 && done.checks.failed === 0, JSON.stringify(done.checks));
+}
+{
+  /* FAIL НЕ ЗАКАНЧИВАЕТ ПРОГОН: решение, что означает несошедшееся утверждение, принимает модель. */
+  const ask = scripted([
+    answer([use('expect', { check: 'present', name: 'Saved', why: 'it saved' }, 'e2')]),
+    answer([use('finish', { ok: false, said: 'It never saved.' }, 'f2')]),
+  ]);
+  const loop = start('save it and make sure it saved');
+  const first = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  const second = await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS, ask,
+    results: [{ id: 'e2', output: MISSING, moved: false }],
+  });
+  check('a failed check does not end the run by itself', !!second.done, 'the run should have ended at finish');
+  check('the model was told FAIL and decided the ending itself',
+    /FAIL \(tree\)/.test(JSON.stringify(ask.seen[1].messages)) && second.done.ok === false);
+  check('and the summary separates a failed CHECK from a failed RUN',
+    second.done.checks.failed === 1 && second.done.checks.passed === 0);
+}
+{
+  /* ОКНО, КОТОРОЕ НЕ ПРОЧИТАЛОСЬ, НЕ ЗАЧЁТ И НЕ ПРОВАЛ. */
+  const ask = scripted([
+    answer([use('expect', { check: 'absent', name: 'Error', why: 'no error is shown' }, 'e3')]),
+    answer([use('finish', { ok: true, said: 'Done.' }, 'f3')]),
+  ]);
+  const loop = start('check no error is shown');
+  const first = await advance({ loop, shot: SHOT, windows: WINDOWS, results: [], ask });
+  const second = await advance({
+    loop: first.loop, shot: SHOT, windows: WINDOWS, ask,
+    results: [{ id: 'e3', output: 'could not read that window', moved: false }],
+  });
+  check('an unreadable window is counted as unchecked, never as a pass',
+    second.done.checks.unchecked === 1 && second.done.checks.passed === 0,
+    JSON.stringify(second.done.checks));
+}
+{
+  /* ШЕСТЬ ПРОВЕРОК ПОДРЯД НЕ ПРЕКРАЩАЮТ ПРОГОН.
+   *
+   * Агент честно отвечает `moved: false` на каждую - взгляд и не должен ничего двигать, - а счётчик
+   * неподвижности, дойдя до STILL_GIVE_UP, прогон заканчивает. У QA-прогона форма ровно такая: «сделай
+   * одно, проверь пять». Без LOOKS_ONLY это ломалось бы ровно тогда, когда всё работает правильно. */
+  let loop = start('check five things');
+  const ask = scripted(new Array(7).fill(0).map((_, i) => (i < 6
+    ? answer([use('expect', { check: 'present', name: 'Send', why: 'x' }, 'x' + i)])
+    : answer([use('finish', { ok: true, said: 'All there.' }, 'fz')]))));
+  let out;
+  for (let i = 0; i < 6; i++) {
+    out = await advance({ loop, shot: SHOT, windows: WINDOWS, results: i ? [{ id: 'x' + (i - 1), output: FOUND, moved: false }] : [], ask });
+    if (out.done) break;
+    loop = out.loop;
+  }
+  check('six checks in a row on a still screen do not stop the run', !out.done, out.done && out.done.error);
+  check('and the stillness counter was never touched by them', loop.still === 0, String(loop.still));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -60,6 +60,7 @@ import {
   gridQuiet,
   gridStirred,
   AFTER_CUT,
+  LOOKS_ONLY,
   notBatched,
   sameTurn,
   STILL_GIVE_UP,
@@ -70,6 +71,8 @@ import type { ShotFrame } from '../../../api/_brain.d.mts';
 /* Тот же расчёт момента, что у облачного драйвера и у расписаний: «в 19:41» обязано значить одно и то же,
  * откуда бы прогон ни шёл. */
 import { clockSaid, deferInstant } from '../../../api/_schedule.mjs';
+/* Один разбор на оба драйвера: «прошло» обязано значить одно и то же, откуда бы прогон ни шёл. */
+import { checksOf, expectSaid, judge } from '../../../api/_expect.mjs';
 
 /* Re-exported so nothing else has to know the brain moved: the Create page counts waves, and the plan
  * preview and the checkpoint gate's thumbnail normalise a picture's format through mediaType. */
@@ -88,7 +91,9 @@ const SETTLE_QUIET_FRAMES = 2;
 export type GateAnswer = 'go' | 'stop';
 
 export interface RunEvent {
-  type: 'turn' | 'tool' | 'text' | 'error' | 'wave' | 'handoff' | 'waiting';
+  type: 'turn' | 'tool' | 'text' | 'error' | 'wave' | 'handoff' | 'waiting' | 'check';
+  /** Только у 'check': прошло, не прошло или проверить не удалось. См. api/_expect.mjs. */
+  pass?: boolean | null;
   n?: number;
   wave?: number;
   inWave?: number;
@@ -111,6 +116,8 @@ export interface RunResult {
   said?: string;
   error?: string;
   steps: RunStep[];
+  /** Сошлись ли утверждения - ОТДЕЛЬНО от того, выполнилась ли процедура. См. checksOf в _expect.mjs. */
+  checks?: { passed: number; failed: number; unchecked: number; tiers: Record<string, number> } | null;
   /** Цель назвала время впереди, и прогон отложен до него: страница ставит расписание, а не пишет прогон. */
   deferred?: { at: string; zone: string; then: string };
 }
@@ -120,6 +127,8 @@ export interface RunStep {
   tool: string;
   input: Record<string, unknown>;
   ms?: { shot: number; model: number; act: number };
+  /** Только у `expect`: вердикт с доказательством. `pass: null` - проверить не удалось (см. _expect.mjs). */
+  outcome?: { pass: boolean | null; how: string; evidence: string };
 }
 
 /** What is already open, in one line each - the mistake a picture cannot prevent. */
@@ -608,7 +617,12 @@ async function runWave(o: {
         const claimed = use.input?.ok === true;
         return {
           stepNo,
-          result: { ok: claimed, said: closing, error: claimed ? undefined : closing, steps },
+          result: {
+            ok: claimed, said: closing, error: claimed ? undefined : closing, steps,
+            /* Отдельно от `ok`: процедура могла выполниться, а утверждение не сойтись - это провал ПРОДУКТА,
+             * а не прогона, и читается он двумя числами, а не одним цветом. */
+            checks: checksOf(steps),
+          },
         };
       }
 
@@ -717,10 +731,28 @@ async function runWave(o: {
          * twitches. */
         const inert = !!(before && after && !gridStirred(before, after));
         /* «Не смог снять отпечаток» - это не «не сдвинулось», и ход, про который ничего не известно, счёт
-         * не трогает вовсе. */
-        if (before && after) {
+         * не трогает вовсе.
+         *
+         * И ВЗГЛЯД НЕ СУДИТ О НЕПОДВИЖНОСТИ: агент отвечает `moved` про каждое действие, включая чтение
+         * окна, а проверка ничего двигать и не собиралась. QA-прогон - «сделай одно, проверь пять» - иначе
+         * упирался бы в STILL_GIVE_UP на статичном экране, то есть когда всё правильно. См. LOOKS_ONLY. */
+        if (before && after && !LOOKS_ONLY.has(use.name ?? '')) {
           judged = true;
           if (!inert) stirred = true;
+        }
+        /* ПРОВЕРКА: вердикт выносится здесь, потому что на этом пути ответ машины уже в руках - в отличие от
+         * облачного, где он приходит ходом позже. Разбор тот же самый, и `is_error` у FAIL остаётся ложным:
+         * инструмент сработал, не сошлось утверждение. */
+        if (use.name === 'expect') {
+          const want = (use.input ?? {}) as { check: string; name: string; text?: string; why?: string };
+          const verdict = judge(want, output, false);
+          trace.outcome = verdict;
+          const said = expectSaid(want, verdict);
+          results.push({ type: 'tool_result', tool_use_id: use.id, content: said });
+          /* Своим видом события, а не текстом: человек, читающий ленту, обязан видеть исход проверки
+           * цветом - в отчёте по кейсу это единственное, что читают. */
+          onEvent({ type: 'check', text: said, pass: verdict.pass });
+          continue;
         }
         const report = {
           type: 'tool_result',

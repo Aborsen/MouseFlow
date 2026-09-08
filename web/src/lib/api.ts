@@ -75,6 +75,9 @@ export interface Run {
   extension: string | null;
   startedAt: string | null;
   finishedAt: string | null;
+  /** Сошлись ли утверждения - отдельно от `outcome`, который говорит лишь, выполнилась ли процедура.
+   *  Null у прогона, который ничего не проверял, и это большинство. См. db/019 и api/_expect.mjs. */
+  checks?: { passed: number; failed: number; unchecked: number; tiers: Record<string, number> } | null;
   /* ЧТО ПРОГОН СДЕЛАЛ И ЧТО СКАЗАЛ. Обе колонки были на проводе с самого начала - api/sync.js отдаёт их в
    * том же ответе, - и обе не были объявлены здесь, поэтому единственный способ узнать, что они есть, был
    * прочитать SQL. Это и есть причина, по которой история прогонов год выглядела невозможной: данные

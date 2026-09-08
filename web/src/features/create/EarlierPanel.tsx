@@ -38,6 +38,7 @@ import type { Flow, Run } from '@/lib/api';
 import { useAgent } from '@/lib/store';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
 import { asDid, describe } from './describe';
+import { evidenceOf, verdictKind } from './verdict';
 import { dictatedFrom, goalRuns, provable, stepsOf, titleOf, took, when, wordsOf } from './run-history';
 
 /* Поиск появляется, когда без него становится трудно. Поле над тремя строками - это мебель. */
@@ -297,7 +298,17 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
                           ))}
 
                           {steps.map((step, i) => (
-                            <StepLine key={`s${i}`} kind="tool">{describe(asDid(step), platform)}</StepLine>
+                            <StepLine
+                              key={`s${i}`}
+                              /* Проверка красится по своему исходу, а не как обычный шаг: в отчёте по
+                                * тесту это единственное, что читают, и три исхода обязаны различаться
+                                * глазом. Форма шага чужого драйвера сюда не попадает - `outcome` пишет
+                                * только expect (см. api/_expect.mjs). */
+                              kind={verdictKind(step)}
+                            >
+                              {describe(asDid(step), platform)}
+                              {evidenceOf(step)}
+                            </StepLine>
                           ))}
 
                           {/* ЧТО СКАЗАТЬ, КОГДА ШАГОВ НЕ ВИДНО - и это три разных случая, а не один.

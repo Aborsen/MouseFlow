@@ -32,6 +32,7 @@ import type { Flow, Run } from '@/lib/api';
 import { useAgent } from '@/lib/store';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
 import { asDid, describe } from './describe';
+import { evidenceOf, verdictKind } from './verdict';
 import { dictatedFrom, goalRuns, provable, stepsOf, titleOf, took, when, wordsOf } from './run-history';
 
 /* Сколько показать сразу. Аккаунт отдаёт до шестидесяти прогонов, и вывалить их все над строкой ввода
@@ -203,7 +204,10 @@ export const Earlier = ({
                   ))}
 
                   {steps.map((step, i) => (
-                    <StepLine key={`s${i}`} kind="tool">{describe(asDid(step), platform)}</StepLine>
+                    <StepLine key={`s${i}`} kind={verdictKind(step)}>
+                      {describe(asDid(step), platform)}
+                      {evidenceOf(step)}
+                    </StepLine>
                   ))}
 
                   {/* ЧТО СКАЗАТЬ, КОГДА ШАГОВ НЕ ВИДНО - и это три разных случая, а не один.

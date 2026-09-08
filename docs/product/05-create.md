@@ -390,6 +390,19 @@ other windows by design. So a finish is **announced**, in three escalating ways
 The notification carries the model's own closing sentence when there is one. "Finished" alone sends somebody
 back to the tab to find out what it did, which is the trip this exists to save.
 
+## Checking, rather than deciding by eye
+
+`expect` is the one action whose answer is **evidence**: it asks the machine whether a control is there, what
+a field holds, or whether something can be used, and records PASS, FAIL or **CANNOT CHECK** into the run with
+the tier it was decided at. The system prompt tells the model to use it for anything the goal asked to
+verify, and never to settle such a question from the screenshot.
+
+It rides on the same `action=find` the loop already had, so it needs no agent update; a failed check does not
+end the run, because what a failed assertion means for the goal is the model's decision. Six checks in a row
+on a still screen no longer trip the stillness guard either — looking-only actions stopped judging it, which
+they should never have done and which only became visible once a run's shape became "do one thing, check
+five". The whole of it is [25 — Checks and tests](25-tests.md).
+
 ## A goal that names a time
 
 *"At 19:41, open ChatGPT and send Continue."* Before September 2026 this produced a run that opened

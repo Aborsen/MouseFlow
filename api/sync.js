@@ -205,7 +205,7 @@ async function pull(res, sql, who) {
   `;
   const runs = await sql`
     select client_id, kind, goal, name, model, flow_id, outcome, summary, error,
-           steps, said, extension, started_at, finished_at
+           steps, said, extension, started_at, finished_at, checks
     from user_run
     where user_id = ${who.id} and deleted_at is null
     order by started_at desc nulls last limit ${RUNS_RETURNED}
@@ -265,6 +265,9 @@ async function pull(res, sql, who) {
       model: r.model, flowId: r.flow_id,
       outcome: r.outcome, summary: r.summary, error: r.error, steps: r.steps, said: r.said,
       extension: r.extension, startedAt: r.started_at, finishedAt: r.finished_at,
+      /* Сошлись ли утверждения - отдельно от того, выполнилась ли процедура. Null у прогона, который ничего
+       * не утверждал, и это большинство: «нет проверок» не то же, что «проверки провалились». См. db/019. */
+      checks: r.checks || null,
     })),
   });
 }
@@ -507,18 +510,33 @@ async function push(req, res, sql, who) {
     `;
     if (before && before.deleted_at) continue;
 
+    /* СВОДКА ПРОВЕРОК, и она НЕ пересчитывается здесь из шагов, хотя могла бы.
+     *
+     * Считает её тот, кто прогон вёл (checksOf в api/_expect.mjs), и приезжает она готовой - потому что
+     * второй счёт в другом месте это второй ответ на вопрос «сколько проверок прошло», и однажды они
+     * разойдутся. Здесь только проверка формы: чужой JSON в эту колонку попасть не должен. */
+    const checks = run.checks && typeof run.checks === 'object' && !Array.isArray(run.checks)
+      ? JSON.stringify({
+        passed: Math.max(0, Math.round(Number(run.checks.passed) || 0)),
+        failed: Math.max(0, Math.round(Number(run.checks.failed) || 0)),
+        unchecked: Math.max(0, Math.round(Number(run.checks.unchecked) || 0)),
+        tiers: run.checks.tiers && typeof run.checks.tiers === 'object' ? run.checks.tiers : {},
+      })
+      : null;
+
     await sql`
       insert into user_run
         (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
-         steps, said, extension, started_at, finished_at)
+         steps, said, extension, started_at, finished_at, checks)
       values
         (${who.id}, ${clientId}, ${kind}, ${text(run.goal, 4000)}, ${text(run.model, 60)},
          ${text(run.flowId, 80)}, ${outcome}, ${text(run.summary, 2000)}, ${text(run.error, 2000)},
          ${trace}, ${words}, ${text(run.extension, 20)},
-         ${when(run.startedAt)}, ${when(run.finishedAt)})
+         ${when(run.startedAt)}, ${when(run.finishedAt)}, ${checks})
       on conflict (user_id, client_id) do update set
         outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
         steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at,
+        checks = excluded.checks,
         synced_at = now()
     `;
     savedRuns++;

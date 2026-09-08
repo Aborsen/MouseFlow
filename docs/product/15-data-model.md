@@ -122,6 +122,20 @@ An extension run's steps carry a per-step `ms` and the page each acted on, which
 timing anywhere in the schema**. A desktop run's steps carry `{ tool, input }` and no timing at all — which is
 why "where did the time go inside a desktop run" is in the Dashboard's gaps rather than on its chart.
 
+### `checks` — whether what the run asserted held
+
+`db/019_run_checks.sql`. `{ passed, failed, unchecked, tiers }`, or **null** on a run that asserted nothing
+(most of them). Written by whoever drove the run, from its steps, through one function (`checksOf` in
+`api/_expect.mjs`) so there is never a second count that can disagree.
+
+**Not part of `outcome`.** That column says whether the agent completed the procedure; this one says whether
+the product behaved as the person said it should. A run that is `ok` with `failed: 1` is the most valuable
+row in the table — the errand worked and the thing it checked was wrong, which is a found bug. See
+[25 — Checks and tests](25-tests.md).
+
+`unchecked` exists for the same reason absence is never a negative fact anywhere else in this schema: a
+window that could not be read is not a window in which something is missing.
+
 ## `flow_digest` — what a recording amounts to, derived once
 
 `db/014_flow_digest.sql`, derived by `api/_digest.mjs`

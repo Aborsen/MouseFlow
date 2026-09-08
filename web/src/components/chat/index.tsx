@@ -194,7 +194,10 @@ export const StepLine = ({
   kind,
   children,
 }: {
-  kind: 'tool' | 'say' | 'error' | 'wave' | 'handoff' | 'waiting';
+  /* pass/fail/unchecked - ПРОВЕРКИ, и они выделены цветом не для красоты: в отчёте по кейсу это
+   * единственное, что читают, а «проверить не удалось» обязано отличаться от «не прошло» глазом, а не
+   * чтением. Три исхода, три вида - см. api/_expect.mjs. */
+  kind: 'tool' | 'say' | 'error' | 'wave' | 'handoff' | 'waiting' | 'pass' | 'fail' | 'unchecked';
   children: ReactNode;
 }) => (
   <div
@@ -204,6 +207,9 @@ export const StepLine = ({
       kind === 'say' && 'text-ink-body',
       kind === 'error' && 'text-fb-red-text',
       kind === 'waiting' && 'text-ink-inactive',
+      kind === 'pass' && 'font-medium text-fb-green',
+      kind === 'fail' && 'font-semibold text-fb-red-text',
+      kind === 'unchecked' && 'text-fb-attention',
       kind === 'wave' && 'mt-1 border-stroke border-t pt-2 font-semibold text-ink-primary',
       kind === 'handoff' && 'border-brand-primary border-l-2 bg-surface-accent px-2 py-1 text-ink-secondary',
     )}

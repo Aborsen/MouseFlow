@@ -127,6 +127,21 @@ export function describe(did: Did, on: On = undefined): string {
         : String(input.at ?? 'later');
       return `set the run aside until ${when}`;
     }
+    /* ПРОВЕРКА - читается как утверждение, а не как вызов инструмента: строка в отчёте по тесту это то,
+     * что человек прочитает через неделю, и «expect present Send» ему ничего не скажет. */
+    case 'expect': {
+      const what = String(input.name ?? 'something');
+      const text = input.text != null ? `"${String(input.text)}"` : '';
+      switch (String(input.check ?? '')) {
+        case 'present': return `check that "${what}" is there`;
+        case 'absent': return `check that "${what}" is gone`;
+        case 'value_is': return `check that "${what}" holds ${text}`;
+        case 'value_contains': return `check that "${what}" contains ${text}`;
+        case 'enabled': return `check that "${what}" can be used`;
+        case 'disabled': return `check that "${what}" is not available`;
+        default: return `check "${what}"`;
+      }
+    }
     case 'reached_checkpoint':
       return `announced checkpoint ${input.n ?? '?'}`;
     case 'finish':

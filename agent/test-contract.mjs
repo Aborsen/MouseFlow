@@ -564,7 +564,16 @@ group('пачку режет одно правило, и его читают о�
     /stirred = true/.test(cloud) && /stirred = true/.test(local));
   check('а ход, про который агент не смог сказать, счёт не трогает вовсе',
     /if \(judged\)/.test(cloud) && /if \(judged\)/.test(local)
-      && /if \(before && after\) \{/.test(local));
+      && /if \(before && after && /.test(local));
+  /* И ВЗГЛЯД НЕ СУДИТ О НЕПОДВИЖНОСТИ - второе условие в той же строке, появившееся с проверками.
+   *
+   * Агент отвечает `moved` про КАЖДОЕ действие, включая чтение окна: пока проверок не было, это было
+   * незаметно - шесть чтений подряд никто не делал. У QA-прогона форма ровно такая, «сделай одно, проверь
+   * пять», и на статичном экране он упирался бы в STILL_GIVE_UP именно тогда, когда всё работает правильно. */
+  check('и действие, которое только смотрит, тоже не судит - в обоих драйверах',
+    /LOOKS_ONLY\.has\(String\(p\.name\)\)/.test(cloud)
+      && /!LOOKS_ONLY\.has\(use\.name \?\? ''\)/.test(local)
+      && /export const LOOKS_ONLY/.test(brain));
   check('и слова говорят про ходы, а не про нажатия',
     /turns in a row now with nothing changing on screen/.test(brain)
       && /through \$\{streak\} decisions in a row/.test(brain));

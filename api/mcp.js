@@ -62,6 +62,8 @@ import { help } from './_help.mjs';
 import {
   FAILS_BEFORE_PAUSE, decide, firstAt, readRule, ruleOf, ruleSaid, whenSaid,
 } from './_schedule.mjs';
+/* Сводка проверок прогона - тем же счётом, что у браузерного драйвера. См. api/_expect.mjs. */
+import { checksOf } from './_expect.mjs';
 /* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
 import { overSpend, spentWhy } from './_spend.mjs';
 /* Потолок на вес записи - тот же, что у api/sync.js: два писателя одной колонки не могут иметь два. */
@@ -1523,7 +1525,7 @@ async function workerRoute(action, req, res, sql, who) {
         await sql`
           insert into user_run
             (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
-             steps, said, extension, started_at, finished_at)
+             steps, said, extension, started_at, finished_at, checks)
           values
             (${who.id}, ${job.id}, 'agent', ${String(state.goal || '').slice(0, 4000)},
              ${String(state.model || '').slice(0, 60)}, ${String(job.flow_id).slice(0, 80)},
@@ -1532,10 +1534,14 @@ async function workerRoute(action, req, res, sql, who) {
              ${JSON.stringify(state.steps || [])}, ${JSON.stringify(state.said || [])},
              /* The loop's own stamp, never claimed_at: that one is moved on by every step, so a
               * three-minute run would be logged with the duration of its last one. */
-             'cloud', ${state.startedAt || job.claimed_at || null}, now())
+             'cloud', ${state.startedAt || job.claimed_at || null}, now(),
+             /* Считается из шагов ЗДЕСЬ же, одной функцией с браузерным драйвером: два счёта «сколько
+              * проверок прошло» однажды разойдутся. Null у прогона, который ничего не утверждал. */
+             ${checksOf(state.steps) ? JSON.stringify(checksOf(state.steps)) : null})
           on conflict (user_id, client_id) do update set
             outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
-            steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at
+            steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at,
+            checks = excluded.checks
         `;
       } catch (err) {
         await report(err, req, { route: 'mcp:step:log' });

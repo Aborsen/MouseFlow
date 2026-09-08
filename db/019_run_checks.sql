@@ -1,0 +1,27 @@
+-- Whether the assertions a run made held, kept apart from whether the run itself completed.
+--
+-- WHY THIS IS NOT `outcome`. `user_run.outcome` answers one question - did the agent carry the procedure
+-- through: 'ok', 'failed', 'stopped'. A test asks a different one: did the product behave as the person
+-- said it should. Those come apart in exactly the case that matters most, and it is the ordinary case for a
+-- test rather than an edge: the agent did everything it was asked, and the thing it checked was wrong. That
+-- run is `ok` and its checks failed, and it is the most valuable row in the table - it is a found bug.
+--
+-- Collapsing them into one column would force a choice between two lies. Call it 'failed' and the report
+-- blames the agent for the defect it just discovered, so nobody can tell a broken product from a broken
+-- automation. Call it 'ok' and the nightly regression is green while the product is on fire.
+--
+-- THREE NUMBERS, NOT TWO. `{ passed, failed, unchecked, tiers }`. `unchecked` is the one that will be
+-- doubted, and it is the same principle every other absence in this schema follows (a missing capability
+-- flag means "too old to say", a missing `#ctx` means "not known"): a window that could not be read and a
+-- window in which the named thing is genuinely missing are different facts. Merged, the first would one day
+-- be painted green - a check that proved nothing, counted as a check that passed. That is the single failure
+-- mode that would make a regression suite worse than having none.
+--
+-- `tiers` counts how each check was decided: `dom` (the extension, or a DevTools connection) is stronger
+-- than `tree` (UI Automation / Accessibility), which is stronger than `ocr`, which is stronger than
+-- `picture` (a model looked and said so). A case whose checks are all `picture` is exploratory testing, not
+-- regression, and this column is what lets a report say so instead of pretending otherwise.
+--
+-- Null on every run recorded before checks existed, and on any run that asserted nothing - which is most
+-- of them. Absent means "this run made no claims", never "its claims failed".
+alter table user_run add column if not exists checks jsonb;

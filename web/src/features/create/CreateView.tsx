@@ -596,6 +596,9 @@ export const CreateView = () => {
                 summary: result.said ?? result.error ?? null,
                 error: result.ok ? null : result.error ?? null,
                 steps: result.steps,
+                /* Сошлись ли утверждения - отдельной колонкой, а не внутри исхода: прогон может выполниться
+                 * целиком и при этом обнаружить, что продукт ведёт себя не так. См. db/019. */
+                checks: result.checks ?? null,
                 /* Обрезано так же, как режет api/sync.js: он берёт первые 200 в любом случае, и отправлять
                  * больше значило бы отправить то, что заведомо выбросят. */
                 said: commentary.slice(0, 200),
@@ -834,10 +837,13 @@ export const CreateView = () => {
                       key={i}
                       kind={
                         event.type === 'tool' ? 'tool'
-                          : event.type === 'error' ? 'error'
-                            : event.type === 'wave' ? 'wave'
-                              : event.type === 'handoff' ? 'handoff'
-                                : 'say'
+                          : event.type === 'check'
+                            /* Три исхода, три вида: «проверить не удалось» - не «не прошло». */
+                            ? (event.pass === true ? 'pass' : event.pass === false ? 'fail' : 'unchecked')
+                            : event.type === 'error' ? 'error'
+                              : event.type === 'wave' ? 'wave'
+                                : event.type === 'handoff' ? 'handoff'
+                                  : 'say'
                       }
                     >
                       {event.type === 'tool'

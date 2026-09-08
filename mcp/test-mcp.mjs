@@ -4871,6 +4871,111 @@ group('отложенное отменяется с той же карточки
     /seenJobs/.test(create));
 }
 
+/* ------------------------------------------------------------------- ПРОВЕРКА, КОТОРУЮ РЕШАЕТ МАШИНА
+ *
+ * Вердикт проверяется исполнением в api/_test-expect.mjs (47 проверок на строках, которые агенты печатают
+ * дословно), проводка в цикле - в api/_test-step.mjs. Здесь то, что не вычисляется ни там, ни там: что
+ * правило сказано модели, что оба драйвера судят ОДНИМ разбором, что сводка отделена от исхода прогона, и
+ * что взгляд не судит о неподвижности.
+ *
+ * Зачем всё это: на `expect` стоит регрессионное тестирование, то есть решение, которое человек не будет
+ * перепроверять руками. Тест, прошедший потому, что модель посмотрела и решила, не стоит того, чтобы его
+ * гонять ночью, - а проверка, которая ничего не смогла прочитать и посчиталась зачётом, хуже отсутствия
+ * проверок вовсе. */
+group('утверждение проверяется машиной, и «не удалось» - это не «прошло»');
+{
+  const brain = read('../api/_brain.mjs');
+  const judge = read('../api/_expect.mjs');
+  const step = read('../api/_step.mjs');
+  const engine = read('../web/src/lib/desktop-engine.ts');
+  const sync = read('../api/sync.js');
+  const route = read('../api/mcp.js');
+  const migration = read('../db/019_run_checks.sql');
+  const pkg = read('../package.json');
+
+  check('у цикла есть слово для утверждения - тул expect', /name: 'expect'/.test(brain));
+  check('и правило сказано прямо: проверять, а не решать по картинке',
+    /WHEN THE GOAL ASKS YOU TO CHECK, VERIFY, MAKE SURE OR CONFIRM/.test(brain)
+      && /do not decide it from the picture/.test(brain));
+  check('проверка едет на find - значит работает на любом агенте, который уже умеет find',
+    /if \(name === 'find_element' \|\| name === 'expect'\) \{/.test(brain));
+  check('и она батчуема: «сделай и проверь» - один ход, а не два',
+    /'expect',\s*\n\]\);/.test(brain));
+
+  /* ОДИН РАЗБОР НА ДВА ДРАЙВЕРА: «прошло» обязано значить одно и то же, откуда бы прогон ни шёл. */
+  check('облачный драйвер судит разбором из _expect.mjs, а не своим',
+    step.includes("import { checksOf, expectSaid, judge } from './_expect.mjs';"));
+  check('браузерный - тем же самым',
+    engine.includes("import { checksOf, expectSaid, judge } from '../../../api/_expect.mjs';"));
+
+  /* ТРИ ИСХОДА. Это то место, где регрессионный набор может стать хуже, чем его отсутствие. */
+  check('вердикт трёхзначный: «проверить не удалось» - отдельный исход',
+    /pass: null/.test(judge) && /CANNOT CHECK/.test(judge));
+  check('и нечитаемое окно не выдаётся за отсутствие',
+    /could not check: \$\{found\.why\}/.test(judge) && /kind: 'cannot'/.test(judge));
+  check('сводка считает три числа, а не два',
+    /passed, failed, unchecked, tiers/.test(judge) || /unchecked,\s*\n?\s*tiers/.test(judge)
+      || (/unchecked\+\+/.test(judge) && /return \{ passed, failed, unchecked, tiers \}/.test(judge)));
+  check('и уровень доказательства пишется в каждый вердикт - tree сильнее, чем picture',
+    /TIERS = \['dom', 'tree', 'ocr', 'picture'\]/.test(judge));
+
+  /* ИСХОД ПРОГОНА И ИСХОД ПРОВЕРОК - РАЗНЫЕ КОЛОНКИ. Прогон может выполниться целиком и обнаружить, что
+   * продукт ведёт себя не так: это найденный дефект, а не неудача агента. */
+  check('сводка проверок - своя колонка, а не часть outcome',
+    /alter table user_run add column if not exists checks jsonb/.test(migration));
+  check('и миграция объясняет, почему это не outcome',
+    /WHY THIS IS NOT `outcome`/.test(migration) && /it is a found bug/.test(migration));
+  check('оба пути пишут её в user_run',
+    /checks = excluded\.checks/.test(sync) && /checks = excluded\.checks/.test(route));
+  check('облако считает сводку тем же checksOf, а не своим счётом',
+    route.includes("import { checksOf } from './_expect.mjs';"));
+  check('и sync её не пересчитывает - иначе два ответа на один вопрос',
+    !/checksOf\(/.test(sync) && /run\.checks && typeof run\.checks === 'object'/.test(sync));
+  check('а читатель получает её обратно', /checks: r\.checks \|\| null/.test(sync));
+
+  /* ВЗГЛЯД НЕ СУДИТ О НЕПОДВИЖНОСТИ - иначе QA-прогон умирает ровно тогда, когда всё правильно. */
+  check('взгляды не трогают счётчик неподвижности',
+    /export const LOOKS_ONLY = new Set\(\['read_window', 'find_element', 'expect'\]\)/.test(brain)
+      && /LOOKS_ONLY\.has\(String\(p\.name\)\)/.test(step)
+      && /!LOOKS_ONLY\.has\(use\.name \?\? ''\)/.test(engine));
+  check('и в комментарии сказано, чем это грозило QA-прогону',
+    /STILL_GIVE_UP/.test(brain) && /проверь пять/.test(brain));
+
+  /* FAIL - НЕ ОШИБКА ИНСТРУМЕНТА. Инструмент сработал; не сошлось утверждение. */
+  check('провалившаяся проверка не выдаётся модели за ошибку вызова',
+    /return \{ type: 'tool_result', tool_use_id: p\.id, content: expectSaid\(p\.input \|\| \{\}, verdict\) \};/.test(step)
+      && !/expectSaid[\s\S]{0,80}is_error/.test(step));
+
+  check('исполняемый набор судьи зовётся из npm test', /node api\/_test-expect\.mjs/.test(pkg));
+}
+
+/* ------------------------------------------------------------------- И ЭТО ВИДНО ЧЕЛОВЕКУ
+ *
+ * Проверка, которую нельзя прочитать в отчёте, не отличается от проверки, которой не было. */
+group('проверка читается в истории прогона - словами, цветом и доказательством');
+{
+  const describes = read('../web/src/features/create/describe.ts');
+  const verdict = read('../web/src/features/create/verdict.ts');
+  const line = read('../web/src/components/chat/index.tsx');
+  const panel = read('../web/src/features/create/EarlierPanel.tsx');
+  const earlier = read('../web/src/features/create/Earlier.tsx');
+  const create = read('../web/src/features/create/CreateView.tsx');
+
+  check('шаг назван утверждением, а не вызовом инструмента',
+    /case 'expect': \{/.test(describes) && /check that "\$\{what\}" is there/.test(describes));
+  check('и к нему дописано ДОКАЗАТЕЛЬСТВО, а не только «прошло»',
+    /export const evidenceOf/.test(verdict) && /\$\{out\.evidence\}/.test(verdict));
+  check('три исхода - три вида строки', /'pass' \| 'fail' \| 'unchecked'/.test(line)
+    && /kind === 'unchecked' && 'text-fb-attention'/.test(line));
+  check('и правило цвета - одно на оба списка истории, а не две копии',
+    panel.includes("import { evidenceOf, verdictKind } from './verdict';")
+      && earlier.includes("import { evidenceOf, verdictKind } from './verdict';"));
+  check('в живой ленте исход тоже виден цветом, а не текстом',
+    /type: 'check', text: said, pass: verdict\.pass/.test(read('../web/src/lib/desktop-engine.ts'))
+      && /event\.pass === true \? 'pass' : event\.pass === false \? 'fail' : 'unchecked'/.test(create));
+  check('и сводка уезжает на аккаунт вместе с прогоном', /checks: result\.checks \?\? null/.test(create));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
  * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has
