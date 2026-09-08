@@ -2,9 +2,9 @@
 
 Written 2026-09-09 from the code as it stands at `8eb5c68`, for whoever picks this up next — including a
 smaller model. Every file, function and constant named below was checked against that commit by grep before
-handing over; §0 still says to grep again before trusting any of them, because the code moves. Every item says what exists today (with file names), what to build, in which order, what the
-tests must pin, what the docs must say, and what "done" means. Read §0 first; it is the part that keeps the
-rest from going wrong.
+handing over; §0 still says to grep again before trusting any of them, because the code moves. Every item
+says what exists today (with file names), what to build, in which order, what the tests must pin, what the
+docs must say, and what "done" means. Read §0 first; it is the part that keeps the rest from going wrong.
 
 The question this answers: **can the agent be used for manual-QA-class work, and what does it take to get
 it to regression testing?** The assessment (2026-09-08, on 65 logged agent runs: 60% ok, 23% stopped by
@@ -315,7 +315,7 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
 3. **The QA machine recipe** (docs, not code): a Windows VM (Hyper-V or Parallels) with the agent autostarted, paired with its own device token labelled "QA-VM", screen never locked (regression needs a desktop), and every case pinned to it. Cost note: one mouse per machine ⇒ cases run serially; 100 cases × 2 min ≈ 3.5 h a night is fine, 1000 is not — a second VM is a second label.
 4. **Stop everything on that machine** stays `mouseflow_stop`; add `mouseflow_stop` per machine label when 2 lands.
 
-**Tests.** Pins: `/do` refuses without the key when `caps.auth`; the web sends the header; claim filters by machine; the docs recipe exists (`check-promises` phrase pin).
+**Tests.** Pins: `/do` refuses without the key when `health.canAuth`; the web sends the header; claim filters by machine; the docs recipe exists (`check-promises` phrase pin).
 
 **Docs.** `09-connections.md` (the key, the QA machine), `10-agent-protocol.md` (`auth` flag, header), `17-privacy-security.md` (close the "no agent authentication" gap), `19-limits` (remove it), site `install-the-agent.md` and `privacy-and-data.md`.
 
