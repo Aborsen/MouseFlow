@@ -5466,6 +5466,87 @@ group('веб-QA: проверки уровня dom, кейсы в браузе�
     /surface: 'browser'/.test(mock) && /how: 'dom'/.test(mock));
 }
 
+
+/* ------------------------------------------------------- ЯКОРЬ: ЗАПИСЬ, КОТОРАЯ ПЕРЕЖИВАЕТ ПЕРЕЕЗД ОКНА
+ *
+ * Пункт 3 плана регрессии. Клик хранился точкой на экране, и это верно ровно до того, как окно сдвинули или
+ * развернули. Прицел по имени у обоих агентов был и раньше - и не помогал: он начинает с ЗАПИСАННОЙ точки, а
+ * она после переезда лежит в чужом окне, где нужного имени нет никогда.
+ *
+ * Что здесь держится: оба агента пишут якорь на той работе, которая и так идёт (второго обхода дерева нет -
+ * это правило протокола); парсер его не теряет; приложение возвращает точку внутрь нужного окна ПЕРЕД
+ * повтором; и человеку сказано, как именно всё сыграло - потому что тихий повтор по записанным координатам
+ * и есть та хрупкость, которую всё это убирает. */
+group('якорь: клик помнит, где были его окно и его элемент');
+{
+  const rules = read('../api/_anchor.mjs');
+  const parser = read('../api/_macro.mjs');
+  const ps = read('../agent/mouseflow-agent.ps1');
+  const swift = read('../agent/mouseflow-agent.swift');
+  const view = read('../web/src/features/record/RecordView.tsx');
+  const client = read('../web/src/lib/agent.ts');
+  const store = read('../web/src/lib/store.ts');
+  const pkg = read('../package.json');
+  const protocol = read('../agent/PROTOCOL.md');
+
+  /* ОБА АГЕНТА, ОДНИМИ КЛЮЧАМИ. Разъезд здесь - это запись, которая на одной платформе переживает переезд
+   * окна, а на другой нет, и узнать об этом можно только по промаху. */
+  check('оба агента пишут восемь чисел якоря',
+    /\\twx=/.test(ps) && /\\tex=/.test(ps) && /wx=\\\(Int\(r\.origin\.x/.test(swift) && /ex=\\\(Int\(r\.origin\.x/.test(swift));
+  check('и оба объявляют это флагом, а не версией',
+    /"canAnchor\\":true/.test(ps) && /canAnchor/.test(swift));
+  /* ВТОРОГО ОБХОДА ДЕРЕВА НЕТ - это правило протокола, и цена ему измерена: 0.6-4.4 с на окно. Рамка окна
+   * берётся у оконного менеджера, рамка элемента - у того попадания, что дало имя. */
+  check('прямоугольник окна - у оконного менеджера, а не обходом',
+    /Native\.GetWindowRect\(top, out wr\)/.test(ps) && /windowAt\(x: job\.x, y: job\.y\)\?\.rect/.test(swift));
+  check('и прямоугольник - того элемента, чьё имя записано, а не того, куда попала точка',
+    /named != null && !string\.IsNullOrEmpty\(job\.Target\.Control\)/.test(ps)
+      && /out\.frame = frameOf\(current\)/.test(swift));
+  check('и якорь входит в guard строки #ctx - иначе строка с одним якорем теряется целиком',
+    /&& !e\.HasWin && !e\.HasEl\) return;/.test(ps) && /\|\| e\.winRect != nil \|\| e\.elRect != nil \{/.test(swift));
+  check('и протокол называет ключи и флаг',
+    /wx wy ww wh/.test(protocol) && /canAnchor/.test(protocol));
+
+  /* ПАРСЕР НЕ ТЕРЯЕТ: «одна сторона пишет, другая не читает» - тот самый класс, который тест ловит. */
+  check('парсер собирает восемь чисел в две рамки',
+    /const win = four\('wx', 'wy', 'ww', 'wh'\);/.test(parser)
+      && /context\.anchor = \{ \.\.\.\(win \? \{ win \} : \{\}\), \.\.\.\(el \? \{ el \} : \{\}\) \}/.test(parser));
+  check('и пустой якорь не заводится - отсутствие остаётся отсутствием',
+    /if \(win \|\| el\) context\.anchor/.test(parser));
+  check('и типы приложения знают про него', /anchor\?: \{ win\?: number\[\]; el\?: number\[\] \}/.test(store));
+
+  /* ПРАВИЛО ПЕРЕПРИВЯЗКИ - вычислением, а не чтением: оно обязано быть верным, когда никто не смотрит. */
+  check('правило живёт в одном модуле без зависимостей',
+    /export function reanchor\(/.test(rules) && !/document\.|fetch\(|require\(/.test(rules));
+  check('и проверяется исполнением', /node api\/_test-anchor\.mjs/.test(pkg));
+  check('найденный контрол побеждает пересчёт по окну',
+    /if \(found\) \{[\s\S]{0,120}?how: 'element'/.test(rules));
+  check('окно на месте - это raw, а не «перепривязано»',
+    /if \(same\(then, now\)\) \{[\s\S]{0,80}?how: 'raw'/.test(rules));
+  check('и растянутое окно считается долей, а не смещением',
+    /const share = shareIn\(then, x, y\);/.test(rules));
+  /* Совпадение окна - три ступени и ни одной дальше: «то же приложение, три окна» это выбор наугад. */
+  check('окно ищется по заголовку, потом по общему краю, потом по единственности',
+    /export function matchWindow/.test(rules) && /sharesEdge/.test(rules)
+      && /if \(mine\.length === 1\) return mine\[0\];/.test(rules));
+  check('и свёрнутое окно не годится - его прямоугольник врёт',
+    /!one\.minimized/.test(rules));
+
+  /* СТРАНИЦА. Один вопрос про окна на повтор, и точка возвращается внутрь окна ПЕРЕД отправкой тела. */
+  check('страница спрашивает окна один раз и перепривязывает перед повтором',
+    /const open = await windows\(port\);/.test(view) && /reanchorAll\(playing\.events, open\.windows\)/.test(view));
+  check('и не отказывается играть, если спросить не удалось',
+    /catch \(_\) \{\s*\n\s*anchored = '';/.test(view));
+  check('и говорит человеку, как именно сыграло',
+    /anchoredSaid\(put\.counts\)/.test(view) && /export function anchoredSaid/.test(rules));
+  /* И ЧИСЛА АГЕНТА - его собственные: сколько кликов он сам довёл до контрола по имени. Оба агента их
+   * считали с 0.12.0, и ни один экран их не читал. */
+  check('и читает числа агента, которые до этого никто не читал',
+    /retargeted\?: number;/.test(client) && /Number\(status\.retargeted\)/.test(view));
+  check('приложение просит сборку, чьи записи переживают переезд',
+    /AGENT_WANTS = '0\.25\.0'/.test(client));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
  * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has

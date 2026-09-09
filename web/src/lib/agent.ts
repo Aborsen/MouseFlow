@@ -25,6 +25,9 @@ export interface AgentHealth {
   /** Whether it resolves what a click landed on - the application, window and control name. Absent on any
    * build before 0.6.0, and absent is the answer: those recordings carry coordinates and nothing else. */
   canName?: boolean;
+  /* Несёт ли клик прямоугольники окна и элемента, по которым повтор пересчитывает точку после переезда
+   * окна (agent 0.25.0). Absent - у записи якоря нет, и повтор честно играет как записано. */
+  canAnchor?: boolean;
   /** Whether typing is recorded as an EVENT - that a key was pressed and when, never which key. False when
    * the keyboard hook failed to install, absent before 0.7.0; either way a transcript then cannot tell
    * "typed nothing" from "was not watching", which is why the flag exists rather than being inferred. */
@@ -277,6 +280,12 @@ export const replayStatus = (port: number) =>
   agentCall<{
     playing: boolean; step: number; steps: number; pass: number; passes: number;
     index: number; total: number;
+    /* СКОЛЬКО КЛИКОВ АГЕНТ САМ ДОВЁЛ ДО КОНТРОЛА ПО ИМЕНИ, и сколько событий он сыграть не мог. Оба числа
+     * агенты пишут с 0.12.0, и оба этот тип не объявлял - то есть единственным способом узнать, что они
+     * есть, было прочитать исходник агента. Из-за этого страница после повтора говорила «готово» и молчала
+     * о том, что половину кликов пришлось перенаводить по имени. */
+    retargeted?: number;
+    unplayable?: number;
   }>(port, '/replay/status');
 export const replayAbort = (port: number) =>
   agentCall<{ ok: true }>(port, '/replay/abort', { method: 'POST' });
@@ -645,7 +654,17 @@ export const autostartEnable = (port: number) =>
  * это абзац, который человек читает, а его записывать нельзя. Теперь пишется подпись ближайшего элемента
  * УПРАВЛЕНИЯ и сторона: «just below „Address Bar“». Старый агент этого поля не пишет, и его записи
  * читаются как раньше - о чём человеку сказать может только этот нудж. */
-export const AGENT_WANTS = '0.24.0';
+/* 0.25.0 - ЭТО СБОРКА, ЧЬИ ЗАПИСИ ПЕРЕЖИВАЮТ ПЕРЕЕЗД ОКНА.
+ *
+ * Клик хранился точкой на экране, и это верно ровно до того, как окно сдвинули, развернули или сменили
+ * разрешение: дальше «нажать в 1074,159» попадает в пустоту или в соседнюю кнопку. Прицел по имени у обоих
+ * агентов был и раньше - и не помогал, потому что начинал с записанной точки, а она после переезда лежит в
+ * чужом окне. С 0.25.0 клик несёт прямоугольники окна и элемента, приложение возвращает точку внутрь
+ * нужного окна перед повтором, и агент доводит её до контрола по имени сам.
+ *
+ * Запись, сделанную старым агентом, это не портит: якоря у неё нет, и повтор честно играет как записано -
+ * но сказать об этом человеку может только этот нудж, потому что снаружи две сборки одинаковы. */
+export const AGENT_WANTS = '0.25.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

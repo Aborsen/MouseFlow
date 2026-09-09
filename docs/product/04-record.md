@@ -196,11 +196,36 @@ Pressing Play on a row:
    no idea what is under them, and if the window has been minimised every click lands on whatever happens
    to be there — a failure that looks like the recording being wrong rather than the desktop having moved
    on. Best effort, and the message says what was tried.
-2. Sends a one-step flow with that recording's repeat / speed / loop and the console's start delay. A row
+2. **Puts every click back inside the window it was recorded in.** A recorded coordinate is true until the
+   window moves; after that "click at 1074,159" lands in empty space, or worse, on the button next to the
+   one it meant. Since agent 0.25.0 a click carries the rectangle of its window and of the control it hit
+   (`wx wy ww wh`, `ex ey ew eh` on the `#ctx` line), so the page asks `/windows` once, finds the same
+   window now, and rewrites the point — moved by the same offset, or scaled by the same fraction when the
+   window has also been resized. The replay note says how many clicks that was: *"3 clicks re-anchored to
+   their windows, 1 replayed as recorded."*
+
+   The rule is one shared module (`api/_anchor.mjs`) and it is checked by execution, because it has to be
+   right when nobody is looking: an element found by name beats a recalculation, a recalculation beats the
+   recorded point, and a window that has not moved is reported as **replayed as recorded** rather than
+   counted as work that did not happen.
+
+   Matching "the same window" is three rungs and stops there: the same title, then the same application
+   with a title sharing a long edge (*"Inbox — Outlook"* becomes *"3 unread — Outlook"*), then the same
+   application with exactly one window. Three windows of one application is a guess, and a guess that
+   misses is worse than an honest "played as recorded".
+3. Sends a one-step flow with that recording's repeat / speed / loop and the console's start delay. A row
    *is* a one-step flow, which is why its settings are the step's: the alternative was a second replay path
    that could disagree with the flow builder's.
-3. Polls `/replay/status` every 700 ms, so the page knows when it is over rather than claiming a replay
-   forever.
+4. Polls `/replay/status` every 700 ms, so the page knows when it is over rather than claiming a replay
+   forever — and when it is, says what the machine did beyond the recording: **how many clicks it aimed at
+   their controls by name** (`retargeted`) and how many events it could not play at all (`unplayable`).
+   Both numbers have been on the wire since agent 0.12.0 and no screen read them, so a replay that had to
+   re-aim half its clicks looked exactly like one where everything landed.
+
+   That is the second level, and it is the agent's: the page gets the point into the right window, the agent
+   walks it to the right control. Aiming by name was there before the anchor and could not work on its own —
+   it starts from the recorded point, and after the window moved that point is in a different window, where
+   the name is never among the neighbours.
 
 **Escape aborts**, from anywhere on the page. The pointer is not yours while a replay runs, so the keyboard
 has to be enough. The agent releases every held button and key on every exit path, including the failure

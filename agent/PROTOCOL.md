@@ -220,6 +220,7 @@ The `can*` flags exist because a version number could not answer the question th
 agent started before the click resolver existed and one started after it reported the same `0.5.0`, and the
 difference was the whole transcript — a list of coordinates against a list of named actions. So each
 capability is stated: `canSee` (screenshots), `canWindows` (`/windows`), `canName` (`#ctx` on a click),
+`canAnchor` (the window and element rectangles on that line - see "`#ctx` — where a click landed"),
 `canKeys` (typing as an event). An older agent omits a flag, and absent is the answer. `canKeys` is the one
 that can be **false** rather than absent: the keyboard hook may fail to install, and the agent runs without
 it rather than refusing to start.
@@ -510,6 +511,35 @@ Tab-separated `key=value`, on the line **above** its event, and it attaches to e
 `app` (process or application name), `window` (title), `control` (the accessible name of the thing under the
 pointer), `type` (its control type), `url` (the page it landed on, when it landed on one). Unknown keys are
 ignored rather than being an error, so an agent may add one; a value that is empty is the same as absent.
+
+**And the anchor: `wx wy ww wh` for the window, `ex ey ew eh` for the named element**, in screen pixels, at
+the moment of the click. Eight integers, written by an agent that says `canAnchor` in `/health`, and the
+point of them is one sentence: a recorded coordinate is true until the window moves.
+
+```
+#ctx	app=OUTLOOK	window=Inbox — Outlook	control=Send	type=button	wx=1000	wy=100	ww=1200	wh=800	ex=1050	ey=140	ew=60	eh=30
+7 | 1074 | 159 | 240 | Left Click Down
+```
+
+Both agents already aim by NAME on a replayed press, and that was not enough on its own: the aim starts from
+the recorded point, and after the window has moved the recorded point is inside a different window, where the
+name is never among the neighbours. With the anchor the client puts the point back **inside the right window**
+first (`api/_anchor.mjs`, and the app does it before it sends the body) and the agent's own aim then takes it
+to the control. Two levels, each where the data for it is.
+
+Rules, and they are the same two rules the rest of this line follows:
+
+- **Read on the work that is already happening.** The window rectangle comes from the window manager
+  (`GetWindowRect` on Windows, the `CGWindowList` entry that already answered "which window is under the
+  point" on macOS). The element rectangle comes from the hit test that produced `control` - UIA's
+  `BoundingRectangle`, AX's position and size. **No second traversal**: the ban on walking the tree on the
+  input path applies here exactly as it does to naming.
+- **The rectangle belongs to the element whose name was recorded**, not to whatever the point landed on. A
+  replay looks the name up; measuring something else would describe a different thing. It is written only
+  when the name was actually kept - a name dropped by the length rule is content, and there is nothing to
+  look up.
+- Absent means not measured. An older agent writes neither pair, and a replay then plays the recorded point
+  and **says so** rather than pretending it re-anchored anything.
 
 **`url` is origin and path only, and the cut happens in the AGENT.** A query string is where a session token,
 a one-time sign-in link and whatever somebody typed into a search box live. Everything past the agent copies

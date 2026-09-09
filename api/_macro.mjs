@@ -84,6 +84,21 @@ export function parseMacro(text) {
           near: found.near,
           side: found.side,
         };
+        /* ЯКОРЬ - ОДНИМ ПОЛЕМ ИЗ ВОСЬМИ ЧИСЕЛ, а не восемью полями рядом с остальными.
+         *
+         * Провод плоский (wx wy ww wh ex ey ew eh), потому что формат плоский; здесь они собираются в две
+         * рамки, потому что читателю нужны рамки, а не восемь чисел, и потому что «есть якорь» - это один
+         * вопрос, а не восемь. Числа, а не строки: всё, что дальше, считает по ним координаты.
+         *
+         * Пустая рамка не пишется вовсе: старый агент их не присылает, а пустой объект-якорь выглядел бы
+         * как якорь, ничего не значил и требовал бы проверки у каждого читателя. См. api/_anchor.mjs. */
+        const four = (a, b, c, d) => {
+          const list = [found[a], found[b], found[c], found[d]].map((one) => parseInt(one, 10));
+          return list.every((one) => Number.isFinite(one)) && list[2] > 0 && list[3] > 0 ? list : undefined;
+        };
+        const win = four('wx', 'wy', 'ww', 'wh');
+        const el = four('ex', 'ey', 'ew', 'eh');
+        if (win || el) context.anchor = { ...(win ? { win } : {}), ...(el ? { el } : {}) };
         pending = Object.values(context).some(Boolean) ? context : undefined;
       }
       continue;

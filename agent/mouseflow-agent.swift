@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.24.0"
+let VERSION = "0.25.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -302,6 +302,20 @@ final class Ev {
      * увидевший имя в `control`, решит, что нажали по нему, - поэтому отдельные поля. */
     var near: String?
     var side: String?
+
+    /* ГДЕ БЫЛО ОКНО И ГДЕ БЫЛ ЭЛЕМЕНТ - в тех же точках, в которых работает CGEvent, на момент клика.
+     *
+     * Точка на экране верна ровно до первого переезда окна: человек сдвинул окно на другой монитор,
+     * развернул его, поменял разрешение - и «нажать в 1074,159» попадает в пустоту или в соседнюю кнопку.
+     * Имея прямоугольник окна ТОГДА и его же СЕЙЧАС, повтор пересчитывает точку (api/_anchor.mjs).
+     *
+     * Оба читаются на той работе, которая и так идёт: окно - из того же списка CGWindowList, который уже
+     * отвечает на «какое окно под точкой», элемент - из того же попадания, что дало имя. Второго обхода
+     * дерева здесь нет и быть не может: это правило протокола.
+     *
+     * Optional, а не нули: окно в 0,0 существует, а «не измерено» - это другое. */
+    var winRect: CGRect?
+    var elRect: CGRect?
 }
 
 /// A resolution job. `target` is the event to write the names onto once they are known.
@@ -1059,7 +1073,8 @@ final class Recorder {
              * разрешение имён вовсе, так что кроме модификатора у неё в контексте ничего и нет. Пропустить
              * это в guard'е - невидимая ошибка, теряющая ровно один из четырёх жестов. */
             if e.app != nil || e.window != nil || e.control != nil || e.controlType != nil
-                || e.nameLength > 0 || e.mods != nil || e.near != nil {
+                || e.nameLength > 0 || e.mods != nil || e.near != nil
+                || e.winRect != nil || e.elRect != nil {
                 out += "#ctx"
                 if let v = e.app { out += "\tapp=" + v }
                 if let v = e.window { out += "\twindow=" + v }
@@ -1080,6 +1095,17 @@ final class Recorder {
                 /* После mods и в том же порядке, что на Windows: сторона перед именем. */
                 if let v = e.side { out += "\tside=" + v }
                 if let v = e.near { out += "\tnear=" + v }
+                /* ЯКОРЬ - ПОСЛЕДНИМ, восемью числами, теми же ключами и в том же порядке, что на Windows.
+                 * Незнакомые ключи PROTOCOL.md велит пропускать, поэтому старый читатель загружает запись
+                 * ровно как прежде, а новый пересчитывает точку после переезда окна (api/_anchor.mjs). */
+                if let r = e.winRect {
+                    out += "\twx=\(Int(r.origin.x.rounded()))\twy=\(Int(r.origin.y.rounded()))"
+                    out += "\tww=\(Int(r.size.width.rounded()))\twh=\(Int(r.size.height.rounded()))"
+                }
+                if let r = e.elRect {
+                    out += "\tex=\(Int(r.origin.x.rounded()))\tey=\(Int(r.origin.y.rounded()))"
+                    out += "\tew=\(Int(r.size.width.rounded()))\teh=\(Int(r.size.height.rounded()))"
+                }
                 out += "\n"
             }
             out += "\(index) | \(e.x) | \(e.y) | \(e.delayMs) | \(e.action)\n"
@@ -1128,6 +1154,9 @@ struct Named {
     var containerName: String?
     /* The page a click landed on, when it landed on one. Origin and path only - see webURL below. */
     var url: String?
+    /* Рамка ТОГО элемента, чьё имя записано, - не того, на который попала точка. По имени повтор потом
+     * ищет именно названное, и мерить надо то же самое. Читается там же, где найдено имя. */
+    var frame: CGRect?
 }
 
 enum Accessibility {
@@ -1394,7 +1423,7 @@ enum Accessibility {
         while let current = element, depth < 5 {
             let type = stringAttr(current, kAXRoleDescriptionAttribute)
             if depth == 0 { hitType = type }
-            if let name = nameAttr(current, kAXTitleAttribute) { out.control = name; out.type = type; return out }
+            if let name = nameAttr(current, kAXTitleAttribute) { out.control = name; out.type = type; out.frame = frameOf(current); return out }
             /* The label is its own element for a form field: AXTitleUIElement points at the static text
              * that names it, the way <label for> names an input, and the text of a static text lives in its
              * value.
@@ -1403,20 +1432,20 @@ enum Accessibility {
              * под ней. Именно этот путь и делает запрет ниже терпимым - поля с подписью имя сохраняют. */
             if let label = elementAttr(current, kAXTitleUIElementAttribute),
                let name = nameAttr(label, kAXValueAttribute) ?? nameAttr(label, kAXTitleAttribute) {
-                out.control = name; out.type = type; return out
+                out.control = name; out.type = type; out.frame = frameOf(current); return out
             }
             /* Description and value, in that order, because a great many controls carry no title: an icon
              * button has kAXDescription - and in Chromium every aria-label lands there - a text field has
              * kAXValue and nothing else. Value only on the element itself, never a parent's: a parent's
              * value is the document. */
-            if let name = nameAttr(current, kAXDescriptionAttribute) { out.control = name; out.type = type; return out }
+            if let name = nameAttr(current, kAXDescriptionAttribute) { out.control = name; out.type = type; out.frame = frameOf(current); return out }
             if depth == 0, valueMayName, !holdsTypedText(current),
                let name = nameAttr(current, kAXValueAttribute) {
-                out.control = name; out.type = type; return out
+                out.control = name; out.type = type; out.frame = frameOf(current); return out
             }
             /* Help is the tooltip. Last, because it describes rather than names - but a toolbar button that
              * names itself nowhere else usually says exactly the right thing here. */
-            if let name = nameAttr(current, kAXHelpAttribute) { out.control = name; out.type = type; return out }
+            if let name = nameAttr(current, kAXHelpAttribute) { out.control = name; out.type = type; out.frame = frameOf(current); return out }
             element = elementAttr(current, kAXParentAttribute)
             depth += 1
         }
@@ -1491,6 +1520,17 @@ enum Accessibility {
         guard CFGetTypeID(raw) == AXValueGetTypeID() else { return nil }
         var size = CGSize.zero
         return AXValueGetValue(raw as! AXValue, .cgSize, &size) ? size : nil
+    }
+
+    /* Рамка элемента - те же две пары атрибутов, что читает centreOf, только целиком.
+     *
+     * Нужна записи: по ней повтор знает, где элемент БЫЛ, и насколько точка отстояла от его центра. Ноль по
+     * ширине или высоте - это не рамка, а «не измерено»: у скрытого элемента бывает и такое. */
+    static func frameOf(_ element: AXUIElement) -> CGRect? {
+        guard let origin = pointAttr(element, kAXPositionAttribute),
+              let size = sizeAttr(element, kAXSizeAttribute),
+              size.width > 0, size.height > 0 else { return nil }
+        return CGRect(origin: origin, size: size)
     }
 
     /// The middle of an element, in the same points CGEvent takes.
@@ -1701,7 +1741,9 @@ enum Accessibility {
      * nothing. Front to back, ordinary windows only (layer 0 - the menu bar, the Dock and overlays live on
      * other layers), first one whose bounds contain the point. The owner's name never needs a permission;
      * the title needs Screen Recording and is honestly absent without it. */
-    static func windowAt(x: Double, y: Double) -> (app: String?, title: String?)? {
+    /* Прямоугольник окна отдаётся ЗАОДНО: он уже прочитан этим же перебором (kCGWindowBounds), и второй
+     * проход за ним был бы вторым списком окон ради тех же четырёх чисел. */
+    static func windowAt(x: Double, y: Double) -> (app: String?, title: String?, rect: CGRect?)? {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let list = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return nil
@@ -1718,8 +1760,9 @@ enum Accessibility {
             let title = (info[kCGWindowName as String] as? String)
                 .flatMap { flatten($0) }
                 .map { clip(bareTitle($0) ?? $0, 120) }
-            if app == nil && title == nil { return nil }
-            return (app, title)
+            let rect = CGRect(x: wx, y: wy, width: ww, height: wh)
+            if app == nil && title == nil { return (nil, nil, rect) }
+            return (app, title, rect)
         }
         return nil
     }
@@ -1976,6 +2019,9 @@ enum Accessibility {
             if let under = windowAt(x: job.x, y: job.y) {
                 job.target.app = under.app
                 job.target.window = under.title
+                /* Дерево не ответило - но окно есть, и его прямоугольник тоже: повтор сможет пересчитать
+                 * точку относительно окна, даже когда назвать элемент было нечем. */
+                job.target.winRect = under.rect
             }
             return
         }
@@ -2022,6 +2068,13 @@ enum Accessibility {
         job.target.containerName = named.containerName
         job.target.url = named.url
         if hasPid { job.target.window = frontWindowTitle(pid: pid) }
+
+        /* ЯКОРЬ. Прямоугольник окна - из того же списка CGWindowList, который отвечает «какое окно под
+         * точкой»; прямоугольник элемента - из того попадания, что дало имя, и ТОЛЬКО когда имя
+         * действительно записалось: правило длины могло его отбросить, а без имени целиться повтору не во
+         * что - остаётся окно. */
+        job.target.winRect = windowAt(x: job.x, y: job.y)?.rect
+        if job.target.control != nil { job.target.elRect = named.frame }
 
         /* ТОЛЬКО когда имени нет: при живой подписи ориентир не нужен и стоил бы обхода дерева ни за что.
          * Обход здесь короче, чем у read_window (600 узлов против 1500, 1.2 с против 2.5), потому что это
@@ -5673,6 +5726,11 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         json += ",\"canName\":\(jsonBool(Permission.accessibility))"
         json += ",\"canKeys\":\(jsonBool(eventTap != nil))"
         json += ",\"canDrain\":true"
+        /* Несёт ли клик прямоугольники окна и элемента - по ним повтор пересчитывает точку после переезда
+         * окна. Следует Accessibility по той же причине, что canName: без разрешения дерево не отвечает
+         * ничем, а якорь элемента читается из него. Прямоугольник окна пришёл бы и так (CGWindowList
+         * разрешения не требует), но обещать половину значило бы обещать перепривязку, которой не будет. */
+        json += ",\"canAnchor\":\(jsonBool(Permission.accessibility))"
         /* Named separately from the flags, because the two switches are in different panes of System
          * Settings and "permissions missing" is not an instruction. */
         json += ",\"permissions\":{\"accessibility\":\(jsonBool(Permission.accessibility))"

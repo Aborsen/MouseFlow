@@ -756,9 +756,15 @@ Carried over from the project's own notes, and still current:
 - **A notarised, prebuilt macOS `.app`** — no compiler on the user's machine at all. A Developer ID now exists
   and the installer prefers it; notarisation is the remaining step, and it is a distribution project rather
   than an installer flag.
-- **Anchored desktop recording.** Capture the target window handle, title and client-relative coordinates
-  alongside the screen position, then re-resolve the window at replay time. This removes the single biggest
-  fragility.
+- **Anchored desktop recording — done in September 2026** (agent 0.25.0). A click carries the rectangle of
+  its window and of the control it hit; the app puts the point back inside that window before a replay and
+  the agent walks it to the control by name, and the note says how many of each. What still breaks, and it
+  is worth knowing precisely: a control that was **renamed** is not found by name and falls back to the
+  window recalculation; an application that **names nothing** (Electron without an accessibility tree) has
+  no element rectangle at all, so the window is all there is; **three windows of one application** with a
+  changed title are not matched, deliberately, because a guess that misses is worse than an honest "played
+  as recorded"; and a **relaid-out** window - the same size, different arrangement - is only saved by the
+  name, never by the geometry. See [04 — Record](04-record.md).
 - **Agent authentication.** One seam, one scheme.
 - **Text for the steps that need it**, if it can be done safely. Keystroke *timing* is captured; the content
   is not, and adding it needs a redaction design rather than a hook. The alternative already works: a created

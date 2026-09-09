@@ -54,6 +54,7 @@ of coordinates against a list of named actions. So each capability is **stated**
 | `canSee` | Screenshots work (`/shot`, `/pulse`) |
 | `canWindows` | `/windows` works |
 | `canName` | A click carries `#ctx` — the application, window, control and type it landed on |
+| `canAnchor` | …and the rectangles of that window and that control, so a replay survives the window moving |
 | `canKeys` | Typing is recorded as an event (that a key was pressed, and when) |
 | `canDrain` | A recording can outlast one response (`/record/drain`) — i.e. long sessions are possible |
 | `platform` | `windows` or `macos`. Used for **exactly one thing**: which install command the Connections screen shows. Never to decide what an agent can do — that is what the `can*` flags are for. |
@@ -212,6 +213,13 @@ Tab-separated `key=value`, on the line **above** its event, attaching to exactly
 (process or application name), `window` (title), `control` (the accessible name of the thing under the
 pointer), `type` (its control type). Unknown keys are ignored rather than being an error; an empty value is
 the same as absent.
+
+**Eight more, the anchor:** `wx wy ww wh` — where the window was — and `ex ey ew eh` — where the named
+control was — in screen pixels, at the moment of the click. Both agents write them from the work they were
+already doing (the window manager for one, the hit test that produced `control` for the other), never from a
+second traversal, and they announce it as `canAnchor`. A replay uses them to put the point back inside the
+right window before the agent aims it at the control by name; see [04 — Record](04-record.md) and
+`api/_anchor.mjs`. Absent on every older recording, and absent is the answer.
 
 **Four more keys, macOS only and newer than the four above:** `role`, `subrole`, `in` (the role of the
 container the click was in) and `inName` (that container's name). They exist because of a problem `type`

@@ -30,6 +30,10 @@ export interface MacroEvent {
     modifiers?: string;
     /** How long a name was that was not recorded. Written by parseMacro since 0.13.0. */
     nameLength?: number;
+    /** Where the window and the named element WERE, in screen pixels, at the moment of the click.
+     *  Written by an agent that says `canAnchor`; absent on every older recording, and absent is the
+     *  answer - a replay then plays the recorded point and says so. See api/_anchor.mjs. */
+    anchor?: { win?: number[]; el?: number[] };
   };
 }
 

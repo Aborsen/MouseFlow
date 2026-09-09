@@ -77,11 +77,20 @@ fast, safe and web-first.
 Suggested sequence for one person: **1 → 2 → 5 (v1, end-of-run checks) → 8 → 3 → 4 → 5 (v2, per-step) → 6 → 7.** Items 1, 2 and 5-v1 give a usable nightly regression on desktop apps with named controls in roughly two weeks.
 
 **Where this stands (2026-09-09).** Items **1** (`expect`), **2** (kept frames), **5-v1** (a case as an
-entity, with the Tests page, three MCP tools and the nightly button) and **8** (web QA through the
-extension: `dom`-tier checks, frames, cases claimed by Chrome) are built, tested and live — see
+entity, with the Tests page, three MCP tools and the nightly button), **8** (web QA through the extension:
+`dom`-tier checks, frames, cases claimed by Chrome) and **3** (anchored recording: a click carries its
+window and element rectangles, and a replay puts the point back inside the window before the agent aims it
+by name) are built, tested and live — see
 [25 — Checks and tests](product/25-tests.md) and [27 — Test cases](product/27-cases.md). What 5-v1
 deliberately left for later is listed at the end of page 27: checks bound to a step (5-v2), the repaired-step
-mark (item 4), and choosing the machine (item 7). Remaining order: **3 → 4 → 5-v2 → 6 → 7.** Item 8 left one thing on the table deliberately — the
+mark (item 4), and choosing the machine (item 7). Remaining order: **4 → 5-v2 → 6 → 7.**
+
+Item 3 shipped its v1 and skipped what the plan called v2 (the agent re-resolving per click just-in-time),
+because the measurement it was waiting for came out differently: both agents *already* aimed by control name
+on a replayed press, and the only reason it never fired was that the aim starts from the recorded point,
+which after a window moves is inside a different window. So the fix was to put the point back in the right
+window first - in the app, once per replay - and let each side do the half it has the data for. The agent
+needs no new replay path, and `canAnchoredReplay` was never added. Item 8 left one thing on the table deliberately — the
 selector-health mark on a web replay, which belongs with item 4's repair mark and is listed at the end of
 page 27.
 

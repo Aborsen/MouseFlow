@@ -470,6 +470,31 @@ namespace MouseFlow
          * утечку, из-за которой имя и отбрасывается. Ориентир - это место, а не содержимое. */
         public string Near;
         public string Side;
+
+        /* ГДЕ БЫЛО ОКНО И ГДЕ БЫЛ ЭЛЕМЕНТ - в экранных пикселях, на момент клика.
+         *
+         * ЗАЧЕМ. Точка на экране верна ровно до первого переезда окна. Человек сдвинул Outlook на другой
+         * монитор, развернул его, поменял разрешение - и «нажать в 1074,159» попадает в пустоту или, хуже,
+         * в соседнюю кнопку. Имея прямоугольник окна ТОГДА и его же СЕЙЧАС, повтор пересчитывает точку
+         * (api/_anchor.mjs); имея прямоугольник элемента, он знает, насколько точка от его центра, - и
+         * когда контрол находится по имени, целится в него, а не в геометрию.
+         *
+         * БЕСПЛАТНО. Прямоугольник окна - это GetWindowRect, вызов оконного менеджера; прямоугольник
+         * элемента УЖЕ прочитан тем же попаданием, которое дало имя. Второго обхода дерева здесь нет - и
+         * не может быть, это правило протокола.
+         *
+         * HasWin/HasEl, а не нули: окно в 0,0 существует, а «не измерено» - это другое. Ноль как признак
+         * отсутствия - тот самый случай, где absent путают с false. */
+        public bool HasWin;
+        public int WinX;
+        public int WinY;
+        public int WinW;
+        public int WinH;
+        public bool HasEl;
+        public int ElX;
+        public int ElY;
+        public int ElW;
+        public int ElH;
     }
 
     public class Step
@@ -489,7 +514,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.24.0";
+        public const string Version = "0.25.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1183,7 +1208,26 @@ namespace MouseFlow
          * names no controls still says "Claude". Then the control, which is the part worth having. */
         static void Describe(Pending job)
         {
-            DescribeWindow(job.Target, Native.WindowFromPoint(new POINT { X = job.X, Y = job.Y }));
+            IntPtr under = Native.WindowFromPoint(new POINT { X = job.X, Y = job.Y });
+            DescribeWindow(job.Target, under);
+
+            /* ПРЯМОУГОЛЬНИК ОКНА - ОДНИМ ВЫЗОВОМ ОКОННОГО МЕНЕДЖЕРА, и именно ТОП-УРОВНЕВОГО: переезжает и
+               меняет размер окно, а не дочерний контейнер под точкой. Это то же окно, которое перечисляет
+               /windows, - иначе повтору было бы не с чем сопоставить якорь. */
+            IntPtr top = under == IntPtr.Zero ? IntPtr.Zero : Native.GetAncestor(under, Native.GA_ROOT);
+            if (top == IntPtr.Zero) top = under;
+            if (top != IntPtr.Zero)
+            {
+                RECT wr;
+                if (Native.GetWindowRect(top, out wr) && wr.Right > wr.Left && wr.Bottom > wr.Top)
+                {
+                    job.Target.HasWin = true;
+                    job.Target.WinX = wr.Left;
+                    job.Target.WinY = wr.Top;
+                    job.Target.WinW = wr.Right - wr.Left;
+                    job.Target.WinH = wr.Bottom - wr.Top;
+                }
+            }
 
             AutomationElement el = AutomationElement.FromPoint(new System.Windows.Point(job.X, job.Y));
             if (el == null) return;
@@ -1195,6 +1239,10 @@ namespace MouseFlow
             string name = null;
             string type = null;
             AutomationElement at = el;
+            /* ЭЛЕМЕНТ, ЧЬЁ ИМЯ В ИТОГЕ ЗАПИСАНО, - ЕГО ЖЕ ПРЯМОУГОЛЬНИК. Не того, на который попала точка:
+               по имени повтор потом ищет ИМЕННО названное, и мерить надо то же самое. Читается на том же
+               подъёме, который уже идёт за именем, - второго обхода нет. */
+            AutomationElement named = null;
             for (int climbed = 0; climbed <= 5 && at != null; climbed++)
             {
                 string candidate = null;
@@ -1207,7 +1255,7 @@ namespace MouseFlow
                 catch { break; }   // the element went away mid-read; whatever was found so far stands
 
                 if (type == null) type = kind;
-                if (!string.IsNullOrEmpty(candidate)) { name = candidate; type = kind; break; }
+                if (!string.IsNullOrEmpty(candidate)) { name = candidate; type = kind; named = at; break; }
 
                 try { at = TreeWalker.ControlViewWalker.GetParent(at); }
                 catch { break; }
@@ -1228,6 +1276,7 @@ namespace MouseFlow
                     {
                         name = best.Current.Name;
                         type = best.Current.LocalizedControlType;
+                        named = best;
                     }
                     catch { /* found and then gone; the coordinates still describe the step */ }
                 }
@@ -1235,6 +1284,26 @@ namespace MouseFlow
 
             RecordName(job.Target, name, type);
             job.Target.Url = PageUrl(el);
+
+            /* ПРЯМОУГОЛЬНИК НАЗВАННОГО ЭЛЕМЕНТА - из того же попадания, что дало имя. Читается ТОЛЬКО когда
+               имя действительно записалось: правило длины могло его отбросить (тогда это содержимое, а не
+               подпись, и искать по нему нечего), а без имени повтору целиться не во что - остаётся окно. */
+            if (named != null && !string.IsNullOrEmpty(job.Target.Control))
+            {
+                try
+                {
+                    System.Windows.Rect box = named.Current.BoundingRectangle;
+                    if (box.Width > 0 && box.Height > 0 && !double.IsInfinity(box.Width))
+                    {
+                        job.Target.HasEl = true;
+                        job.Target.ElX = (int)Math.Round(box.X);
+                        job.Target.ElY = (int)Math.Round(box.Y);
+                        job.Target.ElW = (int)Math.Round(box.Width);
+                        job.Target.ElH = (int)Math.Round(box.Height);
+                    }
+                }
+                catch { /* элемент исчез между чтением имени и чтением рамки: остаётся окно */ }
+            }
 
             /* ТОЛЬКО когда имени нет. Если по клику есть подпись, ориентир не нужен и стоил бы чтения окна
                ни за что; а `namelen` без имени - это тот же случай «сказать нечего», только по другой
@@ -1886,7 +1955,8 @@ namespace MouseFlow
              * and `type` were reachable the same way. The macOS half tests all of them; this one now does
              * too, and PROTOCOL.md says outright that a `#ctx` line may carry `mods` and nothing else. */
             if (e.Process == null && e.Window == null && e.Control == null && e.ControlType == null
-                && e.Url == null && e.NameLength == 0 && e.Mods == null && e.Near == null) return;
+                && e.Url == null && e.NameLength == 0 && e.Mods == null && e.Near == null
+                && !e.HasWin && !e.HasEl) return;
             sb.Append("#ctx");
             if (e.Process != null) { sb.Append("\tapp="); sb.Append(e.Process); }
             if (e.Window != null) { sb.Append("\twindow="); sb.Append(e.Window); }
@@ -1913,6 +1983,23 @@ namespace MouseFlow
                строки» относится к проводу ДЕЙСТВИЙ, где разделитель пробел, а не к этой строке. */
             if (e.Side != null) { sb.Append("\tside="); sb.Append(e.Side); }
             if (e.Near != null) { sb.Append("\tnear="); sb.Append(e.Near); }
+            /* ЯКОРЬ - ПОСЛЕДНИМ, восемью числами: окно и элемент в экранных пикселях. Неизвестные ключи
+               PROTOCOL.md велит пропускать, поэтому старый читатель загружает эту запись ровно как прежде,
+               а новый пересчитывает точку, когда окно переехало (api/_anchor.mjs). */
+            if (e.HasWin)
+            {
+                sb.Append("\twx="); sb.Append(e.WinX.ToString(CultureInfo.InvariantCulture));
+                sb.Append("\twy="); sb.Append(e.WinY.ToString(CultureInfo.InvariantCulture));
+                sb.Append("\tww="); sb.Append(e.WinW.ToString(CultureInfo.InvariantCulture));
+                sb.Append("\twh="); sb.Append(e.WinH.ToString(CultureInfo.InvariantCulture));
+            }
+            if (e.HasEl)
+            {
+                sb.Append("\tex="); sb.Append(e.ElX.ToString(CultureInfo.InvariantCulture));
+                sb.Append("\tey="); sb.Append(e.ElY.ToString(CultureInfo.InvariantCulture));
+                sb.Append("\tew="); sb.Append(e.ElW.ToString(CultureInfo.InvariantCulture));
+                sb.Append("\teh="); sb.Append(e.ElH.ToString(CultureInfo.InvariantCulture));
+            }
             sb.Append("\n");
         }
 
@@ -5059,6 +5146,11 @@ namespace MouseFlow
                        one string - and the app must offer a short recording rather than a day-long one it
                        cannot actually take delivery of. */
                     + ",\"canDrain\":true"
+                    /* Несёт ли клик прямоугольники окна и элемента, по которым повтор пересчитывает точку
+                       после переезда окна. Флагом, а не версией, по той же причине, что у canName: запись,
+                       сделанная старым агентом, якоря не имеет, и повтор обязан честно сказать «сыграно как
+                       записано», а не делать вид, что перепривязал. См. api/_anchor.mjs. */
+                    + ",\"canAnchor\":true"
                     /* Which implementation answered. There are two now, and the Connections screen shows a
                        different install command for each - guessing that from the browser's user agent gets
                        it wrong for anybody helping somebody else set up. */

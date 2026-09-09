@@ -30,6 +30,9 @@ import { type Flow, pull, push } from '@/lib/api';
 import { askAbout } from '@/features/chat/ask-about';
 import { SKILL_ROLE, roleOf } from '@/lib/flow-role';
 import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
+/* ПЕРЕПРИВЯЗКА ПЕРЕД ПОВТОРОМ - общий модуль, без сети и без DOM, проверяемый вычислением
+ * (api/_test-anchor.mjs). Здесь только то, чего у него нет: спросить у агента, где окна сейчас. */
+import { anchoredSaid, reanchorAll } from '../../../../api/_anchor.mjs';
 import {
   type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
   persistTrouble,
@@ -665,15 +668,41 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
         }
       }
 
+      /* ПЕРЕПРИВЯЗКА К ОКНАМ, КАКИЕ ОНИ СЕЙЧАС.
+       *
+       * Записанная точка верна ровно до первого переезда окна: человек сдвинул его на другой монитор,
+       * развернул, поменял разрешение - и клик уходит в пустоту или в соседнюю кнопку. Агент это умеет
+       * лечить сам, прицеливаясь по имени контрола (Retarget в mouseflow-agent.ps1, Accessibility.aim в
+       * .swift), но начинает он с ЗАПИСАННОЙ точки - а она после переезда лежит в чужом окне, где нужного
+       * имени нет никогда. Поэтому здесь делается ровно то, чего ему не хватало: точка возвращается ВНУТРЬ
+       * правильного окна, а до контрола её доводит он.
+       *
+       * Спрашивается один раз на повтор, а не на клик: /windows отдаёт весь список сразу. Не удалось
+       * спросить - играем как записано; повтор, отказавшийся из-за неудачного запроса о окнах, был бы хуже
+       * повтора по координатам. */
+      let aimed = playing.events;
+      let anchored = '';
+      try {
+        const open = await windows(port);
+        const put = reanchorAll(playing.events, open.windows);
+        aimed = put.events as RecordedEvent[];
+        anchored = anchoredSaid(put.counts);
+      } catch (_) {
+        anchored = '';
+      }
+
       await replay(port, flowBody(
         [{ recordingId: rec.id, repeat: settings.repeat, speed: settings.speed, delayAfterMs: 0 }],
         /* `playing`, а не `rec`: у записи, выложенной на аккаунт, `rec.events` пуст, и flowBody построил бы
          * тело повтора без единого события - агент отчитался бы о безупречном прогоне, не сделав ничего. */
-        [playing],
+        [{ ...playing, events: aimed }],
         { startDelayMs: state.startDelayMs, flowRepeat: 1, flowForever: settings.loop },
       ));
       setPlaying(rec.name);
-      setNote(`Replaying "${rec.name}" — press Escape to stop.`);
+      /* СКАЗАТЬ, ЧТО ИМЕННО СДЕЛАЛИ. Повтор, тихо сыгравший по записанным координатам, - это ровно та
+       * хрупкость, которую перепривязка убирает; молчащий об этом отчёт оставляет человека выяснять её из
+       * результата. Сколько кликов агент довёл до контролов по имени, скажет он сам, когда кончит. */
+      setNote(`Replaying "${rec.name}" — press Escape to stop.${anchored ? ` ${anchored}` : ''}`);
     } catch (err) {
       setNote(err instanceof Error ? err.message : 'could not start the replay');
     }
@@ -701,7 +730,16 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
         const status = await replayStatus(port);
         if (!status.playing) {
           setPlaying(null);
-          setNote(`Finished "${playing}".`);
+          /* ЧТО МАШИНА СДЕЛАЛА СВЕРХ ЗАПИСАННОГО, её же числами. Оба агента считают, сколько кликов они
+           * довели до контрола по имени вместо записанной точки (retargeted), и сколько событий сыграть не
+           * смогли - записанное нажатие клавиши агент не воспроизводит. Оба числа ехали на страницу с
+           * 0.12.0 и не читались ни одним экраном: повтор, который перенаправил половину кликов, выглядел
+           * точно так же, как повтор, где всё село на место. */
+          const aimed = Number(status.retargeted) || 0;
+          const skipped = Number(status.unplayable) || 0;
+          setNote(`Finished "${playing}".`
+            + (aimed ? ` The machine aimed ${aimed} click${aimed === 1 ? '' : 's'} at ${aimed === 1 ? 'its control' : 'their controls'} by name.` : '')
+            + (skipped ? ` ${skipped} event${skipped === 1 ? '' : 's'} could not be played back.` : ''));
         }
       } catch (_) {
         // The agent went away mid-replay; the health poller will say so.
