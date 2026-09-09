@@ -109,6 +109,9 @@ async function handler(req, res) {
       // user_flow is keyed by (user_id, client_id) and has no id column of its own.
       sql`delete from user_flow where user_id = ${who.id} returning client_id`,
       sql`delete from user_run where user_id = ${who.id} returning id`,
+      /* Кадры прогонов - ЧУЖИЕ ЭКРАНЫ, и удалить их обязательнее, чем строки: в words попадает то, что
+       * прогон сказал, а в картинку - всё, что было на экране, включая соседние окна. См. db/020. */
+      sql`delete from run_artifact where user_id = ${who.id} returning id`,
       sql`delete from device_token where user_id = ${who.id} returning id`,
       /* chat_message каскадом от chat_thread, и ЗАОДНО по user_id: каскад, тихо переставший работать,
        * оставил бы единственную таблицу здесь, где лежат целые предложения, набранные человеком. */
@@ -134,7 +137,7 @@ async function handler(req, res) {
     ]);
 
     const [
-      flows, runs, devices, messages, threads, prefs, queued,
+      flows, runs, frames, devices, messages, threads, prefs, queued,
       shares, memberships, invites, teamsGone, tokens, codes, published,
     ] = done;
 
@@ -145,6 +148,7 @@ async function handler(req, res) {
       deleted: {
         flows: flows.length,
         runs: runs.length,
+        frames: frames.length,
         devices: devices.length,
         conversations: threads.length,
         messages: messages.length,
@@ -159,8 +163,8 @@ async function handler(req, res) {
       },
       /* Said out loud because the UI has to be able to tell the truth about what just happened, and
        * "account deleted" would not be it. */
-      note: 'Your flows, runs, conversations, preferences, queued runs and paired devices are gone, every '
-        + 'connector is revoked, and anything you published is withdrawn'
+      note: 'Your flows, runs and the frames they kept, conversations, preferences, queued runs and paired '
+        + 'devices are gone, every connector is revoked, and anything you published is withdrawn'
         + (teamsGone.length
           ? `. ${teamsGone.length} team${teamsGone.length === 1 ? '' : 's'} you alone owned ${
             teamsGone.length === 1 ? 'was' : 'were'} closed`

@@ -73,6 +73,8 @@ import type { ShotFrame } from '../../../api/_brain.d.mts';
 import { clockSaid, deferInstant } from '../../../api/_schedule.mjs';
 /* Один разбор на оба драйвера: «прошло» обязано значить одно и то же, откуда бы прогон ни шёл. */
 import { checksOf, expectSaid, judge } from '../../../api/_expect.mjs';
+/* Какой кадр стоит оставить и как его назвать - тот же расчёт, что у облачного драйвера. */
+import { kindOf, saidOf } from '../../../api/_artifact.mjs';
 
 /* Re-exported so nothing else has to know the brain moved: the Create page counts waves, and the plan
  * preview and the checkpoint gate's thumbnail normalise a picture's format through mediaType. */
@@ -267,10 +269,20 @@ interface Options {
    * потому что облачный драйвер отдаёт модели то же самое теми же словами. Отсутствует - и цикл о нём
    * просто не заговаривает, что и происходит у первого прогона. */
   earlier?: unknown[] | null;
+  /**
+   * КАДР, КОТОРЫЙ СТОИТ ОСТАВИТЬ: ход что-то доказал, или на нём всё кончилось.
+   *
+   * Обратным вызовом, а не записью отсюда, по той же причине, по которой этот файл не знает про /api/sync:
+   * цикл ведёт машину, а не аккаунт. Кто его дал - тот и решает, куда кадр девать (страница Create кладёт
+   * его в /api/artifacts). Не дали - кадры просто не хранятся, и всё остальное работает как раньше.
+   */
+  onArtifact?: (kept: {
+    kind: string; stepNo: number; said: string; frame: ShotFrame & { png: string; format?: string; w: number; h: number };
+  }) => void;
 }
 
 export async function runOnDesktop({
-  goal, success, machine, onEvent, isAborted, checkpoints, onCheckpoint, earlier,
+  goal, success, machine, onEvent, isAborted, checkpoints, onCheckpoint, earlier, onArtifact,
 }: Options): Promise<RunResult> {
   /* Шлюз работает только когда есть и план, и кто-то, кто ответит. Одно без другого - это либо инструмент,
    * объявляющий чекпоинты, которых нет, либо пауза, из которой никто не выпустит. */
@@ -305,6 +317,7 @@ export async function runOnDesktop({
 
     const outcome = await runWave({
       messages, success, gate, plan, machine, onEvent, isAborted, steps, wave, stepFrom: stepNo,
+      onArtifact,
     });
     stepNo = outcome.stepNo;
     if (outcome.result) return outcome.result;
@@ -337,6 +350,7 @@ async function runWave(o: {
   onEvent: (event: RunEvent) => void;
   isAborted: () => boolean;
   steps: RunResult['steps'];
+  onArtifact?: Options['onArtifact'];
   wave: number;
   stepFrom: number;
 }): Promise<{ stepNo: number; result?: RunResult }> {
@@ -403,6 +417,9 @@ async function runWave(o: {
      * решает предыдущий ход, отдавая действия, и решать это в двух драйверах в разные моменты значит иметь
      * два разных правила под одним именем. */
     const peekNow = shouldPeek(still);
+    /* Что этот ход доказал. Кадр к нему ОДИН - экран за ход один, - и вид его решает kindOf: провалом ход
+     * считается, если хоть одно утверждение не сошлось. */
+    const proven: { at: number; verdict: { pass: boolean | null; how: string; evidence: string } }[] = [];
 
     const cutoff = new AbortController();
     const shotMs = Date.now() - shotAt;
@@ -416,6 +433,9 @@ async function runWave(o: {
     if (still >= STILL_GIVE_UP) {
       const why = stillStopped(still);
       onEvent({ type: 'text', text: why });
+      /* Кадр провала - тот самый экран, по которому потом и разбирают, на чём всё встало. Берётся кадр
+       * ЭТОГО хода: он снят выше, до решения, и это ровно тот экран, который цикл видел последним. */
+      if (frame) o.onArtifact?.({ kind: 'failure', stepNo, said: why, frame });
       return { stepNo, result: { ok: false, error: why, steps } };
     }
 
@@ -615,6 +635,11 @@ async function runWave(o: {
         const closing = String(use.input?.said ?? said ?? 'Done.');
         // Success has to be claimed: anything but an explicit true is a failure that said so in words.
         const claimed = use.input?.ok === true;
+        /* КАДР НА ОКОНЧАНИИ. Неудача - всегда: по этому экрану её и разбирают. Успех - только если прогон
+         * что-то УТВЕРЖДАЛ: зелёный отчёт без картинки нечем подкрепить, а обычное выполненное поручение в
+         * картинке не нуждается. Кадр берётся тот, на котором решался этот ход. */
+        if (!claimed) o.onArtifact?.({ kind: 'failure', stepNo, said: closing, frame });
+        else if (checksOf(steps)) o.onArtifact?.({ kind: 'final', stepNo, said: closing, frame });
         return {
           stepNo,
           result: {
@@ -747,6 +772,7 @@ async function runWave(o: {
           const want = (use.input ?? {}) as { check: string; name: string; text?: string; why?: string };
           const verdict = judge(want, output, false);
           trace.outcome = verdict;
+          proven.push({ at: stepNo, verdict });
           const said = expectSaid(want, verdict);
           results.push({ type: 'tool_result', tool_use_id: use.id, content: said });
           /* Своим видом события, а не текстом: человек, читающий ленту, обязан видеть исход проверки
@@ -782,6 +808,17 @@ async function runWave(o: {
       /* A moment for the screen to react before the next picture, or it shows the state before this. Skipped
        * when the comparison above already waited it out - one pause, not two. */
       if (!settled) await new Promise((done) => setTimeout(done, 350));
+    }
+
+    /* ОДИН КАДР НА ХОД, названный тем, что этот ход доказал. Пишется и при PASS: зелёная строка, к которой
+     * можно вернуться и посмотреть, - это то, что делает зелёный отчёт проверяемым, а не просто зелёным. */
+    if (proven.length) {
+      o.onArtifact?.({
+        kind: kindOf(proven.map((one) => one.verdict)),
+        stepNo: proven[0].at,
+        said: saidOf(proven.map((one) => one.verdict)),
+        frame,
+      });
     }
 
     /* ИТОГ ХОДА, и только теперь. Ход неподвижен, только если ни одно его действие ничего не сдвинуло;

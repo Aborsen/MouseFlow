@@ -152,6 +152,10 @@ const RUNS = [
   {
     id: 'dr_251119120000', kind: 'agent', goal: 'send the welcome email to Margaryta', model: 'claude-opus-5',
     flowId: null, outcome: 'ok', summary: 'Sent it.', error: null, extension: null,
+    /* ИСХОД `ok` С ПРОВАЛИВШЕЙСЯ ПРОВЕРКОЙ - самый важный случай во всей таблице и потому он в фикстуре:
+     * агент сделал всё, о чём просили, а продукт повёл себя не так. Это найденный дефект, и экран обязан
+     * уметь показать его не как неудачу прогона. См. db/019. */
+    checks: { passed: 1, failed: 1, unchecked: 1, tiers: { tree: 3 } },
     said: ['Outlook is already open, so I will use that rather than launching it.'],
     steps: [
       { tool: 'activate_window', input: { process: 'OUTLOOK' }, ms: { shot: 90, model: 4200, act: 380 } },
@@ -166,6 +170,18 @@ const RUNS = [
       { tool: 'hover', input: { x: 640, y: 210 }, ms: { shot: 88, model: 2400, act: 120 } },
       { tool: 'note', input: { text: 'Sent at 11:07 to margaryta@example.com — the Sent folder shows it.' },
         ms: { model: 2100 } },
+      /* ПРОВЕРКИ - ВСЕ ТРИ ИСХОДА, и это единственный способ увидеть, что «не удалось проверить» не красится
+       * как «не прошло». Ветку с одними зачётами не отличить от сломанной: она зелёная и в том, и в другом
+       * случае. См. api/_expect.mjs. */
+      { tool: 'expect', input: { check: 'present', name: 'Sent Items', why: 'the mail left the outbox' },
+        ms: { shot: 88, model: 2300, act: 90 },
+        outcome: { pass: true, how: 'tree', evidence: 'tree item "Sent Items" at 24,318' } },
+      { tool: 'expect', input: { check: 'value_is', name: 'Subject', text: 'Welcome!', why: 'the subject is the one asked for' },
+        ms: { shot: 89, model: 2500, act: 95 },
+        outcome: { pass: false, how: 'tree', evidence: '"Subject" holds "Welcome", not "Welcome!"' } },
+      { tool: 'expect', input: { check: 'absent', name: 'Undeliverable', why: 'nothing bounced' },
+        ms: { shot: 90, model: 2200, act: 88 },
+        outcome: { pass: null, how: 'tree', evidence: 'could not check: could not read that window' } },
       /* Wave 02, in a fixture for the same reason wave 01 is: a branch no preview can reach is a branch
        * nobody looks at. This is the shape of the run that could not be done before - capture a window,
        * open a web application, paste. */
@@ -890,6 +906,13 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
   /* РАСПИСАНИЯ. Ведёт себя, а не отвечает: постановка возвращает строку, пауза - ту же строку с новым
    * состоянием, удаление подтверждает. Фикстура, которая приняла бы постановку и вернула прежний список,
    * показывала бы работающий экран сломанным - та же ошибка, что однажды сделал мок выхода из аккаунта. */
+  /* Кадры прогонов. У фикстуры их нет: картинки берутся с настоящего экрана, а его у мока нет вовсе -
+   * и полоска миниатюр честно не рисуется. POST принимается, чтобы прогон на моке не ловил отказ. */
+  if (url.startsWith('/api/artifacts')) {
+    if (method === 'POST') return json(res, 200, { ok: true, kept: false, why: 'the mock keeps no frames' });
+    return json(res, 200, { ok: true, artifacts: [] });
+  }
+
   /* Страница Create спрашивает это каждые несколько секунд. У мока нет машины - и ответ говорит «ничего»,
    * а не 404, который в консоли читался бы как поломка. */
   if (url.startsWith('/api/mcp?live=1')) {

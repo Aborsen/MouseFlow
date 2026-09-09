@@ -39,6 +39,7 @@ import { useAgent } from '@/lib/store';
 import { type DictatedRun, hasSkillForRun } from '@/features/record/save-as-skill';
 import { asDid, describe } from './describe';
 import { evidenceOf, verdictKind } from './verdict';
+import { Frames } from './Frames';
 import { dictatedFrom, goalRuns, provable, stepsOf, titleOf, took, when, wordsOf } from './run-history';
 
 /* Поиск появляется, когда без него становится трудно. Поле над тремя строками - это мебель. */
@@ -328,6 +329,11 @@ export const EarlierPanel = ({ runs, flows, hide, onAskAgain, onSaveAsSkill, onR
                                   : 'No step-by-step trace was kept for this run.'}
                             </StepLine>
                           )}
+
+                          {/* КАДРЫ - под шагами, и спрашиваются только когда прогон раскрыт: они есть у
+                            * горстки прогонов (тех, что проверяли или упали), а опрос всех подряд «на
+                            * случай, если есть» это десять запросов в никуда при каждом открытии. */}
+                          <Frames runId={run.id} />
 
                           {note && (
                             <Typography

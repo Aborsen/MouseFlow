@@ -64,6 +64,9 @@ import {
 } from './_schedule.mjs';
 /* Сводка проверок прогона - тем же счётом, что у браузерного драйвера. См. api/_expect.mjs. */
 import { checksOf } from './_expect.mjs';
+/* Кадры, которые стоит оставить: решает их цикл (out.keep), а пишет их этот маршрут - он единственный
+ * здесь, у кого есть и картинка, и база. Потолок и уборка общие с api/artifacts.js. */
+import { ARTIFACT_KEEP_DAYS, artifactId, dropWhich, tooBig } from './_artifact.mjs';
 /* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
 import { overSpend, spentWhy } from './_spend.mjs';
 /* Потолок на вес записи - тот же, что у api/sync.js: два писателя одной колонки не могут иметь два. */
@@ -1660,7 +1663,42 @@ async function workerRoute(action, req, res, sql, who) {
       return fail(spentWhy(budget, 'runs'));
     }
 
+    /* КАДР, КОТОРЫЙ РЕШИЛ ЦИКЛ. Он не знает ни про базу, ни про то, где живут картинки - и не должен: его
+     * гоняет набор тестов без сети. Он говорит «оставь этот кадр, вот под каким именем», а картинка есть
+     * здесь, в теле запроса, и больше нигде.
+     *
+     * Best effort целиком: потерянная картинка это потерянная картинка, а прогон - работа на чьём-то
+     * компьютере, и валить его из-за неё было бы обменом ценного на удобное. */
+    const keepFrame = async (keep) => {
+      if (!keep || !body.shot || !body.shot.png) return;
+      try {
+        if (tooBig(body.shot.png)) return;
+        const have = await sql`
+          select id, kind, step_no from run_artifact where user_id = ${who.id} and run_id = ${id}
+        `;
+        const drop = dropWhich(have, 1);
+        if (drop.length) {
+          await sql`delete from run_artifact where user_id = ${who.id} and id = any(${drop})`;
+        }
+        await sql`
+          insert into run_artifact (id, user_id, run_id, step_no, kind, mime, w, h, bytes, said)
+          values (${artifactId()}, ${who.id}, ${id}, ${Math.max(0, Math.round(Number(keep.stepNo) || 0))},
+                  ${keep.kind}, ${String(body.shot.format || 'image/jpeg')},
+                  ${Number(body.shot.w) || null}, ${Number(body.shot.h) || null},
+                  ${String(body.shot.png)}, ${String(keep.said || '').slice(0, 2000) || null})
+        `;
+        await sql`
+          delete from run_artifact
+          where user_id = ${who.id} and created_at < now() - ${`${ARTIFACT_KEEP_DAYS} days`}::interval
+        `;
+      } catch (_) {
+        /* Миграции может не быть на этом деплое - тогда картинок просто нет, а прогоны работают полностью.
+         * Молча, потому что сказать здесь некому: это ответ машине, а не человеку. */
+      }
+    };
+
     const out = await advance({ loop, shot: body.shot, windows: body.windows, results: body.results });
+    await keepFrame(out.keep || (out.done && out.done.keep));
 
     /* ОТЛОЖЕНО, А НЕ СДЕЛАНО. Цель назвала время впереди, и модель вместо таймера из PowerShell позвала
      * defer_until. Прогон становится разовым расписанием на этот момент - с тем же flow_id, tool_name и

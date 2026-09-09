@@ -185,6 +185,8 @@ Sessions are gone; a recording that will not fit one row cuts itself into ordina
 | `ACCESS_TTL_MS` / `REFRESH_TTL_MS` | 30 days / 180 days | `oauth.js` |
 | `CLIENTS_MAX_URIS` | 10 | `oauth.js` |
 | `NAME_MAX` / `TEAMS_PER_PERSON` / `MEMBERS_MAX` | 60 / 20 / 200 | `team.js` |
+| `ARTIFACT_MAX_BYTES` | 250,000 | `_artifact.mjs` — a heavier frame is declined with a sentence, never cropped |
+| `ARTIFACTS_PER_RUN` / `ARTIFACT_KEEP_DAYS` | 12 / 30 | `_artifact.mjs` — up to 3 MB for the most talkative run; failures are never the frames dropped |
 | `MIN_EVERY_MINUTES` / `MAX_EVERY_MINUTES` | 15 / 43,200 (30 days) | `_schedule.mjs` — the floor is about a machine somebody is sitting at, not about load |
 | `CATCH_UP_MS` | 1,800,000 (30 min) | `_schedule.mjs` — later than this, a due time is **missed** rather than run |
 | `FAILS_BEFORE_PAUSE` | 3 | `_schedule.mjs` — consecutive failures that stop a schedule by itself |

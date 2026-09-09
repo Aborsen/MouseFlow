@@ -2,6 +2,24 @@
 
 Read this before sharing the link, and before putting the agent on a machine that is not yours.
 
+## A kept frame is a picture of the whole screen
+
+Since September 2026 a run keeps a few screenshots as evidence — the turns that asserted something, and the
+screen a run ended badly on ([25 — Checks and tests](25-tests.md)). This is the most sensitive thing the
+product stores, and it deserves saying plainly rather than in a table:
+
+- **A frame is the whole screen**, not the window the run was working on. Whatever else was open is in it.
+- It is kept for **30 days**, capped at **12 frames a run**, and pruned on the way past the next insert.
+- It lives under that account and is served `private` with **no sharing path of any kind** — no gallery, no
+  team read, no link. A skill can be published; a frame cannot.
+- **`run_artifact` is in the erase transaction**, and `DELETE /api/account?erase=1` answers with how many
+  frames went. It is the one table here that holds a picture of somebody's desk.
+- Nothing is kept for an ordinary run. A run that asserted nothing and finished keeps **no** frames; the
+  ones that do are runs that made a check or ended badly.
+
+The keyboard rule below is unchanged and is worth reading beside this one: what somebody *typed* is never
+stored anywhere, and a frame does not change that — but a frame can show a field that already holds it.
+
 ## The keyboard, exactly
 
 Written out here because both this repository and the public docs had been saying it two different loose

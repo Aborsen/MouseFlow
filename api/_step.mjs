@@ -68,6 +68,9 @@ import { clockSaid, deferInstant } from './_schedule.mjs';
 /* Вердикт по проверке - одним разбором на оба драйвера, потому что «прошло» обязано значить одно и то же,
  * откуда бы прогон ни шёл. См. api/_expect.mjs. */
 import { checksOf, expectSaid, judge } from './_expect.mjs';
+/* Какой кадр стоит оставить и как его назвать. Тот же расчёт, что у браузерного драйвера: отчёт, в котором
+ * у одного прогона есть картинка провала, а у такого же другого нет, не читают. См. api/_artifact.mjs. */
+import { kindOf, saidOf } from './_artifact.mjs';
 import { DEFAULT_SHOT_W } from './_brain.mjs';
 import { callModel } from './_vision.mjs';
 
@@ -153,7 +156,9 @@ async function defaultAsk(body) {
  * A pending action with no result is an error rather than an omission: the model has to know its click did
  * not happen, and a missing tool_result is not a thing the API will accept in any case. */
 /* @param {{still: number}} loop  counted across turns, so a streak spanning two of them is still a streak */
-function resultBlocks(pending, said, loop) {
+/* `proven` - то, что этот ход доказал, собирается по пути наружу: кадр к нему один (один экран на ход), и
+ * решает его вид `kindOf`. Массив, а не значение: пачка может сделать пять проверок сразу. */
+function resultBlocks(pending, said, loop, proven) {
   const bySaid = new Map();
   for (const r of Array.isArray(said) ? said : []) bySaid.set(String(r && r.id), r);
   /* ОДИН СЧЁТ НА ХОД, а не на действие - см. STILL_WARN в _brain.mjs. Ход неподвижен, только если ни одно
@@ -207,6 +212,7 @@ function resultBlocks(pending, said, loop) {
       const verdict = judge(p.input || {}, got.output, got.isError === true);
       const step = loop.steps[p.at];
       if (step) step.outcome = verdict;
+      if (Array.isArray(proven)) proven.push({ at: p.at, verdict });
       return { type: 'tool_result', tool_use_id: p.id, content: expectSaid(p.input || {}, verdict) };
     }
     const content = p.name === 'wait' && got.quiet !== undefined
@@ -248,6 +254,33 @@ async function askForHandoff(loop, ask) {
  */
 export async function advance({ loop, shot, windows, results, ask }) {
   const model = ask || defaultAsk;
+  /* КАДР, КОТОРЫЙ СТОИТ ОСТАВИТЬ, - не больше одного за ход, потому что экран за ход один.
+   *
+   * Решается здесь, а пишется маршрутом (api/mcp.js): этот модуль ничего не знает ни о базе, ни о том, где
+   * живут картинки, и знать не должен - его гоняет набор тестов без сети. Наружу уезжает только «оставь
+   * этот кадр, вот под каким именем». */
+  let keep = null;
+  /* Провал вытесняет проверку, финал не вытесняет ничего: у провала одна картинка, и она важнее всех. */
+  const keepFrame = (kind, stepNo, said) => {
+    if (keep && keep.kind === 'failure' && kind !== 'failure') return;
+    if (keep && kind === 'final') return;
+    keep = { kind, stepNo, said: String(said || '').slice(0, 2000) };
+  };
+  /* КАДР НА ОКОНЧАНИИ. Неудача - всегда: это тот самый экран, по которому потом разбирают, что случилось.
+   * Успех - только если прогон что-то УТВЕРЖДАЛ: зелёный отчёт без единой картинки нечем подкрепить, а
+   * зелёный прогон, который ничего не проверял, - это просто выполненное поручение, и картинка ему не нужна.
+   *
+   * Вызывается из `over`, то есть на каждом пути окончания, а не только на finish - потому что «упёрся в
+   * потолок шагов», «шесть ходов ничего не двигалось» и «модель отказалась» тоже надо разбирать по экрану. */
+  const keepEnding = (out) => {
+    if (out.ok !== true) {
+      keepFrame('failure', loop.stepNo, out.error || out.said || 'the run did not finish');
+    } else if (checksOf(loop.steps)) {
+      keepFrame('final', loop.stepNo, out.said || 'finished');
+    }
+    return keep;
+  };
+
   const over = (out) => ({
     loop: pack(loop),
     done: {
@@ -264,6 +297,8 @@ export async function advance({ loop, shot, windows, results, ask }) {
       /* Отложенный прогон - не сделанный: драйвер маршрута видит это поле и ставит расписание вместо того,
        * чтобы записать зелёный прогон, которого не было. */
       deferred: out.deferred || null,
+      /* И кадр, если этот ход что-то доказал или на нём всё кончилось. */
+      keep: keepEnding(out),
       steps: loop.steps,
       saidAll: loop.said,
       stepNo: loop.stepNo,
@@ -286,7 +321,14 @@ export async function advance({ loop, shot, windows, results, ask }) {
    * has no business being in it. */
   const saw = (peeked && peeked.isError !== true && peeked.output) ? String(peeked.output) : null;
 
-  const answered = (loop.mine || []).concat(resultBlocks(loop.pending || [], results, loop));
+  const proven = [];
+  const answered = (loop.mine || []).concat(resultBlocks(loop.pending || [], results, loop, proven));
+  /* Один кадр на ход, названный тем, что этот ход доказал. Пишется и при PASS: зелёная строка, к которой
+   * можно вернуться и посмотреть, - это то, что делает зелёный отчёт проверяемым, а не просто зелёным. */
+  if (proven.length) {
+    keepFrame(kindOf(proven.map((one) => one.verdict)), proven[0].at,
+      saidOf(proven.map((one) => one.verdict)));
+  }
   if (answered.length) loop.messages.push({ role: 'user', content: answered });
   loop.mine = [];
   loop.pending = [];
@@ -573,5 +615,5 @@ export async function advance({ loop, shot, windows, results, ask }) {
     actions.push({ id: PEEK_ID, kind: 'do', name: 'read_window', body: peekBody(shot) });
   }
 
-  return { loop: pack(loop), actions, step: loop.stepNo, shotWidth: loop.shotWidth };
+  return { loop: pack(loop), actions, step: loop.stepNo, shotWidth: loop.shotWidth, keep };
 }

@@ -106,6 +106,52 @@ nightly regression is green while the product is on fire.
 `checks` is **null** on any run that asserted nothing, which is most of them. Absent means "this run made no
 claims", never "its claims failed".
 
+## Kept frames
+
+A failed check in words is a claim about a screen nobody can look at any more. *"Saved is not on the window"*
+is exactly as trustworthy as the parser that said it — which is the point of `expect` — but the person
+reading a red line at nine in the morning wants to know **why** it was not there, and no amount of words
+gets them there. A regression suite whose failures cannot be diagnosed ends one way: people stop reading it.
+
+So a few frames are kept (`db/020_run_artifact.sql`), and only the ones that prove something:
+
+| Kind | When |
+|---|---|
+| `check` | a turn that asserted something and every assertion held |
+| `failure` | a turn with a failed check in it, or the screen a run ended badly on — **any** bad ending: a failed `finish`, six turns with nothing moving, the step ceiling, a model refusal |
+| `final` | the last screen of a successful run **that made checks** — a green report with no picture is nothing to check against |
+
+**One frame per turn, not per check.** A turn can make five checks in one batch; they were all decided from
+one screen, and five copies would be five times the storage for the same evidence. So the frame's `step_no`
+names the first step it covers, and its `said` carries what that whole turn proved.
+
+**A failure frame is never the one thrown away.** Twelve frames per run (`ARTIFACTS_PER_RUN`), and when a
+run goes over, the oldest **passing** checks go first — they confirm what is already green. Failures and the
+final frame stay; they are what the table exists for. The rule is `dropWhich()` in `api/_artifact.mjs` and
+it is checked by execution in `api/_test-artifact.mjs`, because a cap that silently discarded exactly the
+picture somebody needed is the kind of loss noticed a month later.
+
+Numbers, so nobody has to work them out: **250 KB** a frame at most (a heavier one is *declined with a
+sentence*, never silently downscaled — there is nothing here to downscale with, and a cropped picture in a
+report is not what was on screen), **12** frames a run, kept **30 days**. That is up to 3 MB for the most
+talkative run and two frames for an ordinary one. The prune runs on the way past the next insert — the same
+"lazy cron" as schedules, and for the same reason: a cron in the cloud is a second mechanism that can fail
+where nobody looks.
+
+**Both drivers, one rule.** The loop decides *which* frame to keep and says so (`out.keep`); it never
+touches the database, because it is run by a test suite with no network. The cloud path writes it inside
+`?worker=step`, which is the only place with both the picture and the database; the page hands it to
+`/api/artifacts` through the `onArtifact` callback. Two rules would mean one run has a picture of its
+failure and an identical one does not.
+
+**It is somebody's screen.** A frame contains the whole screen, including windows that have nothing to do
+with the run. It lives under that person's account, is deleted with it (`run_artifact` is in the erase
+transaction, and the answer counts it), and is served `private` with no sharing path of any kind. See
+[17 — Privacy and security](17-privacy-security.md).
+
+Without `db/020` applied, runs work exactly as before and no frames are kept: the route says which migration
+is missing rather than answering 500, and the cloud writer swallows the error entirely.
+
 ## What a person sees
 
 In the live feed on the Create page and in the run's history, a check reads as an assertion with its
@@ -118,6 +164,12 @@ evidence, coloured by outcome:
 Three colours because there are three outcomes. The words come from one place
 (`web/src/features/create/verdict.ts`) for both history lists, so the two can never disagree about what
 amber means.
+
+Under a run's steps in the history panel is a strip of the frames it kept — one button per frame, labelled
+by step and by what it is (*what it proved*, *where it failed*, *the last screen*), the failures in red.
+Clicking one opens the full screen with the evidence under it. The strip asks for the list only when a run is
+expanded, and only the list: the pictures themselves are fetched one at a time, because twelve frames are up
+to 3 MB and the panel shows ten runs.
 
 ## One thing this does not close yet
 
@@ -135,6 +187,9 @@ exploratory, and it should not be the thing a release is gated on.
 | | |
 |---|---|
 | `api/_expect.mjs` | the verdict, the three outcomes, and why an unreadable window is not an absence |
+| `api/_artifact.mjs`, `api/_test-artifact.mjs` | which frames survive a full run, and why a failure is never the one dropped |
+| `db/020_run_artifact.sql` | why the pictures are a row and not a blob store, and why one per turn |
+| `api/artifacts.js` | the page's door to them, and why listing and reading are two requests |
 | `api/_test-expect.mjs` | 47 executable checks against the strings the agents actually print |
 | `api/_brain.mjs` | the tool, the rule in the system prompt, why it rides on `find`, and `LOOKS_ONLY` |
 | `api/_step.mjs`, `web/src/lib/desktop-engine.ts` | the two drivers, judging with one parser |

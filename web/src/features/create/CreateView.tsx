@@ -41,7 +41,7 @@ import {
 } from '@/components/chat';
 import { AGENT_WANTS, localMachine, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
-import { type LiveJob, liveJobs, push, scheduleAdd, scheduleRemove } from '@/lib/api';
+import { type LiveJob, keepArtifact, liveJobs, push, scheduleAdd, scheduleRemove } from '@/lib/api';
 import {
   type GateAnswer,
   MAX_WAVES,
@@ -481,6 +481,21 @@ export const CreateView = () => {
           updateLive((t) => ({ ...t, feed: [...t.feed, event] }));
         },
         isAborted: () => abort.current,
+        /* КАДРЫ, КОТОРЫЕ ЧТО-ТО ДОКАЗЫВАЮТ. Цикл решает, какие; кладёт их сюда страница, потому что цикл
+         * ведёт машину, а не аккаунт (см. onArtifact в desktop-engine.ts).
+         *
+         * `void` и без ожидания: прогон не должен ждать сети ради картинки, и потерянная картинка не повод
+         * останавливать работу на чьём-то компьютере. Id прогона тот же, что уедет в push ниже - иначе
+         * кадры оказались бы привязаны к строке, которой нет. */
+        onArtifact: ({ kind, stepNo, said, frame }) => {
+          void keepArtifact({
+            runId: `dr_${startedAt.replace(/\D/g, '').slice(-12)}`,
+            stepNo, kind, said,
+            mime: frame.format || 'image/jpeg',
+            w: frame.w, h: frame.h,
+            bytes: frame.png,
+          }).catch(() => { /* кадр потерян, прогон - нет */ });
+        },
       })
         .then(async (result) => {
           /* ОТЛОЖЕНО, А НЕ СДЕЛАНО. Цель назвала время впереди («в 19:41 …»), и модель вместо таймера из

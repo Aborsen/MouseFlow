@@ -405,6 +405,30 @@ than saying plainly that it is not ours. Signing out afterwards is the client's 
 
 ---
 
+## `/api/artifacts`
+
+```
+GET  /api/artifacts?run=<id>     the frames a run kept — WITHOUT the pictures
+GET  /api/artifacts?id=<frame>   one frame, with the picture
+POST /api/artifacts              keep one (session or device token)
+```
+
+The few screenshots that prove something: a turn that made a check, and the screen a run ended badly on. See
+[25 — Checks and tests](25-tests.md) for which and why.
+
+| | |
+|---|---|
+| Why the page needs a door at all | a run driven from the Create page goes past the cloud entirely — the model is called through `/api/claude`, the actions go to the agent over loopback, and only the outcome reaches the account through `/api/sync`. The cloud path writes its own frames inside `?worker=step`, where it already has both the picture and the database |
+| Listing and reading are separate | twelve frames are up to 3 MB, and the history panel shows ten runs; the list weighs a kilobyte |
+| One frame | served `private, max-age=86400` — a frame's content never changes, it is a snapshot of a moment |
+| Over the cap | the oldest **passing** checks are deleted first; a `failure` frame is never the one dropped (`dropWhich`) |
+| Over 250 KB | answered `{ ok: true, kept: false, why }` — declined with a sentence, never silently cropped |
+| Pruning | anything older than 30 days for that account, on the way past an insert. No cron |
+| Scoping | every statement filters on the caller's id inside the `WHERE`; a foreign frame and a missing one get the same 404 |
+| Without `db/020_run_artifact.sql` | 503 naming the migration, and it says runs are unaffected |
+
+---
+
 ## `/api/schedules`
 
 ```

@@ -311,6 +311,24 @@ make it visible.
 The one query the due check makes, four times a minute per machine, is served by a partial index:
 `user_schedule_due on (user_id, next_at) where paused = false and deleted_at is null`.
 
+## `run_artifact` — the screen at the moment something was proven
+
+`db/020_run_artifact.sql`. `id`, `user_id`, `run_id` (the `user_run.client_id`), `step_no`, `kind`
+(`check` | `failure` | `final`), `mime`, `w`, `h`, `bytes` (base64, inline), `said`, `created_at`.
+
+**One row per turn, not per check** — a turn's five assertions were decided from one screen. `said` carries
+what that turn proved, in the words the person reads under the thumbnail.
+
+**Base64 in the row, deliberately, for now.** A blob store is the textbook answer and the wrong first move:
+it adds a second place where a person's screen lives, a second thing to delete when they erase their
+account, and a second failure mode — a row that outlives its picture. At 250 KB a frame, twelve a run, kept
+thirty days, this fits where it is; if it stops fitting, the column becomes a URL and every reader above it
+changes not at all.
+
+Caps and the prune are in `api/_artifact.mjs`. `run_artifact` is in the erase transaction
+(`api/account.js`) and the answer counts the frames, because this is the one table that holds a picture of
+somebody's whole screen. See [25 — Checks and tests](25-tests.md).
+
 ## `device_token` — pairing the extension
 
 `db/002_user_data.sql`. `id`, `user_id`, `token_hash` (unique), `label`, `created_at`, `last_used_at`,

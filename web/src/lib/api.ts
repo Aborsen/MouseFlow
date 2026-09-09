@@ -372,6 +372,37 @@ export interface Schedule {
 
 export const schedules = () => call<{ ok: true; schedules: Schedule[] }>('/api/schedules');
 
+/* КАДРЫ ПРОГОНА - те немногие, что что-то доказывают: ход, сделавший проверку, и экран, на котором всё
+ * кончилось. См. db/020 и api/_artifact.mjs.
+ *
+ * Список и содержимое - ДВА разных запроса, и это не педантизм: двенадцать кадров это до трёх мегабайт, а
+ * панель истории показывает десять прогонов. Список без картинок весит килобайт. */
+export interface Artifact {
+  id: string;
+  runId: string;
+  stepNo: number;
+  /** 'failure' | 'final' | 'check' - см. KINDS в api/_artifact.mjs. */
+  kind: string;
+  mime: string;
+  w: number | null;
+  h: number | null;
+  /** Что этот кадр доказывает, словами прогона. Без них миниатюра - загадка. */
+  said: string | null;
+  at: string;
+}
+export const artifactsOf = (runId: string) =>
+  call<{ ok: true; artifacts: Artifact[] }>(`/api/artifacts?run=${encodeURIComponent(runId)}`);
+export const artifactBytes = (id: string) =>
+  call<{ ok: true; artifact: { id: string; mime: string; w: number | null; h: number | null; said: string | null; bytes: string } }>(
+    `/api/artifacts?id=${encodeURIComponent(id)}`);
+export const keepArtifact = (body: {
+  runId: string; stepNo: number; kind: string; mime: string; w?: number; h?: number; bytes: string; said?: string;
+}) => call<{ ok: true; kept: boolean; id?: string; why?: string }>('/api/artifacts', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
 /* Прогоны, которые машина делает САМА - по расписанию или по просьбе из чата, - и о которых страница иначе
  * не узнала бы. Шаги в форме десктопного цикла: {tool, input, ms}. */
 export interface LiveJob {
@@ -435,6 +466,8 @@ export const eraseAccount = () =>
     deleted: {
       flows: number; runs: number; devices: number; conversations: number; messages: number;
       preferences: number; queuedRuns: number; teamMemberships: number; teamShares: number;
+      /* Кадры прогонов. В списке, потому что это чей-то экран, и «удалено» обязано включать его тоже. */
+      frames: number;
       invitations: number; teamsClosed: number; connectors: number; withdrawn: number;
     };
     note: string;

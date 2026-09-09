@@ -3285,9 +3285,12 @@ group('в api/ нет ничего, что не должно быть маршр
   /* schedules.js - по той же причине, и это не дубль тулов из mcp.js: у страницы и у MCP разные предъявители
    * (сессионная кука против токена устройства), а `whoIsCalling` - единственное, что решает, чьи это
    * расписания. Один маршрут на два доверия означал бы одну проверку прав на два разных входа. */
-  const expected = ['account.js', 'admin.js', 'auth.js', 'chat.js', 'chats.js', 'claude.js', 'compose.js',
-    'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js', 'schedules.js',
-    'skill-md.js', 'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
+  /* artifacts.js - кадры прогонов. Своя дверь нужна потому, что прогон со страницы Create идёт мимо облака
+   * целиком: модель зовёт /api/claude, действия уходят агенту по локальной сети, и на аккаунт попадает
+   * только итог. Облачный путь свои кадры пишет сам, внутри ?worker=step. */
+  const expected = ['account.js', 'admin.js', 'artifacts.js', 'auth.js', 'chat.js', 'chats.js', 'claude.js',
+    'compose.js', 'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js',
+    'schedules.js', 'skill-md.js', 'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
   const unexpected = routes.filter((n) => !expected.includes(n));
   check('и новых маршрутов не появилось незамеченными', unexpected.length === 0, unexpected.join(', '));
   /* И наоборот - что каждый ожидаемый на месте: список, из которого файл пропал, молча перестаёт его
@@ -4974,6 +4977,105 @@ group('проверка читается в истории прогона - сл
     /type: 'check', text: said, pass: verdict\.pass/.test(read('../web/src/lib/desktop-engine.ts'))
       && /event\.pass === true \? 'pass' : event\.pass === false \? 'fail' : 'unchecked'/.test(create));
   check('и сводка уезжает на аккаунт вместе с прогоном', /checks: result\.checks \?\? null/.test(create));
+}
+
+/* ----------------------------------------------------- КАДР ТАМ, ГДЕ ОН ЧТО-ТО ДОКАЗЫВАЕТ
+ *
+ * Правило «что выбросить, когда не влезает» проверено вычислением в api/_test-artifact.mjs - и главная его
+ * проверка там одна: КАДР ПРОВАЛА НЕ ВЫБРАСЫВАЕТСЯ. Здесь проводка: что кадры снимаются в тех и только тех
+ * местах, что цикл не знает про базу, что чужой экран удаляется вместе с аккаунтом, и что отсутствие
+ * миграции не ломает прогоны.
+ *
+ * Зачем вообще: провалившаяся проверка в словах - это утверждение об экране, на который больше нельзя
+ * посмотреть. Набор, чьи провалы нельзя разобрать, перестают читать. */
+group('кадр сохраняется там, где он что-то доказывает, - и нигде больше');
+{
+  const rules = read('../api/_artifact.mjs');
+  const step = read('../api/_step.mjs');
+  const engine = read('../web/src/lib/desktop-engine.ts');
+  const route = read('../api/mcp.js');
+  const door = read('../api/artifacts.js');
+  const migration = read('../db/020_run_artifact.sql');
+  const erase = read('../api/account.js');
+  const create = read('../web/src/features/create/CreateView.tsx');
+  const frames = read('../web/src/features/create/Frames.tsx');
+  const panel = read('../web/src/features/create/EarlierPanel.tsx');
+  const pkg = read('../package.json');
+
+  /* ОДИН КАДР НА ХОД, а не на проверку: пачка из пяти проверок решалась ОДНИМ экраном. */
+  check('один кадр на ход, а не на проверку - экран за ход один',
+    /ОДИН КАДР НА ХОД/.test(step) && /ОДИН КАДР НА ХОД/.test(engine)
+      && /один кадр на ход/i.test(migration) || /ONE PICTURE PER TURN/.test(migration));
+  check('и провал вытесняет проверку, а финал не вытесняет ничего',
+    /if \(keep && keep\.kind === 'failure' && kind !== 'failure'\) return;/.test(step)
+      && /if \(keep && kind === 'final'\) return;/.test(step));
+
+  /* КАДР НА КАЖДОМ ОКОНЧАНИИ, а не только на finish: «упёрся в потолок шагов» и «шесть ходов ничего не
+   * двигалось» разбирают по экрану точно так же. */
+  check('кадр снимается на любом окончании неудачей, а не только на finish',
+    /const keepEnding = \(out\) => \{[\s\S]{0,400}?if \(out\.ok !== true\) \{/.test(step)
+      && /keepEnding\(out\)/.test(step));
+  check('а на успехе - только если прогон что-то утверждал',
+    /\} else if \(checksOf\(loop\.steps\)\) \{[\s\S]{0,120}?keepFrame\('final'/.test(step)
+      && /else if \(checksOf\(steps\)\) o\.onArtifact\?\.\(\{ kind: 'final'/.test(engine));
+  check('браузерный драйвер тоже снимает кадр на застревании',
+    /if \(frame\) o\.onArtifact\?\.\(\{ kind: 'failure', stepNo, said: why, frame \}\);/.test(engine));
+
+  /* ЦИКЛ НЕ ЗНАЕТ ПРО БАЗУ - его гоняет набор без сети, и это надо сохранить. */
+  check('цикл только НАЗЫВАЕТ кадр, а пишет его маршрут',
+    !/run_artifact/.test(step) && /insert into run_artifact/.test(route));
+  check('а браузерный отдаёт его обратным вызовом, а не кладёт сам',
+    !/keepArtifact/.test(engine) && !/fetch\(['\"`]\/api\/artifacts/.test(engine)
+      && /onArtifact\?: \(kept: \{/.test(engine)
+      && /onArtifact: \(\{ kind, stepNo, said, frame \}\) =>/.test(create));
+  check('и id прогона у кадра тот же, что уедет в push',
+    create.includes('runId: `dr_${startedAt.replace(')
+      && create.includes('const runId = `dr_${startedAt.replace('));
+
+  /* ПОТОЛОК И УБОРКА - ОБЩИЕ, иначе у одного прогона картинка провала есть, а у такого же другого нет. */
+  check('оба пути считают, что выбросить, одной функцией',
+    route.includes("from './_artifact.mjs'") && door.includes("from './_artifact.mjs'")
+      && /dropWhich\(have, 1\)/.test(route) && /dropWhich\(have, 1\)/.test(door));
+  check('уборка по ходу дела, а не кроном в облаке',
+    /created_at < now\(\) - \$\{`\$\{ARTIFACT_KEEP_DAYS\} days`\}::interval/.test(route)
+      && /created_at < now\(\) - \$\{`\$\{ARTIFACT_KEEP_DAYS\} days`\}::interval/.test(door));
+  check('и тяжёлый кадр откладывается с причиной, а не режется молча',
+    /tooBig/.test(rules) && /kept: false, why: heavy/.test(door));
+
+  /* ЧТЕНИЕ РАЗДЕЛЕНО: список без картинок, содержимое по одному. */
+  check('список кадров приезжает без картинок - иначе панель тащит мегабайты',
+    /select id, run_id, step_no, kind, mime, w, h, said, created_at/.test(door)
+      && !/select[^;]*bytes[^;]*order by step_no/.test(door));
+  check('а один кадр - с картинкой и с приватным кэшем на сутки',
+    /Cache-Control', 'private, max-age=86400'/.test(door));
+  check('и чужой кадр отвечает тем же 404, что несуществующий',
+    /no such frame on this account/.test(door) && /user_id = \$\{userId\} and id = \$\{id\}/.test(door));
+
+  /* ЧУЖОЙ ЭКРАН УДАЛЯЕТСЯ ВМЕСТЕ С АККАУНТОМ - и это обязательнее, чем строки: в картинку попало всё, что
+   * было на экране, включая соседние окна. */
+  check('стирание аккаунта удаляет кадры и говорит их число',
+    /delete from run_artifact where user_id = \$\{who\.id\} returning id/.test(erase)
+      && /frames: frames\.length/.test(erase));
+  check('и в ответе это сказано словами', /runs and the frames they kept/.test(erase));
+
+  /* ОТСУТСТВИЕ МИГРАЦИИ НЕ ЛОМАЕТ ПРОГОНЫ. */
+  check('без применённой миграции прогоны идут, а кадров просто нет',
+    /Kept frames need db\/020_run_artifact\.sql applied/.test(door)
+      && /Runs and their words are unaffected/.test(door));
+  check('и в облаке запись кадра целиком best effort',
+    /catch \(_\) \{\s*\n\s*\/\* Миграции может не быть/.test(route));
+
+  /* И ЭТО ВИДНО. Кадр, который нельзя открыть, не отличается от кадра, которого нет. */
+  check('миниатюры показываются под шагами прогона',
+    panel.includes("import { Frames } from './Frames';") && /<Frames runId=\{run\.id\} \/>/.test(panel));
+  check('и спрашиваются только когда прогон раскрыт, а не для всех подряд',
+    /artifactsOf\(runId\)/.test(frames) && /\[runId\]\)/.test(frames));
+  check('провал выделен, и подпись говорит, что это за кадр',
+    /where it failed/.test(frames) && /border-fb-red/.test(frames));
+  check('а отказ не рисуется пустой рамкой с обещанием',
+    /if \(failed \|\| !rows \|\| !rows\.length\) return null;/.test(frames));
+
+  check('исполняемый набор правил зовётся из npm test', /node api\/_test-artifact\.mjs/.test(pkg));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
