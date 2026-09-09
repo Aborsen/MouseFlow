@@ -239,7 +239,10 @@ export const ActivityView = () => {
                 <div className="flex items-center gap-3">
                   <span className="size-2 shrink-0 rounded-full bg-fb-attention" />
                   <span className={cn(TITLE, 'flex-1 font-semibold')} title={job.goal ?? job.name}>{job.goal ?? job.name}</span>
-                  <Chip label={job.scheduleId ? 'by itself · schedule' : 'by itself · chat'} tone="accent" />
+                  <Chip
+                    label={job.source === 'you' ? 'you · on this computer' : job.source === 'schedule' ? 'by itself · schedule' : 'by itself · chat'}
+                    tone={job.source === 'you' ? 'neutral' : 'accent'}
+                  />
                   <span className="text-[0.76rem] text-ink-inactive tabular-nums">step {job.steps.length} · {when(job.startedAt)}</span>
                   <Button
                     variant="destructiveOutline"

@@ -413,10 +413,28 @@ export interface LiveJob {
   name: string;
   goal: string | null;
   scheduleId: string | null;
+  /** Откуда работа: расписание, сам человек со страницы Create, или чат через MCP. */
+  source: 'schedule' | 'you' | 'chat';
   startedAt: string | null;
   finishedAt: string | null;
   steps: { tool: string; input: Record<string, unknown>; ms?: { shot: number; model: number; act: number } }[];
 }
+
+/* ПРОГОН СО СТРАНИЦЫ ОБЪЯВЛЯЕТ СЕБЯ ОЧЕРЕДИ - иначе Activity его не видит и остановить его нечем, кроме
+ * убийства агента в трее. start кладёт строку, step подкладывает шаги живьём, end закрывает; ответ step несёт
+ * состояние, чтобы «меня не отменили?» не стоило второго запроса. */
+export const liveStart = (id: string, goal: string) =>
+  call<{ ok: true }>('/api/mcp?live=start', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, goal }),
+  });
+export const liveStep = (id: string, steps: { tool: string; input: Record<string, unknown> }[]) =>
+  call<{ ok: true; state: string }>('/api/mcp?live=step', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, steps }),
+  });
+export const liveEnd = (id: string, ok: boolean, said: string | null) =>
+  call<{ ok: true }>('/api/mcp?live=end', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id, ok, said }),
+  });
 /* Без `days` - живая лента (идёт сейчас и кончилось за три минуты); с `days` - история очереди за столько
  * суток, включая отменённое до запуска, которое прогоном не стало и в журнале отсутствует. */
 export const liveJobs = (days?: number) =>

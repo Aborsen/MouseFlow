@@ -41,7 +41,9 @@ import {
 } from '@/components/chat';
 import { AGENT_WANTS, localMachine, shot, windows } from '@/lib/agent';
 import { askExtension, watchBridge } from '@/lib/bridge';
-import { type LiveJob, keepArtifact, liveJobs, push, scheduleAdd, scheduleRemove } from '@/lib/api';
+import {
+  type LiveJob, keepArtifact, liveEnd, liveJobs, liveStart, liveStep, push, scheduleAdd, scheduleRemove,
+} from '@/lib/api';
 import {
   type GateAnswer,
   MAX_WAVES,
@@ -316,6 +318,9 @@ export const CreateView = () => {
    * историю. Пять секунд: агент сам спрашивает работу каждые три, а у маршрута общий потолок в минуту на
    * аккаунт, и две открытые вкладки не должны его исчерпать. */
   const seenJobs = useRef<Map<string, LiveJob['state']>>(new Map());
+  /* Id прогона, который ЭТА страница ведёт сейчас, - строка очереди, объявленная через liveStart. Нужен, чтобы
+   * узнать в опросе свою же строку: её не рисовать второй карточкой, а её отмену - исполнить. */
+  const currentRun = useRef<string | null>(null);
   useEffect(() => {
     let stop = false;
     const look = async () => {
@@ -327,6 +332,16 @@ export const CreateView = () => {
       }
       if (stop) return;
       for (const job of jobs) {
+        /* СВОЙ ПРОГОН. Он уже на экране живой карточкой; вторая, «by itself», была бы ложью о том, кто его
+         * начал. Но его ОТМЕНА приходит именно этим путём: Stop на Activity ставит state = cancelled, и цикл
+         * здесь останавливается на следующем действии - той же ручкой, что и кнопка Stop на этой странице. */
+        if (job.source === 'you') {
+          if (job.id === currentRun.current && job.state === 'cancelled' && !abort.current) {
+            abort.current = true;
+            updateLive((t) => ({ ...t, feed: [...t.feed, { type: 'text', text: 'Stopped from the Activity page.' }] }));
+          }
+          continue;
+        }
         const turnId = `q_${job.id}`;
         const feed: RunEvent[] = job.steps.map((step) => ({
           type: 'tool' as const, name: step.tool, input: step.input,
@@ -457,6 +472,31 @@ export const CreateView = () => {
       /** Что прогон говорил по дороге. Собирается по ходу, пишется в конце. */
       const commentary: string[] = [];
 
+      /* ОДИН ID НА ВСЁ: строку очереди, которую этот прогон объявляет, строку журнала, которую он запишет в
+       * конце, кадры, которые он сохранит, и скилл, который из него сделают. Раньше он считался дважды в
+       * .then; посчитанный здесь один раз, он не может разойтись. */
+      const runId = `dr_${startedAt.replace(/\D/g, '').slice(-12)}`;
+      /* ОБЪЯВИТЬ СЕБЯ ОЧЕРЕДИ. Прогон с этой страницы ведёт браузер напрямую с агентом, мимо облака, и без
+       * этого объявления он невидим для Activity: «Nothing is running», пока вокруг экрана горит зелёная
+       * рамка, и остановить его нечем, кроме убийства агента в трее. Best effort - сеть не повод не начинать. */
+      currentRun.current = runId;
+      void liveStart(runId, text).catch(() => {});
+      /* Шаги - в очередь по ходу, не чаще раза в три секунды: Activity рисует их живьём, а состояние в ответе
+       * (cancelled?) - второй путь узнать об остановке, короче пятисекундного опроса. */
+      const stepsSoFar: { tool: string; input: Record<string, unknown> }[] = [];
+      let lastTold = 0;
+      const tell = () => {
+        const now = Date.now();
+        if (now - lastTold < 3000) return;
+        lastTold = now;
+        void liveStep(runId, stepsSoFar).then((out) => {
+          if (out.state === 'cancelled' && !abort.current) {
+            abort.current = true;
+            updateLive((t) => ({ ...t, feed: [...t.feed, { type: 'text', text: 'Stopped from the Activity page.' }] }));
+          }
+        }).catch(() => {});
+      };
+
       void runOnDesktop({
         /* Шлюзы — только когда план действительно спрашивали. Без плана нет границ, и инструмент чекпоинта
          * даже не предлагается модели. */
@@ -489,6 +529,10 @@ export const CreateView = () => {
            * единственное, что делает историю прогона читаемой человеком. Итоговая фраза не здесь: она
            * уходит в `summary`, и дублировать её значило бы напечатать её дважды подряд. */
           if (event.type === 'text' && event.text) commentary.push(event.text);
+          if (event.type === 'tool' && event.name) {
+            stepsSoFar.push({ tool: event.name, input: event.input ?? {} });
+            tell();
+          }
           updateLive((t) => ({ ...t, feed: [...t.feed, event] }));
         },
         isAborted: () => abort.current,
@@ -500,7 +544,7 @@ export const CreateView = () => {
          * кадры оказались бы привязаны к строке, которой нет. */
         onArtifact: ({ kind, stepNo, said, frame }) => {
           void keepArtifact({
-            runId: `dr_${startedAt.replace(/\D/g, '').slice(-12)}`,
+            runId,
             stepNo, kind, said,
             mime: frame.format || 'image/jpeg',
             w: frame.w, h: frame.h,
@@ -509,6 +553,11 @@ export const CreateView = () => {
         },
       })
         .then(async (result) => {
+          /* СТРОКА ОЧЕРЕДИ ЗАКРЫВАЕТСЯ первой: Activity показывает «идёт», пока её не закрыли, а запись в
+           * журнал ниже может занять секунды. Best effort - журнал важнее. */
+          currentRun.current = null;
+          void liveEnd(runId, result.ok, result.said ?? result.error ?? null).catch(() => {});
+
           /* ОТЛОЖЕНО, А НЕ СДЕЛАНО. Цель назвала время впереди («в 19:41 …»), и модель вместо таймера из
            * PowerShell позвала defer_until. Здесь у цели ещё нет скилла - она надиктована, - поэтому она
            * сохраняется как скилл-цель тем же saveDictatedAsGoalSkill, что и кнопка «Save as skill», и на
@@ -517,7 +566,6 @@ export const CreateView = () => {
            * расписание: в назначенный час курьер агента ставит обычный прогон, если машина не спит. */
           if (result.deferred) {
             const { at, zone } = result.deferred;
-            const runId = `dr_${startedAt.replace(/\D/g, '').slice(-12)}`;
             const label = text.split('\n')[0].trim().slice(0, 80) || 'Scheduled goal';
             let note: string;
             let ok = true;
@@ -606,9 +654,6 @@ export const CreateView = () => {
            * in - never a constant. The old hardcoded string meant a model change made every logged run lie,
            * and the chat assistant then reported the lie back with confidence. */
           const loggedModel = await desktopModel().catch(() => 'claude-opus-5');
-          /* Один id на две вещи: строку прогона и скилл, который из неё сделают. Считался он раньше прямо
-           * в теле push(), и «сделать скилл из этого прогона» тогда не на что было бы сослаться. */
-          const runId = `dr_${startedAt.replace(/\D/g, '').slice(-12)}`;
           /* Logged to the account, best effort: the sidebar's hours, the Hours screen and the Insights page
            * are built from runs, so a desktop run that went unrecorded would make them quietly wrong. */
           try {

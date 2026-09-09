@@ -2031,6 +2031,9 @@ async function handler(req, res) {
           name: q.flow_name || q.tool_name || q.flow_id,
           goal: (loop && loop.goal) || q.run_goal || null,
           scheduleId: q.schedule_id || null,
+          /* Откуда работа: расписание, страница Create (человек сам, на этом компьютере) или чат через MCP.
+           * Отдельным полем, потому что «by itself» и «you» - разные подписи у одной и той же строки. */
+          source: q.schedule_id ? 'schedule' : q.tool_name === 'page' ? 'you' : 'chat',
           startedAt: (loop && loop.startedAt) || q.run_started || q.claimed_at || q.created_at,
           finishedAt: q.finished_at,
           /* Идущий - из loop; законченный - из журнала. Ни один не выдумывается. */
@@ -2063,6 +2066,64 @@ async function handler(req, res) {
         ? 'Stopping. A run already under way stops at the next step the machine checks, within a second or two.'
         : 'Cancelled. It never started.',
     });
+  }
+
+  /* ПРОГОН СО СТРАНИЦЫ - ТОЖЕ СТРОКА ОЧЕРЕДИ.
+   *
+   * Прогон с Create ведёт браузер напрямую с агентом, мимо облака: модель через /api/claude, действия по
+   * локальной сети. Он никогда не становился строкой run_queue - и Activity, которая знает только очередь,
+   * показывала «Nothing is running», пока вокруг экрана горела зелёная рамка. Остановить его было нечем,
+   * кроме убийства агента в трее. Это и есть дыра: «всё, что идёт, - в одной очереди» было правдой для
+   * машины и неправдой для человека.
+   *
+   * Поэтому страница ОБЪЯВЛЯЕТ свой прогон: `start` кладёт строку сразу claimed (забирать её агенту нечего -
+   * claim берёт только queued), `step` подкладывает шаги, чтобы Activity показывала их живьём, `end` закрывает.
+   * Отмена - тем же ?cancel, что у любой строки: страница видит state = cancelled в том же опросе, которым
+   * рисует чужие прогоны, и останавливает цикл. Одна очередь, одна кнопка Stop, и «занята ли машина» для
+   * расписаний теперь учитывает и прогон с страницы - одна мышь. */
+  if (req.method === 'POST' && req.query && req.query.live && req.query.live !== '1') {
+    const verb = String(req.query.live);
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const id = String(body.id || '').trim();
+    if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id)) return res.status(400).json({ error: 'that is not a run id' });
+    if (verb === 'start') {
+      const loop = { goal: String(body.goal || '').slice(0, 4000), steps: [], startedAt: new Date().toISOString() };
+      await sql`
+        insert into run_queue (id, user_id, flow_id, tool_name, args, state, claimed_by, claimed_at, loop)
+        values (${id}, ${who.id}, '#page', 'page', '{}'::jsonb, 'claimed', 'page', now(), ${JSON.stringify(loop)})
+        on conflict (id) do nothing
+      `;
+      return res.status(200).json({ ok: true });
+    }
+    if (verb === 'step') {
+      /* Только форма {tool, input}: шаги нужны, чтобы ЧИТАТЬ, что идёт, а не чтобы хранить всё, что прогон
+       * знал. Двести - потолок ровно там же, где у журнала. */
+      const steps = Array.isArray(body.steps) ? body.steps.slice(-200).map((s) => ({
+        tool: String((s && s.tool) || '?'), input: s && typeof s.input === 'object' && s.input ? s.input : {},
+      })) : [];
+      const rows = await sql`
+        update run_queue
+        set loop = jsonb_set(coalesce(loop, '{}'::jsonb), '{steps}', ${JSON.stringify(steps)}::jsonb),
+            claimed_at = now()
+        where id = ${id} and user_id = ${who.id} and tool_name = 'page' and state = 'claimed'
+        returning state
+      `;
+      /* Ответ несёт состояние, чтобы странице не нужен был второй запрос ради «меня не отменили?». */
+      const now = rows.length ? 'claimed'
+        : (await sql`select state from run_queue where id = ${id} and user_id = ${who.id}`)[0]?.state || 'gone';
+      return res.status(200).json({ ok: true, state: now });
+    }
+    if (verb === 'end') {
+      const ok = body.ok === true;
+      await sql`
+        update run_queue
+        set state = ${ok ? 'done' : 'failed'}, ok = ${ok}, said = ${String(body.said || '').slice(0, 2000) || null},
+            finished_at = now(), loop = null
+        where id = ${id} and user_id = ${who.id} and tool_name = 'page' and state = 'claimed'
+      `;
+      return res.status(200).json({ ok: true });
+    }
+    return res.status(400).json({ error: `no live verb "${verb}"` });
   }
 
   const action = req.query && req.query.worker;

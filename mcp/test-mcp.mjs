@@ -5044,8 +5044,10 @@ group('кадр сохраняется там, где он что-то дока�
       && /onArtifact\?: \(kept: \{/.test(engine)
       && /onArtifact: \(\{ kind, stepNo, said, frame \}\) =>/.test(create));
   check('и id прогона у кадра тот же, что уедет в push',
-    create.includes('runId: `dr_${startedAt.replace(')
-      && create.includes('const runId = `dr_${startedAt.replace('));
+    /* Один и тот же по построению: id считается один раз перед прогоном и передаётся кадрам, очереди и журналу
+     * одной переменной, а не пересчитывается в трёх местах. */
+    /void keepArtifact\(\{\s*\n\s*runId,/.test(create)
+      && (create.match(/const runId = `dr_\$\{startedAt\.replace/g) || []).length === 1);
 
   /* ПОТОЛОК И УБОРКА - ОБЩИЕ, иначе у одного прогона картинка провала есть, а у такого же другого нет. */
   check('оба пути считают, что выбросить, одной функцией',
@@ -5178,6 +5180,30 @@ group('Activity отвечает целиком: идёт, ждёт, было - 
       && /sessionStorage\.getItem\('mouseflow\.relaunch'\)/.test(read('../web/src/features/create/CreateView.tsx'))
       && /sessionStorage\.removeItem\('mouseflow\.relaunch'\)/.test(read('../web/src/features/create/CreateView.tsx')));
   check('и предлагается только у законченного с целью', /\{finished && goal \? \(/.test(page));
+
+  /* ПРОГОН СО СТРАНИЦЫ - ТОЖЕ СТРОКА ОЧЕРЕДИ. Он вёл браузер напрямую с агентом, мимо облака, и Activity
+   * показывала «Nothing is running», пока вокруг экрана горела зелёная рамка; остановить его было нечем,
+   * кроме убийства агента в трее. */
+  const create = read('../web/src/features/create/CreateView.tsx');
+  check('прогон с Create объявляет себя очереди при старте и закрывает строку в конце',
+    /void liveStart\(runId, text\)/.test(create) && /void liveEnd\(runId, result\.ok, result\.said \?\? result\.error \?\? null\)/.test(create)
+      && /if \(verb === 'start'\) \{/.test(route) && /'#page', 'page', '\{\}'::jsonb, 'claimed', 'page', now\(\)/.test(route));
+  check('и строка ложится сразу claimed - агенту забирать её нечего, а расписания видят машину занятой',
+    /values \(\$\{id\}, \$\{who\.id\}, '#page', 'page', '\{\}'::jsonb, 'claimed'/.test(route));
+  check('шаги подкладываются по ходу, не чаще раза в три секунды, и ответ несёт состояние',
+    /if \(now - lastTold < 3000\) return;/.test(create) && /void liveStep\(runId, stepsSoFar\)/.test(create)
+      && /returning state/.test(route) && /return res\.status\(200\)\.json\(\{ ok: true, state: now \}\);/.test(route));
+  check('Stop на Activity доходит до страницы двумя путями - ответом step и общим опросом',
+    /out\.state === 'cancelled' && !abort\.current/.test(create)
+      && /job\.id === currentRun\.current && job\.state === 'cancelled' && !abort\.current/.test(create)
+      && /Stopped from the Activity page\./.test(create));
+  check('и свой прогон не рисуется второй карточкой «by itself»',
+    /if \(job\.source === 'you'\) \{[\s\S]{0,700}?continue;\s*\n\s*\}/.test(create));
+  check('источник работы - отдельное поле ответа, и страница Create - это «you»',
+    /source: q\.schedule_id \? 'schedule' : q\.tool_name === 'page' \? 'you' : 'chat'/.test(route)
+      && /source: 'schedule' \| 'you' \| 'chat';/.test(client));
+  check('один id на строку очереди, журнал, кадры и скилл - посчитан один раз',
+    (create.match(/const runId = `dr_\$\{startedAt\.replace/g) || []).length === 1);
   check('мок отвечает историей очереди с тем, чего в журнале нет',
     /cancelled before it finished/.test(mock) && /the skill was deleted between the ask and the run/.test(mock));
 }

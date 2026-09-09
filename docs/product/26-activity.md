@@ -87,6 +87,27 @@ the page and the sidebar read the same answer — the sidebar's count beside *Ac
 never the history. Two polls would be twice the load on a route with one ceiling per account, and two
 pictures that disagree for a second.
 
+## A run started from Create is a queue row too
+
+The first live test found the hole at once: a run started on the **Create** page, the green frame around
+the screen, the agent acting — and Activity said *Nothing is running*, with nothing to cancel. The person
+had to kill the agent from the tray. A run driven from the page goes past the cloud entirely (the model
+through `/api/claude`, the actions over loopback), so it had never been a `run_queue` row, and Activity knows
+only the queue.
+
+So the page **announces** its run. `POST /api/mcp?live=start` puts a row in straight away as `claimed`
+(`tool_name = 'page'`, `flow_id = '#page'`) — nothing for an agent to take, since a claim reads only
+`queued`; `?live=step` sets the row's steps at most every three seconds so Activity shows them as they
+happen, and its answer carries the row's state; `?live=end` closes it. **Stop** on Activity is the same
+`?cancel=` as for any row, and the page hears it two ways — the state in the next `step` answer, and the
+five-second poll it already runs — then stops the loop at the next action, exactly as its own Stop button
+does. The same `dr_…` id names the queue row, the journal row, the kept frames and the skill made from the
+run, computed once.
+
+Two things fall out for free: a run from the page now makes the machine *busy*, so a schedule that comes
+due while somebody is working yields its tick rather than fighting for the mouse; and `mouseflow_status` and
+`mouseflow_stop` see it like any other work.
+
 ## Cancelling one thing
 
 `POST /api/mcp?cancel=<jobId>` — the page's door, with a session cookie. `mouseflow_stop` cancels

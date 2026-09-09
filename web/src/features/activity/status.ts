@@ -84,7 +84,7 @@ export const scheduleChip = (one: Schedule): Chip =>
 
 /** Откуда пришла работа - вторая ось, и она не складывается в статус. */
 export const sourceOf = (run: Run, job?: LiveJob | null): string => {
-  if (job) return job.scheduleId ? 'schedule' : 'chat';
+  if (job) return job.source ?? (job.scheduleId ? 'schedule' : 'chat');
   if (run.extension === 'cloud') return 'chat';
   if (run.extension) return 'extension';
   return 'you';

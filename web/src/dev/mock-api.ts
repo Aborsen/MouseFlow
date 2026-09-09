@@ -932,6 +932,11 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
       }] : [],
     });
   }
+  /* Прогон со страницы объявляет себя очереди. У мока очереди нет; ответ «claimed» означает «тебя не
+   * отменяли», и цикл идёт. */
+  if (url.startsWith('/api/mcp?live=start') || url.startsWith('/api/mcp?live=step') || url.startsWith('/api/mcp?live=end')) {
+    return json(res, 200, { ok: true, state: 'claimed' });
+  }
   if (url.startsWith('/api/mcp?cancel=')) {
     return json(res, 200, { ok: true, cancelled: true, said: 'Cancelled. It never started.' });
   }

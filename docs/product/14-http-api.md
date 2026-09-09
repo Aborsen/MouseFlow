@@ -467,6 +467,9 @@ GET    /api/mcp                    a short document about the server — no cred
 GET    /api/mcp?live=1             (session) what the machine is doing by itself: queued and claimed jobs with their steps, and jobs finished in the last three minutes
 GET    /api/mcp?live=1&days=N      (session) the same, plus every queue row that ended in the last N days (≤30) — including cancelled ones that never became a run; the Activity page's history
 POST   /api/mcp?cancel=<jobId>     (session) cancel one queued job, or stop one running job at its next step; same answer for a foreign or missing id
+POST   /api/mcp?live=start         (session) { id, goal } — a run driven from the Create page announces itself: a claimed row, tool_name 'page'
+POST   /api/mcp?live=step          (session) { id, steps } — its steps so far; answers with the row's state, which is how the page hears a Stop
+POST   /api/mcp?live=end           (session) { id, ok, said } — closes the row
 GET    /api/mcp?pending=1          "is anything waiting for a machine?"  (any credential)
 POST   /api/mcp?worker=claim       a machine takes the next job          (answers at once; ≤ 6 s if a wait is asked for)
 POST   /api/mcp?worker=report      …and says how it went
