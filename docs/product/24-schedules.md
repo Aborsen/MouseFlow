@@ -46,7 +46,7 @@ this product's whole argument is that a claim you cannot check is worthless.
 |---|---|---|
 | `every` | `"30m"`, `"1h"`, `"6h"`, `"1d"` | that far apart, counted **from each run** |
 | `daily` | `at: "09:00"` with `days: "all"` or `"weekdays"` | that local time of day, in the schedule's zone |
-| `once` | an ISO instant | once, then it pauses itself with "it was a one-off, and it has run" |
+| `once` | an ISO instant | once, then it is **finished** — it leaves the list (soft-deleted, so the run's report can still find it). A night of runs each setting a one-off for the next quarter hour had left twenty "paused — it has run" rows with a Resume that could do nothing |
 
 **Floor: 15 minutes.** Not for load — a run occupies the mouse of a machine somebody is sitting at, and
 anything faster is a computer nobody can work at. It also spends: a goal skill pays a model per step, and

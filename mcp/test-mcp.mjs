@@ -4667,6 +4667,21 @@ group('расписания тикают опросом агента, а не к
       && served.has('mouseflow_unschedule'));
   check('и условие исполнения сказано в подтверждении, а не в мелком шрифте',
     /only while that machine is awake and taking work/.test(route));
+
+  /* ОДНОРАЗОВОЕ, КОТОРОЕ СРАБОТАЛО, - ЗАКОНЧЕНО. За ночь прогон, откладывавший себя каждые четверть часа,
+   * оставил двадцать строк «paused - it was a one-off, and it has run», каждая с кнопкой Resume, которая
+   * ничем не могла кончиться, и дату 1970-01-01 в правиле - next_at обнулён, печаталось из null. */
+  check('сработавшее одноразовое завершается, а не остаётся в списке на паузе',
+    /deleted_at = \$\{verdict\.nextAt === null \? new Date\(\)\.toISOString\(\) : null\}/.test(route));
+  /* По ПРИЧИНЕ, а не по пустому сроку: у пропущенного одноразового срока тоже нет, а оно обязано остаться
+   * видимым - ради этого пропуск и записывается. Фильтр по next_at спрятал бы ровно его. */
+  check('а уже накопившиеся отработавшие одноразовые исключены по причине паузы, а не по пустому сроку',
+    /coalesce\(paused_why, ''\) <> 'it was a one-off, and it has run'/.test(route)
+      && /coalesce\(paused_why, ''\) <> 'it was a one-off, and it has run'/.test(read('../api/schedules.js'))
+      && !/kind = 'once' and next_at is null/.test(route));
+  check('и полоса на Skills - шесть строк со скроллом, как соседние списки, а не во весь экран',
+    /const LIST_HEIGHT = 'calc\(6 \* 5\.5rem\)';/.test(read('../web/src/features/skills/Schedules.tsx'))
+      && /style=\{\{ maxHeight: LIST_HEIGHT \}\}/.test(read('../web/src/features/skills/Schedules.tsx')));
 }
 
 /* ------------------------------------------------------- РАСПИСАНИЯ: ВТОРАЯ ДВЕРЬ И ЕДИНСТВЕННАЯ ЗОНА

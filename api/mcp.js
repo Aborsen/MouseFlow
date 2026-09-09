@@ -680,11 +680,18 @@ async function dueNow(sql, who) {
         values (${id}, ${who.id}, ${row.flow_id}, ${row.tool_name},
                 ${JSON.stringify(row.args || {})}, ${row.id})
       `;
+      /* ОДНОРАЗОВОЕ, КОТОРОЕ СРАБОТАЛО, - ЗАКОНЧЕНО, а не «на паузе». Раньше оно оставалось в списке живых
+       * расписаний с пометкой «it was a one-off, and it has run», и за ночь их набралось двадцать: каждый
+       * прогон, отложивший себя через defer_until, оставлял ещё одну строку с кнопкой Resume, которая ничем
+       * не могла кончиться. Прогон уже записан в истории; расписание своё дело сделало. db/018 говорит про
+       * once ровно это - «at next_at, then done». Строка остаётся (отчёт об исходе ещё найдёт её по
+       * schedule_id), но из перечней уходит. */
       await sql`
         update user_schedule
         set next_at = ${verdict.nextAt ? new Date(verdict.nextAt).toISOString() : null},
             paused = ${verdict.nextAt === null},
             paused_why = ${verdict.nextAt === null ? 'it was a one-off, and it has run' : null},
+            deleted_at = ${verdict.nextAt === null ? new Date().toISOString() : null},
             last_at = now(), last_said = ${`queued - ${verdict.why}`},
             runs = runs + 1, fails = 0, updated_at = now()
         where id = ${row.id}
@@ -886,6 +893,10 @@ async function callTool(sql, who, params, req) {
              next_at, paused, paused_why, last_at, last_said, runs, misses
       from user_schedule
       where user_id = ${who.id} and deleted_at is null
+        /* Отработавшие одноразовые, записанные до того, как они стали завершаться. По ПРИЧИНЕ паузы, а не
+         * по пустому сроку: у пропущенного одноразового срока тоже нет, а оно должно остаться видимым -
+         * ради этого пропуск и записывается. */
+        and coalesce(paused_why, '') <> 'it was a one-off, and it has run'
       order by paused, next_at nulls last
     `;
     if (!rows.length) {

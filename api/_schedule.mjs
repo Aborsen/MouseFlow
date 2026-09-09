@@ -343,7 +343,14 @@ export function clockSaid(utcMs, zone) {
 
 /** Правило словами - для списка, для ответа модели и для строки в интерфейсе. */
 export function ruleSaid(rule) {
-  if (rule.kind === 'once') return `once, at ${new Date(rule.nextAt).toISOString()}`;
+  /* Одноразовое - в зоне человека, той же фразой, что и «следующий срок»: ISO в UTC на строке, которую
+   * читает человек, поставивший «в 19:41», - это не его 19:41. А у отработавшего срока больше нет -
+   * next_at обнулён, - и печатать из null было 1970-01-01: дата, которую человек читал как поломку. */
+  if (rule.kind === 'once') {
+    /* «Срок прошёл», а не «сработало»: без срока остаётся и ПРОПУЩЕННОЕ одноразовое - машина спала, - и
+     * оно как раз должно остаться в списке со своей причиной на паузе. Фраза обязана быть верной для обоих. */
+    return rule.nextAt == null ? 'once — the time has passed' : `once, ${whenSaid(rule.nextAt, rule.zone)}`;
+  }
   if (rule.kind === 'every') {
     const m = rule.everyMinutes;
     if (m % 1440 === 0) return `every ${m / 1440} day${m === 1440 ? '' : 's'}`;

@@ -23,6 +23,17 @@ import { type Schedule, scheduleAdd, schedulePause, scheduleRemove, schedules } 
 /** Живое ли расписание - от этого зависит и вид строки, и что предлагает кнопка. */
 const running = (one: Schedule) => !one.paused;
 
+/* ШЕСТЬ СТРОК, ДАЛЬШЕ СКРОЛЛ - как у библиотеки и у «Ready to become a skill» на этой же странице.
+ *
+ * За одну ночь прогон, откладывавший себя каждые четверть часа, оставил двадцать расписаний, и полоса
+ * вытянулась во весь экран, спрятав библиотеку под собой. Список, который растёт с каждой записью,
+ * годится для страницы про этот список; здесь он - одна из трёх секций, и место ему отмерено.
+ *
+ * Строка - имя с правилом, срок со счётчиками и последний исход - около 5.5rem вместе с зазором; шесть
+ * таких - потолок. Не через clamp по высоте окна, как у библиотеки: та делит экран с двумя соседями и
+ * растёт до десяти, а здесь просили ровно шесть. */
+const LIST_HEIGHT = 'calc(6 * 5.5rem)';
+
 export const Schedules = ({ reloadKey, onNote }: {
   /* Меняется, когда где-то поставили новое: перечитать, а не гадать. */
   reloadKey: number;
@@ -98,7 +109,10 @@ export const Schedules = ({ reloadKey, onNote }: {
         hours late, and three failures in a row pause a schedule.
       </Typography>
 
-      <ul className="mt-3 grid grid-cols-[minmax(0,1fr)] gap-2 border-stroke border-t pt-3">
+      <ul
+        className="mt-3 grid grid-cols-[minmax(0,1fr)] content-start gap-2 overflow-y-auto border-stroke border-t pt-3 pe-1"
+        style={{ maxHeight: LIST_HEIGHT }}
+      >
         {rows.map((one) => (
           <li
             key={one.id}

@@ -178,6 +178,14 @@ check('момент печатается местным временем рас�
   whenSaid(winter, KIEV) === 'Fri 2026-01-16 09:00 (Europe/Kiev)', whenSaid(winter, KIEV));
 check('и «больше никогда» - это тоже ответ', whenSaid(null, KIEV) === 'never again');
 check('порог неудач назван числом, а не спрятан', FAILS_BEFORE_PAUSE === 3);
+/* Одноразовое печатается в зоне человека - и отработавшее не печатается из null как 1970-01-01. */
+check('одноразовое - в зоне человека, той же фразой, что и следующий срок',
+  ruleSaid({ kind: 'once', zone: KIEV, nextAt: winter }) === 'once, Fri 2026-01-16 09:00 (Europe/Kiev)',
+  ruleSaid({ kind: 'once', zone: KIEV, nextAt: winter }));
+/* «Срок прошёл», а не «сработало»: без срока остаётся и ПРОПУЩЕННОЕ одноразовое, и фраза верна для обоих. */
+check('а одноразовое без срока названо словами, верными и для сработавшего, и для пропущенного',
+  ruleSaid({ kind: 'once', zone: KIEV, nextAt: null }) === 'once — the time has passed'
+    && !/1970/.test(ruleSaid({ kind: 'once', zone: KIEV, nextAt: null })));
 
 /* ---------------------------------------------------------------- цель, назвавшая время
  *

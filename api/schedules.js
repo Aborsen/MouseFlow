@@ -59,6 +59,10 @@ async function list(res, sql, userId) {
            next_at, paused, paused_why, last_at, last_said, runs, misses, fails
     from user_schedule
     where user_id = ${userId} and deleted_at is null
+      /* Отработавшие одноразовые, записанные до того, как они стали завершаться (см. dueNow в api/mcp.js).
+       * По ПРИЧИНЕ паузы, а не по пустому сроку: у пропущенного одноразового срока тоже нет, а оно обязано
+       * остаться в полосе со своим «missed» - ради этого пропуск и записывается. */
+      and coalesce(paused_why, '') <> 'it was a one-off, and it has run'
     order by paused, next_at nulls last
   `;
   return res.status(200).json({ ok: true, schedules: rows.map(row) });
