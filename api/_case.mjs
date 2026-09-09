@@ -115,7 +115,9 @@ export function readExpects(input, allowed) {
 export const expectLine = (want) => {
   const one = want && typeof want === 'object' ? want : {};
   const check = str(one.check) || 'present';
-  const bits = [`${check} "${str(one.name)}"`];
+  /* У проверки про страницу целиком имени нет, и пустые кавычки в цели («url_contains "" = "…"») читаются
+   * как забытое поле - в том числе моделью, которая эту строку и выполняет. */
+  const bits = [str(one.name) ? `${check} "${str(one.name)}"` : check];
   if (str(one.text)) bits.push(`= "${str(one.text)}"`);
   if (str(one.process)) bits.push(`in ${str(one.process)}`);
   return `${bits.join(' ')}${str(one.why) ? ` - ${str(one.why)}` : ''}`;

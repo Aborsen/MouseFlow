@@ -147,6 +147,12 @@ group('цель кейса - цель скилла плюс проверки с�
   check('одно утверждение словами читается как утверждение',
     expectLine({ check: 'absent', name: 'Error', process: 'OUTLOOK', why: 'nothing broke' })
       === 'absent "Error" in OUTLOOK - nothing broke');
+  /* У проверки про страницу целиком имени нет: пустые кавычки читаются как забытое поле - в том числе
+   * моделью, которой эту строку и выполнять. */
+  check('а у проверки про страницу целиком имени нет, и пустых кавычек тоже',
+    expectLine({ check: 'url_contains', name: '', text: 'example.com', why: 'the tab went there' })
+      === 'url_contains = "example.com" - the tab went there',
+    expectLine({ check: 'url_contains', name: '', text: 'example.com', why: 'the tab went there' }));
 }
 
 group('служебный ключ не доезжает до скилла');
