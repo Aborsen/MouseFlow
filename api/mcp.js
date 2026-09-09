@@ -69,6 +69,16 @@ import { checksOf } from './_expect.mjs';
 import { ARTIFACT_KEEP_DAYS, artifactId, dropWhich, tooBig } from './_artifact.mjs';
 /* Один потолок на все маршруты, тратящие ключ развёртывания - см. api/_spend.mjs. */
 import { overSpend, spentWhy } from './_spend.mjs';
+/* Дверь в очередь и слова двух её отказов - общие со страницей тестов. См. api/_queue.mjs. */
+import { WHERE, jobId, queueOne, workerSeen } from './_queue.mjs';
+/* Тест-кейс: утверждения, дописанные к цели, и вердикт по записанным шагам. См. api/_case.mjs. */
+import {
+  CASE_KEY, VERDICTS, caseGoal, caseIdOf, expectLine, readExpects, stripCase, tallyOf, verdictSaid,
+} from './_case.mjs';
+/* Перечень кейсов и история одного - те же запросы, которыми их читает страница. Импорт у маршрута, а не
+ * копия запроса: «что считается прогоном кейса» должно быть одним ответом на оба входа (так же mcp.js уже
+ * берёт readSettings у api/admin.js). */
+import { casesFor, runsForCase } from './cases.js';
 /* Потолок на вес записи - тот же, что у api/sync.js: два писателя одной колонки не могут иметь два. */
 import { PAYLOAD_MAX_BYTES } from './_payload.mjs';
 /* Один заголовочный набор на все маршруты - см. api/_cors.mjs. Семь копий этих строк разошлись
@@ -383,10 +393,17 @@ const SCHEDULE_TOOL = {
         type: 'string',
         description: 'The skill id from mouseflow_recordings. Its exact name works when only one has it.',
       },
+      case: {
+        type: 'string',
+        description: 'A test case id from mouseflow_cases, INSTEAD of `skill` - the way a case is made to '
+          + 'run nightly. Its checks and its inputs are read from the case each time it starts, so editing '
+          + 'the case changes what tonight proves.',
+      },
       arguments: {
         type: 'object',
         additionalProperties: true,
-        description: 'What the skill asks for, by the input names mouseflow_recordings listed.',
+        description: 'What the skill asks for, by the input names mouseflow_recordings listed. A case '
+          + 'carries its own; nothing here is needed with `case`.',
       },
       every: { type: 'string', description: 'Interval: "30m", "1h", "6h", "1d". Minimum 15 minutes.' },
       at: { type: 'string', description: 'Time of day, "09:00" or "17:30". Needs `zone`.' },
@@ -428,6 +445,95 @@ const UNSCHEDULE_TOOL = {
     additionalProperties: false,
   },
 };
+
+/* ------------------------------------------------------------------------------- тест-кейсы
+ *
+ * ТРИ ТУЛА, И НИ ОДИН ИЗ НИХ НЕ ЗАПУСКАЕТ И НЕ СТАВИТ РАСПИСАНИЕ. Записать кейс, перечислить кейсы,
+ * прочитать историю одного - это три вопроса о кейсах. А «прогони это сейчас» и «пусть идёт каждую ночь»
+ * уже существуют тулами (mouseflow_run, mouseflow_schedule) и принимают `case` там, где принимали `skill`:
+ * просьба одна и та же, и дублировать её ради нового вида работы значило бы держать две пары инструментов,
+ * которые обязаны меняться вместе.
+ *
+ * ПОЧЕМУ КЕЙС ВООБЩЕ ЕСТЬ У МОДЕЛИ. Потому что «проверяй каждое утро, что счета уходят» - это то, что
+ * говорят словами, а не то, что идут заполнять в форме; и потому что утверждения, записанные ЗАРАНЕЕ, - это
+ * единственное, чем отличается регрессия от прогулки по экрану. Модель, которая решает про проверку в
+ * момент прогона, каждую ночь проверяет немного другое.
+ */
+const CASE_TOOL = {
+  name: 'mouseflow_case',
+  description: 'Write down a test case: one skill to run, plus what must be true when it is done. The '
+    + 'checks are decided by the machine from the accessibility tree - never from a picture - so a nightly '
+    + 'report means something. Then have it run by itself with mouseflow_schedule (pass `case`), or once '
+    + 'now with mouseflow_run (pass `case`). The skill must be one made from a goal: a recording is '
+    + 'replayed rather than decided, so nothing in it can check anything.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      name: {
+        type: 'string',
+        description: 'What to call it - "Outlook still sends". It is what a report is read by.',
+      },
+      skill: {
+        type: 'string',
+        description: 'The skill that performs the steps, by id from mouseflow_recordings.',
+      },
+      arguments: {
+        type: 'object',
+        additionalProperties: true,
+        description: 'What that skill asks for, by the input names mouseflow_recordings listed.',
+      },
+      expects: {
+        type: 'array',
+        description: 'What must be true at the END of the run - checked one by one with the expect tool. '
+          + 'Say what each one proves: that sentence is what somebody reads in a red report.',
+        items: {
+          type: 'object',
+          properties: {
+            check: {
+              type: 'string',
+              enum: ['present', 'absent', 'value_is', 'value_contains', 'enabled', 'disabled'],
+            },
+            name: { type: 'string', description: 'The control, as it appears on screen' },
+            text: { type: 'string', description: 'For value_is and value_contains' },
+            process: { type: 'string', description: 'Narrow to a process instead of the window in front' },
+            why: { type: 'string', description: 'What this proves, in the case\'s own words' },
+          },
+          required: ['check', 'name', 'why'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['name', 'skill', 'expects'],
+    additionalProperties: false,
+  },
+};
+
+const CASES_TOOL = {
+  name: 'mouseflow_cases',
+  description: 'The test cases on this account: what each one runs, what it checks, when it next runs by '
+    + 'itself, and how the last ten runs ended. Four outcomes, and they are not two: passed, failed a '
+    + 'check (the product), no verdict (nothing was proven - the run did not finish, or a check could not '
+    + 'be evaluated), and passed with repairs.',
+  inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+};
+
+const CASE_RESULTS_TOOL = {
+  name: 'mouseflow_case_results',
+  description: 'One case\'s history: every run with its verdict, and for a failed one the checks that did '
+    + 'not hold, in the words the case used. Ask mouseflow_cases for the ids. This is the tool to answer '
+    + '"did anything break last night?".',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      case: { type: 'string', description: 'The case id from mouseflow_cases.' },
+      limit: { type: 'number', description: 'How many runs, newest first. Ten by default, fifty at most.' },
+    },
+    required: ['case'],
+    additionalProperties: false,
+  },
+};
+
+const CASE_TOOLS = [CASE_TOOL, CASES_TOOL, CASE_RESULTS_TOOL];
 
 const scheduleId = () => `sch_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -528,14 +634,19 @@ const RUN_TOOL = {
         description: 'The skill\'s id from mouseflow_recordings. Its exact name also works when only one '
           + 'skill has it.',
       },
+      case: {
+        type: 'string',
+        description: 'A test case id from mouseflow_cases, INSTEAD of `skill`: runs the case once now, the '
+          + 'same way its schedule would run it at two in the morning - its checks included.',
+      },
       arguments: {
         type: 'object',
         description: 'What the skill asks for, by the input names mouseflow_recordings listed. Omit for a '
-          + 'skill that asks for nothing.',
+          + 'skill that asks for nothing, and with `case`, which carries its own.',
         additionalProperties: true,
       },
     },
-    required: ['skill'],
+    required: [],
     additionalProperties: false,
   },
 };
@@ -557,28 +668,10 @@ function tableOf(skills) {
 
 /* ------------------------------------------------------------------------------- the queue */
 
-/* Said in three different failures, so it is written once: an instruction that drifts between messages is
- * an instruction somebody follows to two different places. */
-const WHERE = 'open MouseFlow, click your avatar at the bottom of the sidebar, then Connections, then '
-  + '"Let Claude drive this computer"';
-
-const jobId = () => `q_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-
-/** Whether a machine has asked for work lately, and when. */
-async function workerSeen(sql, userId) {
-  try {
-    const rows = await sql`
-      select value from user_pref where user_id = ${userId} and key = 'worker.seen'
-    `;
-    if (!rows.length) return null;
-    const at = new Date(rows[0].value);
-    return Number.isFinite(at.getTime()) ? at : null;
-  } catch (_) {
-    /* No table on this deployment yet. Absent is not false: it means nothing is known, and the caller is
-     * told that rather than told there is no worker. */
-    return undefined;
-  }
-}
+/* WHERE, jobId, workerSeen и постановка одной работы переехали в api/_queue.mjs - их спрашивает вторая
+ * дверь. Кейс запускается кнопкой на странице тестов (api/cases.js), и оба отказа - «машины нет» и «одна
+ * мышь» - обязаны звучать теми же словами, что здесь: инструкция, живущая в двух копиях, устаревает в одной
+ * из них, и именно это здесь однажды и произошло. */
 
 async function stampWorker(sql, userId, key = 'worker.seen') {
   try {
@@ -911,8 +1004,16 @@ async function callTool(sql, who, params, req) {
   }
 
   if (asked === SCHEDULE_TOOL.name) {
+    /* СКИЛЛ ИЛИ КЕЙС - один инструмент, потому что просьба одна: «пусть это идёт само». Второй тул
+     * «расписание для кейса» пришлось бы держать в паре с этим до конца времён, и пауза, снятие с паузы,
+     * пропуски и «три провала подряд» существовали бы в двух экземплярах. Работа кейса отличается ровно
+     * одним ключом в аргументах - указателем на кейс, - а всё остальное в строке то же. */
+    const askedCase = String((args && args.case) || '').trim();
     const wanted = String((args && args.skill) || '').trim();
-    if (!wanted) return say('Which skill? Pass the id from mouseflow_recordings as `skill`.', true);
+    if (!wanted && !askedCase) {
+      return say('Which skill? Pass the id from mouseflow_recordings as `skill` - or a case id as `case`, '
+        + 'to have a test case run by itself.', true);
+    }
 
     /* Правило разбирается ДО поиска скилла: «каждые пять минут» отвергается одинаково, существует скилл или
      * нет, и человеку не приходится сначала узнавать про опечатку в имени, а потом про интервал. */
@@ -924,19 +1025,43 @@ async function callTool(sql, who, params, req) {
         + 'which is the middle of the night for most of the people who ask for nine in the morning.', true);
     }
 
-    const { skills } = await skillsOf(sql, who.id);
-    let entry = skills.find((f) => f.id === wanted) || null;
-    if (!entry) {
-      const named = skills.filter((f) => String(f.name || '').trim() === wanted);
-      if (named.length > 1) {
-        return say(`${named.length} skills are called "${wanted}". Pass one of these ids instead: `
-          + `${named.map((f) => f.id).join(', ')}.`, true);
+    /* Что ставится: id потока, имя для строки, и аргументы работы. У кейса аргументы - только указатель:
+     * значения параметров и утверждения читает драйвер из его строки в момент старта, поэтому кейс,
+     * поправленный после постановки расписания, ночью идёт в новой редакции. */
+    let put = null;
+    if (askedCase) {
+      const found = await sql`
+        select id, name, flow_id, expects from user_case
+        where id = ${askedCase} and user_id = ${who.id} and deleted_at is null
+      `.catch(() => []);
+      if (!found.length) {
+        return say(`There is no case "${askedCase}" on this account. Ask mouseflow_cases for what there is.`,
+          true);
       }
-      if (named.length === 1) entry = named[0];
-    }
-    if (!entry) {
-      return say(`There is no skill "${wanted}" on this account. Ask mouseflow_recordings for what there is.`,
-        true);
+      if (!Array.isArray(found[0].expects) || !found[0].expects.length) {
+        return say('That case has no checks, so there is nothing it could prove every night.', true);
+      }
+      put = {
+        flowId: found[0].flow_id,
+        name: found[0].name,
+        args: { [CASE_KEY]: { id: found[0].id } },
+      };
+    } else {
+      const { skills } = await skillsOf(sql, who.id);
+      let entry = skills.find((f) => f.id === wanted) || null;
+      if (!entry) {
+        const named = skills.filter((f) => String(f.name || '').trim() === wanted);
+        if (named.length > 1) {
+          return say(`${named.length} skills are called "${wanted}". Pass one of these ids instead: `
+            + `${named.map((f) => f.id).join(', ')}.`, true);
+        }
+        if (named.length === 1) entry = named[0];
+      }
+      if (!entry) {
+        return say(`There is no skill "${wanted}" on this account. Ask mouseflow_recordings for what there is.`,
+          true);
+      }
+      put = { flowId: entry.id, name: entry.name, args: (args && args.arguments) || {} };
     }
 
     const at = firstAt(rule, Date.now());
@@ -961,9 +1086,9 @@ async function callTool(sql, who, params, req) {
           id, user_id, flow_id, tool_name, args, label,
           kind, every_minutes, at_minutes, days, zone, next_at
         ) values (
-          ${id}, ${who.id}, ${entry.id}, ${RUN_TOOL.name},
-          ${JSON.stringify((args && args.arguments) || {})},
-          ${String((args && args.label) || entry.name || '').slice(0, 80)},
+          ${id}, ${who.id}, ${put.flowId}, ${RUN_TOOL.name},
+          ${JSON.stringify(put.args)},
+          ${String((args && args.label) || put.name || '').slice(0, 80)},
           ${rule.kind}, ${rule.everyMinutes ?? null}, ${rule.atMinutes ?? null},
           ${rule.days || 'all'}, ${rule.zone}, ${new Date(at).toISOString()}
         )
@@ -978,7 +1103,7 @@ async function callTool(sql, who, params, req) {
     /* Условие исполнения - в подтверждении, а не в мелком шрифте: расписание, о котором человек думает, что
      * оно сработает при закрытом ноутбуке, хуже отсутствующего. */
     const listening = await workerSeen(sql, who.id);
-    return say(`Scheduled: "${entry.name}" ${ruleSaid(rule)}.\n`
+    return say(`Scheduled: "${put.name}" ${ruleSaid(rule)}.\n`
       + `Next run ${whenSaid(at, rule.zone)}. Its id is ${id}.\n\n`
       + (listening === null
         ? 'No computer has ever taken work for this account, so nothing will run this until one does: '
@@ -1018,6 +1143,146 @@ async function callTool(sql, who, params, req) {
     return pausing
       ? say(`Paused. "${row.label || id}" keeps its ${ruleSaid(rule)} and runs nothing until resumed.`)
       : say(`Resumed. Next run ${whenSaid(typeof next === 'number' ? next : null, rule.zone)}.`);
+  }
+
+  /* ------------------------------------------------------------------ тест-кейсы */
+
+  if (asked === CASE_TOOL.name) {
+    const name = String((args && args.name) || '').trim().slice(0, 120);
+    if (!name) return say('What should the case be called? It is what a report is read by.', true);
+    const wantedSkill = String((args && args.skill) || '').trim();
+    if (!wantedSkill) return say('Which skill performs the steps? Pass its id as `skill`.', true);
+
+    /* Утверждения проверяются ТОЙ ЖЕ функцией, что у страницы: список, принятый одной дверью и отвергнутый
+     * другой, - это два разных представления о том, что такое кейс. */
+    const read = readExpects(args && args.expects);
+    if (read.why) return say(read.why, true);
+
+    const { skills } = await skillsOf(sql, who.id);
+    let entry = skills.find((f) => f.id === wantedSkill) || null;
+    if (!entry) {
+      const named = skills.filter((f) => String(f.name || '').trim() === wantedSkill);
+      if (named.length > 1) {
+        return say(`${named.length} skills are called "${wantedSkill}". Pass one of these ids instead: `
+          + `${named.map((f) => f.id).join(', ')}.`, true);
+      }
+      if (named.length === 1) entry = named[0];
+    }
+    if (!entry) {
+      return say(`There is no skill "${wantedSkill}" on this account. Ask mouseflow_recordings for what `
+        + 'there is.', true);
+    }
+    /* Запись кейсом быть не может, и отказ должен прийти сейчас, а не в 02:00: её воспроизводит агент без
+     * модели - экран никто не читает, и вызвать expect некому. */
+    if (entry.kind !== 'created') {
+      return say(`"${entry.name}" is a recording: it is replayed rather than decided, so nothing in it can `
+        + 'check anything. Make a skill from it on the Skills page and build the case on that.', true);
+    }
+
+    const id = `cs_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      await sql`
+        insert into user_case (id, user_id, name, flow_id, args, expects)
+        values (${id}, ${who.id}, ${name}, ${entry.id},
+                ${JSON.stringify((args && args.arguments) || {})}, ${JSON.stringify(read.expects)})
+      `;
+    } catch (err) {
+      return say(`The case could not be saved: ${err.message}. If this deployment has not had `
+        + 'db/021_user_case.sql applied yet, that is the reason.', true);
+    }
+    return say(`Case "${name}" written down as ${id}.\n`
+      + `It runs "${entry.name}" and then checks ${read.expects.length} thing`
+      + `${read.expects.length === 1 ? '' : 's'}:\n`
+      + `${read.expects.map((one, i) => `  ${i + 1}. ${expectLine(one)}`).join('\n')}\n\n`
+      + `To have it run by itself: ${SCHEDULE_TOOL.name} with case: "${id}" and a time - for a nightly `
+      + 'regression, at: "02:00" with days: "weekdays" and the person\'s zone. To run it once now: '
+      + `${RUN_TOOL.name} with case: "${id}". Either way it only runs while that machine is awake and `
+      + 'taking work.');
+  }
+
+  if (asked === CASES_TOOL.name) {
+    let held;
+    try {
+      held = await casesFor(sql, who.id);
+    } catch (err) {
+      return say(`The cases could not be read: ${err.message}. If this deployment has not had `
+        + 'db/021_user_case.sql applied yet, that is the reason.', true);
+    }
+    if (!held.cases.length) {
+      return say(`No test cases on this account. ${CASE_TOOL.name} writes one down: a skill to run, plus `
+        + 'what must be true when it is done.');
+    }
+    const lines = held.cases.map((one) => {
+      const runs = held.runs.get(one.id) || [];
+      const flow = held.names.get(one.flow_id) || null;
+      const sch = held.next.get(one.id) || null;
+      const tally = tallyOf(runs.map((r) => r.verdict));
+      const bits = [
+        `${one.id}  ${one.name}`,
+        `  runs: ${flow ? `"${flow.name}"` : `${one.flow_id} - THE SKILL IS GONE, so this case fails at the gate`}`,
+        `  checks: ${(Array.isArray(one.expects) ? one.expects : []).map(expectLine).join('; ') || 'none'}`,
+      ];
+      /* СРОК И УСЛОВИЕ ЕГО ИСПОЛНЕНИЯ - рядом: расписание, о котором думают, что оно сработает при
+       * закрытом ноутбуке, хуже отсутствующего. */
+      if (sch) {
+        bits.push(`  by itself: ${ruleSaid(ruleOf(sch))}, next ${sch.paused
+          ? `paused - ${sch.paused_why || 'by hand'}`
+          : whenSaid(sch.next_at ? new Date(sch.next_at).getTime() : null, sch.zone)}`);
+      } else {
+        bits.push('  by itself: not scheduled');
+      }
+      if (!runs.length) bits.push('  never run');
+      else {
+        const last = runs[0];
+        bits.push(`  last ${runs.length} run(s): ${runs.map((r) => VERDICTS[r.verdict].word).join(', ')}`);
+        bits.push(`  latest: ${new Date(last.finishedAt || last.startedAt).toISOString()} - `
+          + `${verdictSaid(last.verdict)}${last.summary ? ` - ${last.summary}` : ''}`);
+        if (tally.fail) bits.push(`  ${tally.fail} of those found a defect - ${CASE_RESULTS_TOOL.name} says which check`);
+      }
+      return bits.join('\n');
+    });
+    return say(`${held.cases.length} case${held.cases.length === 1 ? '' : 's'}:\n\n${lines.join('\n\n')}\n\n`
+      + '"no verdict" is not a failure: it means nothing was proven - the run did not finish, or a check '
+      + 'could not be evaluated. A case runs only while its machine is awake and taking work.');
+  }
+
+  if (asked === CASE_RESULTS_TOOL.name) {
+    const id = String((args && args.case) || '').trim();
+    if (!id) return say(`Which case? Pass the id from ${CASES_TOOL.name} as \`case\`.`, true);
+    const rows = await sql`
+      select id, name, flow_id, expects from user_case
+      where id = ${id} and user_id = ${who.id} and deleted_at is null
+    `.catch(() => []);
+    if (!rows.length) return say(`There is no case "${id}" on this account.`, true);
+    const limit = Math.max(1, Math.min(50, Math.round(Number(args && args.limit) || 10)));
+    const runs = await runsForCase(sql, who.id, id, limit);
+    if (!runs.length) {
+      return say(`"${rows[0].name}" has never run. ${RUN_TOOL.name} with case: "${id}" runs it once now; `
+        + `${SCHEDULE_TOOL.name} with case: "${id}" has it run by itself.`);
+    }
+    const tally = tallyOf(runs.map((r) => r.verdict));
+    const lines = runs.map((run) => {
+      const bits = [`${new Date(run.finishedAt || run.startedAt).toISOString()}  ${VERDICTS[run.verdict].word}`];
+      if (run.summary) bits.push(`  said: ${run.summary}`);
+      if (run.error) bits.push(`  error: ${run.error}`);
+      /* ЧТО ИМЕННО НЕ СОШЛОСЬ - словами самого утверждения, из записанных шагов. Иначе красная строка
+       * оставляет человека с числом «1 check failed» и догадкой. */
+      const failed = (Array.isArray(run.steps) ? run.steps : [])
+        .filter((step) => step && step.tool === 'expect' && step.outcome && step.outcome.pass === false)
+        .map((step) => `    ${expectLine(step.input || {})} -> ${step.outcome.evidence || 'did not hold'}`
+          + `${step.outcome.how ? ` (${step.outcome.how})` : ''}`);
+      if (failed.length) bits.push('  did not hold:', ...failed);
+      if (run.checks) {
+        bits.push(`  checks: ${run.checks.passed} held, ${run.checks.failed} did not, `
+          + `${run.checks.unchecked} could not be checked`);
+      }
+      return bits.join('\n');
+    });
+    return say(`"${rows[0].name}" - ${runs.length} run(s), newest first:\n\n${lines.join('\n\n')}\n\n`
+      + `${tally.pass} passed, ${tally.fail} found a defect, ${tally.blocked} proved nothing`
+      + `${tally.pass_with_repairs ? `, ${tally.pass_with_repairs} passed with repairs` : ''}. `
+      + 'A "no verdict" night is not a failing test: it is a night nobody learned anything, and the reason '
+      + 'is in that run\'s own words above.');
   }
 
   if (asked === STATUS_TOOL.name) {
@@ -1101,8 +1366,36 @@ async function callTool(sql, who, params, req) {
       + `${RUN_TOOL.name} rather than each having a tool of its own.`, true);
   }
 
+  /* КЕЙС ЗАПУСКАЕТСЯ ЭТИМ ЖЕ ТУЛОМ, тем же путём и с теми же отказами: «прогони это сейчас» - одна просьба,
+   * и то, что в одном случае к цели дописываются проверки, не делает её другой. Значения параметров и
+   * утверждения читает драйвер из строки кейса при старте; в работе едет только указатель. */
+  const askedCase = String((args && args.case) || '').trim();
+  if (askedCase) {
+    const found = await sql`
+      select id, name, flow_id, expects from user_case
+      where id = ${askedCase} and user_id = ${who.id} and deleted_at is null
+    `.catch(() => []);
+    if (!found.length) {
+      return say(`There is no case "${askedCase}" on this account. Ask mouseflow_cases for what there is.`,
+        true);
+    }
+    if (!Array.isArray(found[0].expects) || !found[0].expects.length) {
+      return say('That case has no checks, so there is nothing it could prove. Add what must be true when '
+        + 'the run is done.', true);
+    }
+    return queueAndWait(sql, who, {
+      flowId: found[0].flow_id,
+      /* Имя работы - имя кейса: на Activity читают «Outlook still sends», а не имя тула. */
+      toolName: `case:${found[0].name}`.slice(0, 80),
+      args: { [CASE_KEY]: { id: found[0].id } },
+    });
+  }
+
   const wanted = String((args && args.skill) || '').trim();
-  if (!wanted) return say('Which skill? Pass the id from mouseflow_recordings as `skill`.', true);
+  if (!wanted) {
+    return say('Which skill? Pass the id from mouseflow_recordings as `skill` - or a case id as `case`.',
+      true);
+  }
   /* The skill's own arguments live one level in, under `arguments`. A separate name rather than reassigning
    * `args`, which is a const and was exactly the mistake here - and one that only shows up when the tool is
    * actually called, since nothing else in this file reads that property. */
@@ -1147,31 +1440,11 @@ async function callTool(sql, who, params, req) {
  * before the work happened has told the caller nothing, and the answer says plainly when the wait ran out
  * rather than reporting a success nobody saw. */
 async function queueAndWait(sql, who, { flowId, toolName, args }) {
-  const seen = await workerSeen(sql, who.id);
-  if (seen === null) {
-    /* The whole of what somebody has to do, in the answer they are already reading.
-     *
-     * This used to name a worker and a command. That was true for a week and is the wrong advice now - and a
-     * stale instruction in a failure message is worse than none: it sends the person somewhere that does not
-     * exist, and they conclude the product is broken rather than that the sentence is. */
-    return say('This account has no computer listening, so there is nothing to run this on. To let one: '
-      + WHERE + ". It takes one click - nothing to type, nothing to copy - and the agent's own menu bar is "
-      + 'where you switch it off again. Nothing was queued.', true);
-  }
-
-  const already = await sql`
-    select id, tool_name from run_queue where user_id = ${who.id} and state in ('queued', 'claimed') limit 1
-  `;
-  if (already.length) {
-    return say(`MouseFlow is already busy on that machine (${already[0].tool_name || already[0].id}). One `
-      + 'thing at a time - there is one mouse. Wait for it, or call mouseflow_stop.', true);
-  }
-
-  const id = jobId();
-  await sql`
-    insert into run_queue (id, user_id, flow_id, tool_name, args)
-    values (${id}, ${who.id}, ${flowId}, ${toolName}, ${JSON.stringify(args || {})})
-  `;
+  /* Обе проверки и оба отказа - в общей двери: страница тестов ставит работу тем же способом и обязана
+   * отказывать теми же словами. Здесь остаётся только то, чего у страницы нет, - ожидание результата. */
+  const put = await queueOne(sql, who.id, { flowId, toolName, args });
+  if (put.why) return say(put.why, true);
+  const id = put.id;
 
   const until = Date.now() + CALL_WAIT_MS;
   while (Date.now() < until) {
@@ -1539,7 +1812,7 @@ async function workerRoute(action, req, res, sql, who) {
         await sql`
           insert into user_run
             (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
-             steps, said, extension, started_at, finished_at, checks)
+             steps, said, extension, started_at, finished_at, checks, case_id)
           values
             (${who.id}, ${job.id}, 'agent', ${String(state.goal || '').slice(0, 4000)},
              ${String(state.model || '').slice(0, 60)}, ${String(job.flow_id).slice(0, 80)},
@@ -1551,11 +1824,17 @@ async function workerRoute(action, req, res, sql, who) {
              'cloud', ${state.startedAt || job.claimed_at || null}, now(),
              /* Считается из шагов ЗДЕСЬ же, одной функцией с браузерным драйвером: два счёта «сколько
               * проверок прошло» однажды разойдутся. Null у прогона, который ничего не утверждал. */
-             ${checksOf(state.steps) ? JSON.stringify(checksOf(state.steps)) : null})
+             ${checksOf(state.steps) ? JSON.stringify(checksOf(state.steps)) : null},
+             /* ПОД КАКИМ КЕЙСОМ ЭТО СЧИТАТЬ - из аргументов работы, а не из состояния цикла: id кейса едет
+              * в строке очереди, и он там на каждом шаге, включая тот, на котором прогон остановили. Сам
+              * вердикт не пишется - он считается из outcome и checks одной функцией (api/_case.mjs), и
+              * сохранённый вердикт при изменённом правиле его чтения - это способ получить отчёт, который
+              * спорит сам с собой. */
+             ${caseIdOf(job.args)})
           on conflict (user_id, client_id) do update set
             outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
             steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at,
-            checks = excluded.checks
+            checks = excluded.checks, case_id = excluded.case_id
         `;
       } catch (err) {
         await report(err, req, { route: 'mcp:step:log' });
@@ -1594,7 +1873,28 @@ async function workerRoute(action, req, res, sql, who) {
 
       const payload = row.payload || {};
       const skill = { ...payload, id: row.client_id, name: row.name, params: payload.params || [] };
-      const args = job.args || {};
+      /* КЕЙС ЧИТАЕТСЯ СЕЙЧАС, А НЕ БЕРЁТСЯ ИЗ СТРОКИ ОЧЕРЕДИ. В args работы лежит только его id: и
+       * утверждения, и значения параметров живут на кейсе, поэтому кейс, отредактированный утром, ночью
+       * проверяется в новой редакции - а не в той, что скопировали при постановке расписания месяц назад.
+       * Забор тот же, что у удалённого скилла: сказать словами, а не упасть. */
+      const askedCase = caseIdOf(job.args);
+      let expects = null;
+      let caseArgs = null;
+      if (askedCase) {
+        const found = await sql`
+          select id, name, args, expects from user_case
+          where id = ${askedCase} and user_id = ${who.id} and deleted_at is null
+        `.catch(() => []);
+        if (!found.length) return fail('the case was deleted between the ask and the run');
+        expects = Array.isArray(found[0].expects) ? found[0].expects : [];
+        if (!expects.length) return fail('this case has no checks, so there is nothing it could prove');
+        caseArgs = found[0].args && typeof found[0].args === 'object' ? found[0].args : {};
+      }
+      /* АРГУМЕНТЫ СКИЛЛА - БЕЗ СЛУЖЕБНЫХ КЛЮЧЕЙ. У кейса они свои и приезжают из его строки; присланное с
+       * работой перекрывает их, чтобы «прогони этот кейс, но для Ann» осталось возможным. Скилл про кейсы
+       * не знает и знать не должен: `__case` снимается здесь, потому что тем же объектом кормится агент
+       * при реплее записи. */
+      const args = stripCase({ ...(caseArgs || {}), ...(job.args || {}) });
       /* missingParams first, as its own comment instructs: fillGoal substitutes an empty string for
        * anything it cannot resolve, so calling it alone turns a missing argument into a goal with a hole in
        * it and a run that does something almost right. */
@@ -1603,8 +1903,11 @@ async function workerRoute(action, req, res, sql, who) {
         return fail(`This skill needs ${missing.join(', ')}. Ask the user for the missing value rather than `
           + 'guessing one: the goal is carried out on their real computer and cannot be undone from here.');
       }
-      const goal = fillGoal(skill, args);
-      if (!goal || !goal.trim()) return fail('This skill has no goal text to carry out.');
+      const filled = fillGoal(skill, args);
+      if (!filled || !filled.trim()) return fail('This skill has no goal text to carry out.');
+      /* Цель кейса - цель скилла плюс его проверки, составленные там же, где считается вердикт: одни слова
+       * на оба драйвера, когда второй до них дойдёт. Без кейса возвращает цель как есть. */
+      const goal = caseGoal(filled, expects);
 
       /* Resolved once, here, so every step of one run is decided by one model. A model changed mid-run
        * would hand the task between two that never saw each other's reasoning. */
@@ -2180,6 +2483,7 @@ async function handler(req, res) {
           ...READ_TOOLS,
           HELP_TOOL,
           SCHEDULE_TOOL, SCHEDULES_TOOL, UNSCHEDULE_TOOL,
+          ...CASE_TOOLS,
           START_TOOL, STOP_RECORDING_TOOL,
           STATUS_TOOL, STOP_TOOL, RUN_STATUS_TOOL, RUN_TOOL, DO_TOOL,
         ],

@@ -266,6 +266,11 @@ determined one.
 **Settings → My account → Delete my data** (`DELETE /api/account?erase=1`). Flows and runs are hard-deleted,
 device tokens are removed, gallery listings are **withdrawn** — the copies other people hold are theirs.
 
+Schedules and test cases were missing from that transaction until September 2026, found while the cases were
+being built: "everything this deployment holds about you" left behind the list of what somebody meant to do
+with their own computer and at what hour, and the check rules in their own words. Both are deleted now, and
+both are counted in the answer — which is what the real numbers are there for.
+
 What it cannot delete: the Google account and the sign-in record Neon Auth keeps for it. That row belongs to
 the issuer, not to this application. Signing out afterwards is the client's job, and the response says so.
 

@@ -13,6 +13,7 @@ Entry point: `web/src/main.tsx`.
 | `/activity` | [Activity](26-activity.md) | Running, waiting and everything that ran, with Stop and Cancel beside each. |
 | `/create` | [Create](05-create.md) | Marked **Beta** in the sidebar. |
 | `/skills` | [Skills](06-skills.md) | |
+| `/tests` | [Test cases](27-cases.md) | Cases, the row of nights each one has had, and one button for a nightly run. |
 | `/gallery` | [Gallery](07-gallery.md) | |
 | `/dashboard` | [Dashboard](08-dashboard.md) | `?team=<id>` scopes it to a whole team, for its owners and admins. |
 | `/team` | [Teams](22-teams.md) | |

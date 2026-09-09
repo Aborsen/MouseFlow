@@ -689,7 +689,7 @@ const missing = [...served].filter((n) => !described.has(n));
 const invented = [...described].filter((n) => !served.has(n));
 check('every tool the server offers is described on the page', missing.length === 0, missing.join(', '));
 check('and nothing is described that the server does not offer', invented.length === 0, invented.join(', '));
-check('fifteen of them, so a count in prose can be trusted', served.size === 15, String(served.size));
+check('eighteen of them, so a count in prose can be trusted', served.size === 18, String(served.size));
 /* ПЕРЕИМЕНОВАНИЕ, У КОТОРОГО ЕСТЬ ЦЕНА. mouseflow_runs стало mouseflow_run_history, потому что рядом
  * стоит mouseflow_run, который двигает настоящую мышь: имена на одну `s` - плохая пара для того, что
  * выбирают по имени. Клиент забирает список инструментов один раз при подключении, поэтому старое имя
@@ -756,7 +756,7 @@ check('and it is in the sidebar, not buried in a dialog', /to: '\/team'/.test(si
    /docs стоял здесь один день и ушёл: список документов стал вкладкой Галереи, потому что вопрос у
    человека один - «что уже сделано и можно взять», - и отвечать на него двумя пунктами меню было ошибкой.
    Пин на порядке существует ровно затем, чтобы и добавление, и удаление были видны в диффе теста. */
-const NAV_ORDER = '/record,/create,/activity,/skills,/dashboard,/team,/gallery';
+const NAV_ORDER = '/record,/create,/activity,/skills,/tests,/dashboard,/team,/gallery';
 check('порядок в сайдбаре тот, о котором договорились, и Gallery последняя',
   [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join() === NAV_ORDER,
   [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join());
@@ -3288,9 +3288,12 @@ group('в api/ нет ничего, что не должно быть маршр
   /* artifacts.js - кадры прогонов. Своя дверь нужна потому, что прогон со страницы Create идёт мимо облака
    * целиком: модель зовёт /api/claude, действия уходят агенту по локальной сети, и на аккаунт попадает
    * только итог. Облачный путь свои кадры пишет сам, внутри ?worker=step. */
-  const expected = ['account.js', 'admin.js', 'artifacts.js', 'auth.js', 'chat.js', 'chats.js', 'claude.js',
-    'compose.js', 'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js', 'params.js',
-    'schedules.js', 'skill-md.js', 'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
+  /* cases.js - тест-кейсы. Своя дверь по той же причине, что у schedules.js: у страницы сессионная кука, у
+   * MCP токен устройства, и `whoIsCalling` - единственное, что решает, чьи это кейсы. Запросы перечня она
+   * ЭКСПОРТИРУЕТ, и тулы в mcp.js берут их оттуда, чтобы «что считается прогоном кейса» был один ответ. */
+  const expected = ['account.js', 'admin.js', 'artifacts.js', 'auth.js', 'cases.js', 'chat.js', 'chats.js',
+    'claude.js', 'compose.js', 'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js',
+    'params.js', 'schedules.js', 'skill-md.js', 'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
   const unexpected = routes.filter((n) => !expected.includes(n));
   check('и новых маршрутов не появилось незамеченными', unexpected.length === 0, unexpected.join(', '));
   /* И наоборот - что каждый ожидаемый на месте: список, из которого файл пропал, молча перестаёт его
@@ -5216,6 +5219,164 @@ group('Activity отвечает целиком: идёт, ждёт, было - 
     (create.match(/const runId = `dr_\$\{startedAt\.replace/g) || []).length === 1);
   check('мок отвечает историей очереди с тем, чего в журнале нет',
     /cancelled before it finished/.test(mock) && /the skill was deleted between the ask and the run/.test(mock));
+}
+
+
+/* ------------------------------------------------------- ТЕСТ-КЕЙС: СКИЛЛ ПЛЮС ТО, ЧТО ДОЛЖНО БЫТЬ ВЕРНО
+ *
+ * Пункт 5 плана регрессии. Скилл отвечает «сделай это», кейс - «это всё ещё так?», и разница вся в том, что
+ * делают с ответом: у кейса есть ВЕРДИКТ, а ряд вердиктов за тридцать ночей - единственное, что отвечает на
+ * вопрос, ради которого регрессия существует.
+ *
+ * ГЛАВНОЕ, ЧТО ЗДЕСЬ ДЕРЖИТСЯ: ни один прогон без доказательства не зелёный, провал проверки не прячется за
+ * «агент не довёл», и «ничего не доказано» не красится как дефект. Вычислением это проверяет
+ * api/_test-case.mjs; здесь - что правило ОДНО на сервер, тулы и страницу, и что кейс читается в момент
+ * старта, а не копируется в расписание. */
+group('тест-кейс: утверждения заранее, вердикт по записанным шагам, одно правило на всех');
+{
+  const rules = read('../api/_case.mjs');
+  const route = read('../api/mcp.js');
+  const door = read('../api/cases.js');
+  const queue = read('../api/_queue.mjs');
+  const sched = read('../api/schedules.js');
+  const page = read('../web/src/features/tests/TestsView.tsx');
+  const words = read('../web/src/features/tests/verdicts.ts');
+  const client = read('../web/src/lib/api.ts');
+  const mock = read('../web/src/dev/mock-api.ts');
+  const migration = read('../db/021_user_case.sql');
+  const pkg = read('../package.json');
+
+  /* ОДНО ПРАВИЛО. Вердикт считает api/_case.mjs, и его читают все трое: маршрут страницы, тулы и браузер. */
+  check('вердикт считает один модуль, и он без зависимостей',
+    /export function caseVerdict/.test(rules) && !/require\(|from 'node:/.test(rules));
+  check('его читает маршрут страницы', /from '\.\/_case\.mjs'/.test(door) && /caseVerdict\(\{/.test(door));
+  check('его читают тулы', /from '\.\/_case\.mjs'/.test(route));
+  check('и его же читает браузер, а своих слов не заводит',
+    /api\/_case\.mjs'/.test(words) && /VERDICTS\[verdict\]/.test(words)
+      && !/'passed'|'failed a check'|'no verdict'/.test(words));
+  check('у типов есть двойник для браузера',
+    existsSync(fileURLToPath(new URL('../api/_case.d.mts', import.meta.url))));
+  check('и он проверяется исполнением, а не чтением', /node api\/_test-case\.mjs/.test(pkg));
+
+  /* «no verdict» - НЕ КРАСНЫЙ, и это решение, а не оттенок: ночь, в которую агент не смог открыть
+   * приложение, покрашенная как найденный дефект, кончается тем, что отчёт перестают читать. */
+  check('«ничего не доказано» серым, а не красным',
+    /verdict === 'fail' \? 'bad'/.test(words) && /: 'neutral'/.test(words));
+  check('и в словаре сказано, что это значит, а не только как называется',
+    /why: 'nothing was proven about the product/.test(rules));
+
+  /* УТВЕРЖДЕНИЯ ПРОВЕРЯЮТСЯ ОДНОЙ ФУНКЦИЕЙ НА ДВЕ ДВЕРИ: список, принятый страницей и отвергнутый тулом, -
+   * это два разных представления о том, что такое кейс. */
+  check('утверждения разбирает одна функция, и её зовут обе двери',
+    /export function readExpects/.test(rules) && /readExpects\(body\.expects\)/.test(door)
+      && /readExpects\(args && args\.expects\)/.test(route));
+  check('кейс без проверок отвергается - иначе он каждую ночь докладывал бы «passed»',
+    /a case needs at least one check/.test(rules) && /proven nothing/.test(rules));
+  check('и утверждение без «что это доказывает» тоже - это единственное, что читают в красном отчёте',
+    /say what it proves/.test(rules));
+
+  /* КЕЙС ЧИТАЕТСЯ В МОМЕНТ СТАРТА. В строке очереди и в расписании едет только указатель: кейс,
+   * поправленный утром, обязан проверяться ночью в новой редакции. */
+  check('в работе едет только id кейса, а не копия его утверждений',
+    /\{ \[CASE_KEY\]: \{ id \} \}/.test(door)
+      && /\{ \[CASE_KEY\]: \{ id: caseRow\.id \} \}/.test(sched));
+  check('а драйвер читает утверждения и аргументы из строки кейса при старте',
+    /select id, name, args, expects from user_case/.test(route)
+      && /const args = stripCase\(\{ \.\.\.\(caseArgs \|\| \{\}\), \.\.\.\(job\.args \|\| \{\}\) \}\);/.test(route));
+  check('и в миграции сказано, почему не копия', /args\.__case = \{ id \}/.test(migration));
+  check('удалённый кейс - забор словами, как удалённый скилл, а не 500',
+    /the case was deleted between the ask and the run/.test(route));
+  check('кейс без проверок не запускается вообще',
+    /this case has no checks, so there is nothing it could prove/.test(route)
+      && /this case has no checks, so there is nothing it could prove/.test(door));
+
+  /* ПРОВЕРКИ ДОПИСЫВАЮТСЯ К ЦЕЛИ - там же, где считается вердикт, и словами, а не полем: в конце прогона
+   * машина стоит там, куда её привёл прогон, и дойти до «Sent Items» может потребоваться. */
+  check('цель кейса - цель скилла плюс проверки, составленная общим модулем',
+    /export function caseGoal/.test(rules) && /const goal = caseGoal\(filled, expects\);/.test(route));
+  /* Строка склеена в исходнике, поэтому пин ловит её вторую половину - ту, что несёт смысл. */
+  check('и модель обязана вызвать expect, а не решить глазом',
+    /'the expect tool - one call each/.test(rules)
+      && /Do not decide any of them by [\s\S]{0,40}?looking at the picture/.test(rules));
+
+  /* СЛУЖЕБНЫЙ КЛЮЧ НЕ ДОЕЗЖАЕТ ДО СКИЛЛА: тем же объектом кормится агент при реплее записи. */
+  check('__case снимается до подстановки в цель',
+    /export function stripCase/.test(rules) && /stripCase\(\{ \.\.\./.test(route));
+  check('и запись кейсом быть не может - отказ сейчас, а не в 02:00',
+    /that skill is a recording - it is replayed, not decided/.test(door)
+      && /is a recording: it is replayed rather than decided/.test(route));
+
+  /* ЗАПУСК - ТЕМ ЖЕ ПУТЁМ, КОТОРЫМ КЕЙС ПОЙДЁТ НОЧЬЮ. Кнопка, проверяющая другой путь, проверяет не то. */
+  check('кнопка ставит работу в ту же очередь, а не гоняет кейс страницей',
+    /const put = await queueOne\(sql, userId, \{/.test(door));
+  check('и оба отказа очереди - из одной двери, общей с тулами',
+    /export async function queueOne/.test(queue)
+      && /from '\.\/_queue\.mjs'/.test(route) && /from '\.\/_queue\.mjs'/.test(door));
+  check('«машины нет» и «одна мышь» сказаны один раз',
+    /has no computer listening/.test(queue) && /already busy on that machine/.test(queue)
+      && !/already busy on that machine/.test(route));
+
+  /* ЧТО СЧИТАЕТСЯ ПРОГОНОМ КЕЙСА - один ответ на две двери: тулы берут запросы у маршрута страницы. */
+  check('перечень кейсов - один запрос, и тулы берут его у страницы',
+    /export async function casesFor/.test(door) && /from '\.\/cases\.js'/.test(route)
+      && /await casesFor\(sql, who\.id\)/.test(route));
+  check('и шаги в перечень не едут - число починок спрашивается запросом',
+    /jsonb_array_elements\(steps\) e/.test(door) && /as repairs/.test(door)
+      && /repairs: Number\(row\.repairs\) \|\| 0/.test(door));
+  check('вердикт не хранится в базе - он считается',
+    !/verdict/.test(migration.replace(/--[^\n]*/g, '')) && /case_id text/.test(migration));
+
+  /* ТРИ ТУЛА, И НИ ОДИН НЕ ЗАПУСКАЕТ: «прогони» и «пусть идёт само» уже существуют и приняли `case`. */
+  check('три тула про кейсы, и все три только про кейсы',
+    /name: 'mouseflow_case'/.test(route) && /name: 'mouseflow_cases'/.test(route)
+      && /name: 'mouseflow_case_results'/.test(route));
+  check('а запуск и расписание - у прежних тулов, через `case` вместо `skill`',
+    (route.match(/const askedCase = String\(\(args && args\.case\) \|\| ''\)\.trim\(\);/g) || []).length === 2
+      && (route.match(/There is no case "\$\{askedCase\}" on this account/g) || []).length === 2);
+  check('и расписание кейса - обычное расписание, а не своя таблица',
+    /caseId/.test(sched) && !/create table/.test(sched)
+      && /args -> \$\{CASE_KEY\}::text ->> 'id'/.test(door));
+  check('снятое расписание уходит вместе с кейсом, чтобы не падать каждую ночь',
+    /update user_schedule set deleted_at = now\(\)[\s\S]{0,240}CASE_KEY/.test(door));
+
+  /* СТРАНИЦА. Две карточки в форме Skills, ряд точек, и слова - из общего словаря. */
+  check('страница - маршрут и пункт меню сразу за Skills',
+    /path: '\/tests'/.test(read('../web/src/main.tsx'))
+      && /to: '\/tests', label: 'Tests'/.test(read('../web/src/shell/AppSidebar.tsx')));
+  check('две карточки в том же ободке, что у библиотеки',
+    (page.match(/const CARD = 'rounded-xl border-stroke border bg-surface-card p-4'/g) || []).length === 1
+      && (page.match(/<section className=\{CARD\}>/g) || []).length === 2);
+  check('окно на семь строк той же меркой, что на Activity',
+    /const LIST_ROW = 2\.75;/.test(page)
+      && /const LIST_HEIGHT = `\$\{7 \* LIST_ROW \+ 6 \* LIST_GAP\}rem`;/.test(page));
+  check('ряд последних ночей - точками, старые слева', /\[\.\.\.runs\]\.reverse\(\)/.test(page));
+  check('шаги и кадры рисуются теми же, что история на Create',
+    /from '@\/features\/create\/verdict'/.test(page) && /from '@\/features\/create\/Frames'/.test(page)
+      && /from '@\/features\/create\/describe'/.test(page));
+  check('«ночная регрессия» - одной кнопкой, с зоной браузера',
+    /const NIGHTLY = \{ at: '02:00', days: 'weekdays' as const \};/.test(page)
+      && /zone: zoneOfBrowser\(\)/.test(page));
+  check('и условие исполнения названо там же, где предложено',
+    /while that machine is awake/.test(page));
+  check('удалённый скилл назван на строке кейса, а не выяснится ночью',
+    /skillGone/.test(page) && /the skill it ran has been deleted/.test(page));
+  check('клиент знает про кейсы, и вердикт приезжает готовым',
+    /export const cases = \(\)/.test(client) && /verdict: Verdict;/.test(client));
+  check('мок ведёт себя: записывает, запускает, отказывает пустому списку',
+    /cs_dev_1/.test(mock) && /queued: 'q_dev_case_now'/.test(mock) && /proven nothing/.test(mock));
+  check('и в фикстуре есть все четыре вердикта, включая кейс без прогонов',
+    /'pass'/.test(mock) && /'fail'/.test(mock) && /'blocked'/.test(mock) && /skillGone: true/.test(mock));
+
+  /* СТИРАНИЕ АККАУНТА. Ни расписаний, ни кейсов в транзакции не было - «удалено всё» оставляло перечень
+   * того, что человек собирался делать со своим компьютером и в котором часу. Найдено при добавлении
+   * кейсов и починено вместе с ними. */
+  const erasing = read('../api/account.js');
+  check('стирание аккаунта уносит расписания и кейсы, а не только прогоны',
+    /delete from user_schedule where user_id = \$\{who\.id\}/.test(erasing)
+      && /delete from user_case where user_id = \$\{who\.id\}/.test(erasing));
+  check('и числа в ответе называют их обоих',
+    /schedules: schedules\.length/.test(erasing) && /cases: cases\.length/.test(erasing)
+      && /schedules, '/.test(erasing));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

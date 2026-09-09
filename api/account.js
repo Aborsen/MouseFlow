@@ -119,6 +119,12 @@ async function handler(req, res) {
       sql`delete from chat_thread where user_id = ${who.id} returning id`,
       sql`delete from user_pref where user_id = ${who.id} returning key`,
       sql`delete from run_queue where user_id = ${who.id} returning id`,
+      /* РАСПИСАНИЯ И ТЕСТ-КЕЙСЫ. Оба отсутствовали здесь, и это была тихая потеря того самого рода, ради
+       * которой числа в ответе настоящие: «удалено всё» оставляло на аккаунте перечень того, что человек
+       * собирался делать со своим компьютером и в котором часу, - и правила проверок, написанные словами.
+       * Скиллов к тому моменту уже нет, так что запускать это ничего не будет; но оставленное - его. */
+      sql`delete from user_schedule where user_id = ${who.id} returning id`,
+      sql`delete from user_case where user_id = ${who.id} returning id`,
       sql`delete from team_share where user_id = ${who.id} returning flow_id`,
       sql`delete from team_member where user_id = ${who.id} returning team_id`,
       /* Приглашения, присланные ЕМУ. Отправленные им остаются: они принадлежат команде, а не ему, и
@@ -137,7 +143,7 @@ async function handler(req, res) {
     ]);
 
     const [
-      flows, runs, frames, devices, messages, threads, prefs, queued,
+      flows, runs, frames, devices, messages, threads, prefs, queued, schedules, cases,
       shares, memberships, invites, teamsGone, tokens, codes, published,
     ] = done;
 
@@ -154,6 +160,8 @@ async function handler(req, res) {
         messages: messages.length,
         preferences: prefs.length,
         queuedRuns: queued.length,
+        schedules: schedules.length,
+        cases: cases.length,
         teamMemberships: memberships.length,
         teamShares: shares.length,
         invitations: invites.length,
@@ -163,8 +171,9 @@ async function handler(req, res) {
       },
       /* Said out loud because the UI has to be able to tell the truth about what just happened, and
        * "account deleted" would not be it. */
-      note: 'Your flows, runs and the frames they kept, conversations, preferences, queued runs and paired '
-        + 'devices are gone, every connector is revoked, and anything you published is withdrawn'
+      note: 'Your flows, runs and the frames they kept, conversations, preferences, queued runs, schedules, '
+        + 'test cases and paired devices are gone, every connector is revoked, and anything you published '
+        + 'is withdrawn'
         + (teamsGone.length
           ? `. ${teamsGone.length} team${teamsGone.length === 1 ? '' : 's'} you alone owned ${
             teamsGone.length === 1 ? 'was' : 'were'} closed`

@@ -311,6 +311,36 @@ make it visible.
 The one query the due check makes, four times a minute per machine, is served by a partial index:
 `user_schedule_due on (user_id, next_at) where paused = false and deleted_at is null`.
 
+## `user_case` — a skill plus what must be true when it has run
+
+`db/021_user_case.sql`
+
+| Column | Notes |
+|---|---|
+| `id`, `user_id` | `cs_…`, minted on the server |
+| `name` | what a person calls it — *"Outlook still sends"*. It is what a report is read by |
+| `flow_id` | the skill that performs the steps. **Not a foreign key**, for the reason nothing here is one: the fence at the start of the run says *the skill was deleted between the ask and the run*, which somebody can act on |
+| `args` | what that skill asks for, by its own parameter names — exactly what `mouseflow_run` would take |
+| `expects` | `[{ check, name, text?, process?, why }]`, the same shape the `expect` tool takes. Evaluated at the **end** of the run in v1; per-step is v2 |
+| `machine` | which machine it may run on. **Nothing reads it yet** (roadmap item 7); the column is free today and a migration is not |
+| `created_at`, `updated_at`, `deleted_at` | |
+
+**Why the assertions live here and not in the schedule's arguments.** A schedule row could carry them
+outright — it carries `args` already — and that was the first design. It is wrong for one reason: a case
+edited in the morning would still be checked tonight by the copy taken when the schedule was made, and
+nothing on any screen would say so. So the schedule and the queue row carry `args.__case = { id }`, one
+pointer, and the run reads the assertions from this table at the moment it starts.
+
+**Why `expects` is JSONB and not a table.** An assertion is never read alone, never listed across cases and
+never joined to anything — it is a field of the case, in the same sense a skill's parameters are a field of
+the skill. A second table would buy ordering and nothing else.
+
+`user_run.case_id` says which case a run belongs to. **The verdict is not stored**: it is computed from that
+run's own `outcome` and `checks` by `caseVerdict()` in `api/_case.mjs`, for the same reason `checks` is a
+summary rather than a copy of the steps — a stored verdict plus a changed rule for reading one is how a
+report starts disagreeing with itself. One case's history is served by
+`user_run_case on (user_id, case_id, started_at desc)`. See [27 — Test cases](27-cases.md).
+
 ## `run_artifact` — the screen at the moment something was proven
 
 `db/020_run_artifact.sql`. `id`, `user_id`, `run_id` (the `user_run.client_id`), `step_no`, `kind`

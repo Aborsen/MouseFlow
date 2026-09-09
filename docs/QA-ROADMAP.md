@@ -76,6 +76,17 @@ fast, safe and web-first.
 
 Suggested sequence for one person: **1 → 2 → 5 (v1, end-of-run checks) → 8 → 3 → 4 → 5 (v2, per-step) → 6 → 7.** Items 1, 2 and 5-v1 give a usable nightly regression on desktop apps with named controls in roughly two weeks.
 
+**Where this stands (2026-09-09).** Items **1** (`expect`), **2** (kept frames) and **5-v1** (a case as an
+entity, with the Tests page, three MCP tools and the nightly button) are built, tested and live — see
+[25 — Checks and tests](product/25-tests.md) and [27 — Test cases](product/27-cases.md). What 5-v1
+deliberately left for later is listed at the end of page 27: checks bound to a step (5-v2), the repaired-step
+mark (item 4), and choosing the machine (item 7). Remaining order: **8 → 3 → 4 → 5-v2 → 6 → 7.**
+
+Two things changed against the plan below, both written up where they live: a case's schedule carries only
+the case's **id** rather than a copy of its assertions (so a case edited in the morning is the one checked
+tonight), and the three new tools do not include running or scheduling — `mouseflow_run` and
+`mouseflow_schedule` take `case` where they take `skill`.
+
 ---
 
 ## 1. `expect` — a checkable assertion as a first-class action

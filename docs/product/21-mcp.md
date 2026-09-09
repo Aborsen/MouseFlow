@@ -146,7 +146,7 @@ connector where half the tools work looks like an intermittent fault rather than
 
 ## What you can ask for
 
-Fifteen built-in tools. (There used to be one more for every skill on the account; that is gone - see
+Eighteen built-in tools. (There used to be one more for every skill on the account; that is gone - see
 **Skills as tools** below.)
 
 ![The tools, on the product page](../img/mcp-tools.png)
@@ -232,12 +232,32 @@ does when the machine was asleep, and why there is no cron — is [24 — Schedu
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `mouseflow_schedule` | `skill` **(required)** · `arguments` · `every`: `"30m"`/`"1h"`/`"1d"` · `at`: `"09:00"` · `days`: `all` \| `weekdays` · `once`: an ISO instant · `zone`: IANA, **required with `at`** · `label` | Sets it up and answers with the rule in words and the next run in the person's own zone. |
+| `mouseflow_schedule` | `skill` — or `case` instead of it · `arguments` · `every`: `"30m"`/`"1h"`/`"1d"` · `at`: `"09:00"` · `days`: `all` \| `weekdays` · `once`: an ISO instant · `zone`: IANA, **required with `at`** · `label` | Sets it up and answers with the rule in words and the next run in the person's own zone. |
 | `mouseflow_schedules` | — | What is set to run by itself: the rule, the next run, and what happened last time — including "missed, nothing was listening". |
 | `mouseflow_unschedule` | `schedule` **(required)** · `pause`: true pauses, false resumes; omit to remove | Stops one. The skill itself is untouched either way. |
 
 Three tools rather than one with an `action`, for the same reason **start** and **stop** are two: an
 instrument is chosen by its name.
+
+### Test cases — the same question, every night
+
+A case is a skill plus what must be true when it has run, and its verdict is one of four rather than two.
+The whole of it — why nothing without evidence is ever green, and why *no verdict* is not a failure — is
+[27 — Test cases](27-cases.md).
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `mouseflow_case` | `name` **(required)** · `skill` **(required)** · `expects` **(required)**: `[{check, name, text, process, why}]` · `arguments` | Writes one down and answers with its id, its checks in words, and the two ways to run it. Refuses a recording: it is replayed rather than decided, so nothing in it can check anything. |
+| `mouseflow_cases` | — | Every case: what it runs, what it checks, when it next runs by itself, and how the last ten runs ended. |
+| `mouseflow_case_results` | `case` **(required)** · `limit`: 1–50 (10) | One case's history. For a failure it prints **which check** did not hold and the evidence beside it — `1 check failed` sends somebody looking; `"Subject" holds "Re: invoce"` is the bug. |
+
+**None of the three runs anything.** *Run this* and *have this run by itself* already exist, and both take
+`case` where they take `skill` — a second pair of tools for a new kind of work would be two pairs that have
+to change together. The queue row carries only the case's **id**: its checks and inputs are read when the
+run starts, so a case edited this morning is the one checked tonight.
+
+Every list ends with the two sentences that keep a report honest: *no verdict is not a failure*, and *a case
+runs only while its machine is awake and taking work*.
 
 **`zone` is required with `at`, and refused without.** The server has no time zone and cannot invent one;
 `"09:00"` with no zone means 09:00 UTC, which for the person who asked for nine in the morning is the middle

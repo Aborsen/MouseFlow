@@ -365,6 +365,147 @@ const SCHEDULES = [
   },
 ];
 
+/* ТЕСТ-КЕЙСЫ. Четыре строки, и каждая - свой ВЕРДИКТ, потому что интересное на этой странице не «кейс
+ * есть», а чем кончилась ночь: прошло, найден дефект, ничего не доказано, и кейс, который ещё не гоняли.
+ * Фикстура, где всё зелёное, учила бы страницу рисовать единственное состояние, в котором на неё не ходят
+ * смотреть - и «no verdict» серым мимо неё не проверить никак.
+ *
+ * Ряд точек у первого кейса неровный нарочно: три ночи подряд «ничего не доказано» - это то, что человек
+ * обязан замечать глазом, потому что это не сломанный продукт, а сломанная регрессия. */
+const caseRunFixture = (
+  id: string, caseId: string, hoursAgo: number,
+  outcome: 'ok' | 'failed' | 'stopped',
+  checks: { passed: number; failed: number; unchecked: number } | null,
+  verdict: 'pass' | 'fail' | 'blocked' | 'pass_with_repairs',
+  summary: string | null,
+  steps: unknown[] = [],
+) => ({
+  id,
+  caseId,
+  outcome,
+  summary,
+  error: outcome === 'failed' ? 'gave up after 6 steps with nothing moving' : null,
+  checks: checks ? { ...checks, tiers: { tree: checks.passed + checks.failed } } : null,
+  repairs: verdict === 'pass_with_repairs' ? 1 : 0,
+  startedAt: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+  finishedAt: new Date(Date.now() - hoursAgo * 3_600_000 + 92_000).toISOString(),
+  verdict,
+  steps,
+  said: outcome === 'ok' ? ['The reply is in Sent Items.'] : [],
+});
+
+const CASE_STEPS = [
+  { tool: 'switch_app', input: { name: 'Outlook' }, ms: { shot: 90, model: 2100, act: 140 } },
+  { tool: 'click', input: { x: 812, y: 420 }, ms: { shot: 88, model: 2300, act: 110 } },
+  { tool: 'expect', input: { check: 'present', name: 'Sent Items', why: 'the reply left the outbox' },
+    ms: { shot: 88, model: 2300, act: 90 },
+    outcome: { pass: true, how: 'tree', evidence: 'tree item "Sent Items" at 24,318' } },
+  { tool: 'expect', input: { check: 'value_contains', name: 'Subject', text: 'Re: invoice', why: 'it answered the right thread' },
+    ms: { shot: 89, model: 2500, act: 95 },
+    outcome: { pass: false, how: 'tree', evidence: '"Subject" holds "Re: invoce", not "Re: invoice"' } },
+];
+
+const CASES = [
+  {
+    id: 'cs_dev_1',
+    name: 'Outlook still sends',
+    flowId: 'dr_dev_1',
+    arguments: { who: 'Ann' },
+    expects: [
+      { check: 'present', name: 'Sent Items', why: 'the reply left the outbox' },
+      { check: 'value_contains', name: 'Subject', text: 'Re: invoice', why: 'it answered the right thread' },
+    ],
+    machine: null,
+    createdAt: new Date(Date.now() - 20 * 86_400_000).toISOString(),
+    updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    skill: 'Reply that the invoice is approved',
+    skillGone: false,
+    runs: [
+      caseRunFixture('q_case_1_5', 'cs_dev_1', 9, 'ok', { passed: 1, failed: 1, unchecked: 0 }, 'fail',
+        'Replied, but the subject is not the one the case asks for.', CASE_STEPS),
+      caseRunFixture('q_case_1_4', 'cs_dev_1', 33, 'failed', null, 'blocked', null),
+      caseRunFixture('q_case_1_3', 'cs_dev_1', 57, 'failed', null, 'blocked', null),
+      caseRunFixture('q_case_1_2', 'cs_dev_1', 81, 'ok', { passed: 2, failed: 0, unchecked: 0 }, 'pass',
+        'Sent, and both checks held.'),
+      caseRunFixture('q_case_1_1', 'cs_dev_1', 105, 'ok', { passed: 2, failed: 0, unchecked: 0 }, 'pass',
+        'Sent, and both checks held.'),
+    ],
+    schedule: {
+      id: 'sch_case_1',
+      paused: false,
+      pausedWhy: null,
+      nextAt: new Date(Date.now() + 11 * 3_600_000).toISOString(),
+      lastAt: new Date(Date.now() - 9 * 3_600_000).toISOString(),
+      lastSaid: 'ran - Replied, but the subject is not the one the case asks for.',
+      misses: 1,
+      fails: 0,
+    },
+  },
+  {
+    id: 'cs_dev_2',
+    name: 'The invoice sheet still opens',
+    flowId: 'dr_dev_4',
+    arguments: {},
+    expects: [
+      { check: 'present', name: 'September', why: 'the workbook opened on the right sheet' },
+      { check: 'absent', name: 'Repair', why: 'Excel did not offer to repair the file' },
+    ],
+    machine: null,
+    createdAt: new Date(Date.now() - 9 * 86_400_000).toISOString(),
+    updatedAt: new Date(Date.now() - 9 * 86_400_000).toISOString(),
+    skill: 'File the September invoices',
+    skillGone: false,
+    runs: [
+      caseRunFixture('q_case_2_3', 'cs_dev_2', 10, 'ok', { passed: 2, failed: 0, unchecked: 0 }, 'pass', 'Opened and both checks held.'),
+      caseRunFixture('q_case_2_2', 'cs_dev_2', 34, 'ok', { passed: 2, failed: 0, unchecked: 0 }, 'pass', 'Opened and both checks held.'),
+      caseRunFixture('q_case_2_1', 'cs_dev_2', 58, 'ok', { passed: 1, failed: 0, unchecked: 1 }, 'blocked',
+        'Opened, but one check could not be evaluated.'),
+    ],
+    schedule: {
+      id: 'sch_case_2',
+      paused: true,
+      pausedWhy: 'paused by hand',
+      nextAt: null,
+      lastAt: new Date(Date.now() - 10 * 3_600_000).toISOString(),
+      lastSaid: 'ran - Opened and both checks held.',
+      misses: 0,
+      fails: 0,
+    },
+  },
+  {
+    id: 'cs_dev_3',
+    name: 'The standup room is bookable',
+    flowId: 'dr_dev_5',
+    arguments: {},
+    expects: [{ check: 'enabled', name: 'Book', why: 'the room can still be booked at all' }],
+    machine: null,
+    createdAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+    updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+    skill: 'Book the Thursday standup room',
+    skillGone: false,
+    runs: [],
+    schedule: null,
+  },
+  {
+    /* Кейс, чей скилл удалили: он падает на заборе каждую ночь, и страница обязана сказать это раньше,
+     * чем наступит ночь. Ветку без фикстуры никто бы не увидел до первого удалённого скилла. */
+    id: 'cs_dev_4',
+    name: 'The old CRM check',
+    flowId: 'dr_dev_gone',
+    arguments: {},
+    expects: [{ check: 'present', name: 'Accounts', why: 'the CRM still opens on accounts' }],
+    machine: null,
+    createdAt: new Date(Date.now() - 40 * 86_400_000).toISOString(),
+    updatedAt: new Date(Date.now() - 40 * 86_400_000).toISOString(),
+    skill: null,
+    skillGone: true,
+    runs: [
+      caseRunFixture('q_case_4_1', 'cs_dev_4', 200, 'failed', null, 'blocked', null),
+    ],
+    schedule: null,
+  },
+];
+
 const json = (res: Parameters<Connect.NextHandleFunction>[1], status: number, body: unknown) => {
   res.statusCode = status;
   res.setHeader('content-type', 'application/json');
@@ -939,6 +1080,70 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
   }
   if (url.startsWith('/api/mcp?cancel=')) {
     return json(res, 200, { ok: true, cancelled: true, said: 'Cancelled. It never started.' });
+  }
+
+  /* ТЕСТ-КЕЙСЫ. Ведёт себя, а не отвечает: запись возвращает строку, запуск - id работы, удаление
+   * подтверждает. Фикстура, принявшая запись и вернувшая прежний список, показывала бы работающий экран
+   * сломанным - та же ошибка, что однажды сделал мок выхода из аккаунта. */
+  if (url.startsWith('/api/cases')) {
+    const asked = new URLSearchParams(url.split('?')[1] || '').get('case') || '';
+    const running = /[?&]run=/.test(url);
+    if (method === 'DELETE') return json(res, 200, { ok: true, id: asked, deleted: true });
+    if (method === 'POST' && asked && running) {
+      const one = CASES.find((row) => row.id === asked);
+      return json(res, 200, {
+        ok: true,
+        queued: 'q_dev_case_now',
+        said: `Queued "${one ? one.name : asked}". It runs as soon as that machine takes it - watch it on `
+          + 'Activity.',
+      });
+    }
+    if (method === 'POST') {
+      let text = '';
+      req.on('data', (chunk) => { text += chunk; });
+      req.on('end', () => {
+        let body: Record<string, unknown> = {};
+        try {
+          body = text ? JSON.parse(text) : {};
+        } catch (_) {
+          return json(res, 400, { error: { type: 'case_error', message: 'that body is not JSON' } });
+        }
+        /* Отказ у пустого списка утверждений - настоящий: он и есть главное правило кейса, и увидеть его на
+         * моке важнее, чем увидеть удачную запись. */
+        const expects = Array.isArray(body.expects) ? body.expects : [];
+        if (!expects.length) {
+          return json(res, 400, { error: { type: 'case_error', message: 'a case needs at least one check - '
+            + 'without one it is a skill on a schedule, and every night it would report "passed" having '
+            + 'proven nothing.' } });
+        }
+        const kept = CASES.find((row) => row.id === asked) || null;
+        return json(res, 200, {
+          ok: true,
+          case: {
+            ...(kept || {}),
+            id: asked || 'cs_dev_new',
+            name: String(body.name || (kept ? kept.name : 'A case')),
+            flowId: String(body.flowId || (kept ? kept.flowId : 'dr_dev_1')),
+            arguments: (body.arguments as Record<string, unknown>) || {},
+            expects,
+            machine: null,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            skill: kept ? kept.skill : 'Reply that the invoice is approved',
+            skillGone: false,
+            runs: kept ? kept.runs : [],
+            schedule: kept ? kept.schedule : null,
+          },
+        });
+      });
+      return;
+    }
+    if (asked) {
+      const one = CASES.find((row) => row.id === asked);
+      if (!one) return json(res, 404, { error: { type: 'case_error', message: 'no case with that id on this account' } });
+      return json(res, 200, { ok: true, case: one });
+    }
+    return json(res, 200, { ok: true, cases: CASES });
   }
 
   if (url.startsWith('/api/schedules')) {

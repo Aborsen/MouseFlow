@@ -4,6 +4,13 @@
  * proxied through /api/auth/* rather than called at the issuer directly. Nothing here handles a token.
  */
 
+/* Утверждение кейса и вердикт прогона - ТИПЫ ОТТУДА, где живут правила: api/_case.mjs читают и сервер, и
+ * браузер, и объявлять здесь свою копию значило бы завести второе представление о том, что такое «прошло».
+ */
+import type { Expect, Verdict } from '../../../api/_case.mjs';
+
+export type { Expect, Verdict };
+
 export interface Flow {
   id: string;
   source: 'web' | 'desktop';
@@ -368,6 +375,8 @@ export interface Schedule {
   runs: number;
   misses: number;
   fails: number;
+  /** Расписание тест-кейса - его id; у обычного расписания скилла пусто. См. api/_case.mjs. */
+  caseId?: string | null;
 }
 
 export const schedules = () => call<{ ok: true; schedules: Schedule[] }>('/api/schedules');
@@ -446,7 +455,10 @@ export const cancelJob = (id: string) =>
   });
 
 export const scheduleAdd = (body: {
-  flowId: string;
+  /** Скилл - или, вместо него, `caseId`: расписание тест-кейса это то же расписание. */
+  flowId?: string;
+  /** Тест-кейс: его скилл, его утверждения и его аргументы читаются в момент старта, не сейчас. */
+  caseId?: string;
   label?: string;
   every?: string;
   at?: string;
@@ -472,6 +484,80 @@ export const scheduleRemove = (id: string) =>
     method: 'DELETE',
   });
 
+/* ТЕСТ-КЕЙСЫ: скилл плюс то, что должно быть верно, когда он кончил. См. db/021 и api/_case.mjs.
+ *
+ * Вердикт приезжает ГОТОВЫМ, посчитанным на сервере одной функцией с тулами: страница, считающая его сама,
+ * однажды покрасила бы ночь иначе, чем чат, и оба были бы уверены в своей правоте. Тип - оттуда же. */
+export interface CaseRun {
+  id: string;
+  caseId: string;
+  outcome: 'ok' | 'failed' | 'stopped' | 'running';
+  summary: string | null;
+  error: string | null;
+  checks: { passed: number; failed: number; unchecked: number; tiers: Record<string, number> } | null;
+  /** Шагов, починенных моделью. Ноль до пункта 4 плана - чинить их пока некому. */
+  repairs: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+  verdict: Verdict;
+  /** Шаги приезжают только у раскрытого кейса: в перечне их нет нарочно - это мегабайты. */
+  steps?: unknown[];
+  said?: unknown[];
+}
+
+export interface Case {
+  id: string;
+  name: string;
+  flowId: string;
+  arguments: Record<string, unknown>;
+  expects: Expect[];
+  machine: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  /** Имя скилла, который кейс гоняет. */
+  skill?: string | null;
+  /** Скилл удалён - положительным фактом: такой кейс ночью падает на заборе, и знать это надо раньше. */
+  skillGone?: boolean;
+  runs: CaseRun[];
+  schedule: {
+    id: string;
+    paused: boolean;
+    pausedWhy: string | null;
+    nextAt: string | null;
+    lastAt: string | null;
+    lastSaid: string | null;
+    misses: number;
+    fails: number;
+  } | null;
+}
+
+export const cases = () => call<{ ok: true; cases: Case[] }>('/api/cases');
+
+export const caseOne = (id: string) =>
+  call<{ ok: true; case: Case }>(`/api/cases?case=${encodeURIComponent(id)}`);
+
+export const caseAdd = (body: {
+  name: string; flowId: string; expects: Expect[]; arguments?: Record<string, unknown>;
+}) => call<{ ok: true; case: Case }>('/api/cases', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+});
+
+export const caseEdit = (id: string, body: {
+  name?: string; expects?: Expect[]; arguments?: Record<string, unknown>;
+}) => call<{ ok: true; case: Case }>(`/api/cases?case=${encodeURIComponent(id)}`, {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+});
+
+/* ЗАПУСК - В ТУ ЖЕ ОЧЕРЕДЬ, которой кейс пойдёт в 02:00, а не страницей: кнопка, проверяющая другой путь,
+ * проверяет не то, что случится ночью. Ответ - id работы; смотреть за ней идут на Activity. */
+export const caseRun = (id: string) =>
+  call<{ ok: true; queued: string; said: string }>(`/api/cases?case=${encodeURIComponent(id)}&run=1`, {
+    method: 'POST',
+  });
+
+export const caseRemove = (id: string) =>
+  call<{ ok: true; deleted: true }>(`/api/cases?case=${encodeURIComponent(id)}`, { method: 'DELETE' });
+
 export const devices = () => call<{ ok: true; devices: Device[] }>('/api/sync?tokens=1');
 
 export const mintDeviceToken = (label: string) =>
@@ -494,6 +580,10 @@ export const eraseAccount = () =>
       preferences: number; queuedRuns: number; teamMemberships: number; teamShares: number;
       /* Кадры прогонов. В списке, потому что это чей-то экран, и «удалено» обязано включать его тоже. */
       frames: number;
+      /* Расписания и тест-кейсы: перечень того, что человек собирался делать со своим компьютером и в
+       * котором часу, и правила проверок его словами. Обоих в стирании не было. */
+      schedules: number;
+      cases: number;
       invitations: number; teamsClosed: number; connectors: number; withdrawn: number;
     };
     note: string;

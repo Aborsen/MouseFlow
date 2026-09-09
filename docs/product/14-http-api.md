@@ -457,6 +457,43 @@ One route for two kinds of trust would be one permission check for two different
 The whole feature — what ticks it, what it does when the machine was asleep, and why there is no cron — is
 [24 — Schedules](24-schedules.md).
 
+**A test case is scheduled through this same route**: `caseId` instead of `flowId`, and the row is stored
+with `args.__case = { id }` and the case's own name as its label. There is no separate table and no separate
+route for "nightly regression" — pausing, resuming, missed times and *three failures in a row pause it* are
+written once, here. The reply carries `caseId` so a reader can tell the two kinds of row apart without
+guessing from the label. See [27 — Test cases](27-cases.md).
+
+---
+
+## `/api/cases`
+
+```
+GET    /api/cases                        the account's cases, newest first, each with its last 10 runs
+GET    /api/cases?case=<id>              one case, with its last 20 runs and their steps
+POST   /api/cases                        write one down
+POST   /api/cases?case=<id>              change its name, inputs or checks
+POST   /api/cases?case=<id>&run=1        queue it now, exactly as its schedule would
+DELETE /api/cases?case=<id>              soft-delete it, and its nightly schedule with it
+```
+
+Serves the **Tests page**. Same argument for its existence as `/api/schedules`: the page arrives with a
+session cookie and MCP with a token, and one route for two kinds of trust would be one permission check for
+two ways in. Its two read functions are **exported and imported by `api/mcp.js`**, so "what counts as a run
+of this case" has one answer rather than two.
+
+| | |
+|---|---|
+| Create body | `name` **(required)** · `flowId` **(required)** · `expects` **(required, 1–8)** · `arguments` |
+| `expects` | `[{ check, name, text?, process?, why }]` — the same shape the `expect` tool takes, validated by `readExpects()` in `api/_case.mjs`, **the same function the MCP tool uses** |
+| An empty `expects` | **400**, in words: a case with no checks would report "passed" every night having proven nothing |
+| A check with no `why` | 400 — that sentence is what somebody reads in a red report |
+| A recording as `flowId` | 400: it is replayed rather than decided, so nothing in it can check anything |
+| `?run=1` | queues a `run_queue` row through the shared door (`api/_queue.mjs`), so the two refusals — *no computer listening* and *one mouse* — are worded exactly as the MCP tools word them. 409 for either |
+| Steps in the list | not sent. The list asks the database for the **number** of repaired steps instead; steps arrive only for one case |
+| The verdict | computed per run by `caseVerdict()` and sent ready-made, never stored |
+| Scoping | every statement filters on the caller's id **inside the `WHERE`**; a foreign id and a missing one get the same 404 |
+| Without `db/021_user_case.sql` | 503 naming the migration, not a 500 that looks like a broken page |
+
 ---
 
 ## `/api/mcp`

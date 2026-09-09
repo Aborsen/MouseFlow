@@ -182,11 +182,22 @@ tree, OCR from the operating system, a DevTools connection, and image anchors fo
 Until then, the rule at the top of this page is the guard: a case that can only be proven by `picture` is
 exploratory, and it should not be the thing a release is gated on.
 
+## A check written down in advance is a case
+
+`expect` is one assertion inside one run, decided while the run is happening. A **case** is the same
+assertions written down *before* — a skill plus what must hold when it has finished — so the same question
+can be asked every night and the answers can be read as a row. That is [27 — Test cases](27-cases.md): the
+four verdicts, why nothing without evidence is green, and why *no verdict* is grey rather than red.
+
+The difference is not only scheduling. A model that decides at run time what to check checks something
+slightly different every night, and a row of nights is then not comparable with itself.
+
 ## Where the reasoning is written
 
 | | |
 |---|---|
 | `api/_expect.mjs` | the verdict, the three outcomes, and why an unreadable window is not an absence |
+| `api/_case.mjs`, `docs/product/27-cases.md` | the same assertions written down in advance, and the four verdicts of a case |
 | `api/_artifact.mjs`, `api/_test-artifact.mjs` | which frames survive a full run, and why a failure is never the one dropped |
 | `db/020_run_artifact.sql` | why the pictures are a row and not a blob store, and why one per turn |
 | `api/artifacts.js` | the page's door to them, and why listing and reading are two requests |

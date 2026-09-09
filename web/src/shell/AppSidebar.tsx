@@ -13,6 +13,7 @@
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
   Activity,
+  FlaskConical,
   ChartNoAxesColumn,
   ChevronsUpDown,
   CircleDot,
@@ -44,6 +45,11 @@ const NAV = [
    * шумом, а число «сейчас» - это то единственное, ради чего сюда идут не глядя. */
   { to: '/activity', label: 'Activity', icon: Activity, live: true },
   { to: '/skills', label: 'Skills', icon: FolderOpen },
+  /* СРАЗУ ЗА SKILLS, потому что кейс делается из скилла и читается рядом с ним: «что у меня есть» и «что из
+   * этого проверяется каждую ночь» - два вопроса, которые задают друг за другом. Счётчика у пункта нет
+   * нарочно: число кейсов не меняется само, а число упавших ночей - это то, за чем идут на страницу
+   * смотреть ряд точек, а не цифру в меню. */
+  { to: '/tests', label: 'Tests', icon: FlaskConical },
   // Asking about the numbers happens on the page that shows them, not at its own address.
   { to: '/dashboard', label: 'Dashboard', icon: ChartNoAxesColumn },
   /* A place rather than a setting. It was the fourth pane of the settings dialog, which was the right size

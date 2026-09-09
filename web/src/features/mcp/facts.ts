@@ -113,8 +113,8 @@ export const MCP_TOOLS: McpTool[] = [
     what: 'Has a skill run by itself - every hour, every weekday at 09:00, or once tomorrow morning. The '
       + 'time is said in words rather than as a cron line, and a time of day needs your zone: 09:00 with no '
       + 'zone means 09:00 UTC.',
-    args: 'skill: id (required) · arguments · every: "1h" · at: "09:00" · days: all | weekdays · once: ISO '
-      + '· zone: IANA · label',
+    args: 'skill: id, or case: id instead of it (one of the two) · arguments · every: "1h" · at: "09:00" '
+      + '· days: all | weekdays · once: ISO · zone: IANA · label',
   },
   {
     name: 'mouseflow_schedules',
@@ -122,6 +122,33 @@ export const MCP_TOOLS: McpTool[] = [
     what: 'What is set to run by itself: the rule, the next run in your own time zone, and what happened '
       + 'last time - including "missed, nothing was listening".',
     args: '',
+  },
+  /* ТЕСТ-КЕЙСЫ - тоже в «Doing», и по той же причине: они происходят на машине. Три тула, и ни один из них
+     не запускает и не ставит расписание - «прогони» и «пусть идёт само» уже существуют, и оба принимают
+     `case` там, где принимали `skill`. */
+  {
+    name: 'mouseflow_case',
+    group: 'machine',
+    what: 'Writes down a test case: one skill to run, plus what must be true when it is done. The checks '
+      + 'are decided by the machine from the window itself, never from a picture - which is what makes a '
+      + 'nightly report worth reading. The skill has to be one made from a goal: a recording is replayed '
+      + 'rather than decided, so nothing in it can check anything.',
+    args: 'name (required) · skill: id (required) · expects: [{check, name, text, process, why}] (required) '
+      + '· arguments',
+  },
+  {
+    name: 'mouseflow_cases',
+    group: 'machine',
+    what: 'The cases on the account: what each runs, what it checks, when it next runs by itself, and how '
+      + 'the last ten runs ended - passed, failed a check, no verdict, passed with repairs.',
+    args: '',
+  },
+  {
+    name: 'mouseflow_case_results',
+    group: 'machine',
+    what: 'One case\'s history, newest first: the verdict of every run, and for a failure the checks that '
+      + 'did not hold in the words the case used. This is what answers "did anything break last night?".',
+    args: 'case: id (required) · limit: 1–50 (10)',
   },
   {
     name: 'mouseflow_unschedule',
@@ -166,9 +193,9 @@ export const MCP_TOOLS: McpTool[] = [
   {
     name: 'mouseflow_run',
     group: 'control',
-    what: 'Runs one of your skills on the paired machine. Ask mouseflow_recordings which there are and what '
-      + 'each one takes.',
-    args: 'skill: its id (required) · arguments: what it asks for',
+    what: 'Runs one of your skills on the paired machine - or a test case, checks included, exactly as its '
+      + 'nightly schedule would. Ask mouseflow_recordings which skills there are and what each one takes.',
+    args: 'skill: its id, or case: a case id instead of it (one of the two) · arguments: what it asks for',
   },
   {
     name: 'mouseflow_do',

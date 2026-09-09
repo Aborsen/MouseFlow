@@ -19,6 +19,8 @@ import { whoIsCalling } from './_session.js';
 import { report, wrap } from './_report.js';
 import { cors } from './_cors.mjs';
 import { firstAt, readRule, ruleOf, ruleSaid, whenSaid } from './_schedule.mjs';
+/* Ключ, под которым в аргументах работы едет указатель на тест-кейс. См. api/_case.mjs. */
+import { CASE_KEY } from './_case.mjs';
 
 const fail = (res, status, message) =>
   res.status(status).json({ error: { type: 'schedule_error', message } });
@@ -46,6 +48,12 @@ const row = (one) => {
     runs: one.runs,
     misses: one.misses,
     fails: one.fails,
+    /* КЕЙС ЛИ ЭТО - положительным признаком, а не догадкой по имени. Строка расписания кейса выглядит как
+     * всякая другая, но читается иначе: «Runs by itself» на Skills не должна предлагать править её как
+     * расписание скилла, а Activity - называть её именем скилла. Пусто - обычное расписание. */
+    caseId: one.args && typeof one.args === 'object' && one.args[CASE_KEY]
+      ? String(one.args[CASE_KEY].id || '') || null
+      : null,
   };
 };
 
@@ -56,7 +64,7 @@ const row = (one) => {
 async function list(res, sql, userId) {
   const rows = await sql`
     select id, flow_id, tool_name, label, kind, every_minutes, at_minutes, days, zone,
-           next_at, paused, paused_why, last_at, last_said, runs, misses, fails
+           next_at, paused, paused_why, last_at, last_said, runs, misses, fails, args
     from user_schedule
     where user_id = ${userId} and deleted_at is null
       /* Отработавшие одноразовые, записанные до того, как они стали завершаться (см. dueNow в api/mcp.js).
@@ -70,7 +78,26 @@ async function list(res, sql, userId) {
 
 async function add(req, res, sql, userId) {
   const body = req.body || {};
-  const flowId = String(body.flowId || '').trim();
+  /* КЕЙС ИЛИ СКИЛЛ - одна и та же строка расписания, отличающаяся одним ключом в аргументах. Своей таблицы
+   * у «ночной регрессии» нет нарочно: пауза, снятие с паузы, пропуски, «три провала подряд» и пересчёт
+   * срока написаны здесь один раз, и вторая их копия для кейсов означала бы два разных представления о том,
+   * что такое «каждую ночь». Утверждения и значения параметров в строку НЕ КОПИРУЮТСЯ - драйвер читает их
+   * у кейса в момент старта, поэтому кейс, поправленный утром, ночью проверяется в новой редакции. */
+  const askedCase = String(body.caseId || '').trim();
+  let caseRow = null;
+  if (askedCase) {
+    if (!ID.test(askedCase)) return fail(res, 400, 'that is not a case id');
+    const found = await sql`
+      select id, name, flow_id, expects from user_case
+      where id = ${askedCase} and user_id = ${userId} and deleted_at is null limit 1
+    `.catch(() => []);
+    if (!found.length) return fail(res, 404, 'no case with that id on this account');
+    if (!Array.isArray(found[0].expects) || !found[0].expects.length) {
+      return fail(res, 400, 'this case has no checks, so there is nothing it could prove every night');
+    }
+    caseRow = found[0];
+  }
+  const flowId = caseRow ? String(caseRow.flow_id) : String(body.flowId || '').trim();
   if (!ID.test(flowId)) return fail(res, 400, 'which skill? pass flowId');
 
   const read = readRule(body);
@@ -111,15 +138,16 @@ async function add(req, res, sql, userId) {
       id, user_id, flow_id, tool_name, args, label,
       kind, every_minutes, at_minutes, days, zone, next_at
     ) values (
-      ${id}, ${userId}, ${flowId}, 'mouseflow_run', ${JSON.stringify(body.arguments || {})},
-      ${String(body.label || flow[0].name || '').slice(0, 80)},
+      ${id}, ${userId}, ${flowId}, 'mouseflow_run',
+      ${JSON.stringify(caseRow ? { [CASE_KEY]: { id: caseRow.id } } : (body.arguments || {}))},
+      ${String(body.label || (caseRow ? caseRow.name : flow[0].name) || '').slice(0, 80)},
       ${rule.kind}, ${rule.everyMinutes ?? null}, ${rule.atMinutes ?? null},
       ${rule.days || 'all'}, ${rule.zone}, ${new Date(at).toISOString()}
     )
   `;
   const made = await sql`
     select id, flow_id, tool_name, label, kind, every_minutes, at_minutes, days, zone,
-           next_at, paused, paused_why, last_at, last_said, runs, misses, fails
+           next_at, paused, paused_why, last_at, last_said, runs, misses, fails, args
     from user_schedule where id = ${id} and user_id = ${userId}
   `;
   return res.status(200).json({ ok: true, schedule: row(made[0]) });
@@ -128,7 +156,7 @@ async function add(req, res, sql, userId) {
 async function pause(req, res, sql, userId, id) {
   const rows = await sql`
     select id, flow_id, tool_name, label, kind, every_minutes, at_minutes, days, zone,
-           next_at, paused, paused_why, last_at, last_said, runs, misses, fails
+           next_at, paused, paused_why, last_at, last_said, runs, misses, fails, args
     from user_schedule
     where id = ${id} and user_id = ${userId} and deleted_at is null
   `;
@@ -148,7 +176,7 @@ async function pause(req, res, sql, userId, id) {
   `;
   const after = await sql`
     select id, flow_id, tool_name, label, kind, every_minutes, at_minutes, days, zone,
-           next_at, paused, paused_why, last_at, last_said, runs, misses, fails
+           next_at, paused, paused_why, last_at, last_said, runs, misses, fails, args
     from user_schedule where id = ${id} and user_id = ${userId}
   `;
   return res.status(200).json({ ok: true, schedule: row(after[0]) });

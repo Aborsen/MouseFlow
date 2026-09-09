@@ -12,6 +12,7 @@ import { bootTheme } from '@/shell/theme';
 import { RecordView } from '@/features/record/RecordView';
 import { CreateView } from '@/features/create/CreateView';
 import { ActivityView } from '@/features/activity/ActivityView';
+import { TestsView } from '@/features/tests/TestsView';
 import { SkillsView } from '@/features/skills/SkillsView';
 import { GalleryView } from '@/features/gallery/GalleryView';
 import { ConnectView } from '@/features/connect/ConnectView';
@@ -53,6 +54,7 @@ const routes = [
   createRoute({ getParentRoute: () => rootRoute, path: '/create', component: CreateView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/activity', component: ActivityView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/skills', component: SkillsView }),
+  createRoute({ getParentRoute: () => rootRoute, path: '/tests', component: TestsView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/gallery', component: GalleryView }),
   createRoute({ getParentRoute: () => rootRoute, path: '/dashboard', component: InsightsView }),
   /* ДВА маршрута на один экран, и это не дубликат: список документов и один документ - одно состояние

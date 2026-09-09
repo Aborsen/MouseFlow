@@ -404,6 +404,24 @@ async function main() {
       await page.goto(SITE + '/activity', 2500);
       await page.shot('activity.png');
 
+      /* ---- tests ----
+         Фикстура даёт то, ради чего страница существует: четыре кейса с ЧЕТЫРЬМЯ разными вердиктами, ряд
+         точек, в котором три ночи подряд ничего не доказано, и кейс, чей скилл удалили. Снимок со всем
+         зелёным показывал бы единственное состояние, в котором сюда не ходят. Раскрытая строка - второй
+         снимок: проверки и провалившийся expect словами это то, ради чего страницу открывают в девять утра. */
+      await page.goto(SITE + '/tests', 2500);
+      await page.shot('tests.png');
+      /* Строка кейса - раскрывающийся div, а не кнопка, поэтому селектор задан: byText по умолчанию ищет
+         среди кнопок и ссылок, и без этого снимок молча получался нераскрытым. */
+      if (await page.eval("window.__mf.clickText('Outlook still sends', 'li > div')")) {
+        await wait(600);
+        await page.eval("window.__mf.clickText('Replied, but the subject', 'li li > div')");
+        await wait(600);
+        await page.shot('tests-case.png');
+      } else {
+        console.log('  SKIPPED tests-case.png - no case row to open');
+      }
+
       /* ---- skills ---- */
       await page.goto(SITE + '/skills', 2500);
       await page.shot('skills.png');

@@ -35,7 +35,10 @@ export const when = (iso: string | null) => {
   return `${at.toLocaleDateString([], { day: 'numeric', month: 'short' })} ${clock}`;
 };
 
-export const took = (run: Run) => {
+/* Берёт не `Run`, а два поля: столько же читает, и это позволяет считать длительность прогона кейса
+ * (CaseRun, у которого нет ни цели, ни шагов в перечне) той же функцией. Две функции «сколько это шло»
+ * разошлись бы на первом же «а покажем секунды до минуты». */
+export const took = (run: { startedAt: string | null; finishedAt: string | null }) => {
   if (!run.startedAt || !run.finishedAt) return null;
   const ms = new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime();
   if (!Number.isFinite(ms) || ms <= 0) return null;
