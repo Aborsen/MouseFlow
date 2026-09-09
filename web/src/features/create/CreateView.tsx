@@ -140,7 +140,18 @@ export const CreateView = () => {
   const [target, setTarget] = useState<Target>(() => {
     try { return localStorage.getItem(KEY) === 'desktop' ? 'desktop' : 'browser'; } catch (_) { return 'browser'; }
   });
-  const [goal, setGoal] = useState('');
+  /* ЦЕЛЬ, ПРИНЕСЁННАЯ СО СТРАНИЦЫ ACTIVITY (Relaunch). Прочитана один раз и сразу стёрта: вернуться на Create
+   * через час и найти в композере вчерашнюю цель - это композер, который подставляет то, о чём не просили.
+   * sessionStorage, а не адресная строка: цель это текст на несколько строк, и в URL ему не место. */
+  const [goal, setGoal] = useState(() => {
+    try {
+      const carried = sessionStorage.getItem('mouseflow.relaunch');
+      if (carried) sessionStorage.removeItem('mouseflow.relaunch');
+      return carried ?? '';
+    } catch (_) {
+      return '';
+    }
+  });
 
   /* Готовые куски речи ДОПИСЫВАЮТСЯ к тому, что уже набрано, а не заменяют его: диктовка - это ещё один
    * способ набирать в то же поле, а не отдельный режим ввода. Пробел ставится здесь, потому что

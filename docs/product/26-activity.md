@@ -13,6 +13,27 @@ schedule was a row on **Skills → Runs by itself**; the queued work was visible
 the history was the panel on the right of **Create**, and only while Create was open. None of the three
 answered the question whole, and none had a button beside the thing being asked about.
 
+## Three cards, shaped like the Skills page
+
+The first version drew the history as a full-width table, and on a 1920-pixel screen a run's goal stretched
+across most of it; the page read as a stranger's. It is now three cards of the same shape as the library and
+*Ready to become a skill*: each in its own border, a gap between them, rows as the same rounded plates,
+**seven rows tall and then a scrollbar** — the same row height (58.3 px, measured) and gap the Skills page
+uses. The goal is capped at about seventy characters and truncated; the whole of it is in the tooltip and
+in the expanded row.
+
+**Filters are three independent axes**, not one segmented control: *status* (any / ok / ok · a check failed
+/ could not finish / stopped by you / cancelled · never ran / set aside), *source* (you / schedule / chat /
+extension) and *period* (24 hours / 7 days / 30 days / all), plus a search by name. "Failed" and "by itself"
+are different questions, and one control forced a choice between them.
+
+**Relaunch** sits on every finished row that has a goal. It goes through the same door as *Ask again* in the
+Create page's history panel — the goal is placed in the Create composer and the person presses Run — rather
+than queueing behind their back: a queue waits for a machine that may be asleep, and somebody who pressed
+Relaunch is looking at the screen and wants to watch it go. The goal travels through `sessionStorage`, read
+once and cleared, because a multi-line goal does not belong in a URL and a composer that still holds
+yesterday's goal an hour later is a composer that fills itself in.
+
 ## Three sections, each of which collapses honestly
 
 | Section | Holds | Action | When empty |

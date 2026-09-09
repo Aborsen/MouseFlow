@@ -5117,8 +5117,20 @@ group('Activity отвечает целиком: идёт, ждёт, было - 
     /cancelJob\(job\.id\), 'Cancelled\.'\)/.test(page) && /setUpcoming\(sch\.schedules\.filter\(\(one\) => !one\.paused && one\.nextAt\)\)/.test(page));
   check('одноразовое расписание отменяется здесь, повторяющееся - только на паузу',
     /one\.rule\.startsWith\('once'\) \?/.test(page) && /scheduleRemove\(one\.id\)/.test(page) && /schedulePause\(one\.id, true\)/.test(page));
-  check('и секции «ждёт» нет вовсе, когда ждать нечего',
-    /\(queued\.length > 0 \|\| upcoming\.length > 0\) && \(/.test(page));
+  /* ТРИ КАРТОЧКИ КАК НА SKILLS - в ободке, с зазором, с окном на шесть-семь строк и прокруткой. Первая версия
+   * рисовала историю таблицей во всю ширину, и на 1920 пикселях цель тянулась на полтора метра. */
+  check('три карточки в том же ободке, что у библиотеки, и строки - те же плашки',
+    (page.match(/rounded-xl border-stroke border bg-surface-card p-4/g) || []).length === 3
+      && /const ROW = 'rounded-lg border-stroke\/45 border bg-surface-card2 px-3 py-2';/.test(page));
+  /* Высота строки - СВОЯ, измеренная: с библиотечной в окно влезало восемь, и снимок доки это показал. */
+  check('и у каждой окно на семь строк с прокруткой - зазор как у Skills, высота строки своя, измеренная',
+    /const LIST_ROW = 2\.75;/.test(page) && /const LIST_GAP = 0\.375;/.test(page)
+      && /const LIST_HEIGHT = `\$\{rowsToRem\(7\)\}rem`;/.test(page)
+      && (page.match(/overflow-y-auto pe-1/g) || []).length === 3);
+  check('а цель обрезана, а не растянута на весь экран',
+    /const TITLE = 'min-w-0 max-w-\[42rem\] truncate/.test(page));
+  check('секция «ждёт» пустой говорит, где паузы, а не исчезает молча',
+    /Nothing is waiting\. Schedules that are paused stay on/.test(page));
 
   /* История - журнал ПЛЮС очередь: отменённое до запуска прогоном не стало и в user_run его нет. */
   check('история сшивает журнал с очередью без дублей',
@@ -5152,8 +5164,20 @@ group('Activity отвечает целиком: идёт, ждёт, было - 
     /job\.state === 'claimed' \|\| job\.state === 'queued'/.test(page) && /liveCount > 0 &&/.test(sidebar));
   check('пункт стоит после Create и до Skills', /'\/record,\/create,\/activity,\/skills/.test(read('./test-mcp.mjs')));
 
-  /* Фильтры считаны, как у библиотеки. */
-  check('фильтры считаны, чтобы выбор не был гаданием', /\{label\} \{counts\[id\]\}/.test(page));
+  /* ТРИ ОСИ, А НЕ ОДИН ПЕРЕКЛЮЧАТЕЛЬ: «failed» и «by itself» это разные вопросы, и один сегментный контрол
+   * заставлял выбирать между ними. */
+  check('фильтры - статус, источник и время независимо, плюс поиск по имени',
+    /<select value=\{status\}/.test(page) && /<select value=\{source\}/.test(page) && /<select value=\{period\}/.test(page)
+      && /placeholder="Search by name…"/.test(page));
+  check('и в статусах «ok · a check failed» стоит отдельно от «ok» - найденный дефект это свой фильтр',
+    /\{ id: 'bug', label: 'ok · a check failed' \}/.test(page) && /checks\.failed > 0 \? 'bug' : 'ok'/.test(page));
+  /* ПЕРЕЗАПУСК - той же дверью, что «Ask again»: цель в композер Create, Run нажимает человек. */
+  check('перезапуск ведёт в Create с целью в композере, а не ставит в очередь за спиной',
+    /export const RELAUNCH_KEY = 'mouseflow\.relaunch';/.test(page)
+      && /sessionStorage\.setItem\(RELAUNCH_KEY, goal\)/.test(page)
+      && /sessionStorage\.getItem\('mouseflow\.relaunch'\)/.test(read('../web/src/features/create/CreateView.tsx'))
+      && /sessionStorage\.removeItem\('mouseflow\.relaunch'\)/.test(read('../web/src/features/create/CreateView.tsx')));
+  check('и предлагается только у законченного с целью', /\{finished && goal \? \(/.test(page));
   check('мок отвечает историей очереди с тем, чего в журнале нет',
     /cancelled before it finished/.test(mock) && /the skill was deleted between the ask and the run/.test(mock));
 }
