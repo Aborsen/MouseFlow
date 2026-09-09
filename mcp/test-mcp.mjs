@@ -499,7 +499,7 @@ check('a notification gets 202 and no body', /startsWith\('notifications\/'\)[\s
  * fell into it and the in-app banner silently never appeared, which is what a route that swallows unknown
  * queries looks like from the outside: fine. */
 check('the info document does not swallow the other GETs',
-  /const aGetForSomethingElse = req\.query && \(req\.query\.worker \|\| req\.query\.pending \|\| req\.query\.live\)/.test(route));
+  /const aGetForSomethingElse = req\.query && \(req\.query\.worker \|\| req\.query\.pending \|\| req\.query\.live[\s\S]{0,40}?\|\| req\.query\.cancel\)/.test(route));
 const getQueries = [...route.matchAll(/req\.method === 'GET' && req\.query && req\.query\.(\w+)/g)]
   .map((m) => m[1]);
 check('and every GET query it does have is one of them',
@@ -756,7 +756,7 @@ check('and it is in the sidebar, not buried in a dialog', /to: '\/team'/.test(si
    /docs стоял здесь один день и ушёл: список документов стал вкладкой Галереи, потому что вопрос у
    человека один - «что уже сделано и можно взять», - и отвечать на него двумя пунктами меню было ошибкой.
    Пин на порядке существует ровно затем, чтобы и добавление, и удаление были видны в диффе теста. */
-const NAV_ORDER = '/record,/create,/skills,/dashboard,/team,/gallery';
+const NAV_ORDER = '/record,/create,/activity,/skills,/dashboard,/team,/gallery';
 check('порядок в сайдбаре тот, о котором договорились, и Gallery последняя',
   [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join() === NAV_ORDER,
   [...sidebar.matchAll(/to: '(\/[a-z]+)'/g)].map((m) => m[1]).join());
@@ -4859,7 +4859,7 @@ group('прогон, который машина делает сама, виде
   check('и только строки этого человека', /from run_queue q[\s\S]{0,400}?where q\.user_id = \$\{who\.id\}/.test(route));
 
   check('страница спрашивает это по таймеру, а не один раз',
-    create.includes('const timer = setInterval(() => { void look(); }, 5000);') && client.includes("call<{ ok: true; jobs: LiveJob[] }>('/api/mcp?live=1')"));
+    create.includes('const timer = setInterval(() => { void look(); }, 5000);') && client.includes("call<{ ok: true; jobs: LiveJob[] }>(`/api/mcp?live=1"));
   check('и рисует чужой прогон той же карточкой, с подписью, что он сам по себе',
     create.includes("byItself: { scheduleId: job.scheduleId }")
       && /by itself, from a schedule/.test(create) && /by itself, asked from a chat/.test(create));
@@ -5091,6 +5091,71 @@ group('кадр сохраняется там, где он что-то дока�
     /if \(failed \|\| !rows \|\| !rows\.length\) return null;/.test(frames));
 
   check('исполняемый набор правил зовётся из npm test', /node api\/_test-artifact\.mjs/.test(pkg));
+}
+
+/* ------------------------------------------------------- ACTIVITY: ЧТО ИДЁТ, ЧТО ЖДЁТ, ЧТО БЫЛО - И КНОПКА У ВЕЩИ
+ *
+ * Прогон по расписанию шёл всю ночь, каждые четверть часа, и на вопрос «как это отменить» ответ был рассыпан
+ * по трём местам без единой кнопки у той вещи, о которой спрашивали. Здесь проверяется, что страница отвечает
+ * целиком, что её слова - из одного словаря, и что в истории есть то, чего в журнале прогонов не бывает. */
+group('Activity отвечает целиком: идёт, ждёт, было - с действием у каждой строки');
+{
+  const page = read('../web/src/features/activity/ActivityView.tsx');
+  const words = read('../web/src/features/activity/status.ts');
+  const live = read('../web/src/lib/live.ts');
+  const route = read('../api/mcp.js');
+  const client = read('../web/src/lib/api.ts');
+  const sidebar = read('../web/src/shell/AppSidebar.tsx');
+  const mock = read('../web/src/dev/mock-api.ts');
+
+  /* Три секции, и каждая честно складывается. */
+  check('идущее - с кнопкой Stop у самой карточки',
+    /Running now/.test(page) && /cancelJob\(job\.id\), 'Stopping\.'\)/.test(page));
+  check('и «ничего не идёт» различает «нечего» и «некому»',
+    /and no agent is listening on this computer, so nothing can/.test(page));
+  check('ждущее - очередь с Cancel и ближайшие расписания',
+    /cancelJob\(job\.id\), 'Cancelled\.'\)/.test(page) && /setUpcoming\(sch\.schedules\.filter\(\(one\) => !one\.paused && one\.nextAt\)\)/.test(page));
+  check('одноразовое расписание отменяется здесь, повторяющееся - только на паузу',
+    /one\.rule\.startsWith\('once'\) \?/.test(page) && /scheduleRemove\(one\.id\)/.test(page) && /schedulePause\(one\.id, true\)/.test(page));
+  check('и секции «ждёт» нет вовсе, когда ждать нечего',
+    /\(queued\.length > 0 \|\| upcoming\.length > 0\) && \(/.test(page));
+
+  /* История - журнал ПЛЮС очередь: отменённое до запуска прогоном не стало и в user_run его нет. */
+  check('история сшивает журнал с очередью без дублей',
+    /const byId = new Map\(queueHistory\.map/.test(page) && /if \(seen\.has\(job\.id\)\) continue;/.test(page));
+  check('и маршрут отдаёт историю очереди за окно в сутках, а не только за три минуты',
+    /const days = Math\.min\(30, Math\.max\(0, Math\.round\(Number\(req\.query\.days\) \|\| 0\)\)\);/.test(route)
+      && /q\.finished_at > now\(\) - \$\{`\$\{days\} days`\}::interval/.test(route)
+      && client.includes("`/api/mcp?live=1${days ? `&days=${Math.round(days)}` : ''}`"));
+
+  /* Отмена одной работы - со страницы, кукой. */
+  check('отменить одну можно кукой со страницы, а не только тулом все сразу',
+    /if \(req\.method === 'POST' && req\.query && req\.query\.cancel\)/.test(route)
+      && /where user_id = \$\{who\.id\} and id = \$\{id\} and state in \('queued', 'claimed'\)/.test(route));
+  check('и ответ различает «не начиналось» и «остановится на следующем шаге»',
+    /Cancelled\. It never started\./.test(route) && /stops at the next step the machine checks/.test(route));
+  check('чужой и несуществующий id отвечают одинаково', /nothing to cancel - it had already finished, or it is not yours/.test(route));
+
+  /* Словарь - одно место, два вопроса никогда не в одном чипе. */
+  check('слова статусов живут в одном месте',
+    /export const runChips/.test(words) && /export const jobChip/.test(words) && /export const scheduleChip/.test(words));
+  check('и они человеческие, а не имена состояний из базы',
+    /could not finish/.test(words) && /stopped by you/.test(words) && /cancelled · never ran/.test(words) && !/'failed', tone/.test(words));
+  check('провал проверки - отдельным чипом рядом с ok, красным',
+    /chips\.push\(\{ label: `\$\{checks\.failed\} check/.test(words) && /tone: 'bad' \}\)/.test(words));
+  check('а источник - вторая ось, не сложенная в статус', /export const sourceOf/.test(words) && /'schedule' : 'chat'/.test(words));
+
+  /* Один опрос на всё приложение. */
+  check('живое кормится одним опросом на страницу и сайдбар',
+    /useSyncExternalStore\(subscribe, snapshot, snapshot\)/.test(live) && /if \(!listeners\.size && timer\)/.test(live));
+  check('и сайдбар считает только идущее и ждущее, никогда историю',
+    /job\.state === 'claimed' \|\| job\.state === 'queued'/.test(page) && /liveCount > 0 &&/.test(sidebar));
+  check('пункт стоит после Create и до Skills', /'\/record,\/create,\/activity,\/skills/.test(read('./test-mcp.mjs')));
+
+  /* Фильтры считаны, как у библиотеки. */
+  check('фильтры считаны, чтобы выбор не был гаданием', /\{label\} \{counts\[id\]\}/.test(page));
+  check('мок отвечает историей очереди с тем, чего в журнале нет',
+    /cancelled before it finished/.test(mock) && /the skill was deleted between the ask and the run/.test(mock));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

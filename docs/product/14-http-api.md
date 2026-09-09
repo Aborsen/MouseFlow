@@ -465,6 +465,8 @@ The whole feature — what ticks it, what it does when the machine was asleep, a
 POST   /api/mcp                    JSON-RPC 2.0: initialize, ping, tools/list, tools/call
 GET    /api/mcp                    a short document about the server — no credential needed
 GET    /api/mcp?live=1             (session) what the machine is doing by itself: queued and claimed jobs with their steps, and jobs finished in the last three minutes
+GET    /api/mcp?live=1&days=N      (session) the same, plus every queue row that ended in the last N days (≤30) — including cancelled ones that never became a run; the Activity page's history
+POST   /api/mcp?cancel=<jobId>     (session) cancel one queued job, or stop one running job at its next step; same answer for a foreign or missing id
 GET    /api/mcp?pending=1          "is anything waiting for a machine?"  (any credential)
 POST   /api/mcp?worker=claim       a machine takes the next job          (answers at once; ≤ 6 s if a wait is asked for)
 POST   /api/mcp?worker=report      …and says how it went

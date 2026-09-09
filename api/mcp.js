@@ -1924,7 +1924,8 @@ async function handler(req, res) {
    * instead of the thing that was asked for. `?pending=1` fell into it and returned `{name, version}` - no
    * error, no 401, just the wrong answer - and the banner that reads `waiting` from it silently never
    * appeared. A route that swallows unknown queries fails exactly like this: quietly, and looking fine. */
-  const aGetForSomethingElse = req.query && (req.query.worker || req.query.pending || req.query.live);
+  const aGetForSomethingElse = req.query && (req.query.worker || req.query.pending || req.query.live
+    || req.query.cancel);
   if (req.method === 'GET' && !aGetForSomethingElse) {
     const host = req.headers['x-forwarded-host'] || req.headers.host || 'mouseflowapp.vercel.app';
     res.status(200).json({
@@ -1987,17 +1988,37 @@ async function handler(req, res) {
    * закончилось только что (шаги - из user_run, потому что loop у законченного обнулён). Три минуты назад -
    * чтобы окончание, случившееся между двумя опросами, не пропало. Только строки этого человека. */
   if (req.method === 'GET' && req.query && req.query.live) {
-    const rows = await sql`
-      select q.id, q.flow_id, q.tool_name, q.state, q.ok, q.said, q.loop, q.schedule_id,
-             q.created_at, q.claimed_at, q.finished_at,
-             f.name as flow_name, r.steps as run_steps, r.goal as run_goal, r.started_at as run_started
-      from run_queue q
-      left join user_flow f on f.user_id = q.user_id and f.client_id = q.flow_id
-      left join user_run r on r.user_id = q.user_id and r.client_id = q.id
-      where q.user_id = ${who.id}
-        and (q.state in ('queued', 'claimed') or q.finished_at > now() - interval '3 minutes')
-      order by q.created_at desc limit 5
-    `;
+    /* `days` - окно ИСТОРИИ очереди, для страницы Activity. Без него - три минуты, для живой ленты на Create.
+     *
+     * Зачем странице очередь, если у неё есть журнал прогонов: в журнал попадает только то, что БЫЛО. Работа,
+     * отменённая до того, как машина её взяла, или упавшая на заборе («скилл удалён между просьбой и
+     * взятием»), прогоном не становится и в user_run не пишется - а человек, глядя на «что стало с моей
+     * просьбой из чата», обязан увидеть и это. Тридцать суток - потолок, потому что строки очереди чистятся
+     * не так, как журнал, и лента из тысячи отменённых никому не нужна. */
+    const days = Math.min(30, Math.max(0, Math.round(Number(req.query.days) || 0)));
+    const rows = days
+      ? await sql`
+        select q.id, q.flow_id, q.tool_name, q.state, q.ok, q.said, q.loop, q.schedule_id,
+               q.created_at, q.claimed_at, q.finished_at,
+               f.name as flow_name, r.steps as run_steps, r.goal as run_goal, r.started_at as run_started
+        from run_queue q
+        left join user_flow f on f.user_id = q.user_id and f.client_id = q.flow_id
+        left join user_run r on r.user_id = q.user_id and r.client_id = q.id
+        where q.user_id = ${who.id}
+          and (q.state in ('queued', 'claimed') or q.finished_at > now() - ${`${days} days`}::interval)
+        order by q.created_at desc limit 200
+      `
+      : await sql`
+        select q.id, q.flow_id, q.tool_name, q.state, q.ok, q.said, q.loop, q.schedule_id,
+               q.created_at, q.claimed_at, q.finished_at,
+               f.name as flow_name, r.steps as run_steps, r.goal as run_goal, r.started_at as run_started
+        from run_queue q
+        left join user_flow f on f.user_id = q.user_id and f.client_id = q.flow_id
+        left join user_run r on r.user_id = q.user_id and r.client_id = q.id
+        where q.user_id = ${who.id}
+          and (q.state in ('queued', 'claimed') or q.finished_at > now() - interval '3 minutes')
+        order by q.created_at desc limit 5
+      `;
     res.status(200).json({
       ok: true,
       jobs: rows.map((q) => {
@@ -2019,6 +2040,29 @@ async function handler(req, res) {
       }),
     });
     return;
+  }
+
+  /* ОТМЕНИТЬ ОДНО - со страницы, кукой. mouseflow_stop отменяет ВСЁ и ходит с токеном; человеку на странице
+   * Activity нужна кнопка у одной строки. Тот же SQL, что у стопа, сужённый до id: queued исчезает из очереди,
+   * claimed останавливается на следующем шаге, который проверит агент (см. ?worker=state). Чужой id и
+   * несуществующий отвечают одинаково - «нечего отменять», - как у расписаний и по той же причине. */
+  if (req.method === 'POST' && req.query && req.query.cancel) {
+    const id = String(req.query.cancel || '').trim();
+    if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id)) return res.status(400).json({ error: 'that is not a job id' });
+    const killed = await sql`
+      update run_queue set state = 'cancelled', finished_at = now(),
+             ok = false, said = 'cancelled before it finished'
+      where user_id = ${who.id} and id = ${id} and state in ('queued', 'claimed')
+      returning id, claimed_at
+    `;
+    if (!killed.length) return res.status(200).json({ ok: true, cancelled: false, said: 'nothing to cancel - it had already finished, or it is not yours' });
+    return res.status(200).json({
+      ok: true,
+      cancelled: true,
+      said: killed[0].claimed_at
+        ? 'Stopping. A run already under way stops at the next step the machine checks, within a second or two.'
+        : 'Cancelled. It never started.',
+    });
   }
 
   const action = req.query && req.query.worker;

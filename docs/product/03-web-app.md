@@ -10,6 +10,7 @@ Entry point: `web/src/main.tsx`.
 |---|---|---|
 | `/` | → `/record` | Landing on Record: the thing most visits came to do. |
 | `/record` | [Record](04-record.md) | |
+| `/activity` | [Activity](26-activity.md) | Running, waiting and everything that ran, with Stop and Cancel beside each. |
 | `/create` | [Create](05-create.md) | Marked **Beta** in the sidebar. |
 | `/skills` | [Skills](06-skills.md) | |
 | `/gallery` | [Gallery](07-gallery.md) | |

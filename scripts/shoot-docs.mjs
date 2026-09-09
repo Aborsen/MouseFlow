@@ -398,6 +398,12 @@ async function main() {
         }
       }
 
+      /* ---- activity ----
+         Фикстура даёт то, ради чего страница существует: расписания, которые ждут, и историю, в которой
+         есть отменённое до запуска - то есть строки, которых в журнале прогонов не бывает. */
+      await page.goto(SITE + '/activity', 2500);
+      await page.shot('activity.png');
+
       /* ---- skills ---- */
       await page.goto(SITE + '/skills', 2500);
       await page.shot('skills.png');

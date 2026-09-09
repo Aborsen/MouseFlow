@@ -23,6 +23,7 @@ import { Reconciler } from '@/features/record/Reconciler';
 const TITLES: Record<string, string> = {
   '/record': 'Record',
   '/create': 'Create the flow',
+  '/activity': 'Activity',
   '/skills': 'Skills',
   '/gallery': 'Gallery',
   '/dashboard': 'Dashboard',

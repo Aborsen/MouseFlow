@@ -12,6 +12,7 @@
  */
 import { Link, useRouterState } from '@tanstack/react-router';
 import {
+  Activity,
   ChartNoAxesColumn,
   ChevronsUpDown,
   CircleDot,
@@ -27,6 +28,7 @@ import { Badge } from '@insightis/ui/Badge';
 import { cn } from '@insightis/ui/cn';
 import { Typography } from '@insightis/ui/Typography';
 import { hoursOf } from '@/lib/api';
+import { useActivityCount } from '@/features/activity/ActivityView';
 import { useAccount } from '@/shell/AccountProvider';
 
 const TIGHT = 'mouseflow.side.tight';
@@ -37,6 +39,10 @@ const NAV = [
    * from a model's decisions, so it is the one that can be wrong in a way that costs something. Saying so is
    * more use than a uniform confidence nobody believes. */
   { to: '/create', label: 'Create', icon: Sparkles, beta: true },
+  /* После Create и до Skills - в порядке, в котором человек встречает вещи: попросил, смотрит, что стало.
+   * Счётчик у пункта - только идущее и ждущее, никогда история: число, растущее с каждым прогоном, было бы
+   * шумом, а число «сейчас» - это то единственное, ради чего сюда идут не глядя. */
+  { to: '/activity', label: 'Activity', icon: Activity, live: true },
   { to: '/skills', label: 'Skills', icon: FolderOpen },
   // Asking about the numbers happens on the page that shows them, not at its own address.
   { to: '/dashboard', label: 'Dashboard', icon: ChartNoAxesColumn },
@@ -71,6 +77,8 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
       return false;
     }
   });
+  /* Идущее и ждущее прямо сейчас - из того же опроса, что кормит страницу Activity. */
+  const liveCount = useActivityCount();
   const { account, runs } = useAccount();
   const path = useRouterState({ select: (s) => s.location.pathname });
 
@@ -170,6 +178,11 @@ export const AppSidebar = ({ onOpenSettings }: Props) => {
                     <Badge variant="attention" size="xs" rounded="full" className="ms-auto shrink-0">
                       Beta
                     </Badge>
+                  )}
+                  {'live' in row && row.live && liveCount > 0 && (
+                    <span className="ms-auto shrink-0 rounded-full bg-brand-primary/12 px-1.5 py-px text-[0.68rem] font-semibold text-brand-primary tabular-nums">
+                      {liveCount}
+                    </span>
                   )}
                 </>
               )}

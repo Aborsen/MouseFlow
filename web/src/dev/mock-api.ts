@@ -916,7 +916,24 @@ export const mockApi: Connect.NextHandleFunction = (req, res, next) => {
   /* Страница Create спрашивает это каждые несколько секунд. У мока нет машины - и ответ говорит «ничего»,
    * а не 404, который в консоли читался бы как поломка. */
   if (url.startsWith('/api/mcp?live=1')) {
-    return json(res, 200, { ok: true, jobs: [] });
+    /* С `days` - история очереди: то, что прогоном не стало. Без него - живая лента, и у мока она пуста:
+     * машины нет, и рисовать идущий прогон было бы враньём про экран, которого нет. */
+    const withDays = /[?&]days=/.test(url);
+    return json(res, 200, {
+      ok: true,
+      jobs: withDays ? [{
+        id: 'q_dev_cancelled', state: 'cancelled', ok: false, said: 'cancelled before it finished',
+        name: 'Reply that the invoice is approved', goal: 'в 20:20 проверь приложение chatGPT и если оно ничего не делает — дай команду продолжать',
+        scheduleId: 'sch_dev_3', startedAt: '2026-08-31T20:19:00.000Z', finishedAt: '2026-08-31T20:19:40.000Z', steps: [],
+      }, {
+        id: 'q_dev_fence', state: 'failed', ok: false, said: 'the skill was deleted between the ask and the run',
+        name: 'Weekly Jira export', goal: null,
+        scheduleId: 'sch_dev_2', startedAt: '2026-08-30T15:00:00.000Z', finishedAt: '2026-08-30T15:00:02.000Z', steps: [],
+      }] : [],
+    });
+  }
+  if (url.startsWith('/api/mcp?cancel=')) {
+    return json(res, 200, { ok: true, cancelled: true, said: 'Cancelled. It never started.' });
   }
 
   if (url.startsWith('/api/schedules')) {

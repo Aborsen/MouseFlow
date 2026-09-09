@@ -407,7 +407,7 @@ export const keepArtifact = (body: {
  * не узнала бы. Шаги в форме десктопного цикла: {tool, input, ms}. */
 export interface LiveJob {
   id: string;
-  state: 'queued' | 'claimed' | 'done' | 'failed';
+  state: 'queued' | 'claimed' | 'done' | 'failed' | 'cancelled';
   ok: boolean | null;
   said: string | null;
   name: string;
@@ -417,7 +417,15 @@ export interface LiveJob {
   finishedAt: string | null;
   steps: { tool: string; input: Record<string, unknown>; ms?: { shot: number; model: number; act: number } }[];
 }
-export const liveJobs = () => call<{ ok: true; jobs: LiveJob[] }>('/api/mcp?live=1');
+/* Без `days` - живая лента (идёт сейчас и кончилось за три минуты); с `days` - история очереди за столько
+ * суток, включая отменённое до запуска, которое прогоном не стало и в журнале отсутствует. */
+export const liveJobs = (days?: number) =>
+  call<{ ok: true; jobs: LiveJob[] }>(`/api/mcp?live=1${days ? `&days=${Math.round(days)}` : ''}`);
+/* Отменить одну работу: queued исчезает, claimed останавливается на следующем шаге агента. */
+export const cancelJob = (id: string) =>
+  call<{ ok: true; cancelled: boolean; said: string }>(`/api/mcp?cancel=${encodeURIComponent(id)}`, {
+    method: 'POST',
+  });
 
 export const scheduleAdd = (body: {
   flowId: string;
