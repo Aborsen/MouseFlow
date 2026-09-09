@@ -50,6 +50,11 @@ const LIST_ROW = 2.75;   // rem — 44px measured on this page's single-line row
 const LIST_GAP = 0.375;  // rem — gap-1.5, as on Skills
 const rowsToRem = (n: number) => n * LIST_ROW + (n - 1) * LIST_GAP;
 const LIST_HEIGHT = `${rowsToRem(7)}rem`;
+/* У ИСТОРИИ ОКНО ГЛУБЖЕ - десять строк. Её строка раскрывается, и раскрытое (шаги, вердикты, кадры) должно
+ * помещаться в то же окно, а не выталкивать его: раньше открытая строка снимала потолок совсем (`open ?
+ * undefined`), и вместо блока на семь строк на страницу выливались все восемьдесят пять. Потолок теперь
+ * держится всегда, а окно глубже - чтобы под раскрытым было место. */
+const HISTORY_HEIGHT = `${rowsToRem(10)}rem`;
 
 /* Та же плашка, что у строк «Ready to become a skill»: скруглённая, с тонким ободком, на surface-card2. */
 const ROW = 'rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2';
@@ -336,9 +341,11 @@ export const ActivityView = () => {
         <div className="mb-3 flex flex-wrap items-end gap-x-3 gap-y-3">
           <div className="min-w-0 flex-1 basis-full lg:basis-auto">
             <Typography variant="span" className={cn(LABEL, 'block')}>
-              History · {shown.length === entries.length ? `${entries.length} run${entries.length === 1 ? '' : 's'}` : `${shown.length} of ${entries.length}`}
+              {shown.length === entries.length
+                ? `${entries.length} run${entries.length === 1 ? '' : 's'}`
+                : `${shown.length} of ${entries.length} runs`}
             </Typography>
-            <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.35rem]">Everything that ran</Typography>
+            <Typography variant="h2" weight="semibold" className="mt-0.5 text-[1.35rem]">History</Typography>
           </div>
           <div className="relative min-w-[12rem] flex-1 sm:max-w-[18rem]">
             <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-inactive" />
@@ -367,7 +374,7 @@ export const ActivityView = () => {
             {entries.length ? 'Nothing matches these filters.' : 'Nothing has run yet.'}
           </Typography>
         ) : (
-          <ul className="flex flex-col gap-1.5 overflow-y-auto pe-1" style={{ maxHeight: open ? undefined : LIST_HEIGHT }}>
+          <ul className="flex flex-col gap-1.5 overflow-y-auto pe-1" style={{ maxHeight: HISTORY_HEIGHT }}>
             {shown.map((e) => {
               const isOpen = open === e.id;
               const chips = e.kind === 'run' ? runChips(e.run) : [jobChip(e.job)];
@@ -382,7 +389,11 @@ export const ActivityView = () => {
                   <div
                     onClick={(ev) => {
                       if ((ev.target as HTMLElement).closest('button,a')) return;
+                      const row = (ev.currentTarget as HTMLElement).parentElement;
                       setOpen(isOpen ? null : e.id);
+                      /* Раскрытая строка не должна уезжать под нижнюю кромку окна: 'nearest' двигает
+                       * только ближайший скроллер и ровно настолько, насколько нужно, чтобы её видеть. */
+                      if (!isOpen && row) requestAnimationFrame(() => row.scrollIntoView({ block: 'nearest' }));
                     }}
                     className="grid cursor-pointer grid-cols-[1rem_minmax(0,1fr)_auto_5.5rem_9rem_4rem_auto_1.25rem] items-center gap-3"
                   >

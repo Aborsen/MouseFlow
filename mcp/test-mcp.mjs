@@ -5129,6 +5129,16 @@ group('Activity отвечает целиком: идёт, ждёт, было - 
     /const LIST_ROW = 2\.75;/.test(page) && /const LIST_GAP = 0\.375;/.test(page)
       && /const LIST_HEIGHT = `\$\{rowsToRem\(7\)\}rem`;/.test(page)
       && (page.match(/overflow-y-auto pe-1/g) || []).length === 3);
+  /* У ИСТОРИИ окно глубже - десять строк - и потолок с неё НЕ СНИМАЕТСЯ при раскрытии строки: раньше
+   * открытая строка выливала на страницу весь список. */
+  check('окно истории - десять строк, и раскрытая строка не снимает потолок',
+    /const HISTORY_HEIGHT = `\$\{rowsToRem\(10\)\}rem`;/.test(page)
+      && /style=\{\{ maxHeight: HISTORY_HEIGHT \}\}/.test(page)
+      && !/maxHeight: open \? undefined/.test(page)
+      && /row\.scrollIntoView\(\{ block: 'nearest' \}\)/.test(page));
+  check('и заголовок нижней карточки - History, а счётчик прогонов над ним',
+    /className="mt-0\.5 text-\[1\.35rem\]">History</.test(page)
+      && /\$\{shown\.length\} of \$\{entries\.length\} runs/.test(page));
   check('а цель обрезана, а не растянута на весь экран',
     /const TITLE = 'min-w-0 max-w-\[42rem\] truncate/.test(page));
   check('секция «ждёт» пустой говорит, где паузы, а не исчезает молча',

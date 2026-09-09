@@ -18,9 +18,20 @@ answered the question whole, and none had a button beside the thing being asked 
 The first version drew the history as a full-width table, and on a 1920-pixel screen a run's goal stretched
 across most of it; the page read as a stranger's. It is now three cards of the same shape as the library and
 *Ready to become a skill*: each in its own border, a gap between them, rows as the same rounded plates,
-**seven rows tall and then a scrollbar** — the same row height (58.3 px, measured) and gap the Skills page
-uses. The goal is capped at about seventy characters and truncated; the whole of it is in the tooltip and
-in the expanded row.
+**a window and then a scrollbar** — the Skills page's gap (`gap-1.5`) with this page's own measured row
+height (44 px; a single-line row here is shorter than a library row, and borrowing the library's 58.3 px
+fitted eight rows into a window meant for seven). *Running now* and *Waiting* are seven rows tall;
+**History is ten**, because its rows open.
+
+The goal is capped at about seventy characters and truncated; the whole of it is in the tooltip and in the
+expanded row.
+
+**The window keeps its ceiling when a row opens.** It did not at first: an open row dropped the cap
+(`maxHeight: open ? undefined`) so the detail would have room, and the whole of a thirty-day history —
+eighty-five rows on the machine that found it — poured down the page, and the card stopped being a card.
+The cap now holds always, the window is ten rows deep so the opened detail has somewhere to be, and opening
+a row scrolls it into view with `block: 'nearest'` — the least movement that makes it visible, in the inner
+scroller rather than the page.
 
 **Filters are three independent axes**, not one segmented control: *status* (any / ok / ok · a check failed
 / could not finish / stopped by you / cancelled · never ran / set aside), *source* (you / schedule / chat /
