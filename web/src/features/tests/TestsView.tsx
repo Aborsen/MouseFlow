@@ -35,8 +35,7 @@ import { Frames } from '@/features/create/Frames';
 import { took, when } from '@/features/create/run-history';
 import { chipClass, dotClass, type Tone } from '@/features/activity/status';
 import { verdictChip, verdictTone, verdictWhy } from './verdicts';
-import { CHECKS } from '../../../../api/_expect.mjs';
-import { EXPECTS_MAX, expectLine } from '../../../../api/_case.mjs';
+import { EXPECTS_MAX, checksFor, expectLine } from '../../../../api/_case.mjs';
 
 const LABEL = 'text-[0.7rem] uppercase tracking-wide text-ink-inactive';
 const ROW = 'rounded-lg border-stroke/45 border bg-surface-card2 px-3 py-2';
@@ -162,11 +161,26 @@ const NewCase = ({ onMade }: { onMade: (made: Case) => void }) => {
   const [name, setName] = useState('');
   const [flowId, setFlowId] = useState('');
   const [expects, setExpects] = useState<Expect[]>([{ check: 'present', name: '', why: '' }]);
+  /* ЧТО МОЖНО УТВЕРЖДАТЬ - ЗАВИСИТ ОТ ВЫБРАННОГО СКИЛЛА, и список видов меняется вместе с ним: адрес
+   * страницы и точное число совпадений знает только документ, а у окна приложения адреса нет вовсе.
+   * Предлагать проверку, которую этой поверхности нечем сделать, - это отказ, отложенный до записи. */
+  const on = useMemo(() => {
+    const picked = skills.find((one) => one.id === flowId);
+    return picked && picked.source !== 'desktop' ? 'browser' : 'desktop';
+  }, [skills, flowId]);
+  const kinds = checksFor(on);
   const [busy, setBusy] = useState(false);
   const [why, setWhy] = useState<string | null>(null);
 
   const setOne = (i: number, patch: Partial<Expect>) =>
     setExpects((was) => was.map((one, at) => (at === i ? { ...one, ...patch } : one)));
+
+  /* Сменили скилл на другую поверхность - вид проверки, которого там нет, СБРАСЫВАЕТСЯ, а не остаётся
+   * выбранным втихую: иначе форма показывает одно, а на сервер уезжает другое, и отказ выглядит
+   * необъяснимым. */
+  useEffect(() => {
+    setExpects((was) => was.map((one) => (kinds.includes(one.check) ? one : { ...one, check: kinds[0] })));
+  }, [kinds]);
 
   const save = async () => {
     setBusy(true);
@@ -212,7 +226,14 @@ const NewCase = ({ onMade }: { onMade: (made: Case) => void }) => {
             />
             <select value={flowId} onChange={(e) => setFlowId(e.target.value)} aria-label="Skill" className={SELECT}>
               <option value="">Which skill runs it…</option>
-              {skills.map((one) => <option key={one.id} value={one.id}>{one.name}</option>)}
+              {/* На чём это пойдёт, видно в выборе: веб-скилл проверяется в Chrome и доказательствами
+                * уровня `dom`, десктопный - агентом и деревом доступности. Это доказательства разной силы,
+                * и человек, выбирающий скилл, выбирает заодно и её. */}
+              {skills.map((one) => (
+                <option key={one.id} value={one.id}>
+                  {one.name}{one.source === 'desktop' ? '' : ' — in Chrome'}
+                </option>
+              ))}
             </select>
           </div>
 
@@ -224,17 +245,22 @@ const NewCase = ({ onMade }: { onMade: (made: Case) => void }) => {
                 aria-label="What kind of check"
                 className={SELECT}
               >
-                {CHECKS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+                {kinds.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
               </select>
-              <input
-                value={one.name}
-                onChange={(e) => setOne(i, { name: e.target.value })}
-                placeholder="The control, as it appears on screen"
-                aria-label="Control name"
-                className={cn(FIELD, 'max-w-[16rem] flex-1')}
-              />
+              {/* У проверки про страницу целиком имени нет - и поле для него было бы приглашением
+                * написать то, что никто не прочитает. */}
+              {one.check !== 'url_is' && one.check !== 'url_contains' && (
+                <input
+                  value={one.name}
+                  onChange={(e) => setOne(i, { name: e.target.value })}
+                  placeholder="The control, as it appears on screen"
+                  aria-label="Control name"
+                  className={cn(FIELD, 'max-w-[16rem] flex-1')}
+                />
+              )}
               {/* Поле значения показывается только там, где без него утверждение бессмысленно. */}
-              {(one.check === 'value_is' || one.check === 'value_contains') && (
+              {['value_is', 'value_contains', 'text_is', 'text_contains', 'url_is', 'url_contains', 'count_is']
+                .includes(one.check) && (
                 <input
                   value={one.text || ''}
                   onChange={(e) => setOne(i, { text: e.target.value })}
@@ -394,6 +420,7 @@ export const TestsView = () => {
                           : `runs “${one.skill || one.flowId}”`}
                         {' · '}
                         {one.expects.length} check{one.expects.length === 1 ? '' : 's'}
+                        {one.surface === 'browser' ? ' · in Chrome' : ''}
                         {sch ? ` · by itself ${sch.paused ? '(paused)' : 'nightly'}` : ' · not scheduled'}
                         {sch && sch.misses ? ` · ${sch.misses} missed` : ''}
                       </div>
@@ -438,12 +465,17 @@ export const TestsView = () => {
                         leftSlot={<Clock className="size-3" />}
                         isLoading={busy === one.id}
                         disabled={one.skillGone}
-                        title="Every weekday at 02:00 in this browser's own zone"
+                        title={one.surface === 'browser'
+                          ? 'Every weekday at 02:00 in this browser’s own zone, in Chrome with the extension'
+                          : 'Every weekday at 02:00 in this browser’s own zone'}
                         onClick={() => void act(one.id,
                           () => scheduleAdd({
                             caseId: one.id, at: NIGHTLY.at, days: NIGHTLY.days, zone: zoneOfBrowser(),
                           }),
-                          `“${one.name}” now runs at ${NIGHTLY.at} on weekdays — while that machine is awake.`)}
+                          `“${one.name}” now runs at ${NIGHTLY.at} on weekdays — while `
+                          + (one.surface === 'browser'
+                            ? 'that Chrome is open with the extension taking work.'
+                            : 'that machine is awake and taking work.'))}
                       >
                         Nightly
                       </Button>
@@ -460,7 +492,12 @@ export const TestsView = () => {
                       {sch && (
                         <Typography variant="p" className="text-[0.78rem] text-ink-inactive">
                           By itself: {sch.paused ? `paused — ${sch.pausedWhy || 'by hand'}` : `next ${when(sch.nextAt)}`}
-                          {' · runs only while that computer is awake and taking work'}
+                          {/* УСЛОВИЕ ИСПОЛНЕНИЯ - СВОЁ У КАЖДОЙ ПОВЕРХНОСТИ. Веб-кейс ждёт не агента, а
+                            * открытый Chrome с расширением; тот, кто ждёт не того, чего надо, решит, что
+                            * сломан продукт. */}
+                          {one.surface === 'browser'
+                            ? ' · runs only while that Chrome is open with the extension taking work'
+                            : ' · runs only while that computer is awake and taking work'}
                           {sch.fails ? ` · ${sch.fails} failure(s) in a row` : ''}
                         </Typography>
                       )}

@@ -20,11 +20,14 @@ import {
   skillFromRecording, skillFromRun, importSkills, exportSkill, exportMany, fillGoal, missingParams, flowFor,
   publishLink,
 } from './skills.js';
+/* Проверки, которые решает страница: факты собирает content.js, вердикт выносится здесь, сводка и вид
+ * кадра считаются теми же функциями, которыми их считает сервер (он импортирует их отсюда). */
+import { checkSaid, checksOf, judgeDom, kindOf, saidOf, whyNotCheckable } from './checks.js';
 
 /* Kept in step with the manifest by hand, and asserted in the tests: the popup compares the two to
  * tell the user when the worker it is talking to is an older build. A stale constant here would make
  * that warning cry wolf. */
-const VERSION = '0.16.2';
+const VERSION = '0.17.0';
 // Where the gallery lives. The same deployment that serves the shared Claude key.
 const APP_URL = 'https://mouseflowapp.vercel.app';
 const KEEPALIVE_MS = 20000;
@@ -987,6 +990,13 @@ async function runsToPush() {
       summary: result.summary || null,
       error: result.ok ? null : result.error || null,
       steps: run.steps || [],
+      /* СОШЛИСЬ ЛИ УТВЕРЖДЕНИЯ - отдельно от исхода, и посчитано ЗДЕСЬ, тем же checksOf, которым это
+       * считают оба десктопных драйвера (api/sync.js её не пересчитывает нарочно: второй счёт «сколько
+       * проверок прошло» однажды разойдётся с первым). Null у прогона, который ничего не утверждал. */
+      checks: checksOf(run.steps),
+      /* ПОД КАКИМ ТЕСТ-КЕЙСОМ ЭТО СЧИТАТЬ, если прогон был прогоном кейса. Приезжает из ответа на claim:
+       * страница тестов ставит работу с указателем на кейс, и облако отдаёт его вместе с целью. */
+      caseId: run.caseId || null,
       extension: run.version || VERSION,
       startedAt: run.startedAt,
       finishedAt: run.finished ? (run.steps && run.steps.length
@@ -1389,6 +1399,9 @@ async function saveTrace(done) {
     version: VERSION,
     flowId: agent.flowId || null,
     skillVersion: agent.skillVersion || null,
+    /* Каким тест-кейсом был этот прогон, если был. Держится на прогоне, а не выводится потом из цели:
+     * цель кейса - это его собственная цель плюс проверки, и разбирать её обратно было бы догадкой. */
+    caseId: agent.caseId || null,
     steps: agent.trace,
     result: done ? agent.result : null,
     finished: !!done,
@@ -1402,6 +1415,62 @@ async function saveTrace(done) {
     }
   } catch (_) {
     // Storage full or unavailable; the run itself must not fail over logging.
+  }
+}
+
+/* КАДР, КОТОРЫЙ ЧТО-ТО ДОКАЗЫВАЕТ - и только он.
+ *
+ * ЗАЧЕМ КАРТИНКА, КОГДА ДОКАЗАТЕЛЬСТВО И ТАК ТОЧНОЕ. Вердикт `dom` - самый сильный из четырёх уровней:
+ * «"Subject" holds "Re: invoce"» проверяемо через неделю без всякой картинки. Но человек, читающий красную
+ * строку в девять утра, спрашивает не «что было в поле», а ПОЧЕМУ там это оказалось, - и на это отвечает
+ * только экран. Регрессионный набор, чьи провалы нельзя разобрать, кончается одним: его перестают читать.
+ *
+ * ТОТ ЖЕ МОМЕНТ И ТОТ ЖЕ ВИД, ЧТО У ДЕСКТОПА: ход, сделавший проверку (`check`), ход с провалившейся
+ * проверкой (`failure`) и последний экран прогона, который что-то проверял (`final`). Вид считает kindOf -
+ * одна функция на две поверхности. Потолок на прогон (двенадцать) и то, что провал никогда не выбрасывается,
+ * держит сервер: api/artifacts.js и api/_artifact.mjs, общие с облачным путём.
+ *
+ * JPEG, А НЕ PNG, и это не про качество: кадр весит не больше 250КБ, иначе он ОТКЛАДЫВАЕТСЯ с причиной
+ * (обрезать его здесь нечем, а положить в отчёт обрезанное значило бы положить не то, что было на экране).
+ * PNG страницы почти всегда тяжелее этого.
+ *
+ * ЦЕЛИКОМ BEST EFFORT: потерянная картинка - это потерянная картинка, а прогон - работа на чьём-то
+ * компьютере, и валить его из-за неё было бы обменом ценного на удобное. */
+const FRAME_QUALITY = 55;
+
+async function keepFrame(verdict, want, kind) {
+  if (!agent.startedAt) return;
+  try {
+    const token = await syncToken();
+    if (!token) return;
+    const tabId = await agentTab();
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab) return;
+    const dataUrl = await chrome.tabs
+      .captureVisibleTab(tab.windowId, { format: 'jpeg', quality: FRAME_QUALITY })
+      .catch(() => null);
+    const comma = String(dataUrl || '').indexOf(',');
+    if (comma < 0) return;
+    const verdicts = verdict ? [verdict] : [];
+    await fetch(APP_URL + '/api/artifacts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: JSON.stringify({
+        /* ТОТ ЖЕ ID, ЧТО У ПРОГОНА НА АККАУНТЕ: кадр находят по user_run.client_id, а его расширение
+         * составляет из startedAt (см. runsToPush). Два разных способа звать один прогон - это кадры,
+         * которые ни к чему не привязаны. */
+        runId: 'run_' + agent.startedAt,
+        stepNo: agent.trace.length + 1,
+        kind: kind || kindOf(verdicts),
+        mime: 'image/jpeg',
+        bytes: dataUrl.slice(comma + 1),
+        said: verdicts.length
+          ? saidOf(verdicts)
+          : (want && want.said) || 'the last screen of a run that made checks',
+      }),
+    }).catch(() => null);
+  } catch (_) {
+    /* Кадр не сохранился. Прогон продолжается. */
   }
 }
 
@@ -1433,6 +1502,11 @@ async function tracedTool(name, input) {
   step.ok = !!outcome.ok;
   if (outcome.ok) {
     step.result = summariseResult(name, outcome.result);
+    /* ВЕРДИКТ ПРОВЕРКИ - НА САМОМ ШАГЕ, а не в его сводке. Именно эти шаги едут на аккаунт (runsToPush
+     * отдаёт трассу), из них считается `checks`, и из них страница рисует строку проверки с
+     * доказательством. Спрятать вердикт в summariseResult значило бы, что отчёт зависит от того, как
+     * выглядит текст сводки. */
+    if (outcome.result && outcome.result.verdict) step.outcome = outcome.result.verdict;
   } else {
     step.error = outcome.error;
     /* Surfaced as an event, not just recorded in the trace. runGoal's onEvent only ever emitted
@@ -1629,6 +1703,40 @@ async function runAgentTool(name, input) {
       return { ok: true, result: out };
     }
 
+    /* ПРОВЕРКА, КОТОРУЮ РЕШАЕТ СТРАНИЦА, а не модель, - и она ЗАПИСЫВАЕТСЯ.
+     *
+     * Три части, и каждая там, где может быть только она: факты берёт content.js (он единственный в
+     * документе), вердикт выносит чистая функция в extension/checks.js (её можно прогнать без браузера), а
+     * кадр-доказательство сохраняет этот файл (только у него есть и картинка вкладки, и токен устройства).
+     *
+     * НЕУДАЧА СТРАНИЦЫ - ЭТО «НЕ УДАЛОСЬ ПРОВЕРИТЬ», А НЕ ОТКАЗ ИНСТРУМЕНТА. Ответ всё равно ok:true с
+     * вердиктом pass:null, потому что утверждение было сделано и его исход обязан попасть в отчёт: молча
+     * пропавшая проверка - это отчёт, в котором её как будто и не просили. Ровно то же делает десктопный
+     * expect, отдавая ответ агента в judge() вместе с признаком ошибки. */
+    case 'expect': {
+      const want = {
+        check: String((input && input.check) || '').trim(),
+        name: String((input && input.name) || '').trim(),
+        text: input && input.text != null ? String(input.text) : '',
+        why: String((input && input.why) || '').trim(),
+      };
+      /* Проверка, которую нельзя проверить, отвергается ДО страницы и словами: «count_is без числа» это
+       * ошибка в утверждении, а не факт о продукте, и записывать её как «не сошлось» было бы ложью. */
+      const bad = whyNotCheckable(want);
+      let facts;
+      if (bad) facts = { error: bad };
+      else {
+        const tabId = await agentTab();
+        const res = await send(tabId, { mf: 'agent/check', want }, agent.frameId);
+        facts = res && res.ok && res.result
+          ? res.result
+          : { error: (res && res.error) || 'the page did not answer' };
+      }
+      const verdict = judgeDom(want, facts);
+      await keepFrame(verdict, want);
+      return { ok: true, result: { verdict, say: checkSaid(want, verdict) } };
+    }
+
     /* КАРТИНКА СТРАНИЦЫ - и это дорогой инструмент рядом с дешёвым.
      *
      * Расширение видит DOM, а не пиксели, и это осознанно: список элементов с именами точнее снимка и
@@ -1749,6 +1857,9 @@ async function agentStart(goal, from) {
     // Null for a goal typed by hand: there is no skill to point at, and inventing one would be worse.
     flowId: (from && from.flowId) || null,
     skillVersion: (from && from.skillVersion) || null,
+    /* ТЕСТ-КЕЙС, если это он. Приходит с ответом на claim и едет дальше до записи на аккаунте: без него
+     * прогон прошёл, проверки сошлись, а ряд точек кейса о нём не узнал. */
+    caseId: (from && from.caseId) || null,
     gate: null,
     plan: null,
   });
@@ -1803,6 +1914,12 @@ async function agentStart(goal, from) {
       chrome.storage.session.set({ lastAgentRun: { goal: agent.goal, log: agent.log.slice(-40), result: agent.result } }).catch(() => {});
       // And the full trace, in local storage, so a run can still be explained tomorrow.
       await saveTrace(true);
+      /* ПОСЛЕДНИЙ ЭКРАН ПРОГОНА, КОТОРЫЙ ЧТО-ТО ПРОВЕРЯЛ. Зелёный отчёт без картинки не с чем сравнить,
+       * когда через месяц он станет красным; у прогона без проверок кадру нечего доказывать, поэтому и
+       * условие такое. То же правило, что у облачного пути (`final` в api/_artifact.mjs). */
+      if (checksOf(agent.trace)) {
+        await keepFrame(null, { said: 'the last screen of a run that made checks' }, 'final');
+      }
     });
 
   return { ok: true };
@@ -2412,9 +2529,24 @@ async function carryJob(token, job) {
 
   try {
     if (skill.kind === 'recorded') {
+      /* ЗАПИСЬ КЕЙСОМ БЫТЬ НЕ МОЖЕТ, и сказать это надо здесь, а не промолчать: повтор идёт без модели
+       * вовсе - экран никто не читает, и вызвать expect некому. Две двери впереди отказывают такому кейсу
+       * теми же словами (api/cases.js и тул); это третий забор - на случай строки, которая встала в
+       * очередь до них. */
+      if (job.caseId) {
+        await reportJob(token, job.id, false,
+          `"${skill.name}" is a recording: it is replayed rather than decided, so nothing in it can check `
+          + 'anything. Build the case on a skill made from a goal.');
+        return;
+      }
       await replayStart(flowFor(skill, { values }));
     } else {
-      await agentStart(fillGoal(skill, values), { flowId: skill.id, skillVersion: skill.updated || null });
+      /* ЦЕЛЬ КЕЙСА СОСТАВЛЕНА НА СЕРВЕРЕ и приезжает готовой. Собирать её здесь значило бы вторую
+       * редакцию слов, которыми модели говорят «проверь это тулом, а не глазом», - а они обязаны быть
+       * одни на все три драйвера (caseGoal в api/_case.mjs). */
+      await agentStart(job.caseGoal || fillGoal(skill, values), {
+        flowId: skill.id, skillVersion: skill.updated || null, caseId: job.caseId || null,
+      });
     }
   } catch (err) {
     await reportJob(token, job.id, false, err.message);
@@ -2466,6 +2598,14 @@ async function claimOnce() {
     }
     if (!job) return;
     await carryJob(token, job);
+    /* И СРАЗУ ОТДАТЬ ПРОГОН АККАУНТУ. Отчёт об очереди (?worker=report) говорит, чем работа кончилась, но
+     * САМ ПРОГОН - шаги, проверки, id кейса - едет в user_run только через sync, а его до сих пор запускали
+     * только человек из панели и спаривание. То есть ночной веб-кейс отработал бы, отчитался и не появился
+     * бы ни в ряду точек, ни в отчёте до того, как кто-то утром откроет панель. Ради этого ряда всё и
+     * делается, поэтому push здесь: работа кончилась - её запись на аккаунте.
+     *
+     * Тихо: не отдалось - следующий sync отдаст, а валить забор работы из-за этого нечего. */
+    await syncNow().catch(() => null);
   } finally {
     holdWorker(false);
   }

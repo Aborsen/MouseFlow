@@ -7,6 +7,9 @@ import type { Want } from './_expect.d.mts';
 export const CASE_KEY: string;
 export const EXPECTS_MAX: number;
 
+/** What can be asserted where: the browser's document knows things an accessibility tree does not. */
+export function checksFor(surface: 'desktop' | 'browser' | string | undefined): string[];
+
 /** What a case asserts. The same shape the `expect` tool takes - deliberately one language, not two. */
 export interface Expect extends Want {
   process?: string | null;
@@ -15,7 +18,7 @@ export interface Expect extends Want {
 /** The four outcomes of a case run. `blocked` is not a red: it means nothing was proven. */
 export type Verdict = 'pass' | 'pass_with_repairs' | 'fail' | 'blocked';
 
-export function readExpects(input: unknown): { expects: Expect[]; why: string };
+export function readExpects(input: unknown, allowed?: string[]): { expects: Expect[]; why: string };
 export function expectLine(want: unknown): string;
 export function caseGoal(goal: string, expects: unknown): string;
 export function stripCase(args: unknown): Record<string, unknown>;

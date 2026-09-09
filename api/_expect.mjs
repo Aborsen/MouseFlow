@@ -82,7 +82,13 @@ function linesOf(said) {
  * @returns {{pass: boolean|null, how: string, evidence: string}}
  */
 export function judge(want, output, isError = false) {
-  const check = String((want && want.check) || '');
+  /* ДВА НАПИСАНИЯ ОДНОГО УТВЕРЖДЕНИЯ, и это не небрежность, а цена двух словарей. На десктопе у контрола
+   * ЗНАЧЕНИЕ (`value_is`), в документе у элемента ТЕКСТ (`text_is`) - каждое слово верно на своей
+   * поверхности, и переучивать одну из них значило бы ломать уже записанные кейсы и скиллы. Поэтому
+   * написания взаимно принимаются: кейс, написанный для веба, не должен отказывать на десктопе из-за
+   * буквы. Ровно то же делает judgeDom в extension/checks.js в обратную сторону. */
+  const asked = String((want && want.check) || '');
+  const check = asked === 'text_is' ? 'value_is' : asked === 'text_contains' ? 'value_contains' : asked;
   const name = String((want && want.name) || '');
   const text = want && want.text != null ? String(want.text) : null;
   const how = 'tree';
@@ -168,20 +174,11 @@ export function expectSaid(want, result) {
 /**
  * Сводка по прогону из его шагов. Три числа, а не два, и уровни доказательства рядом: прогон, все проверки
  * которого доказаны картинкой, - это не регрессионный тест, и сводка обязана позволять это увидеть.
+ *
+ * ЖИВЁТ ТЕПЕРЬ В extension/checks.js и здесь только реэкспортируется. Причина в том, где расширение может
+ * читать код: оно загружается из своей папки и импортировать что-либо выше неё не может ни в каком виде.
+ * Когда проверки появились и там, выбор был между вторым счётом «сколько проверок прошло» - то есть вторым
+ * ответом на один вопрос, который однажды расходится, - и переносом функции туда, откуда её читают все
+ * трое. Ровно так же уже сделан extension/skills.js.
  */
-export function checksOf(steps) {
-  let passed = 0;
-  let failed = 0;
-  let unchecked = 0;
-  const tiers = {};
-  for (const step of Array.isArray(steps) ? steps : []) {
-    if (!step || step.tool !== 'expect' || !step.outcome) continue;
-    if (step.outcome.pass === true) passed++;
-    else if (step.outcome.pass === false) failed++;
-    else unchecked++;
-    const tier = String(step.outcome.how || 'picture');
-    tiers[tier] = (tiers[tier] || 0) + 1;
-  }
-  if (!passed && !failed && !unchecked) return null;
-  return { passed, failed, unchecked, tiers };
-}
+export { checksOf } from '../extension/checks.js';

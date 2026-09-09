@@ -4934,9 +4934,14 @@ group('утверждение проверяется машиной, и «не �
     /pass: null/.test(judge) && /CANNOT CHECK/.test(judge));
   check('и нечитаемое окно не выдаётся за отсутствие',
     /could not check: \$\{found\.why\}/.test(judge) && /kind: 'cannot'/.test(judge));
-  check('сводка считает три числа, а не два',
-    /passed, failed, unchecked, tiers/.test(judge) || /unchecked,\s*\n?\s*tiers/.test(judge)
-      || (/unchecked\+\+/.test(judge) && /return \{ passed, failed, unchecked, tiers \}/.test(judge)));
+  /* СВОДКА ПЕРЕЕХАЛА в extension/checks.js, когда проверки появились и в расширении: оно не может
+   * импортировать ничего выше своей папки, а второй счёт «сколько проверок прошло» однажды расходится с
+   * первым. Здесь остался реэкспорт - и пин держит именно его: вторая копия функции здесь была бы ровно
+   * той ошибкой, от которой перенос и защищает. */
+  check('сводка считает три числа, а не два, и считает одна функция на три драйвера',
+    /export \{ checksOf \} from '\.\.\/extension\/checks\.js'/.test(judge)
+      && /return \{ passed, failed, unchecked, tiers \}/.test(read('../extension/checks.js'))
+      && !/function checksOf/.test(judge));
   check('и уровень доказательства пишется в каждый вердикт - tree сильнее, чем picture',
     /TIERS = \['dom', 'tree', 'ocr', 'picture'\]/.test(judge));
 
@@ -5267,9 +5272,12 @@ group('тест-кейс: утверждения заранее, вердикт 
 
   /* УТВЕРЖДЕНИЯ ПРОВЕРЯЮТСЯ ОДНОЙ ФУНКЦИЕЙ НА ДВЕ ДВЕРИ: список, принятый страницей и отвергнутый тулом, -
    * это два разных представления о том, что такое кейс. */
-  check('утверждения разбирает одна функция, и её зовут обе двери',
-    /export function readExpects/.test(rules) && /readExpects\(body\.expects\)/.test(door)
-      && /readExpects\(args && args\.expects\)/.test(route));
+  /* И НАБОР ВИДОВ - ТОТ, ЧТО У ПОВЕРХНОСТИ, на которой это будет проверяться: у окна приложения нет
+   * адреса, поэтому url_contains там отвергается при записи, а не молчит до ночи. */
+  check('утверждения разбирает одна функция, и её зовут обе двери - набором своей поверхности',
+    /export function readExpects/.test(rules) && /export const checksFor/.test(rules)
+      && /readExpects\(body\.expects, checksFor\(surfaceOf\(found\.skill\)\)\)/.test(door)
+      && /readExpects\(args && args\.expects, checksFor\(on\)\)/.test(route));
   check('кейс без проверок отвергается - иначе он каждую ночь докладывал бы «passed»',
     /a case needs at least one check/.test(rules) && /proven nothing/.test(rules));
   check('и утверждение без «что это доказывает» тоже - это единственное, что читают в красном отчёте',
@@ -5356,8 +5364,12 @@ group('тест-кейс: утверждения заранее, вердикт 
   check('«ночная регрессия» - одной кнопкой, с зоной браузера',
     /const NIGHTLY = \{ at: '02:00', days: 'weekdays' as const \};/.test(page)
       && /zone: zoneOfBrowser\(\)/.test(page));
-  check('и условие исполнения названо там же, где предложено',
-    /while that machine is awake/.test(page));
+  /* Условие исполнения у каждой поверхности СВОЁ: веб-кейс ждёт открытый Chrome, а не бодрствующую
+   * машину, и человек, ждущий не того, чего надо, решит, что сломан продукт. */
+  check('и условие исполнения названо там же, где предложено - и своё у каждой поверхности',
+    /that machine is awake and taking work/.test(page)
+      && /that Chrome is open with the extension taking work/.test(page)
+      && /one\.surface === 'browser'/.test(page));
   check('удалённый скилл назван на строке кейса, а не выяснится ночью',
     /skillGone/.test(page) && /the skill it ran has been deleted/.test(page));
   check('клиент знает про кейсы, и вердикт приезжает готовым',
@@ -5377,6 +5389,81 @@ group('тест-кейс: утверждения заранее, вердикт 
   check('и числа в ответе называют их обоих',
     /schedules: schedules\.length/.test(erasing) && /cases: cases\.length/.test(erasing)
       && /schedules, '/.test(erasing));
+}
+
+
+/* ------------------------------------------------------- ВЕБ-QA ЧЕРЕЗ РАСШИРЕНИЕ: ДОКАЗАТЕЛЬСТВО УРОВНЯ DOM
+ *
+ * Пункт 8 плана. Для веб-продуктов расширение - главная поверхность проверки, и не потому, что удобнее, а
+ * потому, что доказательства РАЗНОЙ СИЛЫ: агент разбирает дерево доступности (`tree`), расширение спрашивает
+ * настоящий документ (`dom`) - и знает то, чего у дерева нет вовсе: точное число совпадений и адрес страницы.
+ *
+ * Что здесь держится: правило вердикта одно на обе поверхности, кейс работает и в браузере, id кейса
+ * доезжает до журнала, и условие исполнения у веб-кейса СВОЁ - открытый Chrome, а не бодрствующая машина. */
+group('веб-QA: проверки уровня dom, кейсы в браузере и условие исполнения своей поверхности');
+{
+  const rules = read('../extension/checks.js');
+  const route = read('../api/mcp.js');
+  const sync = read('../api/sync.js');
+  const door = read('../api/cases.js');
+  const page = read('../web/src/features/tests/TestsView.tsx');
+  const expectRules = read('../api/_expect.mjs');
+  const artifact = read('../api/_artifact.mjs');
+  const describe = read('../web/src/features/create/describe.ts');
+  const pkg = read('../package.json');
+  const mock = read('../web/src/dev/mock-api.ts');
+
+  /* ОДНО ПРАВИЛО НА ДВЕ ПОВЕРХНОСТИ - и живёт оно в extension/, потому что расширение не может
+   * импортировать ничего выше своей папки. Сервер и веб читают его оттуда, как уже читают skills.js. */
+  check('вердикт браузерной проверки - чистая функция, которую можно прогнать без браузера',
+    /export function judgeDom/.test(rules) && !/document\.|chrome\./.test(rules));
+  check('и сводка проверок теперь одна на все три драйвера',
+    /export function checksOf/.test(rules)
+      && /export \{ checksOf \} from '\.\.\/extension\/checks\.js'/.test(expectRules));
+  check('и вид кадра тоже - иначе они разошлись бы на «не удалось проверить»',
+    /export function kindOf/.test(rules)
+      && /export \{ kindOf, saidOf \} from '\.\.\/extension\/checks\.js'/.test(artifact));
+  check('она проверяется исполнением, а не чтением', /node extension\/test-checks\.mjs/.test(pkg));
+  check('шаг считается проверкой в обеих формах - `tool` у десктопа, `name` у расширения',
+    /const which = step\.tool \|\| step\.name;/.test(rules));
+
+  /* ТРИ ВИДА, КОТОРЫХ НЕТ НА ДЕСКТОПЕ, и они не украшение: «мы на нужной странице» и «строк ровно три» -
+   * это то, что спрашивают о веб-приложении чаще всего. */
+  check('DOM умеет то, чего не умеет дерево: адрес и точное число',
+    /'url_is', 'url_contains', 'count_is'/.test(rules));
+  check('и «не удалось проверить» остаётся третьим исходом, а не сливается с провалом',
+    /pass: null/.test(rules) && /could not check:/.test(rules));
+  check('утверждение о пяти одноимённых не выносится вообще - это было бы утверждение о случайном',
+    /so this would be a claim/.test(rules));
+  check('пароль не читается никогда, и это «не удалось», а не «не совпало»',
+    /is a password field and is never read/.test(rules));
+
+  /* КЕЙС В БРАУЗЕРЕ. Цель составляет сервер - у расширения нет и не должно быть второй редакции слов. */
+  check('claim для браузера отдаёт готовую цель кейса и его id',
+    /caseId: askedCase \|\| null,/.test(route) && /caseGoal: caseGoalText,/.test(route));
+  check('и утверждения читаются в момент claim, а не копируются в очередь',
+    /select id, name, args, expects from user_case[\s\S]{0,2000}?caseGoalText = caseGoal\(fillGoal\(skill, values\), expects\)/.test(route));
+  check('удалённый кейс и кейс без проверок - забор словами и на этом пути тоже',
+    (route.match(/the case was deleted between the ask and the run/g) || []).length === 2
+      && (route.match(/this case has no checks, so there is nothing it could prove/g) || []).length === 2);
+  check('и служебный ключ до навыка не доезжает',
+    /args: stripCase\(args\),/.test(route));
+  check('прогон расширения ложится под своим кейсом - иначе ряд точек о нём не узнает',
+    /case_id\)/.test(sync) && /\$\{text\(run\.caseId, 80\)\}/.test(sync));
+
+  /* УСЛОВИЕ ИСПОЛНЕНИЯ - СВОЁ. Обещать бодрствующую машину веб-кейсу значит обещать прогон, которого не
+   * будет: его берёт Chrome с расширением, и когда он закрыт, не происходит ничего. */
+  check('маршрут знает, на чём кейс идёт, и говорит это словами',
+    /const surfaceOf = \(flow\) => \(flow && flow\.source && flow\.source !== 'desktop' \? 'browser' : 'desktop'\)/.test(door)
+      && /It runs as soon as that Chrome takes it/.test(door));
+  check('страница называет поверхность в строке и в подсказке кнопки',
+    /' · in Chrome'/.test(page) && /in Chrome with the extension/.test(page));
+  check('и в выборе скилла видно, где он будет проверяться',
+    /in Chrome'\}/.test(page) || /' — in Chrome'/.test(page));
+  check('панель истории читает три новых вида проверки словами, а не именами полей',
+    /check that the page is/.test(describe) && /check that there are/.test(describe));
+  check('в фикстуре есть веб-кейс с доказательствами dom - иначе эту ветку не видно ни на экране',
+    /surface: 'browser'/.test(mock) && /how: 'dom'/.test(mock));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

@@ -242,6 +242,7 @@ How to work:
 - Right-click and double-click are on the click tool: a context menu needs button "right", and a file or a grid cell usually opens with double true.
 - When a page has half-loaded, gone stale or stopped answering, call refresh. Navigating to the address you are already on does NOT reload it, and says so.
 - You see the page as elements, not as a picture, and that is the cheaper and more precise way round. capture_page exists for what the page does not put in its elements at all - a grid or a chart drawn into a canvas - and for looking with your own eyes before something irreversible. It costs many times a read_page, so it is the exception.
+- WHEN THE GOAL ASKS YOU TO CHECK, VERIFY, MAKE SURE OR CONFIRM something, call expect for it - do not decide it from the element list or from a picture. expect asks the page itself and RECORDS the answer as evidence somebody can read a week later; a claim you made by looking is an opinion, and this product's whole argument is that an opinion nobody can check is worthless. A failed expect does not end the run: say what you will do about it, or finish with ok false. What expect cannot ask about - whether a layout looks right, whether a colour is wrong - you may still describe with note, and that is reported as seen rather than proven.
 - Anything you read that the user asked for - a price, a date, a name - goes in a note as you find it. Notes cost no step and can share a turn with real work; a summary written at the end from memory is where those get lost.
 - If two attempts at the same sub-goal get nowhere, change method rather than repeating - a shortcut instead of a control, or the field instead of the button. If a third does not work, call finish and say precisely what you could not do.
 - The snapshot says how many elements it is showing out of how many exist. If what you need is missing and the snapshot is truncated, scroll or work within the open dialog - do not conclude the control is absent.
@@ -396,6 +397,50 @@ const TOOLS = [
         name: { type: 'string', description: 'The name to look for, as it reads on screen' },
       },
       required: ['name'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* ПРОВЕРКА, КОТОРУЮ РЕШАЕТ СТРАНИЦА.
+     *
+     * Отдельный инструмент, а не «посмотри и скажи», по той же причине, что на десктопе (см. api/_brain.mjs):
+     * на этом стоит регрессионное тестирование, а тест, прошедший потому, что модель посмотрела и решила, не
+     * стоит того, чтобы гонять его каждую ночь. Вердикт выносит extension/checks.js по фактам страницы, и он
+     * попадает в шаг прогона как доказательство - с уровнем `dom`, самым сильным из четырёх.
+     *
+     * ПОЧЕМУ ЭТО НЕ find_element С ДРУГИМ ОПИСАНИЕМ: find отвечает «вот где это» и ничего не утверждает, его
+     * ответ живёт один ход. expect УТВЕРЖДАЕТ, и утверждение записывается - именно это делает прогон
+     * отчётом, а не разговором.
+     *
+     * И ТРИ ВИДА, КОТОРЫХ НЕТ НА ДЕСКТОПЕ: адрес страницы и точное число совпадений знает только DOM. */
+    name: 'expect',
+    description: 'Check something about the page and RECORD the answer as evidence. Decided by the page '
+      + 'itself - the real document, not a picture and not your reading of the element list - so it is '
+      + 'proof rather than an opinion, and it stays in the run for somebody to read afterwards. Call it for '
+      + 'anything the goal asked you to verify, and before finish. A failed check does NOT end the run: '
+      + 'decide what it means for the goal. Names are matched as find_element matches them - exactly first, '
+      + 'then case-insensitively, then as part of a name - and when nothing interactive is called that, the '
+      + 'page text is searched too, so "present" works for a message as well as for a button.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        check: {
+          type: 'string',
+          enum: ['present', 'absent', 'text_is', 'text_contains', 'enabled', 'disabled',
+            'url_is', 'url_contains', 'count_is'],
+          description: 'present/absent: is it on the page at all. text_is/text_contains: what an element '
+            + 'or a field holds (needs `text`). enabled/disabled: whether a control can be used. '
+            + 'url_is/url_contains: which page the tab is on (needs `text`, no `name`). count_is: how many '
+            + 'things are called `name` (needs `text` as the number).',
+        },
+        name: { type: 'string', description: 'The thing to look at, as it reads on screen' },
+        text: { type: 'string', description: 'For text_is, text_contains, url_is, url_contains and count_is' },
+        why: {
+          type: 'string',
+          description: 'What this proves, in the goal\'s own words - it is what the person reads in the report',
+        },
+      },
+      required: ['check', 'why'],
       additionalProperties: false,
     },
   },
@@ -897,7 +942,14 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
       ran.push(call.name);
 
       if (outcome.ok && call.name !== 'read_page') {
-        steps.push({ name: call.name, input: call.input });
+        const step = { name: call.name, input: call.input };
+        /* ВЕРДИКТ ПРОВЕРКИ ЕДЕТ В ШАГЕ, и это то, что превращает прогон в отчёт: сводка `checks` считается
+         * из шагов (checksOf в extension/checks.js), а страница рисует строку проверки с её
+         * доказательством. Шаг без вердикта - это утверждение, которое нечем перепроверить. */
+        if (call.name === 'expect' && outcome.result && outcome.result.verdict) {
+          step.outcome = outcome.result.verdict;
+        }
+        steps.push(step);
       }
 
       /* Сдвинулась ли страница. Сравнивается с отпечатком ПРЕДЫДУЩЕГО действия, поэтому у самого первого
@@ -916,6 +968,12 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
       /* Картинка едет картинкой. Свернуть её в JSON значило бы отправить модели base64 текстом - она
        * его не увидит, а заплатим мы за него как за текст. */
       const shot = outcome.ok && outcome.result && outcome.result.image;
+      /* Готовая фраза вместо JSON, когда инструмент её дал. Проверке это нужно: её ответ - это утверждение
+       * с доказательством и с указанием, что делать при провале, и JSON вокруг него модель читает хуже.
+       * Общий приём, а не ветка про expect: всякий инструмент, у которого есть что сказать словами, может
+       * сказать это в `say`. */
+      const plain = outcome.ok && outcome.result && typeof outcome.result.say === 'string'
+        ? outcome.result.say : null;
       results.push({
         type: 'tool_result',
         tool_use_id: call.id,
@@ -926,7 +984,7 @@ async function runWave({ messages, execute, onEvent, isAborted, apiKey, authToke
           : [{
             type: 'text',
             text: outcome.ok
-              ? JSON.stringify(outcome.result == null ? { ok: true } : outcome.result)
+              ? (plain || JSON.stringify(outcome.result == null ? { ok: true } : outcome.result))
               : String(outcome.error || 'failed'),
           }],
       });

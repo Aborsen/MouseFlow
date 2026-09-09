@@ -1,6 +1,6 @@
 # 13 — The Chrome extension
 
-`extension/`, Manifest V3, version **0.16.2**, `minimum_chrome_version: 127`. Its own engineering notes:
+`extension/`, Manifest V3, version **0.17.0**, `minimum_chrome_version: 127`. Its own engineering notes:
 [`extension/README.md`](../../extension/README.md).
 
 Records pointer movement, clicks and scrolling **inside web pages** and replays them. No install script, no
@@ -163,6 +163,68 @@ What it still will not do:
 Care went into the details rather than into hesitating: before a one-way click it re-reads the page and
 checks what the goal named — recipient, amount, destination, which item — against what is actually on screen,
 and stops if any of them differs.
+
+## Checking, not looking — `dom` is the strongest evidence there is
+
+For a web product this is the QA surface, and not because it is more convenient: **the evidence is of a
+different strength.** The desktop agent parses an accessibility tree (`tree`); the extension asks the real
+document (`dom`), and the document knows things a tree has no way to say — the exact number of matches, and
+which page the tab is on.
+
+`expect` here takes the same shape it takes on the desktop ([25 — Checks and tests](25-tests.md)) and three
+kinds more:
+
+| `check` | Asks |
+|---|---|
+| `present` / `absent` | is it on the page at all |
+| `text_is` / `text_contains` | what an element or a field holds (`value_is`/`value_contains` mean the same and are accepted) |
+| `enabled` / `disabled` | whether a control can be used — `aria-disabled` counts, because half the web disables a button that way |
+| `url_is` / `url_contains` | which page the tab is on. **No `name`**: a page has no name to give |
+| `count_is` | how many things are called `name` — the check a tree cannot make |
+
+**It looks wider than the control list.** People check text as often as buttons — *"the page says Saved"* —
+so when nothing interactive is called that, the page's own text is searched, **smallest element first**.
+Without "smallest", the wrapper round half the page would match and every text check would pass.
+
+**Three parts, each where only it can be.** The page (`content.js`) answers with **facts** — how many
+matched, what is visible, what it holds, which address. The verdict is a pure function
+(`extension/checks.js`), which is why it can be run without a browser at all, and is: `extension/test-checks.mjs`
+covers all three outcomes. The frame that proves it is kept by the worker, the only half with both a
+picture of the tab and the device token.
+
+**Three outcomes, not two**, same as everywhere else here: a page that did not answer, five things sharing
+one name, a password field (never read), a field holding nothing — all of those are *could not be checked*,
+never *failed*. Merging them is how a suite starts painting green over things it never proved.
+
+**A frame per check, and JPEG.** The moments are the desktop's moments — a turn that checked something, a
+turn where a check failed, and the last screen of a run that checked anything — and the kind is decided by
+one function shared with the cloud path (`kindOf`). JPEG at quality 55 because a kept frame may weigh 250 KB
+and a PNG of a page almost never does; a heavier one is *declined with a sentence* rather than cropped.
+
+**A finished job pushes its run at once.** Reporting the queue outcome (`?worker=report`) says how the work
+ended; the run itself - its steps, its checks, its case id - reaches `user_run` only through a sync, and a
+sync used to happen only when somebody opened the panel or paired a device. A nightly web case would have
+run, reported, and shown no dot until morning. So a claimed job syncs the moment it finishes, quietly: if
+that fails, the next sync carries it.
+
+## A test case can run here
+
+A case ([27 — Test cases](27-cases.md)) whose skill is a web skill is claimed by the extension like any other
+work. Two things travel with the claim, and both come from the server on purpose:
+
+- **the ready-made goal**, with the case's checks written under it. The extension has `fillGoal` and could
+  compose it, but then the words that tell a model *check it with the tool, not by looking* would exist in
+  two editions and drift apart at the first correction. One function (`caseGoal`), one wording, three
+  drivers.
+- **the case's id**, which travels through the run and reaches the account with it, so the run lands under
+  its case and shows up as one dot in that case's row.
+
+The condition of execution is different here and is said differently everywhere it is offered: a desktop
+case runs while that computer is awake and taking work; a web case runs **while that Chrome is open with the
+extension taking work**. Promising one instead of the other is promising a run that will not happen.
+
+A **recording** cannot be a case, and all three doors say so in the same words: a replay runs with no model
+in the loop, so nothing is looking at the screen and there is nothing to call `expect` with.
 
 ## Finding out what a run actually did
 

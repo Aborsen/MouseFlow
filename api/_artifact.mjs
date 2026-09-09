@@ -62,24 +62,7 @@ export function dropWhich(have, adding = 0) {
   return rows.slice(0, over).map((row) => String(row.id));
 }
 
-/**
- * Вид кадра по тому, что этот ход доказал. Один ход - один кадр, поэтому вердиктов может быть несколько.
- *
- * @param {{pass: boolean|null}[]} verdicts
- */
-export function kindOf(verdicts) {
-  const all = Array.isArray(verdicts) ? verdicts : [];
-  if (!all.length) return 'check';
-  /* Провалом ход считается, если хоть одно утверждение не сошлось. «Не удалось проверить» провалом НЕ
-   * считается - но и зачётом тоже: кадр всё равно сохраняется, потому что именно по нему потом и разбирают,
-   * почему прочитать не вышло. */
-  return all.some((v) => v && v.pass === false) ? 'failure' : 'check';
-}
-
-/** Слова к кадру: что этот ход доказал, коротко и по-человечески. */
-export function saidOf(verdicts) {
-  return (Array.isArray(verdicts) ? verdicts : [])
-    .map((v) => `${v.pass === true ? 'PASS' : v.pass === false ? 'FAIL' : 'CANNOT CHECK'}: ${v.evidence}`)
-    .join('; ')
-    .slice(0, 2000);
-}
+/* ВИД КАДРА И СЛОВА К НЕМУ живут теперь в extension/checks.js и здесь только реэкспортируются - по той
+ * же причине, что и checksOf: кадры теперь оставляет и расширение, а импортировать выше своей папки оно не может.
+ * Одно правило «этот ход - провал или зачёт» на две поверхности: два разошлись бы на «не удалось проверить». */
+export { kindOf, saidOf } from '../extension/checks.js';

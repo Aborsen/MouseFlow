@@ -73,7 +73,8 @@ import { overSpend, spentWhy } from './_spend.mjs';
 import { WHERE, jobId, queueOne, workerSeen } from './_queue.mjs';
 /* Тест-кейс: утверждения, дописанные к цели, и вердикт по записанным шагам. См. api/_case.mjs. */
 import {
-  CASE_KEY, VERDICTS, caseGoal, caseIdOf, expectLine, readExpects, stripCase, tallyOf, verdictSaid,
+  CASE_KEY, VERDICTS, caseGoal, caseIdOf, checksFor, expectLine, readExpects, stripCase, tallyOf,
+  verdictSaid,
 } from './_case.mjs';
 /* Перечень кейсов и история одного - те же запросы, которыми их читает страница. Импорт у маршрута, а не
  * копия запроса: «что считается прогоном кейса» должно быть одним ответом на оба входа (так же mcp.js уже
@@ -491,7 +492,15 @@ const CASE_TOOL = {
           properties: {
             check: {
               type: 'string',
-              enum: ['present', 'absent', 'value_is', 'value_contains', 'enabled', 'disabled'],
+              /* Оба словаря в одной схеме, а какие из них можно - решает поверхность скилла: у окна
+               * приложения нет адреса, поэтому url_* и count_is там отвергаются при записи, а не молчат
+               * ночью. text_is/text_contains и value_is/value_contains - два написания одного, принимаемые
+               * взаимно (см. judge в api/_expect.mjs). */
+              enum: ['present', 'absent', 'value_is', 'value_contains', 'text_is', 'text_contains',
+                'enabled', 'disabled', 'url_is', 'url_contains', 'count_is'],
+              description: 'present/absent, value_is/value_contains (text_is/text_contains say the same '
+                + 'thing), enabled/disabled work everywhere. url_is, url_contains and count_is need a '
+                + 'browser skill: a desktop window has no address and no exact count.',
             },
             name: { type: 'string', description: 'The control, as it appears on screen' },
             text: { type: 'string', description: 'For value_is and value_contains' },
@@ -1153,11 +1162,6 @@ async function callTool(sql, who, params, req) {
     const wantedSkill = String((args && args.skill) || '').trim();
     if (!wantedSkill) return say('Which skill performs the steps? Pass its id as `skill`.', true);
 
-    /* Утверждения проверяются ТОЙ ЖЕ функцией, что у страницы: список, принятый одной дверью и отвергнутый
-     * другой, - это два разных представления о том, что такое кейс. */
-    const read = readExpects(args && args.expects);
-    if (read.why) return say(read.why, true);
-
     const { skills } = await skillsOf(sql, who.id);
     let entry = skills.find((f) => f.id === wantedSkill) || null;
     if (!entry) {
@@ -1178,6 +1182,14 @@ async function callTool(sql, who, params, req) {
       return say(`"${entry.name}" is a recording: it is replayed rather than decided, so nothing in it can `
         + 'check anything. Make a skill from it on the Skills page and build the case on that.', true);
     }
+
+    /* УТВЕРЖДЕНИЯ ПРОВЕРЯЮТСЯ ПОСЛЕ СКИЛЛА, И НАБОРОМ ЕГО ПОВЕРХНОСТИ. Той же функцией, что у страницы -
+     * список, принятый одной дверью и отвергнутый другой, это два разных представления о том, что такое
+     * кейс, - но набор видов у поверхностей разный: адрес страницы и точное число совпадений знает только
+     * документ, а у окна приложения адреса нет вовсе. Сказать это при записи дешевле, чем ночью. */
+    const on = entry.source && entry.source !== 'desktop' ? 'browser' : 'desktop';
+    const read = readExpects(args && args.expects, checksFor(on));
+    if (read.why) return say(read.why, true);
 
     const id = `cs_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     try {
@@ -1708,15 +1720,65 @@ async function workerRoute(action, req, res, sql, who) {
          * с ним делать - это его собственный формат. Строить ему пятиколоночное тело было бы переводом
          * между двумя системами координат, одна из которых у него отсутствует. */
         if (row.source !== 'desktop') {
+          /* ТЕСТ-КЕЙС ДЛЯ БРАУЗЕРА - РАЗРЕШАЕТСЯ ЗДЕСЬ, а не в расширении, и это то же решение, что у
+           * облачного драйвера: в строке очереди лежит только id кейса, а утверждения читаются в момент
+           * старта, поэтому кейс, поправленный утром, ночью проверяется в новой редакции.
+           *
+           * И ЦЕЛЬ СОСТАВЛЯЕТСЯ ТОЖЕ ЗДЕСЬ. Расширение могло бы дописать проверки к цели само - у него
+           * есть и fillGoal, и payload, - но тогда слова, которыми модели говорят «проверь это тулом, а не
+           * глазом», существовали бы в двух редакциях и разошлись бы первым же уточнением. Здесь их одна
+           * функция (caseGoal), и она уже импортирована ради облачного пути. */
+          const askedCase = caseIdOf(job.args);
+          let caseGoalText = null;
+          if (askedCase) {
+            const found = await sql`
+              select id, name, args, expects from user_case
+              where id = ${askedCase} and user_id = ${who.id} and deleted_at is null
+            `.catch(() => []);
+            if (!found.length) {
+              await sql`
+                update run_queue set state = 'failed', ok = false, finished_at = now(),
+                       said = 'the case was deleted between the ask and the run'
+                where id = ${job.id}
+              `;
+              continue;
+            }
+            const expects = Array.isArray(found[0].expects) ? found[0].expects : [];
+            if (!expects.length) {
+              await sql`
+                update run_queue set state = 'failed', ok = false, finished_at = now(),
+                       said = 'this case has no checks, so there is nothing it could prove'
+                where id = ${job.id}
+              `;
+              continue;
+            }
+            const skill = { ...payload, id: row.client_id, name: row.name, params: payload.params || [] };
+            const values = stripCase({ ...(found[0].args || {}), ...args });
+            const missing = missingParams(skill, values);
+            if (missing.length) {
+              await sql`
+                update run_queue set state = 'failed', ok = false, finished_at = now(),
+                       said = ${`this case needs ${missing.join(', ')}, and neither it nor the ask carried `
+                         + (missing.length === 1 ? 'it' : 'them')}
+                where id = ${job.id}
+              `;
+              continue;
+            }
+            caseGoalText = caseGoal(fillGoal(skill, values), expects);
+          }
           return res.status(200).json({
             ok: true,
             job: {
               id: job.id,
               toolName: job.tool_name,
-              args,
+              /* Служебный ключ до навыка не доезжает: он про кейс, а не про параметры навыка. */
+              args: stripCase(args),
               body: null,
               activate: null,
               goal: row.kind === 'created',
+              /* Кейс - двумя полями: id, чтобы прогон записался под ним, и готовая цель с проверками. */
+              caseId: askedCase || null,
+              caseGoal: caseGoalText,
               flow: {
                 id: row.client_id, source: row.source, kind: row.kind, name: row.name,
                 description: row.description, payload, origins: row.origins || [],

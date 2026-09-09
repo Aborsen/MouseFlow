@@ -139,6 +139,14 @@ export function describe(did: Did, on: On = undefined): string {
         case 'value_contains': return `check that "${what}" contains ${text}`;
         case 'enabled': return `check that "${what}" can be used`;
         case 'disabled': return `check that "${what}" is not available`;
+        /* Три вида, которых нет на десктопе: адрес страницы и точное число совпадений знает только DOM.
+         * Читаются здесь, потому что панель истории и страница Tests показывают прогоны обеих
+         * поверхностей одним списком - см. extension/checks.js. */
+        case 'text_is': return `check that "${what}" holds ${text}`;
+        case 'text_contains': return `check that "${what}" contains ${text}`;
+        case 'url_is': return `check that the page is ${text}`;
+        case 'url_contains': return `check that the address contains ${text}`;
+        case 'count_is': return `check that there are ${text} of "${what}"`;
         default: return `check "${what}"`;
       }
     }

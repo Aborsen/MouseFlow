@@ -13,13 +13,25 @@ everything after them depends on being able to say what a green report is worth.
 
 | Tier | Decided by | Where it comes from |
 |---|---|---|
-| `dom` | a selector against the real document | the browser extension; a DevTools connection to an Electron app |
+| `dom` | the real document — matches, text, address, exact counts | **the browser extension** (`expect` there, since September 2026); a DevTools connection to an Electron app is still to come |
 | `tree` | UI Automation (Windows) / Accessibility (macOS) | `expect` today |
 | `ocr` | text recognised on screen | not built yet |
 | `picture` | a model looked and said so | `finish`'s own sentence, `note` |
 
 Every recorded check names its tier. A case whose checks are all `picture` is **exploratory testing, not
 regression** — it may be useful, and it is not something to gate a release on.
+
+**`dom` is not just a stronger `tree`; it can ask more.** Three checks exist only there — `url_is`,
+`url_contains` and `count_is` — because only a document can say which page it is and how many things match
+exactly. So what a case may assert depends on where it will be checked, and the refusal comes when the case
+is written rather than at two in the morning: `url_contains` on a desktop skill is not a typo, it is a
+check nothing could make. The vocabulary of each surface is `checksFor()` in `api/_case.mjs`; the browser's
+verdict is `judgeDom()` in `extension/checks.js`, and [13 — The extension](13-extension.md) is where it is
+written up.
+
+One thing is spelled twice on purpose: a control **holds a value** on the desktop (`value_is`) and an
+element **holds text** in a document (`text_is`). Each word is right on its own surface, and both spellings
+are accepted on both — a case written for one should not be refused by the other over a letter.
 
 **Every step a model decided is marked as such.** A model decision is a source of variance: the same case
 can pass today and fail tomorrow for reasons that have nothing to do with the product. A regression case

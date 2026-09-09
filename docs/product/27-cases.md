@@ -19,9 +19,24 @@ Three things, and nothing else:
 That is the whole of `user_case` (`db/021_user_case.sql`). Its name is the fourth thing, and it matters more
 than it looks: *"Outlook still sends"* is what somebody reads at nine in the morning next to a red dot.
 
-**The skill has to be one made from a goal.** A recording is replayed by the agent with no model in the
-loop: nothing reads the screen, so there is nothing to call `expect` with. Both doors refuse it — the page
-and the tool — with that sentence rather than at two in the morning.
+**The skill has to be one made from a goal.** A recording is replayed with no model in the loop: nothing
+reads the screen, so there is nothing to call `expect` with. All three doors refuse it — the page, the tool
+and the extension — with that sentence rather than at two in the morning.
+
+**A case runs where its skill runs**, and that is a fact with consequences rather than a detail of plumbing:
+
+| | Desktop skill | Web skill |
+|---|---|---|
+| Carried out by | the agent on that machine | Chrome with the extension |
+| Evidence | `tree` — the accessibility tree | `dom` — the real document |
+| Can also check | — | `url_is`, `url_contains`, `count_is` |
+| Runs while | that computer is awake and taking work | that Chrome is open with the extension taking work |
+
+So **what a case may assert depends on where it will be checked**, and the refusal arrives when the case is
+written: `url_contains` on a desktop skill is not a typo, it is a check nothing could make. The page's own
+list of check kinds changes with the skill you pick, for the same reason. See
+[13 — The extension](13-extension.md) for the `dom` half and [25 — Checks and tests](25-tests.md) for the
+tiers.
 
 ## Four verdicts, and `no verdict` is not a failure
 
@@ -154,6 +169,9 @@ runs only while its machine is awake and taking work*.
   account's agent is (roadmap item 7).
 - **Editing a case from a chat.** The tool writes one; changing and deleting are on the page.
 - **A case over a recording.** Refused, for the reason at the top: a replay has no model to check anything.
+- **Selector health on a web replay.** The extension records by selector, so a moved element is already
+  survivable — but a selector that matches nothing or several is not yet marked as repaired. That mark is
+  roadmap item 4, and the verdict `passed · repaired` is waiting for it.
 
 ## Where the reasoning is written
 

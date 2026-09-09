@@ -420,6 +420,7 @@ const CASES = [
     updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     skill: 'Reply that the invoice is approved',
     skillGone: false,
+    surface: 'desktop',
     runs: [
       caseRunFixture('q_case_1_5', 'cs_dev_1', 9, 'ok', { passed: 1, failed: 1, unchecked: 0 }, 'fail',
         'Replied, but the subject is not the one the case asks for.', CASE_STEPS),
@@ -455,6 +456,7 @@ const CASES = [
     updatedAt: new Date(Date.now() - 9 * 86_400_000).toISOString(),
     skill: 'File the September invoices',
     skillGone: false,
+    surface: 'desktop',
     runs: [
       caseRunFixture('q_case_2_3', 'cs_dev_2', 10, 'ok', { passed: 2, failed: 0, unchecked: 0 }, 'pass', 'Opened and both checks held.'),
       caseRunFixture('q_case_2_2', 'cs_dev_2', 34, 'ok', { passed: 2, failed: 0, unchecked: 0 }, 'pass', 'Opened and both checks held.'),
@@ -483,8 +485,58 @@ const CASES = [
     updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString(),
     skill: 'Book the Thursday standup room',
     skillGone: false,
+    surface: 'desktop',
     runs: [],
     schedule: null,
+  },
+  {
+    /* ВЕБ-КЕЙС: он проверяется расширением, доказательства уровня `dom`, и условие исполнения у него своё -
+     * открытый Chrome, а не бодрствующая машина. Без фикстуры этой ветки не увидеть ни на экране, ни на
+     * снимке доки, а разница в условии - это ровно то, из-за чего человек решает, что продукт сломан. */
+    id: 'cs_dev_5',
+    name: 'Staging still signs in',
+    flowId: 'wf_dev_web',
+    arguments: {},
+    expects: [
+      { check: 'url_contains', name: '', text: '/dashboard', why: 'the sign-in ended up on the dashboard' },
+      { check: 'text_contains', name: 'Welcome back', text: 'Margaryta', why: 'it signed in as the test user' },
+      { check: 'absent', name: 'Sign in', why: 'the sign-in form is gone, so it really went through' },
+    ],
+    machine: null,
+    createdAt: new Date(Date.now() - 5 * 86_400_000).toISOString(),
+    updatedAt: new Date(Date.now() - 1 * 86_400_000).toISOString(),
+    skill: 'Sign in on staging',
+    skillGone: false,
+    surface: 'browser',
+    runs: [
+      caseRunFixture('q_case_5_2', 'cs_dev_5', 11, 'ok', { passed: 3, failed: 0, unchecked: 0 }, 'pass',
+        'Signed in and all three checks held.', [
+          { name: 'navigate', input: { url: 'https://staging.example.com/sign-in' } },
+          { name: 'type_text', input: { ref: 3, text: 'margaryta@example.com' } },
+          { name: 'click', input: { ref: 7 } },
+          { name: 'expect', input: { check: 'url_contains', text: '/dashboard', why: 'the sign-in ended up on the dashboard' },
+            outcome: { pass: true, how: 'dom', evidence: 'the page is https://staging.example.com/dashboard' } },
+          { name: 'expect', input: { check: 'text_contains', name: 'Welcome back', text: 'Margaryta', why: 'it signed in as the test user' },
+            outcome: { pass: true, how: 'dom', evidence: '"Welcome back" holds "Welcome back, Margaryta"' } },
+          { name: 'expect', input: { check: 'absent', name: 'Sign in', why: 'the sign-in form is gone, so it really went through' },
+            outcome: { pass: true, how: 'dom', evidence: 'nothing visible on the page is called "Sign in"' } },
+        ]),
+      caseRunFixture('q_case_5_1', 'cs_dev_5', 35, 'ok', { passed: 2, failed: 1, unchecked: 0 }, 'fail',
+        'Signed in, but the dashboard did not greet the test user.', [
+          { name: 'expect', input: { check: 'text_contains', name: 'Welcome back', text: 'Margaryta', why: 'it signed in as the test user' },
+            outcome: { pass: false, how: 'dom', evidence: '"Welcome back" holds "Welcome back, guest", not containing "Margaryta"' } },
+        ]),
+    ],
+    schedule: {
+      id: 'sch_case_5',
+      paused: false,
+      pausedWhy: null,
+      nextAt: new Date(Date.now() + 12 * 3_600_000).toISOString(),
+      lastAt: new Date(Date.now() - 11 * 3_600_000).toISOString(),
+      lastSaid: 'ran - Signed in and all three checks held.',
+      misses: 2,
+      fails: 0,
+    },
   },
   {
     /* Кейс, чей скилл удалили: он падает на заборе каждую ночь, и страница обязана сказать это раньше,
@@ -499,6 +551,7 @@ const CASES = [
     updatedAt: new Date(Date.now() - 40 * 86_400_000).toISOString(),
     skill: null,
     skillGone: true,
+    surface: 'desktop',
     runs: [
       caseRunFixture('q_case_4_1', 'cs_dev_4', 200, 'failed', null, 'blocked', null),
     ],

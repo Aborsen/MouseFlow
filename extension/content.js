@@ -1355,6 +1355,71 @@
     return { ok: true, result: { looked: wanted, matches: found.length, of: hits.length, found } };
   }
 
+  /* ФАКТЫ ДЛЯ ПРОВЕРКИ - И ТОЛЬКО ФАКТЫ. Вердикт выносит extension/checks.js, чистой функцией, которую
+   * можно прогнать без браузера; здесь собирается то, что можно узнать только на странице.
+   *
+   * СОВПАДЕНИЕ ПО ИМЕНИ - ТЕМ ЖЕ ПОРЯДКОМ, ЧТО У findNamed: точное имя, затем без учёта регистра, затем
+   * вхождение. «Кнопка, которая называется X» обязана значить одно и то же в find_element и в expect -
+   * иначе проверка утверждает не про то, на что смотрела модель.
+   *
+   * И ШИРЕ, ЧЕМ УПРАВЛЯЮЩИЕ ЭЛЕМЕНТЫ. Проверяют не только кнопки: «на странице есть слово Saved», «заголовок
+   * says Dashboard» - это текст, а не контрол. Поэтому если среди интерактивного ничего не совпало, ищется
+   * САМЫЙ МЕЛКИЙ видимый элемент, чей собственный текст совпадает: без «самого мелкого» подошёл бы и <body>,
+   * и проверка «текст на странице» проходила бы всегда. */
+  function checkFacts(want) {
+    const one = want && typeof want === 'object' ? want : {};
+    const wanted = String(one.name || '').trim();
+    const lower = wanted.toLowerCase();
+    const facts = { url: location.href, title: document.title || null, count: 0 };
+    if (!wanted) return { ok: true, result: facts };
+
+    const seen = new Set();
+    const controls = [...document.querySelectorAll(AGENT_SELECTOR)].filter((el) => {
+      if (seen.has(el) || !isVisible(el)) return false;
+      seen.add(el);
+      return true;
+    });
+    const named = controls.map((el) => ({ el, name: accessibleName(el) }));
+    let hits = named.filter((c) => c.name === wanted);
+    if (!hits.length) hits = named.filter((c) => c.name.toLowerCase() === lower);
+    if (!hits.length) hits = named.filter((c) => c.name.toLowerCase().includes(lower));
+
+    /* Ничего интерактивного - ищем текст. Мелкие элементы вперёд: у вложенных совпадений содержательным
+     * является самый внутренний, а не обёртка вокруг половины страницы. */
+    if (!hits.length) {
+      const texts = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,span,li,td,th,label,div,a,strong,em,small,summary,figcaption,dt,dd,caption,output,code,pre')]
+        .filter((el) => isVisible(el))
+        .map((el) => ({ el, text: visibleText(el) }))
+        .filter(({ text }) => text && (text === wanted || text.toLowerCase().includes(lower)));
+      texts.sort((a, b) => a.text.length - b.text.length);
+      hits = texts.slice(0, 8).map(({ el, text }) => ({ el, name: text, text: true }));
+    }
+
+    facts.count = hits.length;
+    if (!hits.length) return { ok: true, result: facts };
+
+    const { el, name } = hits[0];
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    facts.name = String(name || '').slice(0, 200);
+    facts.tag = el.tagName.toLowerCase();
+    facts.role = el.getAttribute('role') || type || el.tagName.toLowerCase();
+    facts.onScreen = onScreen(el);
+    /* Можно ли этим пользоваться - и `aria-disabled` наравне с настоящим атрибутом: половина
+     * веб-интерфейсов выключает кнопку именно так, и «не сказано» здесь читалось бы как «включена». */
+    const aria = (el.getAttribute('aria-disabled') || '').toLowerCase();
+    if (typeof el.disabled === 'boolean' || aria === 'true' || aria === 'false') {
+      facts.disabled = el.disabled === true || aria === 'true';
+    }
+    /* ПАРОЛЬ НЕ ЧИТАЕТСЯ НИКОГДА - положительным признаком, чтобы вердикт сказал «не удалось проверить», а
+     * не «не совпало». Тот же запрет, что в снимке страницы и у десктопного expect. */
+    if (type === 'password') facts.secret = true;
+    else if (/^(input|textarea|select)$/i.test(el.tagName)) {
+      facts.value = String(el.value == null ? '' : el.value).slice(0, 400);
+    }
+    facts.text = visibleText(el).slice(0, 400);
+    return { ok: true, result: facts };
+  }
+
   function snapshot(limit, compact) {
     refs = [];
     snapshotSeq++;
@@ -1670,6 +1735,16 @@
     if (msg.mf === 'agent/find') {
       trackOffset(true);
       respond(findNamed(msg.name));
+      return;
+    }
+
+    /* Проверка спрашивает у страницы ФАКТЫ, а вердикт по ним выносится в extension/checks.js. Разделение
+     * не косметическое: пока это был один кусок кода внутри страницы, правило «не удалось проверить - это
+     * не провал» нельзя было прогнать без браузера. */
+    if (msg.mf === 'agent/check') {
+      trackOffset(true);
+      try { respond(checkFacts(msg.want)); }
+      catch (err) { respond({ ok: false, error: err.message }); }
       return;
     }
 

@@ -23,7 +23,7 @@ import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { report, wrap } from './_report.js';
 import { cors } from './_cors.mjs';
-import { CASE_KEY, caseVerdict, readExpects } from './_case.mjs';
+import { CASE_KEY, caseVerdict, checksFor, readExpects } from './_case.mjs';
 import { queueOne } from './_queue.mjs';
 
 const fail = (res, status, message) =>
@@ -37,6 +37,9 @@ const ID = /^[A-Za-z0-9_.:-]{1,80}$/;
 const DOTS = 10;
 /* И сколько прогонов отдаётся, когда кейс раскрыли. Шаги здесь уже едут, поэтому число скромнее. */
 const RUNS = 20;
+
+/** На чём проверяется этот навык. Одно место на весь маршрут, чтобы ответ не зависел от того, кто спросил. */
+const surfaceOf = (flow) => (flow && flow.source && flow.source !== 'desktop' ? 'browser' : 'desktop');
 
 const caseId = () => `cs_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -123,10 +126,10 @@ export async function casesFor(sql, userId) {
 
   /* Имя скилла, который кейс гоняет, и его следующий срок - оба нужны в строке, и оба лежат не здесь. */
   const flows = await sql`
-    select client_id, name, kind from user_flow
+    select client_id, name, kind, source from user_flow
     where user_id = ${userId} and client_id = any(${rows.map((one) => one.flow_id)}) and deleted_at is null
   `;
-  const names = new Map(flows.map((one) => [one.client_id, { name: one.name, kind: one.kind }]));
+  const names = new Map(flows.map((one) => [one.client_id, { name: one.name, kind: one.kind, source: one.source }]));
 
   /* РАСПИСАНИЕ КЕЙСА - это обычное расписание, у которого в аргументах стоит его id. Отдельной таблицы нет
    * нарочно: пауза, снятие с паузы, пропуски и «три провала подряд» уже написаны один раз (api/_schedule.mjs),
@@ -174,6 +177,10 @@ async function list(res, sql, userId) {
       const flow = names.get(one.flow_id) || null;
       return shape(one, {
         skill: flow ? flow.name : null,
+        /* НА ЧЁМ ЭТО ИДЁТ - и это не подробность устройства, а условие исполнения: десктопный кейс
+         * идёт, пока не спит машина с агентом, а веб-кейс - пока открыт Chrome с расширением. Обещать
+         * одно вместо другого значит обещать прогон, которого не будет. */
+        surface: surfaceOf(flow),
         /* «Скилл удалён» - положительным фактом, а не пустым именем: кейс, чей скилл удалили, ночью
          * упадёт на заборе, и человек обязан узнать это раньше, чем наступит ночь. */
         skillGone: !flow,
@@ -208,7 +215,7 @@ async function one(res, sql, userId, id) {
 /** Скилл кейса: существует, принадлежит этому человеку, и его вообще можно гонять по цели. */
 async function skillFor(sql, userId, flowId) {
   const rows = await sql`
-    select client_id, name, kind, payload from user_flow
+    select client_id, name, kind, source, payload from user_flow
     where user_id = ${userId} and client_id = ${flowId} and deleted_at is null limit 1
   `;
   if (!rows.length) return { why: 'no skill with that id on this account' };
@@ -229,11 +236,14 @@ async function add(req, res, sql, userId) {
   const name = String(body.name || '').trim().slice(0, NAME_MAX);
   if (!name) return fail(res, 400, 'a case needs a name - it is what a report is read by');
 
-  const read = readExpects(body.expects);
-  if (read.why) return fail(res, 400, read.why);
-
+  /* СКИЛЛ СНАЧАЛА, УТВЕРЖДЕНИЯ ПОТОМ, и порядок здесь значит вот что: что можно утверждать, зависит от
+   * того, где это будет проверяться. У окна приложения нет адреса, поэтому url_contains на десктопном
+   * скилле - не опечатка, а проверка, которую нечем сделать, и сказать это надо при записи. */
   const found = await skillFor(sql, userId, flowId);
   if (found.why) return fail(res, found.why.startsWith('no skill') ? 404 : 400, found.why);
+
+  const read = readExpects(body.expects, checksFor(surfaceOf(found.skill)));
+  if (read.why) return fail(res, 400, read.why);
 
   const id = caseId();
   await sql`
@@ -247,7 +257,13 @@ async function add(req, res, sql, userId) {
   `;
   return res.status(200).json({
     ok: true,
-    case: shape(made[0], { skill: found.skill.name, skillGone: false, runs: [], schedule: null }),
+    case: shape(made[0], {
+      skill: found.skill.name,
+      skillGone: false,
+      surface: surfaceOf(found.skill),
+      runs: [],
+      schedule: null,
+    }),
   });
 }
 
@@ -264,7 +280,8 @@ async function edit(req, res, sql, userId, id) {
    * способ прислать индекс, которого уже нет, и проверять не то, что показано на экране. */
   let expects = rows[0].expects;
   if (body.expects !== undefined) {
-    const read = readExpects(body.expects);
+    const on = await skillFor(sql, userId, rows[0].flow_id);
+    const read = readExpects(body.expects, checksFor(on.skill ? surfaceOf(on.skill) : 'desktop'));
     if (read.why) return fail(res, 400, read.why);
     expects = read.expects;
   }
@@ -314,8 +331,15 @@ async function run(res, sql, userId, id) {
     args: { [CASE_KEY]: { id } },
   });
   if (put.why) return fail(res, 409, put.why);
+  /* УСЛОВИЕ ИСПОЛНЕНИЯ - СВОЁ У КАЖДОЙ ПОВЕРХНОСТИ, и оно в ответе, а не в мелком шрифте:
+   * веб-кейс ждёт не агента на машине, а открытый Chrome с расширением, и человек, ждущий не того, чего
+   * надо, решит, что продукт сломан. */
+  const web = surfaceOf(found.skill) === 'browser';
   return res.status(200).json({ ok: true, queued: put.id, said: `Queued "${rows[0].name}". `
-    + 'It runs as soon as that machine takes it - watch it on Activity.' });
+    + (web
+      ? 'It runs as soon as that Chrome takes it - the extension has to be on, with "Let my AI run skills '
+        + 'in this browser" switched on. Watch it on Activity.'
+      : 'It runs as soon as that machine takes it - watch it on Activity.') });
 }
 
 async function remove(res, sql, userId, id) {

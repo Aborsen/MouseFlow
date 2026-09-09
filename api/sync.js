@@ -527,16 +527,20 @@ async function push(req, res, sql, who) {
     await sql`
       insert into user_run
         (user_id, client_id, kind, goal, model, flow_id, outcome, summary, error,
-         steps, said, extension, started_at, finished_at, checks)
+         steps, said, extension, started_at, finished_at, checks, case_id)
       values
         (${who.id}, ${clientId}, ${kind}, ${text(run.goal, 4000)}, ${text(run.model, 60)},
          ${text(run.flowId, 80)}, ${outcome}, ${text(run.summary, 2000)}, ${text(run.error, 2000)},
          ${trace}, ${words}, ${text(run.extension, 20)},
-         ${when(run.startedAt)}, ${when(run.finishedAt)}, ${checks})
+         ${when(run.startedAt)}, ${when(run.finishedAt)}, ${checks},
+         /* ПОД КАКИМ ТЕСТ-КЕЙСОМ СЧИТАТЬ ЭТОТ ПРОГОН. Расширение узнаёт кейс из ответа на claim и везёт
+          * его id сюда; вердикт не пишется - он считается из outcome и checks (api/_case.mjs), потому что
+          * хранимый вердикт при изменённом правиле его чтения - это отчёт, спорящий сам с собой. */
+         ${text(run.caseId, 80)})
       on conflict (user_id, client_id) do update set
         outcome = excluded.outcome, summary = excluded.summary, error = excluded.error,
         steps = excluded.steps, said = excluded.said, finished_at = excluded.finished_at,
-        checks = excluded.checks,
+        checks = excluded.checks, case_id = excluded.case_id,
         synced_at = now()
     `;
     savedRuns++;

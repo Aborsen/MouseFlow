@@ -24,6 +24,17 @@
  */
 
 import { CHECKS } from './_expect.mjs';
+/* Виды проверок, которые умеет ДОКУМЕНТ, а не дерево доступности: у DOM их девять против шести, потому что
+ * точное число совпадений и адрес страницы знает только он. Живут в extension/, потому что расширение не
+ * может импортировать ничего выше своей папки; сервер и браузер читают их оттуда. */
+import { DOM_CHECKS } from '../extension/checks.js';
+
+/**
+ * ЧТО МОЖНО УТВЕРЖДАТЬ - ЗАВИСИТ ОТ ТОГО, ГДЕ ЭТО БУДЕТ ПРОВЕРЯТЬСЯ, и отказ поэтому приходит при записи
+ * кейса, а не ночью. `url_contains` на десктопном скилле не бессмысленно - его просто нечем проверить: у
+ * окна приложения нет адреса. Обратное неверно, поэтому у браузера набор шире.
+ */
+export const checksFor = (surface) => (surface === 'browser' ? DOM_CHECKS : CHECKS);
 
 /** Ключ, под которым кейс едет в аргументах работы. Двойное подчёркивание - «это не параметр скилла». */
 export const CASE_KEY = '__case';
@@ -47,8 +58,12 @@ const str = (value) => (typeof value === 'string' ? value.trim() : '');
  *
  * @returns {{ expects: object[], why: string }} why непустой - список не принят, и в нём сказано почему.
  */
-export function readExpects(input) {
+export function readExpects(input, allowed) {
   const list = Array.isArray(input) ? input : [];
+  /* Набор видов - ТОТ, ЧТО У ПОВЕРХНОСТИ, на которой это будет проверяться (checksFor). По умолчанию
+   * десктопный: он строже, и кейс, записанный без указания поверхности, лучше отвергнуть, чем принять
+   * утверждение, которое проверить будет нечем. */
+  const kinds = Array.isArray(allowed) && allowed.length ? allowed : CHECKS;
   if (!list.length) {
     return {
       expects: [],
@@ -71,14 +86,18 @@ export function readExpects(input) {
     const process = str(one.process).slice(0, NAME_MAX);
     const why = str(one.why).slice(0, WHY_MAX);
     const at = `check ${i + 1}`;
-    if (!CHECKS.includes(check)) {
-      return { expects: [], why: `${at}: "${check || '(nothing)'}" is not a kind of check. `
-        + `One of ${CHECKS.join(', ')}.` };
+    if (!kinds.includes(check)) {
+      return { expects: [], why: `${at}: "${check || '(nothing)'}" is not a kind of check here. `
+        + `One of ${kinds.join(', ')}.` };
     }
-    if (!name) return { expects: [], why: `${at}: which control? Name it as it appears on screen.` };
+    /* Адрес страницы имени не имеет: у url_is и url_contains требовать его - требовать бессмыслицу. */
+    if (!name && check !== 'url_is' && check !== 'url_contains') {
+      return { expects: [], why: `${at}: which control? Name it as it appears on screen.` };
+    }
     /* Текст обязателен там, где без него утверждение бессмысленно: «value_is» без значения не утверждает
      * ничего, а прошёл бы как утверждение. */
-    if ((check === 'value_is' || check === 'value_contains') && !text) {
+    if (['value_is', 'value_contains', 'text_is', 'text_contains', 'url_is', 'url_contains', 'count_is']
+      .includes(check) && !text) {
       return { expects: [], why: `${at}: ${check} needs \`text\` - the value it must hold.` };
     }
     /* «Что это доказывает» - не украшение: это единственная строка, которую человек читает в красном

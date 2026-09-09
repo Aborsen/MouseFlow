@@ -1316,6 +1316,13 @@ group('и свободную цель - предложение, а не навы
         args: { goal: 'open the docs' }, command: '#goal.browser', flow: null } });
     }
     if (String(url).includes('worker=report')) { posted.push(['report', body]); return reply({ ok: true }); }
+    /* Кончившаяся работа СРАЗУ отдаёт прогон аккаунту - иначе ночной прогон не появился бы ни в ряду
+     * точек кейса, ни в отчёте до того, как кто-то откроет панель. Стенд отвечает на это, а не считает
+     * его вызовом модели. */
+    if (String(url).includes('/api/sync')) {
+      posted.push(['sync', body]);
+      return reply({ ok: true, flows: 0, runs: (body.runs || []).length, deleted: 0, problems: [] });
+    }
     if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
     /* Модель отвечает сразу: цель проверяется тем, что она ДОШЛА до цикла, а не тем, как он думает. */
     seenGoal = JSON.stringify(body.messages || []);
@@ -1328,6 +1335,19 @@ group('и свободную цель - предложение, а не навы
   }
   check('предложение доехало до цикла как цель', /open the docs/.test(String(seenGoal)),
     show(seenGoal && seenGoal.slice(0, 80)));
+
+  /* И ПРОГОН СРАЗУ УЕХАЛ НА АККАУНТ. Найдено разбором пункта 8: об исходе работы отчитывался ?worker=report,
+   * а сам прогон - шаги, проверки, id кейса - попадал в user_run только при следующем sync, который до сих
+   * пор запускали человек из панели и спаривание. Ночной веб-кейс отработал бы и не появился бы ни в ряду
+   * точек, ни в отчёте до утра - то есть ровно то, ради чего кейсы существуют, не работало бы. */
+  const pushed = posted.filter(([k]) => k === 'sync');
+  const withRun = pushed.map(([, b]) => b).filter((b) => Array.isArray(b.runs) && b.runs.length);
+  check('и прогон сразу уехал на аккаунт, а не дождался, пока откроют панель',
+    withRun.length >= 1, show(pushed.map(([, b]) => (b.runs || []).length)));
+  check('и в отданном прогоне есть его шаги и место под кейс',
+    withRun.length >= 1 && 'checks' in withRun[0].runs[0] && 'caseId' in withRun[0].runs[0]
+      && 'steps' in withRun[0].runs[0],
+    show(withRun.length ? Object.keys(withRun[0].runs[0]) : []));
   const rep = posted.find(([k]) => k === 'report');
   check('и исход отчитан обратно', !!rep && rep[1].id === 'g1' && rep[1].ok === true, show(rep && rep[1]));
   check('и в отчёте слова прогона, а не наши', !!rep && /opened/.test(String(rep[1].said)),
@@ -1455,6 +1475,143 @@ group('capture_page: картинка едет картинкой и забыв�
     show(msgs[2].content[0].content[0]));
   check('и пара tool_use/tool_result не порвана', msgs[2].content[0].tool_use_id === 'a',
     show(msgs[2].content[0].tool_use_id));
+}
+
+
+group('expect в браузере: страница отвечает фактами, вердикт едет в шаге, слова - модели');
+{
+  const { runGoal } = await import('./agent.js');
+  /* Инструмент ОБЪЯВЛЕН - иначе модель его не вызовет ни разу, сколько бы кода за ним ни стояло. */
+  const { toolsFor } = await import('./agent.js');
+  const tools = toolsFor(false);
+  const expectTool = tools.find((t) => t.name === 'expect');
+  check('инструмент объявлен циклу', !!expectTool);
+  check('и знает три вида, которых нет на десктопе - их знает только DOM',
+    expectTool.input_schema.properties.check.enum.includes('url_contains')
+      && expectTool.input_schema.properties.check.enum.includes('count_is')
+      && expectTool.input_schema.properties.check.enum.includes('text_contains'));
+  /* «Что это доказывает» - обязательно, потому что это единственное, что читают в красном отчёте. */
+  check('и «что это доказывает» обязательно, а имя - нет (адрес страницы имени не имеет)',
+    expectTool.input_schema.required.includes('why') && !expectTool.input_schema.required.includes('name'));
+  check('в промпте сказано звать его, а не решать глазом',
+    /call expect for it - do not decide it from the element list or from a picture/
+      .test(readFileSync(new URL('./agent.js', import.meta.url), 'utf8')));
+
+  /* ВЕРДИКТ ДОЛЖЕН ОКАЗАТЬСЯ В ШАГЕ - иначе сводка `checks` пуста, а страница рисует проверку без
+   * доказательства. Прогоняется настоящим циклом: модель зовёт expect, исполнитель отдаёт вердикт. */
+  let turn = 0;
+  netHandler = async (url, init) => {
+    if (!init || init.method === 'GET') return reply({ extensionModel: 'claude-opus-5' });
+    turn++;
+    if (turn > 1) {
+      return reply({ stop_reason: 'end_turn',
+        content: [{ type: 'tool_use', id: 'f', name: 'finish', input: { ok: true, summary: 'checked' } }] });
+    }
+    return reply({ stop_reason: 'end_turn',
+      content: [{ type: 'tool_use', id: 'e', name: 'expect',
+        input: { check: 'present', name: 'Saved', why: 'the change stuck' } }] });
+  };
+  const said = [];
+  const out = await runGoal({
+    goal: 'check it', apiKey: null, authToken: 'mf_test',
+    execute: async (name, input) => {
+      if (name !== 'expect') return { ok: true, result: { url: 'u' } };
+      const { judgeDom, checkSaid } = await import('./checks.js');
+      const verdict = judgeDom(input, { count: 0 });
+      said.push(checkSaid(input, verdict));
+      return { ok: true, result: { verdict, say: checkSaid(input, verdict) } };
+    },
+    onEvent: () => {}, isAborted: () => false,
+  });
+  const step = (out.steps || []).find((s) => s.name === 'expect');
+  check('шаг проверки записан вместе с вердиктом', !!step && !!step.outcome, show(out.steps));
+  check('и вердикт - тот, что вынесла страница, с уровнем dom',
+    step.outcome.pass === false && step.outcome.how === 'dom', show(step && step.outcome));
+  check('а модель прочитала утверждение словами, а не JSON',
+    said[0].startsWith('FAIL') && /the change stuck/.test(said[0]), said[0]);
+
+  /* Проверка ТОЛЬКО СМОТРИТ, поэтому «страница не изменилась» её не касается: иначе шесть проверок
+   * подряд остановили бы прогон как застрявший. То же правило, что LOOKS_ONLY на десктопе. */
+  const { pageMark } = await import('./agent.js');
+  check('ответ проверки не считается движением страницы',
+    pageMark({ verdict: { pass: true }, say: 'PASS' }) === null);
+}
+
+group('и факты для проверки собирает страница - шире, чем управляющие элементы');
+{
+  const src = readFileSync(new URL('./content.js', import.meta.url), 'utf8');
+  const at = src.indexOf('function checkFacts(');
+  check('функция есть в странице', at > 0);
+  let depth = 0;
+  let body = '';
+  for (let i = src.indexOf('{', at); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) { body = src.slice(at, i + 1); break; }
+  }
+  const el = (name, extra = {}) => Object.assign({
+    tagName: 'BUTTON', getAttribute: () => null, value: null, disabled: false,
+  }, extra, { __name: name });
+  const make = (controls, texts) => {
+    // eslint-disable-next-line no-new-func
+    return new Function('document', 'location', 'AGENT_SELECTOR', 'isVisible', 'onScreen', 'accessibleName',
+      'visibleText', body + '; return checkFacts;')(
+      {
+        title: 'A page',
+        querySelectorAll: (sel) => (sel === 'CONTROLS' ? controls : texts),
+      },
+      { href: 'https://app.example.com/dashboard' },
+      'CONTROLS', () => true, () => true, (e) => e.__name, (e) => e.__text || e.__name);
+  };
+
+  const facts = make([el('Send'), el('Send later')], [])({ check: 'present', name: 'Send' });
+  check('точное имя важнее вхождения', facts.result.count === 1, show(facts.result));
+  check('и адрес страницы приезжает всегда',
+    facts.result.url === 'https://app.example.com/dashboard');
+
+  /* ТЕКСТ, А НЕ ТОЛЬКО КОНТРОЛ: «на странице есть слово Saved» - обычная проверка, и она про текст. */
+  const text = make([], [el('Welcome back, Ann', { tagName: 'SPAN', __text: 'Welcome back, Ann' }),
+    el('everything on the page including this', { tagName: 'DIV', __text: 'everything on the page including this and Welcome back, Ann' })])(
+    { check: 'text_contains', name: 'Welcome back', text: 'Ann' });
+  check('текст находится, когда среди контролов ничего нет', text.result.count === 2, show(text.result));
+  /* САМЫЙ МЕЛКИЙ ВПЕРЁД: иначе подошла бы обёртка вокруг половины страницы, и проверка «текст на
+   * странице» проходила бы всегда. */
+  check('и содержательным берётся самый мелкий, а не обёртка',
+    text.result.text === 'Welcome back, Ann', show(text.result.text));
+
+  const secret = make([el('Password', { tagName: 'INPUT', getAttribute: (a) => (a === 'type' ? 'password' : null), value: 'hunter2' })], [])(
+    { check: 'text_is', name: 'Password', text: 'hunter2' });
+  check('пароль не читается вовсе - положительным признаком',
+    secret.result.secret === true && secret.result.value === undefined, show(secret.result));
+
+  const off = make([el('Send', { getAttribute: (a) => (a === 'aria-disabled' ? 'true' : null) })], [])(
+    { check: 'disabled', name: 'Send' });
+  check('aria-disabled читается наравне с настоящим атрибутом', off.result.disabled === true,
+    show(off.result));
+}
+
+group('веб-кейс: цель приезжает готовой, id кейса едет до аккаунта, запись кейсом быть не может');
+{
+  const src = readFileSync(new URL('./background.js', import.meta.url), 'utf8');
+  /* ЦЕЛЬ КЕЙСА СОСТАВЛЯЕТ СЕРВЕР. Собирать её здесь значило бы вторую редакцию слов «проверь тулом, а не
+   * глазом» - а они обязаны быть одни на все три драйвера (caseGoal в api/_case.mjs). */
+  check('цель кейса берётся из ответа на claim, а не собирается заново',
+    /job\.caseGoal \|\| fillGoal\(skill, values\)/.test(src));
+  check('и id кейса едет через прогон до записи на аккаунте',
+    /caseId: \(from && from\.caseId\) \|\| null/.test(src) && /caseId: agent\.caseId \|\| null/.test(src)
+      && /caseId: run\.caseId \|\| null/.test(src));
+  check('сводка проверок считается перед отправкой, а не на сервере',
+    /checks: checksOf\(run\.steps\)/.test(src));
+  check('запись кейсом быть не может, и это сказано словами',
+    /is a recording: it is replayed rather than decided/.test(src));
+  /* КАДР-ДОКАЗАТЕЛЬСТВО. Провалившаяся проверка в словах - утверждение об экране, которого больше нет. */
+  check('кадр сохраняется под тем же id, под которым прогон ляжет на аккаунт',
+    /runId: 'run_' \+ agent\.startedAt/.test(src) && /'\/api\/artifacts'/.test(src));
+  check('и вид кадра считает общая функция, а не своя',
+    /kind: kind \|\| kindOf\(verdicts\)/.test(src) && /from '\.\/checks\.js'/.test(src));
+  check('последний экран остаётся только у прогона, который что-то проверял',
+    /if \(checksOf\(agent\.trace\)\) \{[\s\S]{0,200}?'final'\)/.test(src));
+  check('кадр - jpeg, потому что png страницы почти всегда тяжелее потолка',
+    /format: 'jpeg', quality: FRAME_QUALITY/.test(src));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

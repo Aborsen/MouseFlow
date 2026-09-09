@@ -518,6 +518,8 @@ export interface Case {
   skill?: string | null;
   /** Скилл удалён - положительным фактом: такой кейс ночью падает на заборе, и знать это надо раньше. */
   skillGone?: boolean;
+  /** На чём кейс идёт: десктопный агент или Chrome с расширением. Это условие исполнения, а не деталь. */
+  surface?: 'desktop' | 'browser';
   runs: CaseRun[];
   schedule: {
     id: string;
