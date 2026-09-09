@@ -37,7 +37,11 @@ fast, safe and web-first.
 
 ### Rules the owner has set
 
-- **Never `git push` without the owner saying "пуш".** Commit freely; pushing deploys (Vercel builds on push, ~20–40 s).
+- **Push when green, without asking** (rule set 2026-09-09; it replaced "never push without the word
+  'пуш'"). Green means `npm test` with zero FAIL, `npx tsc --noEmit -p web/tsconfig.json` clean, and
+  `npm run build` in `web/` ok — for MouseLanding, `npm run build` and `npm test`. Then wait for the deploy
+  (`build.json` shows the commit) and tell the owner one concrete thing to check. Not green → do not push,
+  and say what failed. Pushing deploys (Vercel builds on push, ~20–40 s).
 - Commits in this repo and in MouseLanding are authored as `raudar.aborsen@gmail.com` (already configured).
 - The owner handles credentials and secrets. Never ask for key values; never put them in files.
 - A migration against the production database is applied only after explicit approval, then verified with `npm run migrate -- --list`.
