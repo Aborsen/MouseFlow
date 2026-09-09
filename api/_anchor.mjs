@@ -131,6 +131,40 @@ export function anchoredSaid(counts) {
 }
 
 /**
+ * КАКОЕ ОКНО ПОДНИМАТЬ ПЕРЕД ПОВТОРОМ - то, в котором записаны КЛИКИ.
+ *
+ * Раньше поднималось `payload.windows[0]` - первое окно, которое увидел сэмплер за время записи. И это
+ * систематически НЕ ТО ОКНО: запись начинают кнопкой в MouseFlow, значит впереди в этот момент сам
+ * MouseFlow, значит первым в списке стоит он. Из настоящей записи в Chrome:
+ *
+ *   windows: [{"title":"MouseFlow","process":"chrome"}, {"title":"… - Gmail - Google Chrome", …}]
+ *
+ * Повтор поднимал MouseFlow и клацал в него - даже когда координаты были уже пересчитаны в окно Chrome,
+ * потому что развёрнутый MouseFlow накрывает Chrome в углу, а клик достаётся тому, кто сверху.
+ *
+ * Клики знают правильный ответ сами: у них в контексте написано, в каком окне они были сделаны. Берётся
+ * самое частое - у записи, ходившей по трём окнам, поднять можно только одно, и это то, где работы больше
+ * всего; при равенстве - то, что встретилось раньше.
+ */
+export function whichWindow(events) {
+  const seen = new Map();
+  let order = 0;
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!event || !/Click Down/.test(String(event.action || ''))) continue;
+    const ctx = event.context;
+    const window = ctx && typeof ctx.window === 'string' ? ctx.window.trim() : '';
+    if (!window) continue;                    // клик по панели задач или по трею окна не называет
+    const app = ctx && typeof ctx.app === 'string' ? ctx.app.trim() : '';
+    const key = `${app}\u0000${window}`;
+    const had = seen.get(key);
+    if (had) had.n++;
+    else seen.set(key, { app: app || null, window, n: 1, at: order++ });
+  }
+  if (!seen.size) return null;
+  return [...seen.values()].sort((a, b) => (b.n - a.n) || (a.at - b.at))[0];
+}
+
+/**
  * ТО ЖЕ ОКНО СЕЙЧАС - или ничего.
  *
  * Заголовок окна МЕНЯЕТСЯ, и это не редкость: «Inbox — Outlook» становится «3 unread — Outlook», документ

@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.25.0"
+let VERSION = "0.26.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -494,6 +494,9 @@ final class Recorder {
 
     private var buffer: [Ev] = []
     private var recording = false
+    /* Где в буфере кончилась работа человека и началось НАШЕ меню - см. markOwnMenu и endFromAgent.
+     * -1 значит «меню не открывали», и тогда не отрезается ничего. */
+    private var ownMenuAt = -1
     /* A recording ended at the AGENT, waiting for the app to take delivery. Serialized text, not events:
      * the resolver has already finished with it, and text is what /record/stop returns anyway. Spilled to
      * disk the moment it exists, because every way this process ends - a crash, a logout, the permission
@@ -661,6 +664,29 @@ final class Recorder {
      * no account to put them on - the app does, and its Record page collects a held recording through the
      * ordinary /record/stop the moment it notices. `recording:false` with `count>0` on /record/status is
      * the signal, and it is unambiguous because a client-driven stop never leaves that state behind. */
+    /* ГДЕ КОНЧАЕТСЯ ЗАПИСЬ И НАЧИНАЕТСЯ НАШЕ СОБСТВЕННОЕ МЕНЮ.
+     *
+     * Сообщено с прогона на Windows, и мера здесь та же, потому что механика та же: человек остановил
+     * запись из меню агента, и клик по «Stop and Save Recording» попал В ЗАПИСЬ - а повтор в конце снова
+     * открыл меню и снова нажал ту же кнопку, то есть начал новую запись. Запись не должна содержать то,
+     * чем её остановили.
+     *
+     * Метка ставится, когда открывается НАШЕ меню (menuNeedsUpdate - единственный момент, когда это
+     * известно), и указывает на последнее НАЖАТИЕ в буфере: то, которым меню и открыли. */
+    func markOwnMenu() {
+        gate.lock()
+        defer { gate.unlock() }
+        guard recording else { ownMenuAt = -1; return }
+        var at = buffer.count
+        /* Назад до последнего нажатия и недалеко: клик по строке меню - это конец буфера. */
+        var i = buffer.count - 1
+        while i >= 0, i >= buffer.count - 40 {
+            if buffer[i].action.hasSuffix("Click Down") { at = i; break }
+            i -= 1
+        }
+        ownMenuAt = at
+    }
+
     func endFromAgent() {
         /* The buffer is taken in the SAME critical section that drops the flag, and that is the whole
          * correctness of this function. Dropping `recording` first and taking the buffer after the resolver
@@ -673,8 +699,16 @@ final class Recorder {
         let was = recording
         stoppedElapsed = recording ? (DispatchTime.now().uptimeNanoseconds - startNanos) : stoppedElapsed
         recording = false
-        let taken = buffer
+        var taken = buffer
         buffer = []
+        /* ХВОСТ НАШЕГО МЕНЮ ОТРЕЗАН ЗДЕСЬ - до того, как посчитан признак «есть что отдать»: иначе запись
+         * из одного клика по «Stop and Save» отдалась бы как запись с одним событием, и повтор нажал бы
+         * Стоп ещё раз. Движения к строке меню уходят вместе с ним. */
+        if ownMenuAt >= 0, ownMenuAt <= taken.count {
+            taken = Array(taken.prefix(ownMenuAt))
+            while let last = taken.last, last.action == "Mouse Movement" { taken.removeLast() }
+        }
+        ownMenuAt = -1
         /* Held from this instant: `ending` covers the gap until the text exists, and both /record/status
          * and /record/stop read it, so no caller can see a hold that is not there yet. */
         ending = was && !taken.isEmpty
@@ -6333,6 +6367,9 @@ final class MenuActions: NSObject, NSMenuDelegate {
      * only moment visibility matters. */
     func menuNeedsUpdate(_ menu: NSMenu) {
         let recording = Recorder.shared.isRecording
+        /* И ЗАПОМНИТЬ, ЧТО ДАЛЬШЕ В БУФЕРЕ - УЖЕ НАШЕ МЕНЮ. Это единственный момент, когда про открытие
+         * известно; клик, которым его открыли, из записи выпадет. См. Recorder.markOwnMenu. */
+        Recorder.shared.markOwnMenu()
         stopSaveItem?.isHidden = !recording
         let held = Recorder.shared.heldStatus
         /* Start shows when it would work: idle, nothing held, and Accessibility either granted already or

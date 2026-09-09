@@ -13,7 +13,7 @@
  * Run: node api/_test-anchor.mjs
  */
 import {
-  anchorOf, anchoredSaid, findKey, matchWindow, reanchor, reanchorAll, rectOf, whatToFind,
+  anchorOf, anchoredSaid, findKey, matchWindow, reanchor, reanchorAll, rectOf, whatToFind, whichWindow,
 } from './_anchor.mjs';
 
 let pass = 0;
@@ -194,6 +194,49 @@ group('вся запись целиком - и счёт, который чело
   check('сдвинутых событий столько же, сколько пересчитанных', counts.moved === 1, String(counts.moved));
   check('мусор на входе ничего не ломает',
     JSON.stringify(reanchorAll(null, null).counts) === '{"window":0,"raw":0,"moved":0}');
+}
+
+group('КАКОЕ ОКНО ПОДНЯТЬ - ТО, В КОТОРОМ ЗАПИСАНЫ КЛИКИ');
+{
+  /* ЗАЧЕМ ЭТО ЕСТЬ. Перед повтором окно надо поднять - иначе клик достаётся тому, кто сверху, и никакая
+   * перепривязка координат не поможет. Раньше поднималось `recording.windows[0]` - первое, что увидел
+   * сэмплер, - а сэмплер начинает смотреть в момент нажатия «Записать», то есть когда впереди сам
+   * MouseFlow. Найдено прогоном: запись в Chrome, у которой windows[0] = {"title":"MouseFlow"}; повтор
+   * поднимал MouseFlow и клацал в него. Спрашивать надо КЛИКИ, а не сэмплер. */
+  const click = (window, app) => ({ x: 1, y: 1, action: 'Left Click Down', context: { app, window } });
+
+  const most = whichWindow([
+    click('MouseFlow', 'chrome'),
+    click('Inbox — Outlook', 'OUTLOOK'),
+    click('Inbox — Outlook', 'OUTLOOK'),
+    { x: 5, y: 5, action: 'Mouse Movement' },
+  ]);
+  check('выбрано окно, где кликов больше', most && most.window === 'Inbox — Outlook',
+    JSON.stringify(most));
+  check('и приложение вместе с ним', most && most.app === 'OUTLOOK', JSON.stringify(most));
+
+  /* ПРИ РАВЕНСТВЕ - ПЕРВОЕ. Запись начинают в том окне, в котором собирались работать, поэтому первое
+   * названное кликом окно - лучшая догадка, чем последнее. */
+  const tie = whichWindow([click('A window', 'a'), click('B window', 'b')]);
+  check('при равенстве побеждает первое названное', tie && tie.window === 'A window',
+    JSON.stringify(tie));
+
+  check('движения и отпускания окна не называют',
+    whichWindow([{ x: 1, y: 1, action: 'Mouse Movement', context: { window: 'Ghost' } },
+      { x: 1, y: 1, action: 'Left Click Release', context: { window: 'Ghost' } }]) === null);
+  check('клик без окна ничего не выбирает',
+    whichWindow([{ x: 1, y: 1, action: 'Left Click Down', context: { app: 'x' } }]) === null);
+  check('мусор на входе отвечает «не знаю», а не падает',
+    whichWindow(null) === null && whichWindow(undefined) === null && whichWindow([]) === null);
+
+  /* И ВМЕСТЕ С matchWindow: выбранное кликами окно ищется среди живых по ТЕКУЩЕМУ заголовку. */
+  const live = (title, process, box) => ({ title, process, ...box });
+  const now = matchWindow(most, [
+    live('MouseFlow', 'chrome', { x: 0, y: 0, w: 800, h: 600 }),
+    live('Inbox — Outlook — 3 unread', 'OUTLOOK', { x: 1400, y: 50, w: 1200, h: 800 }),
+  ]);
+  check('и найдено живое окно того же приложения, а не MouseFlow',
+    now && now.process === 'OUTLOOK', JSON.stringify(now));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

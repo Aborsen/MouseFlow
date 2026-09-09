@@ -24,8 +24,8 @@ button is a dead end: it says no and not why.
 
 ### What a recording deliberately does not contain
 
-Three things, and each of them was a leak that had to be found in a real transcript rather than reasoned
-about beforehand.
+Four things. The first three were leaks that had to be found in a real transcript rather than reasoned about
+beforehand; the fourth was a replay that restarted the recorder.
 
 **Typed text.** The keystroke is recorded, never the character. See `Key Down` in `agent/PROTOCOL.md`.
 
@@ -42,6 +42,29 @@ contain the text.
 a sign-in redirect is exactly such a page: `auth.doubleword.ai/u/login?state=hKFo2SAw…` — a one-time sign-in
 token. `PageUrl` had always cut the query off the `url` field for that reason; the title walked around it.
 Only when the whole title parses as an address: a title that merely contains a question mark is a sentence.
+
+**How you stopped it.** Every door out of a recording is a click somewhere, and every one of them was
+landing *inside* the recording — so a replay ended by pressing that same control again. The tray's **Stop
+and Save Recording** was the bad one: the item is in the same place next time, so the replay's last act was
+to *start a new recording*. The app's own Stop button did the same thing one level up, ending every replay
+in MouseFlow.
+
+The trim is split, because each half is the only one who can see its own door:
+
+- **The agent** marks its buffer the instant its own menu opens (`ContextMenuStrip.Opening` on Windows,
+  `menuNeedsUpdate` on macOS), at the last press before that, and cuts there. It knows the *moment*;
+  nothing downstream does. Agent 0.26.0.
+- **The app** cuts the press that landed on a window carrying its own title, plus the travel to it
+  (`dropOwnTail` in `api/_macro.mjs`). It knows its *title*; the agent cannot tell our window from any
+  other. This half works with any agent.
+
+The rule is deliberately minimal: trailing movements, then **one** press-and-release, then the movements
+that led to it. Not "every click of ours at the end" — somebody may have been reading something in the app
+before they stopped — and never a click on somebody else's window, so a recording's real last action stays
+where it is. Not a clock either: "the last two seconds" would eat a real click after a slow stop and keep
+ours after a slow hand. A recording that consisted only of pressing Stop now correctly says **"Nothing was
+captured."**, and what this costs is written down in
+[19 — Limits and known gaps](19-limits-and-known-gaps.md).
 
 What is **not** redacted is written down in
 [19 — Limits and known gaps](19-limits-and-known-gaps.md): short content, and titles themselves.
@@ -74,7 +97,10 @@ transcript saying "No window was recorded". Everything else the poller needs tra
 
 On stop:
 
-1. `POST /record/stop` returns the events as `.mmmacro` text; `parseMacro` turns them into events.
+1. `POST /record/stop` returns the events as `.mmmacro` text; `parseMacro` turns them into events, and
+   `dropOwnTail` takes off the press that stopped it — see *What a recording deliberately does not
+   contain* above. Only here: the mid-flight cut (`/record/drain`) slices a live recording in the middle,
+   where nobody stopped anything, and trimming there would cost every part its last click.
 2. The recording is named by **when** it was made, to the second: `MouseFlow 21/08 13:34:07`. A timestamp
    reads as a moment and sorts like one. (Window-title names were tried and aged badly — ten recordings in
    the same app were ten identical names. Minutes alone were tried too: three recordings inside one minute
@@ -191,11 +217,19 @@ who has never seen this app.
 
 Pressing Play on a row:
 
-1. **Brings the application this was recorded in to the front** — `action=activate` on the first window the
-   recorder saw, then 350 ms for the window to actually raise. A replay is coordinates and clicks: it has
-   no idea what is under them, and if the window has been minimised every click lands on whatever happens
-   to be there — a failure that looks like the recording being wrong rather than the desktop having moved
-   on. Best effort, and the message says what was tried.
+1. **Brings the window the CLICKS name to the front** — not the first window the sampler saw. That
+   distinction is the whole point: the sampler starts looking the moment Record is pressed, and what is in
+   front at that moment is MouseFlow itself, so `windows[0]` was systematically *us*. A recording made in
+   Chrome carried `{"title":"MouseFlow"}` as its first window, and the replay dutifully raised MouseFlow
+   and clicked into it — which re-anchoring could not save, because a maximised MouseFlow covers the Chrome
+   window and the click goes to whoever is on top.
+
+   So `whichWindow` counts the presses per window and asks *them*; `matchWindow` finds that window as it is
+   now, and `action=activate` raises it by its **current** title — a tab's title changes, and activate
+   searches by it — then 350 ms for the window to actually raise. The window list is then **re-read**,
+   because a minimised window reports a placeholder rectangle and step 2 has to measure the restored one.
+   A replay is coordinates and clicks: it has no idea what is under them. Best effort, and the message says
+   what was tried.
 2. **Puts every click back inside the window it was recorded in.** A recorded coordinate is true until the
    window moves; after that "click at 1074,159" lands in empty space, or worse, on the button next to the
    one it meant. Since agent 0.25.0 a click carries the rectangle of its window and of the control it hit

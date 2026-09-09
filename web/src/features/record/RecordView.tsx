@@ -16,6 +16,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Typography } from '@insightis/ui/Typography';
 import { cn } from '@insightis/ui/cn';
 import {
+  type AgentWindow,
   doAction,
   recordDrain,
   recordStart,
@@ -29,10 +30,10 @@ import {
 import { type Flow, pull, push } from '@/lib/api';
 import { askAbout } from '@/features/chat/ask-about';
 import { SKILL_ROLE, roleOf } from '@/lib/flow-role';
-import { flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
+import { dropOwnTail, flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
 /* ПЕРЕПРИВЯЗКА ПЕРЕД ПОВТОРОМ - общий модуль, без сети и без DOM, проверяемый вычислением
  * (api/_test-anchor.mjs). Здесь только то, чего у него нет: спросить у агента, где окна сейчас. */
-import { anchoredSaid, reanchorAll } from '../../../../api/_anchor.mjs';
+import { anchoredSaid, matchWindow, reanchorAll, whichWindow } from '../../../../api/_anchor.mjs';
 import {
   type RecordedEvent, type Recording, refreshAgent, uid, useAgent, useConsole,
   persistTrouble,
@@ -458,7 +459,15 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
     try {
       const text = await recordStop(port);
       setLive(null);
-      const { events } = parseMacro(text);
+      /* ЧЕМ ЗАПИСЬ ОСТАНОВИЛИ - НЕ ЧАСТЬ ЗАПИСИ. Кнопка «Стоп» стоит в НАШЕМ окне, и клик по ней попадал в
+       * запись: повтор в конце поднимал MouseFlow и нажимал Стоп ещё раз - то есть начинал новую запись.
+       * Свой хвост в трее агент снимает сам, но про кнопку в приложении знает только приложение, поэтому
+       * оно и передаёт свой заголовок. Правило целиком - в api/_macro.mjs.
+       *
+       * Отрез стоит ДО проверки «есть что записать»: запись из одного клика по «Стоп» - это пустая запись,
+       * и сказать про неё «Nothing was captured.» вернее, чем сохранить строку, которая при повторе
+       * нажимает Стоп. */
+      const { events } = dropOwnTail(parseMacro(text).events, document.title);
       if (!events.length) { setNote('Nothing was captured.'); return; }
 
       const where = seenWindows.current.slice();
@@ -649,22 +658,36 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
        *
        * A replay is coordinates and clicks: it has no idea what is under them. If the window has been
        * minimised, or something else is in front, every click lands on whatever happens to be there - and the
-       * failure looks like the recording being wrong rather than the desktop having moved on. The recorder
-       * already noted which applications were in front (this page samples the foreground window every
-       * second), so the first one is where this recording belongs.
+       * failure looks like the recording being wrong rather than the desktop having moved on.
        *
        * Best effort on purpose: a window that has since closed should not stop a replay the user asked for -
        * they may be about to open it. The message says what was tried.
-       */
-      const front = rec.windows?.[0];
-      if (front && (front.title || front.process)) {
+       *
+       * КАКОЕ ОКНО ПОДНЯТЬ - ТО, В КОТОРОМ ЗАПИСАНЫ КЛИКИ, а не первое, которое увидел сэмплер.
+       *
+       * Раньше здесь стояло `rec.windows[0]`, и это систематически было НЕ ТО ОКНО: запись начинают
+       * кнопкой в MouseFlow, значит впереди в этот момент сам MouseFlow, значит первым в его списке стоит
+       * он. Найдено прогоном: запись в Chrome, у которой windows[0] = {"title":"MouseFlow"}; повтор
+       * поднимал MouseFlow и клацал в него - и перепривязка координат этого не спасала, потому что
+       * развёрнутый MouseFlow накрывает окно Chrome, а клик достаётся тому, кто сверху.
+       *
+       * Заголовок берётся ТЕКУЩИЙ, а не записанный: у вкладки он меняется, а activate ищет по нему. */
+      let open = await windows(port).then((it) => it.windows).catch(() => [] as AgentWindow[]);
+      const want = whichWindow(playing.events);
+      const front = (want && matchWindow(want, open)) || rec.windows?.[0] || null;
+      const title = front && 'title' in front ? front.title : undefined;
+      const process = front && 'process' in front ? front.process : undefined;
+      if (front && (title || process)) {
         try {
-          await doAction(port, `action=activate ${front.process ? `process=${front.process} ` : ''}` +
-            `${front.title ? `title=${front.title}` : ''}`.trim());
+          await doAction(port, `action=activate ${process ? `process=${process} ` : ''}` +
+            `${title ? `title=${title}` : ''}`.trim());
           // Windows takes a moment to actually raise it; clicking into a window still coming forward misses.
           await new Promise((done) => setTimeout(done, 350));
+          /* И ПЕРЕЧИТАТЬ ОКНА ПОСЛЕ ПОДНЯТИЯ: свёрнутое окно до этого отдавало условный прямоугольник
+           * 160x28, по которому пересчитывать нечего, - а восстановленное отдаёт настоящий. */
+          open = await windows(port).then((it) => it.windows).catch(() => open);
         } catch (_) {
-          setNote(`Could not bring ${front.title || front.process} to the front — replaying anyway.`);
+          setNote(`Could not bring ${title || process} to the front — replaying anyway.`);
         }
       }
 
@@ -683,8 +706,7 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       let aimed = playing.events;
       let anchored = '';
       try {
-        const open = await windows(port);
-        const put = reanchorAll(playing.events, open.windows);
+        const put = reanchorAll(playing.events, open);
         aimed = put.events as RecordedEvent[];
         anchored = anchoredSaid(put.counts);
       } catch (_) {

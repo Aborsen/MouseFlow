@@ -95,6 +95,16 @@ to the agent's own disk the moment it exists and reloaded at startup, so no rest
 the permission watcher's own self-restart - can destroy it; the file is deleted on delivery. The menu says
 a hold is waiting, because "I pressed Save and nothing visible happened" reads as loss.
 
+**Since 0.26.0 the agent's own menu is not in the recording.** The click that opened the tray menu and the
+click on **Stop and Save Recording** were both captured, so replaying that recording ended by opening the
+menu and pressing the same item - which, the item being in the same place, STARTED A NEW RECORDING. The
+agent now marks its buffer when its menu opens (`ContextMenuStrip.Opening` on Windows, `menuNeedsUpdate` on
+macOS), at the last press before that, and truncates there - BEFORE `count` and the "something is held" flag
+are computed from it, so a recording consisting only of the stop is delivered as nothing rather than as one
+event. Trailing `Mouse Movement` goes with it: a recording ending in the road to the tray sends the cursor
+to that corner on replay. The mark is taken at menu-open rather than by a clock, and only this door reads
+it - the client's Stop button is the client's own tail to cut, because only the client knows its own title.
+
 The agent itself never touches the account - it has no credentials, which is a design and not a gap. The
 client's Record page takes delivery through the same path as its own Stop button: while open, its status
 poll notices within a quarter second; on arrival, one status read collects what was held while the page was

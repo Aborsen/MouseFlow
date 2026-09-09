@@ -30,6 +30,13 @@ export interface OpenWindow {
   h?: number;
 }
 
+/**
+ * Which window to raise before a replay: the one the CLICKS name, not the first the sampler saw. The
+ * sampler's first window is systematically MouseFlow itself, because that is what is in front when Start
+ * is pressed - and raising it made the replay click into MouseFlow.
+ */
+export function whichWindow(events: unknown): { app: string | null; window: string; n: number } | null;
+
 /** The same window now, or nothing - see the three rungs in _anchor.mjs. */
 export function matchWindow(ctx: unknown, list: OpenWindow[] | null | undefined): OpenWindow | null;
 

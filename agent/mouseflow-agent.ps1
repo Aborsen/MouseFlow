@@ -514,7 +514,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.25.0";
+        public const string Version = "0.26.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -1702,6 +1702,38 @@ namespace MouseFlow
          * through the ordinary /record/stop the moment it notices. `recording:false` with `count>0` on
          * /record/status is the signal, and it is unambiguous because a client-driven stop never leaves
          * that state behind. Same contract the macOS agent implements; see PROTOCOL.md. */
+        /* ГДЕ КОНЧАЕТСЯ ЗАПИСЬ И НАЧИНАЕТСЯ НАШЕ СОБСТВЕННОЕ МЕНЮ.
+         *
+         * Сообщено с прогона, и это была настоящая поломка: человек остановил запись через трей, и клик по
+         * «Stop and Save Recording» попал В ЗАПИСЬ. Повтор в конце снова открывал меню агента и снова
+         * нажимал ту же кнопку - то есть запускал новую запись, потому что кнопка на том же месте. Запись
+         * не должна содержать то, чем её остановили: это не работа человека, это управление инструментом.
+         *
+         * Метка ставится в момент, когда НАШЕ меню открывается (ContextMenuStrip.Opening), и указывает на
+         * последнее НАЖАТИЕ в буфере - то самое, которым меню и открыли. Никаких часов и никаких догадок по
+         * времени: всё, что после этого нажатия, сделано в нашем меню.
+         *
+         * Обновляется при каждом открытии, поэтому «открыл, закрыл, поработал десять минут, снова открыл и
+         * нажал Стоп» отрежет только второе открытие. Читается только этим путём - у остановки по HTTP свой
+         * хвост (кнопка в самом приложении), и его снимает приложение. */
+        static int _ownMenuAt = -1;
+
+        public static void MarkOwnMenu()
+        {
+            lock (Gate)
+            {
+                if (!_recording) { _ownMenuAt = -1; return; }
+                int at = _buffer.Count;
+                /* Назад до последнего нажатия, но недалеко: клик по значку в трее - это последние события в
+                 * буфере, а не что-то в глубине. Сорок - это движения мыши к трею плюс сам клик. */
+                for (int i = _buffer.Count - 1; i >= 0 && i >= _buffer.Count - 40; i--)
+                {
+                    if (IsPress(_buffer[i].Action)) { at = i; break; }
+                }
+                _ownMenuAt = at;
+            }
+        }
+
         public static void EndFromTray()
         {
             /* The buffer is taken in the SAME critical section that drops the flag, and that is the whole
@@ -1721,6 +1753,20 @@ namespace MouseFlow
                 _clock.Stop();
                 taken = _buffer;
                 _buffer = new List<Ev>();
+                /* ХВОСТ НАШЕГО МЕНЮ ОТРЕЗАН ЗДЕСЬ - до того, как счётчики и признак «есть что отдать»
+                 * посчитаны по нему: иначе запись из одного клика по «Stop and Save» отдалась бы как
+                 * запись с одним событием, и повтор нажал бы Стоп ещё раз. */
+                if (_ownMenuAt >= 0 && _ownMenuAt <= taken.Count)
+                {
+                    taken = taken.GetRange(0, _ownMenuAt);
+                    /* И движения к трею - за ним: сами по себе они безвредны, но запись, кончающаяся
+                     * дорогой в угол экрана, при повторе туда же и уводит курсор. */
+                    while (taken.Count > 0 && taken[taken.Count - 1].Action == "Mouse Movement")
+                    {
+                        taken.RemoveAt(taken.Count - 1);
+                    }
+                }
+                _ownMenuAt = -1;
                 /* Held from this instant: _ending covers the gap until the text exists, and both the status
                  * route and RecordStop read it, so no caller can see a hold that is not there yet. */
                 _ending = was && taken.Count > 0;
@@ -6831,7 +6877,9 @@ namespace MouseFlow
                 };
                 _menu.Items.Add(quit);
 
-                _menu.Opening += delegate { Refresh(); };
+                /* Refresh обновляет надписи; MarkOwnMenu запоминает, что дальше в буфере - уже наше
+                 * меню, а не работа человека. См. EndFromTray. */
+                _menu.Opening += delegate { Refresh(); Agent.MarkOwnMenu(); };
 
                 _icon = new System.Windows.Forms.NotifyIcon();
                 _icon.Icon = _idleIcon;

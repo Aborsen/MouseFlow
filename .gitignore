@@ -20,3 +20,6 @@ extension/dist/
 *.dump
 *.dump.age
 backup-key.txt
+
+# Артефакт `tsc -b` - кэш инкрементальной сборки, а не исходник.
+tsconfig.tsbuildinfo

@@ -13,6 +13,7 @@
 export type { Summary } from '../../../api/_macro.d.mts';
 
 export {
+  dropOwnTail,
   exportMacro,
   flowBody,
   fmtMs,

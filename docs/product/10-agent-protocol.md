@@ -318,6 +318,14 @@ The agent stops capturing and **holds the events**:
 - The hold carries the same `#part` line a drain writes, so the session clock and part number survive an
   agent restart with it.
 - The menu says a hold is waiting, because "I pressed Save and nothing visible happened" reads as loss.
+- **Since 0.26.0 the menu interaction itself is cut out of the hold.** Opening the menu and pressing the
+  item were both captured, so a replay of that recording opened the menu and pressed the same item again —
+  starting a new recording, because the item is in the same place. The agent marks its buffer at
+  `ContextMenuStrip.Opening` / `menuNeedsUpdate`, at the last press before it, and truncates there **before**
+  `count` and the hold flag are computed — so a recording consisting only of the stop is delivered as
+  nothing rather than as one event. Trailing `Mouse Movement` goes with it. Only this door reads the mark;
+  the client's own Stop button is the client's tail to cut, because only the client knows its title. See
+  [04 — Record](04-record.md).
 
 **The agent itself never touches the account** — it has no credentials, which is a design and not a gap.
 An agent that never ends recordings itself is still a valid implementation of this section: the client only

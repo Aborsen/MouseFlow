@@ -60,6 +60,13 @@ export interface Summary {
 }
 
 export declare function parseMacro(text: string): { events: MacroEvent[]; problems: string[] };
+/** Drops what STOPPED the recording: the press on our own window and the travel to it. The agent trims
+ *  its own tray menu the same way, where it knows the moment the menu opened. See _macro.mjs. */
+export declare function dropOwnTail<T extends MacroEvent>(
+  events: T[] | null | undefined,
+  ownTitle: string,
+): { events: T[]; dropped: number };
+
 export declare function flowBody(
   flow: MacroStep[],
   recordings: MacroRecording[],

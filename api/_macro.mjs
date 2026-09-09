@@ -129,6 +129,69 @@ export function parseMacro(text) {
   }
   return { events, problems };
 }
+/* ЧЕМ ЗАПИСЬ ОСТАНОВИЛИ - НЕ ЧАСТЬ ЗАПИСИ.
+ *
+ * Найдено прогоном, и поломка настоящая: кнопка «Stop and save this recording» стоит В НАШЕМ ОКНЕ, клик по
+ * ней попадал в запись - и повтор в конце снова поднимал MouseFlow и снова нажимал ту же кнопку, потому что
+ * она на том же месте. То есть повтор записи заканчивался запуском новой записи.
+ *
+ * У агента такой же хвост от его меню в трее, и его отрезает сам агент: он ЗНАЕТ момент, когда его меню
+ * открылось (см. MarkOwnMenu в mouseflow-agent.ps1). Здесь отрезается то, чего агент знать не может, -
+ * нажатие по окну приложения, - и знать об этом может только приложение, поэтому оно передаёт свой
+ * заголовок.
+ *
+ * ПРАВИЛО МИНИМАЛЬНОЕ, И ЭТО НАМЕРЕННО. Останов - это ОДНО нажатие: снимаются движения с конца, затем одна
+ * пара «нажали-отпустили», если нажатие было по окну с нашим заголовком, затем движения, которыми к нам
+ * шли. Не «все наши клики с конца»: человек мог до остановки что-то смотреть в приложении, и это его
+ * работа. Клик по чужому окну не снимается никогда, поэтому настоящее последнее действие остаётся на месте.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ: часов. «Последние две секунды» отрезали бы у медленной остановки чужой клик и не отрезали
+ * бы у медленного человека наш. Признак - окно, а не время.
+ *
+ * ЦЕНА. Запись, у которой последнее действие ВСЕРЬЁЗ было кликом в самом MouseFlow, потеряет этот клик.
+ * Плата принята: запись работы над самим MouseFlow - редкость, а запись, которая при повторе нажимает
+ * «Стоп», не работает никогда.
+ *
+ * @param {{action?: string, context?: {window?: string}}[]} events разобранные события, по порядку
+ * @param {string} ownTitle заголовок нашего окна - каким его видит агент, то есть document.title
+ * @returns {{events: object[], dropped: number}} события без хвоста и сколько событий снято
+ */
+export function dropOwnTail(events, ownTitle) {
+  const list = Array.isArray(events) ? events.slice() : [];
+  const own = typeof ownTitle === 'string' ? ownTitle.trim() : '';
+  /* Короткий заголовок опознаёт слишком много: «MF» стоит внутри половины чужих окон. Нет заголовка -
+   * нет и правила, и запись остаётся как записана. */
+  if (own.length < 4 || !list.length) return { events: list, dropped: 0 };
+
+  const said = (event) => String((event && event.action) || '');
+  /* Только «Mouse Movement». Прокрутка - это действие: у неё есть последствие на экране, и снимать её с
+   * конца значило бы менять запись, а не чистить её. */
+  const move = (event) => said(event) === 'Mouse Movement';
+  const down = (event) => /Click Down$/.test(said(event));
+  const up = (event) => /Click (Release|Up)$/.test(said(event));
+  /* НАШЕ ОКНО. Заголовок окна вкладки длиннее нашего («MouseFlow - Google Chrome»), а имя, дошедшее от
+   * дерева доступности, бывает короче, - поэтому вхождение в любую сторону, а не равенство. */
+  const ours = (event) => {
+    const context = event && event.context;
+    const window = context && typeof context.window === 'string' ? context.window.trim() : '';
+    if (window.length < 4) return false;
+    return window.includes(own) || own.includes(window);
+  };
+
+  const before = list.length;
+  /* Хвост движений: сам по себе он безвреден, но запись, кончающаяся дорогой к кнопке, при повторе туда же
+   * и уводит курсор - и следующая догадка «где мышь» считается от угла экрана. */
+  const trimMoves = () => { while (list.length && move(list[list.length - 1])) list.pop(); };
+  trimMoves();
+  if (list.length >= 2 && up(list[list.length - 1]) && down(list[list.length - 2])
+    && ours(list[list.length - 2])) {
+    list.pop();
+    list.pop();
+    trimMoves();
+  }
+  return { events: list, dropped: before - list.length };
+}
+
 export function flowBody(flow, recordings, opts) {
   const lines = [];
   lines.push(`startDelay=${Math.max(0, opts.startDelayMs)}`);

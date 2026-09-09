@@ -2344,5 +2344,104 @@ group('и список ориентиров один на две платфор�
       && swift.indexOf('\\tside=') < swift.indexOf('\\tnear='));
 }
 
+group('чем запись остановили - в запись не попадает');
+{
+  /* НАЙДЕНО ПРОГОНОМ, И ЭТО БЫЛА ЕДИНСТВЕННАЯ ПОЛОМКА, КОТОРАЯ САМА СЕБЯ ВОСПРОИЗВОДИЛА.
+   *
+   * Человек остановил запись из меню агента в трее. Клик по «Stop and Save Recording» попал В ЗАПИСЬ - и
+   * повтор в конце снова открыл меню агента и снова нажал ту же кнопку, потому что она на том же месте.
+   * То есть повтор записи заканчивался ЗАПУСКОМ НОВОЙ ЗАПИСИ. То же и с кнопкой «Стоп» в приложении.
+   *
+   * ГРАНИЦА ЗАКРЕПЛЕНА ЗДЕСЬ ПОТОМУ, ЧТО ОНА РАЗДЕЛЕНА НА ТРОИХ, и каждый знает только свою половину:
+   *
+   *   агент знает МОМЕНТ, когда открылось ЕГО меню (Opening / menuNeedsUpdate), и режет по нему;
+   *   приложение знает СВОЙ заголовок окна, и режет по нему (правило - api/_macro.mjs, dropOwnTail);
+   *   ни один из них не знает про дверь другого.
+   *
+   * Разойдись эти три места - и одна из дверей в остановку снова начнёт писать себя в запись, молча. */
+
+  /* WINDOWS. Метка ставится на открытии меню и указывает на последнее НАЖАТИЕ, а не на конец буфера:
+   * между нажатием по значку в трее и появлением меню успевают лечь события. */
+  check('трей помечает буфер в момент открытия своего меню',
+    /public static void MarkOwnMenu/.test(ps)
+      && /_menu[.]Opening [+]= delegate \{ Refresh\(\); Agent[.]MarkOwnMenu\(\); \};/.test(ps));
+  check('и метка указывает на нажатие, которым меню открыли',
+    /if \(IsPress\(_buffer\[i\][.]Action\)\) \{ at = i; break; \}/.test(ps));
+
+  /* И ОБРЕЗКА СТОИТ ДО СЧЁТЧИКОВ. Посчитай `_ending` по необрезанному буферу - и запись из одного клика
+   * по «Stop and Save» отдастся как запись с одним событием, то есть та самая, которая нажимает Стоп. */
+  const endTray = ps.slice(ps.indexOf('public static void EndFromTray()'));
+  const cutAt = endTray.indexOf('taken.GetRange(0, _ownMenuAt)');
+  const countAt = endTray.indexOf('_ending = was && taken.Count > 0;');
+  check('и хвост отрезан РАНЬШЕ, чем посчитано, есть ли что отдавать',
+    cutAt > 0 && countAt > 0 && cutAt < countAt, cutAt + '/' + countAt);
+  check('и дорога к трею уходит вместе с ним',
+    /taken\[taken[.]Count - 1\][.]Action == "Mouse Movement"/.test(ps));
+  check('и метка сбрасывается после реза - иначе следующая остановка режет по старой',
+    /_ownMenuAt = -1;/.test(ps));
+
+  /* macOS. Та же мера в том же месте: буфер стал var, потому что его теперь режут. */
+  check('меню macOS помечает буфер тем же способом',
+    /func markOwnMenu\(\)/.test(swift)
+      && /Recorder[.]shared[.]markOwnMenu\(\)/.test(swift));
+  const endAgent = swift.slice(swift.indexOf('func endFromAgent()'));
+  const swCut = endAgent.indexOf('taken = Array(taken.prefix(ownMenuAt))');
+  const swCount = endAgent.indexOf('ending = was && !taken.isEmpty');
+  check('и режет до того, как посчитан признак «есть что отдать»',
+    swCut > 0 && swCount > 0 && swCut < swCount, swCut + '/' + swCount);
+  check('и метка сбрасывается тоже', /ownMenuAt = -1/.test(swift));
+
+  /* ПРИЛОЖЕНИЕ. Свою кнопку «Стоп» агент опознать не может, поэтому правило зовут на пути остановки - и
+   * ДО проверки «есть ли что записывать»: запись из одного «Стоп» - это пустая запись. */
+  const stopView = read('web/src/features/record/RecordView.tsx');
+  check('остановка в приложении снимает свой собственный хвост',
+    /const \{ events \} = dropOwnTail\(parseMacro\(text\)[.]events, document[.]title\);/.test(stopView));
+  const stopAt = stopView.indexOf('dropOwnTail(parseMacro(text).events');
+  const emptyAt = stopView.indexOf("setNote('Nothing was captured.')");
+  check('и отрез стоит до «Nothing was captured.»',
+    stopAt > 0 && emptyAt > 0 && stopAt < emptyAt, stopAt + '/' + emptyAt);
+  /* ОТРЕЗ ТОЛЬКО НА ОСТАНОВКЕ. Автоотрез (recordDrain) режет живую запись посередине - там никто ничего
+   * не останавливал, и снимать оттуда хвост значило бы терять последний клик каждой части. */
+  check('а отрез на ходу его не трогает',
+    (stopView.match(/dropOwnTail\(/g) || []).length === 1,
+    String((stopView.match(/dropOwnTail\(/g) || []).length));
+
+  /* И ОДНО ПРАВИЛО НА ВСЕХ ЧИТАТЕЛЕЙ - в модуле формата, рядом с разбором, с проверками вычислением
+   * (api/_test-macro.mjs). Снимается ОДНО нажатие: не `while`, а `if`. */
+  const macro = read('api/_macro.mjs');
+  check('правило живёт в одном месте и снимает одно нажатие, а не все свои с конца',
+    /export function dropOwnTail\(events, ownTitle\)/.test(macro)
+      && /if \(list[.]length >= 2 && up\(list\[list[.]length - 1\]\)/.test(macro)
+      && !/while \(list[.]length >= 2 && up\(/.test(macro));
+  check('и прокрутку с конца не снимает - она действие, а не дорога',
+    /const move = \(event\) => said\(event\) === .Mouse Movement.;/.test(macro));
+}
+
+group('повтор поднимает то окно, в котором записаны клики');
+{
+  /* ВТОРАЯ ПОЛОМКА ТОГО ЖЕ ПРОГОНА. Запись сделали в развёрнутом Chrome, потом окно свернули и убрали в
+   * угол. Повтор пошёл клацать В MOUSEFLOW - и перепривязка координат этого не спасала, потому что
+   * поднималось не то окно, а клик достаётся тому, кто сверху.
+   *
+   * Причина систематическая, а не случайная: поднимали recording.windows[0] - первое, что увидел
+   * сэмплер, - а сэмплер начинает смотреть в момент нажатия «Записать», когда впереди сам MouseFlow.
+   * Спрашивать надо КЛИКИ: они называют то окно, в котором работали. */
+  const playView = read('web/src/features/record/RecordView.tsx');
+  check('окно выбирают клики, а не сэмплер',
+    /const want = whichWindow\(playing[.]events\);/.test(playView)
+      && /const front = \(want && matchWindow\(want, open\)\)/.test(playView));
+  /* ЗАГОЛОВОК БЕРЁТСЯ ЖИВОЙ, А НЕ ЗАПИСАННЫЙ: у вкладки он меняется, а activate ищет по нему. */
+  check('и поднимают его по живому заголовку найденного окна',
+    /const title = front && 'title' in front \? front[.]title : undefined;/.test(playView));
+  /* И ОКНА ПЕРЕЧИТЫВАЮТСЯ ПОСЛЕ ПОДЪЁМА: свёрнутое окно отдаёт условный прямоугольник, по которому
+   * пересчитывать нечего, а восстановленное - настоящий. Перепривязка обязана считать по второму. */
+  const raiseAt = playView.indexOf('action=activate');
+  const rereadAt = playView.indexOf('open = await windows(port).then((it) => it.windows).catch(() => open);');
+  const useAt = playView.indexOf('reanchorAll(playing.events, open)');
+  check('и перепривязка считает по прямоугольникам, прочитанным после подъёма',
+    raiseAt > 0 && rereadAt > raiseAt && useAt > rereadAt,
+    raiseAt + '/' + rereadAt + '/' + useAt);
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

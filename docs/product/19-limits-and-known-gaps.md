@@ -765,6 +765,17 @@ Carried over from the project's own notes, and still current:
   changed title are not matched, deliberately, because a guess that misses is worse than an honest "played
   as recorded"; and a **relaid-out** window - the same size, different arrangement - is only saved by the
   name, never by the geometry. See [04 — Record](04-record.md).
+- **A recording no longer contains what stopped it — done in September 2026** (agent 0.26.0, and the app
+  half works with any agent). Both doors out of a recording were captured inside it, and the tray one was
+  self-reproducing: the replay's last act was to press **Stop and Save Recording** again, which started a
+  new recording. The agent cuts at the moment its own menu opened; the app cuts a trailing press on a
+  window carrying its own title. **What this costs, precisely:** a recording whose genuine last action was
+  a click *in MouseFlow itself* loses that click — recording work on MouseFlow is rare, and a recording
+  that presses Stop on replay is broken always. And the app half recognises our window **by title**, so a
+  page in another browser window whose own title contains "MouseFlow" — the docs site, for instance —
+  would be read as ours if a click on it were the very last thing in a recording. One click, only at the
+  very end, only on a title match: the alternative was a clock, which is wrong more often and in both
+  directions. See [04 — Record](04-record.md).
 - **Agent authentication.** One seam, one scheme.
 - **Text for the steps that need it**, if it can be done safely. Keystroke *timing* is captured; the content
   is not, and adding it needs a redaction design rather than a hook. The alternative already works: a created
