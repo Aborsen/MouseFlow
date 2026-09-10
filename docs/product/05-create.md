@@ -138,6 +138,35 @@ products.
 So this file is the **browser** driver. It is not the definition of the loop, and a change to how the model
 is asked belongs in `_brain.mjs` or it lands on one path only.
 
+### What a turn costs
+
+Measured over ninety days of real runs, not estimated — the query is in
+[`docs/QA-ROADMAP.md`](../QA-ROADMAP.md) → item 6:
+
+| | |
+|---|---|
+| Model decision, median | **5,035 ms** |
+| p90 / p99 / worst | 9,560 / 18,159 / 51,278 ms |
+| Screenshot, median | **196 ms** |
+| Steps per successful run, median | 13 (p90: 29) |
+
+**The cost is per TURN, not per tool**, and that is the finding that decided what to do about it. The
+median barely moves between actions — `click` 5,238 ms, `press_key` 5,848, `type_text` 5,504,
+`activate_window` 4,197 — a spread smaller than between two runs of the same tool. What every turn has in
+common is the part that did not change: several thousand tokens of `SYSTEM` and tool schema, re-sent each
+time.
+
+So the prefix is **cached**. `payloadFor` in `api/_vision.mjs` — the one place both drivers' requests pass
+through — marks the system block and the *last* tool with `cache_control`, which caches everything before
+it: system and schema as one piece. Two marks rather than one, because a call with no tools at all (the
+wave hand-off) still has a system worth caching. How much came back from the cache is recorded on the step
+as `cached`, so the lever is measured rather than believed.
+
+**And two of the plan's five levers were dropped on this evidence.** Smaller screenshots after a good read,
+and parallelising the `/windows` fetch, both chase the *196 ms*: under 4% of a turn, for two days' work.
+What remains worth doing is removing whole turns — one action that finds a control and clicks it, instead of
+two turns to do the same thing — because a turn removed is 5 seconds, and a run is 13 of them.
+
 ### Shape
 
 The constants live in `api/_brain.mjs`, and both drivers read them from there.
@@ -148,6 +177,7 @@ The constants live in `api/_brain.mjs`, and both drivers read them from there.
 | Wave | `WAVE_TURNS = 24` decisions |
 | Run | `MAX_WAVES = 10` waves — 240 steps |
 | Screenshot | 1280px wide by default, halved on a 413, floor 320px |
+| Prefix | `SYSTEM` + the tool schemas are **cached** — see *What a turn costs* |
 | Settle poll | 1.5 s, two quiet frames, 120 s ceiling |
 
 **Waves** are why long tasks finish and why the tenth wave costs what the first did: at a seam the model

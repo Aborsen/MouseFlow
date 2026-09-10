@@ -5584,6 +5584,34 @@ group('якорь: клик помнит, где были его окно и е�
     /AGENT_WANTS = '0\.27\.0'/.test(client));
 }
 
+group('префикс хода кешируется - самое дорогое место в цикле');
+{
+  /* ИЗМЕРЕНО, А НЕ ПРЕДПОЛОЖЕНО (пункт 6 плана, запрос там же): медиана решения модели 5035 мс, p90
+   * 9560, p99 18159 - и она РОВНАЯ по инструментам (click 5238, press_key 5848, type_text 5504). Значит
+   * платится за ХОД, а не за инструмент: каждый ход заново отправляет несколько тысяч токенов SYSTEM и
+   * схемы, которые не менялись. Отметка cache_control - это то, что перестаёт их отправлять. */
+  const vision = read('../api/_vision.mjs');
+  check('система и последний инструмент помечены для кеша',
+    /cache_control: EPHEMERAL/.test(vision)
+      && /payload[.]system = \[\{ type: 'text', text: body[.]system, cache_control: EPHEMERAL \}\]/
+        .test(vision)
+      && /i === body[.]tools[.]length - 1/.test(vision));
+  /* ОТМЕТКА КЕШИРУЕТ ВСЁ ДО СЕБЯ, поэтому она обязана стоять на ПОСЛЕДНЕМ инструменте: на первом она
+   * закешировала бы часть схемы, а остальное поехало бы заново каждый ход - и заметить это было бы
+   * нечем, время просто вернулось бы к прежнему. Порядок закреплён вычислением в api/_test-vision.mjs. */
+  check('и копией, а не в общем массиве TOOLS - его читают оба драйвера и тесты',
+    /\{ [.][.][.]tool, cache_control: EPHEMERAL \}/.test(vision)
+      && !/Object[.]assign\(tool/.test(vision));
+  /* И ВЫИГРЫШ ИЗМЕРИМ: без записанного числа рычаг остаётся верой. Ноль на первом ходу - норма, ноль на
+   * тринадцатом значит, что префикс перестал быть неменяющимся. */
+  check('сколько токенов пришло из кеша - записано в шаг',
+    /cache_read_input_tokens/.test(read('../api/_step.mjs'))
+      && /[.][.][.]\(cached \? \{ cached \} : \{\}\)/.test(read('../api/_step.mjs')));
+  check('и сам модуль запроса закреплён исполнением - до пункта 6 он не был закреплён ничем',
+    /payloadFor/.test(read('../api/_test-vision.mjs'))
+      && /node api\/_test-vision[.]mjs/.test(read('../package.json')));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
  * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has

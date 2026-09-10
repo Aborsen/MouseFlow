@@ -575,7 +575,17 @@ export async function advance({ loop, shot, windows, results, ask }) {
      * three actions paid for one decision, so summing this column over-counts - the number to read is the
      * per-turn one, and a reader who wants a total should take the distinct decisions. Said here because
      * the shape invites the wrong sum. */
-    loop.steps.push({ tool: use.name || '?', input: use.input || {}, ms: { model: modelMs } });
+    /* СКОЛЬКО ТОКЕНОВ ПРИШЛО ИЗ КЕША - рядом со временем, потому что это его объяснение. Пункт 6 плана
+     * требует проверять кеширование по `usage.cache_read_input_tokens`, а число, которое некуда записать,
+     * проверить нельзя. Ноль на первом ходу прогона - норма; ноль на тринадцатом значит, что префикс
+     * перестал быть неменяющимся, и увидеть это можно только отсюда. */
+    const cached = Number(body.usage && body.usage.cache_read_input_tokens) || 0;
+    loop.steps.push({
+      tool: use.name || '?',
+      input: use.input || {},
+      ms: { model: modelMs },
+      ...(cached ? { cached } : {}),
+    });
 
     if (use.name === 'wait') {
       const ms = Math.min(SETTLE_MAX_MS, Math.max(200, Number(use.input && use.input.ms) || 2000));

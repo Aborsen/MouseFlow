@@ -23,6 +23,35 @@ export const MAX_MESSAGES = 120;         // a runaway loop hits this long before
  * the size so the number is not a mystery. */
 export const MAX_BODY_BYTES = 4_000_000;
 
+/* ЧТО У ЭТОГО ЗАПРОСА НЕ МЕНЯЕТСЯ ОТ ХОДА К ХОДУ - и почему это самое дорогое место в цикле.
+ *
+ * ИЗМЕРЕНО НА ПРОГОНАХ (пункт 6 плана требует мерить до и после; запрос - в самом пункте): медиана
+ * решения модели 5035 мс, p90 9560, p99 18159. И она РОВНАЯ по инструментам: click 5238, press_key 5848,
+ * type_text 5504, activate_window 4197 - разброс меньше, чем между двумя прогонами одного инструмента.
+ * То есть платится не за инструмент и не за картинку решения, а ЗА ХОД: каждый ход заново отправляет
+ * несколько тысяч токенов, которые не менялись, - SYSTEM и схему инструментов.
+ *
+ * `cache_control` помечает конец такого префикса. Дальше платформа отдаёт его из кеша: время до первого
+ * токена падает на каждом ходу, кроме первого, а при медиане в 13 шагов на удачный прогон первый ход -
+ * одна тринадцатая.
+ *
+ * ДВЕ ОТМЕТКИ, А НЕ ОДНА, и порядок здесь и есть смысл. Префикс запроса - это system, потом tools, потом
+ * messages; отметка кеширует ВСЁ ДО СЕБЯ. Отметка на последнем инструменте кеширует system+tools одним
+ * куском - это и есть та неменяющаяся часть. Отметка на system нужна отдельно для тех вызовов, у которых
+ * инструментов нет вовсе (askForHandoff в api/_step.mjs зовёт с HANDOFF_SYSTEM и без tools).
+ *
+ * ПОЧЕМУ ПОСЛЕДНИЙ ИНСТРУМЕНТ - ЭТО ВСЕГДА `finish`: в TOOLS он стоит последним, а toolsFor вырезает
+ * только reached_checkpoint, который стоит раньше. Отметка ставится на ПОЗИЦИЮ, а не на имя, поэтому её
+ * не сломает переименование - но сломает потеря этого порядка, и на это стоит пин.
+ *
+ * ЧЕГО ЗДЕСЬ НЕТ: порога «кешировать только длинное». Платформа сама не кеширует префикс короче своего
+ * минимума, и делает это молча - то есть порог здесь был бы вторым, нашим, который однажды разошёлся бы
+ * с её первым.
+ *
+ * И `system` СТАНОВИТСЯ МАССИВОМ БЛОКОВ. На строку отметку не поставить; массив с одним текстовым блоком
+ * для модели - то же самое. Массив на входе пропускается как есть: вызывающий, который уже собрал блоки,
+ * знает про них больше, чем это место. */
+const EPHEMERAL = { type: 'ephemeral' };
 /* Rebuilt field by field rather than forwarded wholesale, so a caller cannot smuggle in options this is not
  * meant to pay for. */
 export function payloadFor(body) {
@@ -31,8 +60,19 @@ export function payloadFor(body) {
     max_tokens: Math.min(Number(body.max_tokens) || 4096, MAX_TOKENS_CAP),
     messages: body.messages,
   };
-  if (typeof body.system === 'string') payload.system = body.system;
-  if (Array.isArray(body.tools)) payload.tools = body.tools;
+  if (typeof body.system === 'string' && body.system) {
+    payload.system = [{ type: 'text', text: body.system, cache_control: EPHEMERAL }];
+  } else if (Array.isArray(body.system)) {
+    payload.system = body.system;
+  }
+  if (Array.isArray(body.tools)) {
+    /* КОПИЕЙ, А НЕ НА МЕСТЕ: TOOLS - общий экспортированный массив (api/_brain.mjs), и дописать в него
+     * cache_control значило бы дописать его во все будущие запросы и во всё, что этот массив читает. */
+    payload.tools = body.tools.map((tool, i) => (i === body.tools.length - 1
+      && tool && typeof tool === 'object'
+      ? { ...tool, cache_control: EPHEMERAL }
+      : tool));
+  }
   if (body.tool_choice) payload.tool_choice = body.tool_choice;
   if (body.fallbacks) payload.fallbacks = body.fallbacks;
   return payload;

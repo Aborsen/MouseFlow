@@ -321,9 +321,28 @@ tonight), and the three new tools do not include running or scheduling — `mous
 
 ---
 
-## 6. Speed — from ~8 s a step towards 3
+## 6. Speed — measured at 5 s a step, and the cost is per TURN
 
-**Goal.** Halve the model time per step without touching correctness. **Measure before and after**: steps carry `ms: { shot, model, act }` (see `RunEvent.spent` and `RunStep.ms`); the query below gives the baseline.
+**Measured 2026-09-10** over ninety days of real runs, which is what this item asked for first. The heading
+used to say "~8 s a step towards 3"; that number was never measured and it is wrong.
+
+| | |
+|---|---|
+| Model decision, median | **5,035 ms** (p90 9,560 · p99 18,159 · worst 51,278) |
+| Screenshot, median | **196 ms** |
+| Steps per successful run, median | 13 (p90 29) |
+| Steps measured | 807 with a `model` time; 587 also carry `shot` and `act` |
+
+**THE COST IS PER TURN, NOT PER TOOL**, and that is what decided the rest of this item. The median barely
+moves between actions — `click` 5,238 · `press_key` 5,848 · `type_text` 5,504 · `activate_window` 4,197 —
+a spread smaller than between two runs of the same tool. What every turn shares is the part that did not
+change: several thousand tokens of `SYSTEM` and tool schema, re-sent every time.
+
+Note also that `ms` is not one shape: the cloud driver writes `{ model }` only (`api/_step.mjs`), the browser
+driver writes all three, and a few old steps have `ms` as a scalar — guard with
+`jsonb_typeof(s->'ms') = 'object'` before `jsonb_object_keys`.
+
+**Goal.** Halve the model time per step without touching correctness. The baseline query:
 
 ```sql
 select percentile_cont(0.5) within group (order by (s->'ms'->>'model')::int) med_model_ms,
@@ -334,17 +353,32 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
 
 **Levers, in order of certainty.**
 
-1. **Prompt caching** (highest certainty, one file). In `api/_vision.mjs`, `payloadFor(body)` is the one place both drivers' requests pass through (`api/_step.mjs` calls `callModel` directly; the browser driver posts to `/api/claude`, which calls the same `callModel`). There, turn `system` into `[{ type: 'text', text, cache_control: { type: 'ephemeral' } }]` and put `cache_control` on the last tool in `tools`. `SYSTEM` + `TOOLS` are several thousand tokens re-sent every turn; caching cuts time-to-first-token and cost on every turn after the first. Nothing sets `cache_control` today (checked). Verify with `usage.cache_read_input_tokens` in the response; log it into `ms`.
+1. ~~**Prompt caching**~~ — **done 2026-09-10.** `payloadFor` in `api/_vision.mjs` marks the system block
+   and the **last** tool with `cache_control`, which caches everything before it: system and schema as one
+   piece. Two marks, because a call with no tools (the wave hand-off) still has a system worth caching. The
+   last tool is always `finish` — pinned by execution in the new `api/_test-vision.mjs`, because the whole
+   lever rests on that position. `usage.cache_read_input_tokens` is recorded on the step as `cached`, so
+   the gain is measured rather than believed. That file also now pins this module's caps, which nothing had
+   pinned before. Original text: In `api/_vision.mjs`, `payloadFor(body)` is the one place both drivers' requests pass through (`api/_step.mjs` calls `callModel` directly; the browser driver posts to `/api/claude`, which calls the same `callModel`). There, turn `system` into `[{ type: 'text', text, cache_control: { type: 'ephemeral' } }]` and put `cache_control` on the last tool in `tools`. `SYSTEM` + `TOOLS` are several thousand tokens re-sent every turn; caching cuts time-to-first-token and cost on every turn after the first. Nothing sets `cache_control` today (checked). Verify with `usage.cache_read_input_tokens` in the response; log it into `ms`.
 2. **One action instead of two turns for the commonest pair.** Today "find the button, then click it" is two turns because `click` is aimed at the picture. Add `click_named` (agent action `action=clickname title=<name> [process=]`, flag `canClickName`): the agent resolves and clicks in ~30 ms. Expect a third of turns on form-heavy goals to disappear. Both agents; brain tool offered only when the flag is present (`toolsFor` already filters tools by situation — extend it).
-3. **Smaller pictures after a successful read.** `MIN_SHOT_W` and `shotWidth` already exist on the loop (`shrink`). Policy: after any turn in which the model used `read_window`/`find_element`/`expect` successfully, request the next frame at 960 px; go back to `DEFAULT_SHOT_W` after a click that changed the screen.
+3. **DROPPED on the measurement (2026-09-10).** The screenshot median is **196 ms** — under 4 % of a turn.
+   Two days of work to chase it, and the risk is a model reading a smaller picture than it needed. Do not
+   revive this without a new measurement showing the shot has become expensive. Original text: `MIN_SHOT_W` and `shotWidth` already exist on the loop (`shrink`). Policy: after any turn in which the model used `read_window`/`find_element`/`expect` successfully, request the next frame at 960 px; go back to `DEFAULT_SHOT_W` after a click that changed the screen.
 4. **Model per turn kind** — only after 1–3, and only where it cannot cause a wrong click: use `claude-haiku-4-5-20251001` for `askForHandoff` (the wave summary) and for the plan preview (`model.plan` setting already exists; make haiku the default there). Do **not** route action turns by heuristics — a cheaper model deciding coordinates is the wrong trade.
-5. **Parallelise in the browser driver**: in `runWave`, the frame is fetched and then `openWindows(machine, frame)` is awaited — but only the *conversion* of window rectangles into screenshot pixels needs the frame; the `/windows` request itself does not. Split `openWindows` into fetch and convert, start the fetch alongside `shot`, convert after both arrive.
+5. **DROPPED on the same measurement.** Overlapping the `/windows` fetch with `shot` saves part of that
+   same 196 ms. Original text: in `runWave`, the frame is fetched and then `openWindows(machine, frame)` is awaited — but only the *conversion* of window rectangles into screenshot pixels needs the frame; the `/windows` request itself does not. Split `openWindows` into fetch and convert, start the fetch alongside `shot`, convert after both arrive.
 
 **Tests.** A pin that `callModel` sets `cache_control` on system and tools; a pin that `click_named` is gated on the capability; the executable step test asserting the shot-width policy.
 
 **Docs.** `05-create.md` → the decision loop (the pace paragraph with the new measured number), `18-configuration.md` (constants), `10-agent-protocol.md` (`clickname`, the flag).
 
-**Done when** the median `model` ms over 30 days of runs is under 4000 and no correctness pin changed. **Estimate:** 2 days for 1, 3, 5; +3 days for 2 (both agents).
+**Done when** the median `model` ms over 30 days of runs is **under 4,000** — from a measured 5,035 — and
+no correctness pin changed. Re-run the baseline query to check; caching moves time-to-first-token, so the
+median is where it shows.
+
+**What is left is lever 2 alone**, and it is now the whole item: a turn removed is 5 seconds, and a run is
+thirteen of them. Levers 3 and 5 were dropped for chasing 196 ms; lever 4 (a cheaper model for the
+hand-off and the plan preview) stays last and stays small. **Estimate:** 3 days for lever 2, both agents.
 
 ---
 

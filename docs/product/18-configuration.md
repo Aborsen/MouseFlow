@@ -168,7 +168,7 @@ Sessions are gone; a recording that will not fit one row cuts itself into ordina
 | `QUESTION_MAX` / `HISTORY_MAX` / `ANSWER_TOKENS` | 2,000 / 16 turns / 2,000 | `chat.js` |
 | `TOOL_OUTPUT_MAX` / `ROWS_MAX` / `STEPS_RETURNED` / `GROUPS_MAX` | 12,000 / 50 / 60 / 30 | `chat.js` |
 | Rate limit | 20/min per account | `chat.js` |
-| `MAX_TOKENS_CAP` / `MAX_MESSAGES` / `MAX_BODY_BYTES` | 16,000 / 120 / 4,000,000 | `claude.js` |
+| `MAX_TOKENS_CAP` / `MAX_MESSAGES` / `MAX_BODY_BYTES` | 16,000 / 120 / 4,000,000 | `_vision.mjs`, reached through `claude.js` — and pinned by `api/_test-vision.mjs`, which is also where the prefix caching is checked |
 | Rate limit | 30/min per account | `claude.js` |
 | `PAGE_MAX` / `PAYLOAD_MAX_BYTES` | 50 / 400,000 | `gallery.js` |
 | `IDLE_MAX_MS` | 120,000 | `_transcript.js` |
