@@ -2541,9 +2541,101 @@ group('повтор не заканчивается контекстным ме�
   check('и записка о финише называет его словами',
     /const switched = Number\(status[.]switched\) \|\| 0;/.test(playedView)
       && /played as "show that window" instead/.test(playedView));
-  check('и приложение просит сборку 0.27.0 - старая делает и то и другое по-старому',
-    /AGENT_WANTS = '0\.27\.0'/.test(client)
-      && /Version = "0[.]27[.]0"/.test(ps) && /let VERSION = "0[.]27[.]0"/.test(swift));
+  /* Номер в этом закреплении - НЕ про пункт выше, а про согласие трёх мест, где он живёт: ps1, swift и
+   * AGENT_WANTS. Именно поэтому формулировка больше не называет число: свойство, которое проверяется, -
+   * «приложение просит сборку, делающую и то и другое», и оно верно у всякой сборки не старее 0.27.0, где
+   * это появилось. Число же обязано совпадать во всех трёх, иначе одна половина обновится без другой -
+   * см. MEMORY-PLAN §0, там перечислены все места. */
+  check('и приложение просит сборку, которая делает и то и другое - старая делает по-старому',
+    /AGENT_WANTS = '0\.28\.0'/.test(client)
+      && /Version = "0[.]28[.]0"/.test(ps) && /let VERSION = "0[.]28[.]0"/.test(swift));
+}
+
+// ------------------------------------------------------------------ пункт 6, рычаг 2: нажатие по имени
+group('нажатие по имени - одно действие вместо двух ходов, и обе реализации отвечают одинаково');
+{
+  /* ЗАЧЕМ ЭТО ЗАКРЕПЛЕНО ТУТ. Действие есть на проводе, значит его обязаны понимать ОБА агента - иначе
+   * флаг canClickName на одной платформе означает одно, а на другой другое, и модель, которой инструмент
+   * предложили, получает "unknown action". Ровно та цена, которую рычаг снимает: потерянный ход.
+   *
+   * Swift здесь не скомпилировать (машина под Windows), поэтому macOS-половина закреплена текстом - см.
+   * шапку файла. C#-половина компилируется по-настоящему, см. MEMORY-PLAN §0. */
+  check('действие разбирается обеими', /action == "clickname"/.test(ps) && /case "clickname":/.test(swift));
+  check('и у обеих оно ведёт в свою функцию',
+    /return ClickNamed\(a\);/.test(ps) && /return doClickNamed\(fields\)/.test(swift));
+
+  /* РАЗРЕШЕНИЕ ИМЕНИ - ОБЩЕЕ С find, И ЭТО ТРЕБОВАНИЕ, А НЕ СОВПАДЕНИЕ: «есть ли такое имя» и «нажми по
+   * этому имени» не имеют права разойтись в том, что нашли. На Windows это вынесенный NamedHits, на macOS
+   * уже существовавший findThings. */
+  check('имя разрешается тем же кодом, что у find - Windows',
+    /static List<AutomationElement> NamedHits\(/.test(ps)
+      && (ps.match(/NamedHits\(a, wanted, out problem\)/g) || []).length === 2);
+  check('и тем же - macOS',
+    (swift.match(/findThings\(fields, wanted: wanted\)/g) || []).length === 2);
+
+  /* И ЖЕСТ - ТОТ ЖЕ, что у координатного клика. На Windows тело клика вынесено в ClickAt, чтобы у двух
+   * вызывающих не оказалось двух жестов: разошедшуюся копию видно только по тому, что один из путей
+   * делает не то, о чём отчитался. */
+  check('жест нажатия - одной реализацией на два пути',
+    /static string ClickAt\(int x, int y, string button, bool twice, string mods\)/.test(ps)
+      && (ps.match(/ClickAt\(/g) || []).length === 3);
+  check('и на macOS оба зовут Input.click',
+    (swift.match(/Input\.click\(x:/g) || []).length === 2);
+
+  /* ТРИ ОТКАЗА ВМЕСТО НАЖАТИЯ, и все три - у обеих. Это и есть «никаких ложных зелёных»: отчитаться
+   * "done" о ненажатом хуже, чем сказать, почему не нажал.
+   *
+   * Именно поэтому они ОШИБКИ, а не Output.say: у find «такого тут нет» - законный ответ, это его работа,
+   * а clickname в этом случае не сделал того, о чём просили. */
+  check('имени нет на окне - и сказано, что НИЧЕГО не нажато',
+    /so nothing was \n?\s*\+?\s*"?clicked/.test(ps.replace(/\s+/g, ' '))
+      && /so nothing was clicked/.test(swift));
+  check('подходит несколько - не нажимает и перечисляет, у обеих',
+    /does not say which to click and NOTHING was/.test(ps.replace(/\s+/g, ' '))
+      && /does not say which to /.test(swift.replace(/\s+/g, ' ')));
+  check('найденное выключено - не нажимает, у обеих',
+    /is DISABLED, so nothing was clicked/.test(ps.replace(/\s+/g, ' '))
+      && /is DISABLED, so nothing was clicked/.test(swift.replace(/\s+/g, ' ')));
+
+  /* И ДВЕ ПРОВЕРКИ, КОТОРЫЕ ЕСТЬ У КООРДИНАТНОГО ПУТИ И ОБЯЗАНЫ БЫТЬ ЗДЕСЬ. Точку никто не называл, но
+   * она всё равно точка: за краем стола ОС её прижмёт к краю вместо отказа, а под ней может стоять наше
+   * собственное окно - имя-то ищется на окне впереди. */
+  check('точка за краем стола - отказ, а не клик по углу, у обеих',
+    /which is off the screen, so nothing was clicked/.test(ps.replace(/\s+/g, ' '))
+      && /which is off the desktop/.test(swift.replace(/\s+/g, ' ')));
+  check('и своё окно - отказ, у обеих',
+    /string mine = Mine\(Native\.WindowFromPoint\(new POINT \{ X = cx, Y = cy \}\)\);/.test(ps)
+      && /Own\.refusal\(pid: Windows\.at\(x: cx, y: cy\)\?\.pid \?\? 0\)/.test(swift));
+
+  /* КУДА нажали - в пикселях снимка, тем же обратным пересчётом, каким отвечают read и find. Модель после
+   * этого знает, где цель оказалась, и следующий ход может целиться сама. */
+  check('ответ говорит, куда нажато, в пикселях снимка - у обеих',
+    /Say\("clicked "/.test(ps) && /Output\.say\("clicked "/.test(swift));
+  check('и геометрия для этого читается, как у find',
+    /ClickNamed\(Dictionary<string, string> a\)\n *\{\n *ReadGeometry\(a\);/.test(ps)
+      && /doClickNamed\(_ fields: \[String: String\]\) -> String\? \{\n *Geometry\.read\(fields\)/.test(swift));
+
+  /* ФЛАГ, А НЕ ВЕРСИЯ - и в /health у обеих, и в теле каждого шага облачного пути. Второе не роскошь:
+   * оттуда агента спросить нельзя вовсе, он сам держит запрос. */
+  check('возможность объявлена в /health обеими',
+    /canClickName/.test(ps) && /canClickName/.test(swift));
+  check('и на macOS она следует Accessibility - без дерева имя не разрешить',
+    /"canClickName": Permission\.accessibility/.test(swift));
+  check('и едет с каждым шагом облачного пути, у обеих',
+    /\\"caps\\":\{\\"canClickName\\":true\}/.test(ps) && /caps = "\{\\"canClickName\\"/.test(swift));
+
+  /* И ДОКУМЕНТ - в том же коммите, что агент: это правило дома. */
+  check('протокол описывает действие и его поле',
+    /action=clickname scale=1 ox=0 oy=0/.test(protocol) && /title=<the name to click>/.test(protocol));
+  check('и называет флаг среди возможностей',
+    /`canClickName` \(`action=clickname`/.test(protocol));
+  check('и говорит, что имя забирает остаток строки',
+    /carries the name and therefore comes \*\*last\*\*/.test(protocol));
+  check('и что отказ - это не нажатие',
+    /clicks nothing and says why/.test(protocol));
+
+  /* И КЛИЕНТ ЗНАЕТ ПОЛЕ - иначе единственным способом узнать о возможности было бы прочитать агента. */
+  check('тип здоровья объявляет флаг', /canClickName\?: boolean;/.test(client));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

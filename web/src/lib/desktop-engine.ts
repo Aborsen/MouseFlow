@@ -257,6 +257,16 @@ interface Options {
   success?: string | null;
   /** Какой компьютер вести. Раньше здесь стоял номер порта - см. Machine в agent.ts. */
   machine: Machine;
+  /* ЧТО ЭТА МАШИНА УМЕЕТ - плоские флаги из её /health, ровно как их отдал агент.
+   *
+   * Отдельно от Machine нарочно. Machine - это ЧЕТЫРЕ ДЕЙСТВИЯ, которые цикл делает с компьютером, и
+   * весь смысл того интерфейса в том, что цикл не различает локальный агент и агент на другом конце
+   * запроса. Возможности - не действие, а факт, и знает его тот, кто уже опросил /health: страница
+   * держит его в состоянии и обновляет опросом. Цикл его только ЧИТАЕТ и только для того, чтобы решить,
+   * какие инструменты предложить модели.
+   *
+   * Не передали - модель не получит инструментов, зависящих от флага, и прогон пойдёт как до 0.28.0. */
+  caps?: { canClickName?: boolean } | null;
   onEvent: (event: RunEvent) => void;
   isAborted: () => boolean;
   /** Чекпоинты, которые модель обещала пройти. Передаются - значит цикл о них знает и объявляет их; не
@@ -282,7 +292,7 @@ interface Options {
 }
 
 export async function runOnDesktop({
-  goal, success, machine, onEvent, isAborted, checkpoints, onCheckpoint, earlier, onArtifact,
+  goal, success, machine, caps, onEvent, isAborted, checkpoints, onCheckpoint, earlier, onArtifact,
 }: Options): Promise<RunResult> {
   /* Шлюз работает только когда есть и план, и кто-то, кто ответит. Одно без другого - это либо инструмент,
    * объявляющий чекпоинты, которых нет, либо пауза, из которой никто не выпустит. */
@@ -316,7 +326,7 @@ export async function runOnDesktop({
     if (wave > 1) onEvent({ type: 'wave', n: wave, of: MAX_WAVES });
 
     const outcome = await runWave({
-      messages, success, gate, plan, machine, onEvent, isAborted, steps, wave, stepFrom: stepNo,
+      messages, success, gate, plan, machine, caps, onEvent, isAborted, steps, wave, stepFrom: stepNo,
       onArtifact,
     });
     stepNo = outcome.stepNo;
@@ -347,6 +357,7 @@ async function runWave(o: {
   gate?: Options['onCheckpoint'];
   plan?: Options['checkpoints'];
   machine: Machine;
+  caps?: Options['caps'];
   onEvent: (event: RunEvent) => void;
   isAborted: () => boolean;
   steps: RunResult['steps'];
@@ -448,7 +459,7 @@ async function runWave(o: {
         model: runModel,
         max_tokens: MAX_TOKENS,
         system: SYSTEM,
-        tools: toolsFor(!!o.gate, o.success ?? null),
+        tools: toolsFor(!!o.gate, o.success ?? null, o.caps ?? null),
         messages,
       }, cutoff.signal));
     } catch (err) {

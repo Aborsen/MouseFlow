@@ -252,7 +252,21 @@ async function askForHandoff(loop, ask) {
  *   { shrink }   that picture was too big to send - take a smaller one and ask again
  *   { done }     the run is over, with what to report
  */
-export async function advance({ loop, shot, windows, results, ask }) {
+/* `caps` - ПЛОСКИЕ ФЛАГИ МАШИНЫ, приехавшие с этим же шагом, и приехать они могут только так.
+ *
+ * На этом пути у облака нет способа спросить агента о чём-либо: агент сам держит запрос открытым, а
+ * ничто отсюда до его 127.0.0.1 не достаёт - это то самое правило «машина спрашивает, ничто не тянется
+ * внутрь», на котором держится вся эта половина. Значит возможности либо едут в теле шага, либо не
+ * существуют для облачного драйвера вовсе.
+ *
+ * ПОЧЕМУ НЕ В loop, ОДИН РАЗ НА ПРОГОН. Строка живёт между шагами, а машина - нет: работу забрал один
+ * агент, а через минуту на той же машине может отвечать обновлённый. Флаг, записанный при старте,
+ * пережил бы факт, который он описывает. Здесь он стоит ровно столько, сколько длится ход, и это тот
+ * срок, на который он верен.
+ *
+ * И отсутствие - это ОТВЕТ, а не false: старый агент про свои возможности не говорит ничего, и мозг
+ * тогда инструмента не предлагает. См. toolsFor в api/_brain.mjs. */
+export async function advance({ loop, shot, windows, results, caps, ask }) {
   const model = ask || defaultAsk;
   /* КАДР, КОТОРЫЙ СТОИТ ОСТАВИТЬ, - не больше одного за ход, потому что экран за ход один.
    *
@@ -420,7 +434,7 @@ export async function advance({ loop, shot, windows, results, ask }) {
       model: loop.model, max_tokens: MAX_TOKENS, system: SYSTEM,
       /* No checkpoint tool on this path: a checkpoint stops the run until a person answers, and on this
        * path there is no one at the other end of it - the request came from a machine. */
-      tools: toolsFor(false, loop.success || null), messages: loop.messages,
+      tools: toolsFor(false, loop.success || null, caps || null), messages: loop.messages,
     });
   } catch (err) {
     return over({ ok: false, error: `The model could not be reached at step ${loop.stepNo}: ${err && err.message}` });

@@ -126,7 +126,7 @@ definition.
 
 | Constant | Value | File |
 |---|---|---|
-| `AGENT_WANTS` | `0.8.0` | `agent.ts` |
+| `AGENT_WANTS` | `0.28.0` — and it lives in **four** places: `Version` in the ps1, `let VERSION` in the swift, this constant, and the pin on it in `agent/test-contract.mjs` | `agent.ts` |
 | Per-endpoint deadlines | 2.5 s – 20 s (see [10](10-agent-protocol.md#the-endpoints)) | `agent.ts` |
 | Health poll | 2 s while answering or under 8 failures, 15 s after | `store.ts` |
 | `WAVE_TURNS` / `MAX_WAVES` | 24 / 10 | `desktop-engine.ts` |
@@ -135,6 +135,7 @@ definition.
 | Default screenshot width | 1,280 px, halved on 413, floor 320 | `desktop-engine.ts` |
 | Settle poll / quiet frames / ceiling | 1.5 s / 2 / 120 s | `desktop-engine.ts` |
 | Plan model / timeout / checkpoints | `claude-opus-5` / 45 s / max 6 | `plan.ts` |
+| Tools offered by machine | `click_named` only where `/health` says `canClickName` — the filter is `toolsFor(gated, success, caps)` in `api/_brain.mjs`, so both drivers gate identically | `desktop-engine.ts`, `api/_step.mjs` |
 
 ### Cutting a long recording (`web/src/features/record/`)
 

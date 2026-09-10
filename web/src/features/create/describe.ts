@@ -47,6 +47,16 @@ export function describe(did: Did, on: On = undefined): string {
   switch (did.name) {
     case 'click':
       return `${with_}${input.double ? 'double-click' : input.button === 'right' ? 'right-click' : 'click'}${at}`;
+    /* ИМЯ, А НЕ КООРДИНАТА, - и в журнале это тем и ценно.
+     *
+     * Тот же префикс модификаторов, что у click, потому что жест тот же: пропустить его здесь значит
+     * получить журнал, который про Shift-нажатие по имени молчит, - ровно та поломка, которую закрепление
+     * на трёх ветвях и ловило, когда ветвей было три.
+     *
+     * `at` не дописывается: у этого шага нет ни x, ни y - в том и смысл. Читателю журнала имя говорит
+     * больше, чем сказала бы точка, и «click "Save"» не нуждается в том, где эта Save оказалась. */
+    case 'click_named':
+      return `${with_}${input.double ? 'double-click' : input.button === 'right' ? 'right-click' : 'click'} "${input.name ?? '?'}"`;
     case 'hover':
       return `hover${at}`;
     case 'scroll': {

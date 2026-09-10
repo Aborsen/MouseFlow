@@ -25,9 +25,11 @@ Learned on 2026-09-09/10, none of it written anywhere else:
   is guarded by text pins only (`agent/test-contract.mjs`), so read Swift edits twice.
 - **Every new pin is proven by mutation**: break the rule it guards, watch it FAIL, restore. A pin that was
   not seen failing is not a pin. This is how the codebase works; keep to it.
-- **Agent version bumps** live in three places: `Version = "…"` (ps1), `let VERSION = "…"` (swift),
-  `AGENT_WANTS` in `web/src/lib/agent.ts` — and the pin on `AGENT_WANTS` in `mcp/test-mcp.mjs` (search
-  `AGENT_WANTS = '0\.`). Agents are at **0.27.0**.
+- **Agent version bumps** live in **five** places, and the fifth was found stale by twenty versions on
+  2026-09-11 because nothing named it: `Version = "…"` (ps1), `let VERSION = "…"` (swift), `AGENT_WANTS`
+  in `web/src/lib/agent.ts`, the pins on it in **both** `mcp/test-mcp.mjs` and `agent/test-contract.mjs`
+  (search `AGENT_WANTS = '0\.`), and the table in `docs/product/18-configuration.md`, which is prose and
+  so no pin catches it. Agents are at **0.28.0**.
 - **Live hosts.** The app is `https://mouseflowapp.vercel.app` (`/build.json` shows the deployed commit);
   the docs site is `https://mouse-flow.vercel.app`. `mouseflow.ai` is parked and not pointed at Vercel.
 - **Read-only probes against production data** are how most of yesterday's defects were found. Pattern: a
@@ -37,6 +39,13 @@ Learned on 2026-09-09/10, none of it written anywhere else:
 - **Executable suites** are `api/_test-*.mjs`, each added to the `test` script in `package.json`
   (`api/_test-macro.mjs` and `api/_test-anchor.mjs` are the most recent). Source pins: `agent/test-contract.mjs`
   (537 checks) and `mcp/test-mcp.mjs` (1238, includes the expected-routes list and the MCP tool count, 18).
+
+- **A new capability flag** touches six places, all of them small and all of them required for the flag to
+  do anything: `/health` in both agents, the `caps` object each agent sends with `?worker=step` (the cloud
+  driver has no other way to learn it — nothing on that path may reach into the machine), `AgentHealth` in
+  `web/src/lib/agent.ts`, the filter in `toolsFor` (`api/_brain.mjs`, one implementation for both
+  drivers), and the `caps` argument threaded through `advance` and `runOnDesktop`. `canClickName` on
+  2026-09-11 is the worked example; grep it to see all six at once.
 
 ## 1. Where things stand (2026-09-10)
 

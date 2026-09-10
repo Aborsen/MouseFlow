@@ -29,7 +29,7 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 
 | Method | Path | Deadline | Returns |
 |---|---|---|---|
-| GET | `/health` | 4s | `{ok, version, screen:{w,h}, recording, playing, canSee, canWindows, canName, canKeys}` |
+| GET | `/health` | 4s | `{ok, version, screen:{w,h}, recording, playing, canSee, canWindows, canName, canClickName, canKeys}` |
 | GET | `/shot` | 12s | `{ok, png, format, bytes, w, h, scale, originX, originY}` |
 | GET | `/shot?w=640` | 12s | the same, smaller — asked for after a 413 upstream |
 | GET | `/pulse` | 5s | `{ok, grid}` — 64×36 greyscale samples as a short string |
@@ -231,7 +231,8 @@ agent started before the click resolver existed and one started after it reporte
 difference was the whole transcript — a list of coordinates against a list of named actions. So each
 capability is stated: `canSee` (screenshots), `canWindows` (`/windows`), `canName` (`#ctx` on a click),
 `canAnchor` (the window and element rectangles on that line - see "`#ctx` — where a click landed"),
-`canKeys` (typing as an event). An older agent omits a flag, and absent is the answer. `canKeys` is the one
+`canClickName` (`action=clickname` — clicking by name, with no coordinate), `canKeys` (typing as an
+event). An older agent omits a flag, and absent is the answer. `canKeys` is the one
 that can be **false** rather than absent: the keyboard hook may fail to install, and the agent runs without
 it rather than refusing to start.
 
@@ -242,6 +243,13 @@ Since 0.8.0 there are three more, and two of them are macOS answering questions 
   day-long one it cannot take delivery of.
 - `platform` — `windows` or `macos`. Used for exactly one thing: which install command the Connections
   screen shows. Never to decide what an agent can do — that is what the `can*` flags are for.
+`canClickName` is the flag whose absence costs the most to get wrong, and it is worth saying why. The
+deployment offers the model a tool only where the flag is present, because a tool the agent does not have
+costs **exactly what this action was added to save**: the model calls it, the agent answers "unknown
+action", and a turn is gone — five seconds spent learning about the caller's own machine. Absent means "too
+old to say", which on this flag is read as "do not offer"; on macOS it follows the Accessibility permission,
+because without the tree there is no name to resolve.
+
 - `permissions` — `{accessibility, screenRecording}`, macOS only. On Windows both are unconditionally true
   and there is nothing to report; on macOS the user grants them per-binary in System Settings and no code can
   grant either, so `canSee` follows Screen Recording and `canName` follows Accessibility, and this field says
@@ -298,6 +306,46 @@ action=drag x=100 y=100 tx=400 ty=300
 action=refresh [process=chrome] [title=Inbox]
 action=waitwindow ms=20000 until=appears|disappears [process=chrome] [title=Save]
 ```
+
+And one at 0.28.0, which is the only action on this wire that clicks **without a coordinate**:
+
+```
+action=clickname scale=1 ox=0 oy=0 [process=chrome] [button=left] [double=0] [mods=Shift] title=<the name to click>
+```
+
+**Why it exists, in one number.** A model that wants to press a button spends two turns on it: `find`
+answers with a coordinate, and that answer only reaches it with the next screenshot, then `click` aims at
+the coordinate. A turn is **5,035 ms** measured over ninety days of real runs; resolving the name inside the
+agent is about **30 ms**. The saving is not in what the agent does — it is in how many times the model is
+asked, and a successful run is thirteen of those.
+
+**It is not `click` with a name instead of a point, and the difference is the refusal.** On `click`,
+`name=` is a *hint*: the point leads and the name only corrects the aim when something else turns out to be
+under it. Here there is no point at all, so a name that does not resolve has nothing to fall back on — and
+this action then **clicks nothing and says why**, where `click` would press at the coordinate regardless.
+Three answers are refusals rather than presses, all for one reason — never to report success for a press
+that did not happen:
+
+- **the name is not on the window** — nothing was clicked;
+- **several things match it** — the name does not say which, and choosing silently is a click on somebody
+  else's row that reports `done`. The matches are listed with their centres, so the caller can click one by
+  coordinate or ask again with a longer name. Same rule as `find`, which reports ambiguity rather than
+  resolving it;
+- **what it found is disabled** — pressing it would do nothing and answer `done`.
+
+`title=` carries the name and therefore comes **last**: it takes the rest of the line, like `text=` and
+`app=`, so `button`, `double` and `mods` are written before it or they are read as part of the name.
+Narrow the window with `process=`, never with a window title — the wire has exactly one field that may
+contain spaces and this action spends it on the name, for the same reason `find` does.
+
+The geometry travels even though nothing is being converted inwards: the answer says **where it clicked**,
+in the pixels of the screenshot, by the same reverse conversion `read`, `find`, `capture` and `scrollto`
+apply. A caller that knows where the target turned out to be can aim the next step itself.
+
+**Both agents resolve the name through the same code their `find` uses** — `NamedHits` on Windows,
+`findThings` on macOS — and that is a requirement, not an implementation note: "is it there" and "click it"
+must never disagree about what they found. The point pressed is the **centre of the found rectangle**,
+which is what `find` tells its caller to click.
 
 `scale`, `ox` and `oy` are **the model's coordinate system, sent inward so answers can come back out in
 it**. Every other coordinate on this wire has already been converted from screenshot pixels to screen

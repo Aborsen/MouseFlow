@@ -20,7 +20,7 @@
  * Run: node api/_test-vision.mjs
  */
 import { ALLOWED_MODELS, MAX_BODY_BYTES, MAX_MESSAGES, MAX_TOKENS_CAP, payloadFor } from './_vision.mjs';
-import { TOOLS, toolsFor } from './_brain.mjs';
+import { actionBody, TOOLS, toolsFor } from './_brain.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -69,6 +69,60 @@ group('НА ЧЁМ ЭТО ДЕРЖИТСЯ: `finish` - последний инс
     last(toolsFor(false, 'the row is in the table')) === 'finish');
   /* И он там ОДИН: два finish означали бы, что отметка легла не на тот. */
   check('и он там один', TOOLS.filter((t) => t.name === 'finish').length === 1);
+}
+
+group('НАЖАТИЕ ПО ИМЕНИ ПРЕДЛАГАЕТСЯ ТОЛЬКО ТАМ, ГДЕ АГЕНТ ЕГО УМЕЕТ (пункт 6, рычаг 2)');
+{
+  /* ПОЧЕМУ ЭТО ЗАКРЕПЛЕНО ИСПОЛНЕНИЕМ, А НЕ ТЕКСТОМ. Весь смысл рычага - снять ход, и инструмент,
+   * которого агент не умеет, ход ДОБАВЛЯЕТ: модель его зовёт, агент отвечает "unknown action", пять
+   * секунд ушли. То есть ошибка в этом фильтре не ломает прогон, а тихо разворачивает пункт в минус, и
+   * увидеть это можно только по счёту ходов через месяц. Значит проверять надо здесь.
+   *
+   * И отсутствие флага - НЕ false. Старый агент про свои возможности не говорит ничего, и «слишком старый,
+   * чтобы сказать» читается как «не предлагать»: это то же правило, что у canName и canAnchor. */
+  const names = (list) => list.map((t) => t.name);
+  const has = (list) => names(list).includes('click_named');
+
+  check('в самом TOOLS инструмент есть - он один на всех, фильтруется на выдаче',
+    names(TOOLS).includes('click_named'));
+  check('без возможностей вовсе - не предлагается', !has(toolsFor(false)));
+  check('с флагом - предлагается', has(toolsFor(false, null, { canClickName: true })));
+  check('с флагом false - не предлагается: это агент, который сказал «не умею»',
+    !has(toolsFor(false, null, { canClickName: false })));
+  check('с другими флагами, но без этого - не предлагается: отсутствие не «да»',
+    !has(toolsFor(false, null, { canName: true, canSee: true })));
+  check('и со шлюзом правило то же - фильтр один, не два',
+    has(toolsFor(true, null, { canClickName: true })) && !has(toolsFor(true)));
+
+  /* И ТО, НА ЧЁМ ДЕРЖИТСЯ КЕШ: фильтр вырезает из СЕРЕДИНЫ, поэтому finish обязан остаться последним в
+   * каждом из четырёх сочетаний. Иначе отметка cache_control ляжет не на конец схемы, и кешироваться
+   * будет её часть - молча, без всякого признака. */
+  const last = (list) => (list.length ? list[list.length - 1].name : '(empty)');
+  for (const [said, list] of [
+    ['без флага', toolsFor(false)],
+    ['с флагом', toolsFor(false, null, { canClickName: true })],
+    ['со шлюзом и флагом', toolsFor(true, null, { canClickName: true })],
+    ['с флагом и переписанным finish', toolsFor(false, 'the row is there', { canClickName: true })],
+  ]) {
+    check(`finish остаётся последним: ${said}`, last(list) === 'finish', last(list));
+  }
+
+  /* ЦЕЛЬ - ИМЯ, И НА ПРОВОДЕ ЭТО ВИДНО. `title=` забирает остаток строки, поэтому всё остальное стоит
+   * до него; написанное после - часть имени, и нажатие уедет по имени "Save button=left". */
+  const frame = { scale: 2, originX: 0, originY: 0 };
+  const line = actionBody('click_named', { name: 'Save as', process: 'excel' }, frame);
+  check('действие называется clickname', line.startsWith('action=clickname '), line);
+  check('и имя стоит последним, потому что забирает остаток строки',
+    line.endsWith(' title=Save as'), line);
+  check('и геометрия едет - агент отвечает, КУДА нажал, в пикселях снимка',
+    line.includes('scale=2 ox=0 oy=0'), line);
+  check('и окно сужается процессом, а не заголовком', line.includes(' process=excel'), line);
+  check('модификаторы - до имени, иначе они часть имени',
+    actionBody('click_named', { name: 'Send', modifiers: ['Shift'] }, frame)
+      === 'action=clickname scale=2 ox=0 oy=0 button=left double=0 mods=Shift title=Send',
+    actionBody('click_named', { name: 'Send', modifiers: ['Shift'] }, frame));
+  check('без имени действия нет вовсе - пустое имя нажало бы неизвестно что',
+    actionBody('click_named', { name: '   ' }, frame) === null);
 }
 
 group('ОБЩИЙ МАССИВ НЕ МУТИРУЕТСЯ - иначе отметка расползётся по всему, что его читает');

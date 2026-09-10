@@ -60,7 +60,12 @@ export const HANDOFF_ASK: string;
 export const HANDOFF_SYSTEM: string;
 
 /** @param success what the author said done looks like, appended to `finish` so it is read when stopping. */
-export function toolsFor(gated: boolean, success?: string | null): Tool[];
+/* `caps` - плоские флаги из /health агента. Отсутствие флага не предлагает инструмент: см. toolsFor. */
+export function toolsFor(
+  gated: boolean,
+  success?: string | null,
+  caps?: { canClickName?: boolean } | null,
+): Tool[];
 export function mediaType(said: string | undefined | null): string;
 export function actionBody(
   name: string,

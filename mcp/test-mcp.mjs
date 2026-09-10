@@ -548,7 +548,7 @@ group('a goal can be carried out by an agent with no worker behind it');
    * this function's memory, that a picture never lands in the queue, and that the machine is told to stop
    * when the job it is holding has been cancelled. */
   check('the endpoint exists and takes one turn per request',
-    /if \(action === 'step'\)/.test(route) && /await advance\(\{ loop, shot: body\.shot/.test(route));
+    /if \(action === 'step'\)/.test(route) && /await advance\(\{[\s\S]{0,200}?shot: body\.shot/.test(route));
   check('the loop lives in the row, not in the instance',
     /update run_queue set loop = \$\{JSON\.stringify\(out\.loop\)\}/.test(route));
   check('and is cleared when the run ends, so no queue row keeps a conversation',
@@ -4191,23 +4191,25 @@ group('the run log says what the gesture was made with');
   /* Проверяется по тексту, а не выполнением: describe.ts - это TypeScript внутри приложения, и запускать
    * его в этом наборе нечем. Поэтому утверждается ФОРМА правила, а не результат: префикс строится один раз
    * и применяется всеми тремя ветвями. */
-  check('the prefix is built once, not three times',
+  check('the prefix is built once, not four times',
     /const with_ = held\.length \? `\$\{held\.join\('\+'\)\}-` : '';/.test(describer)
-      && (describer.match(/\$\{with_\}/g) || []).length === 3);
+      && (describer.match(/\$\{with_\}/g) || []).length === 4);
   /* Порядок ФИКСИРОВАН, а не тот, в котором модель перечислила: один и тот же жест обязан читаться
    * одинаково в двух прогонах, иначе журнал сравнивать нельзя. */
   check('and the order is fixed rather than as-listed',
     /\['cmd', 'ctrl', 'alt', 'shift'\]/.test(describer));
-  /* Три ветви, и это те же три инструмента, у которых поле есть. Пропустить одну - значит получить журнал,
-   * который для одного из трёх жестов молчит о модификаторе. */
-  check('click, scroll and drag all carry it',
-    /\$\{with_\}\$\{input\.double \? 'double-click'/.test(describer)
+  /* Ветвей столько же, сколько инструментов с этим полем, и это НЕ совпадение, за которым можно не
+   * следить: пропустить одну - значит получить журнал, который для одного из жестов молчит о
+   * модификаторе. Их стало четыре, когда появился click_named: тот же жест, то же поле, и Shift-нажатие
+   * по имени обязано читаться в журнале так же, как Shift-нажатие по точке. */
+  check('click, click_named, scroll and drag all carry it',
+    (describer.match(/\$\{with_\}\$\{input\.double \? 'double-click'/g) || []).length === 2
       && /\$\{with_\}scroll \$\{way\}/.test(describer)
       && /\$\{with_\}drag /.test(describer));
-  /* И поле у инструментов есть - все три, потому что схема без описания к ней это поле, о котором модель не
-   * узнает. */
-  check('and all three tools declare the field',
-    (brain.match(/modifiers: MODIFIERS,/g) || []).length === 3);
+  /* И поле у инструментов есть - у всех, потому что схема без описания к ней это поле, о котором модель
+   * не узнает. Четыре с 0.28.0: click, click_named, scroll, drag. */
+  check('and all four tools declare the field',
+    (brain.match(/modifiers: MODIFIERS,/g) || []).length === 4);
   /* Одно объяснение на три инструмента, а не три копии: разница с `press_key` - самое лёгкое место, где
    * ошибиться, и написанное трижды оно разошлось бы. */
   check('with one description shared by them, not three copies',
@@ -5581,7 +5583,7 @@ group('якорь: клик помнит, где были его окно и е�
   check('и читает числа агента, которые до этого никто не читал',
     /retargeted\?: number;/.test(client) && /Number\(status\.retargeted\)/.test(view));
   check('приложение просит сборку, которая не сворачивает окно, которое хотела показать, и не кончает повтор меню',
-    /AGENT_WANTS = '0\.27\.0'/.test(client));
+    /AGENT_WANTS = '0\.28\.0'/.test(client));
 }
 
 group('префикс хода кешируется - самое дорогое место в цикле');
@@ -5610,6 +5612,76 @@ group('префикс хода кешируется - самое дорогое 
   check('и сам модуль запроса закреплён исполнением - до пункта 6 он не был закреплён ничем',
     /payloadFor/.test(read('../api/_test-vision.mjs'))
       && /node api\/_test-vision[.]mjs/.test(read('../package.json')));
+}
+
+group('ход снимается целиком: нажатие по имени вместо «найди, потом нажми» (пункт 6, рычаг 2)');
+{
+  /* ЧТО ЗДЕСЬ ЗАКРЕПЛЕНО, А ЧТО - В ДРУГИХ ФАЙЛАХ. Фильтр по флагу и вид строки на проводе проверяются
+   * ИСПОЛНЕНИЕМ в api/_test-vision.mjs, обе реализации агента - в agent/test-contract.mjs. Здесь -
+   * проводка: что флаг вообще доезжает до toolsFor на ОБОИХ путях, потому что это то место, где рычаг
+   * тихо превращается в ноль. Инструмент, до которого не доехал флаг, не предлагается никогда - и прогон
+   * при этом работает ровно как раньше, то есть заметить нечем.
+   *
+   * ИЗМЕРЕНИЕ, ради которого всё это: медиана решения модели 5035 мс, шагов в успешном прогоне 13. Найти
+   * кнопку и нажать её - два хода, потому что find отвечает координатой, а его ответ приезжает только со
+   * следующим снимком. Разрешение имени внутри агента - около 30 мс. Значит снятый ход это пять секунд,
+   * и это самый крупный одиночный выигрыш во всём проекте. */
+  const step = read('../api/_step.mjs');
+
+  check('инструмент есть в мозге и описан как «вместо двух ходов»',
+    /name: 'click_named',/.test(brain) && /ONE step where find_element then click is/.test(brain));
+  check('и промпт учит предпочитать его - слова для модели живут в мозге',
+    /CLICK BY NAME WHENEVER THE THING HAS A NAME/.test(brain));
+  /* И ЧТО ДЕЛАТЬ, ЕСЛИ ЕГО НЕ ПРЕДЛОЖИЛИ: SYSTEM один на всех и кешируется целиком, поэтому он говорит
+   * про инструмент, которого на старой машине не будет. Фраза обязана оставаться верной и там. */
+  check('и говорит, что делать, когда его в списке нет - SYSTEM один на все машины',
+    /not among your tools this computer's agent is too old for it/.test(brain));
+
+  /* ФИЛЬТР - ОДИН, И ОН В МОЗГЕ. Правило, добавленное в двух драйверах по отдельности, - это два правила
+   * под одним именем: см. «одна реализация, много читателей» в §0 плана. */
+  check('фильтр по возможности - один, в toolsFor',
+    /toolsFor = \(gated, success = null, caps = null\)/.test(brain)
+      && /caps && caps[.]canClickName === true/.test(brain));
+  check('и он не трогает порядок - на нём держится отметка кеша',
+    /[.]filter\(\(t\) => t[.]name !== 'click_named'/.test(brain));
+
+  /* ОБА ДРАЙВЕРА ПЕРЕДАЮТ ФЛАГ - и это ровно то, что ломается молча. */
+  check('облачный драйвер принимает возможности шага и отдаёт их в toolsFor',
+    /advance\(\{ loop, shot, windows, results, caps, ask \}\)/.test(step)
+      && /toolsFor\(false, loop[.]success \|\| null, caps \|\| null\)/.test(step));
+  check('и маршрут берёт их из тела шага, а не выдумывает',
+    /caps: body[.]caps && typeof body[.]caps === 'object' \? body[.]caps : null,/.test(route));
+  check('браузерный драйвер тоже передаёт - иначе рычаг работал бы только в облаке',
+    /toolsFor\(!!o[.]gate, o[.]success \?\? null, o[.]caps \?\? null\)/.test(engine)
+      && /caps\?: \{ canClickName\?: boolean \} \| null;/.test(engine));
+  /* И СТРАНИЦА ДАЁТ ИХ ЦЕЛИКОМ, а не выбранным полем: следующая возможность тогда не потребует правки ни
+   * на странице, ни в цикле - решает один toolsFor. */
+  check('и страница Create отдаёт то, что уже держит от /health',
+    /caps: health \?\? null,/.test(read('../web/src/features/create/CreateView.tsx')));
+
+  /* ПРАВИЛО ПАЧКИ НЕ ТРОНУТО, и это осознанный выбор, а не недоделка.
+   *
+   * click_named ведёт себя ровно как click: первым в ходу - можно, вторым - нет, и после него можно то,
+   * что уходит в фокус. Значит «нажми по имени, напечатай, нажми Enter» - один ход, а выигрыш рычага уже
+   * получен. Сделать его ещё и BATCHABLE (то есть разрешить ему ИДТИ ВТОРЫМ - «напечатай, потом нажми
+   * Сохранить» одним ходом) - отдельный выигрыш и отдельный риск: правило пачки держит «не целься
+   * вслепую», и хотя имя разрешается живьём, а не по устаревшей картинке, это изменение правила, которое
+   * пункт 6 просил не менять («и ни одно закрепление корректности не изменилось»). Оставлено следующему
+   * замеру - см. QA-ROADMAP §6.
+   *
+   * Закреплено ОТСУТСТВИЕМ: если кто-то допишет click_named в BATCHABLE, не приняв это решение, здесь
+   * станет красно. */
+  check('click_named не в BATCHABLE - правило пачки не менялось вместе с рычагом',
+    !new RegExp("BATCHABLE = new Set\\(\\[[^\\]]*click_named").test(brain));
+  check('и не в TERMINAL - как и click, за ним может идти набор в фокус',
+    !new RegExp("TERMINAL = new Set\\(\\[[^\\]]*click_named").test(brain));
+  check('и не в LOOKS_ONLY - оно ДЕЙСТВУЕТ, и счёт неподвижности его касается',
+    !/LOOKS_ONLY = new Set\(\['read_window', 'find_element', 'expect', 'click_named'\]\)/.test(brain));
+
+  /* И ЖУРНАЛ НАЗЫВАЕТ ЖЕСТ. Шаг без координат должен читаться по имени - «click "Save"», - и с тем же
+   * префиксом модификаторов, что у click: иначе про Shift-нажатие по имени журнал молчит. */
+  check('журнал прогона описывает шаг по имени, а не пустым «click»',
+    /case 'click_named':/.test(read('../web/src/features/create/describe.ts')));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

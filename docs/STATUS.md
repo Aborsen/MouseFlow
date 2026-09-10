@@ -1,11 +1,10 @@
 # Where MouseFlow stands — 2026-09-11
 
 A handover, written to be read on a machine that has never seen this project. It says what changed on
-9–10 September, what is true now, what to do next, and what only the owner can supply.
+9–11 September, what is true now, what to do next, and what only the owner can supply.
 
-**Live right now:** app `https://mouseflowapp.vercel.app` (commit `6711318`), docs site
-`https://mouse-flow.vercel.app`, agents at **0.27.0**. Whole suite green: 1251 source pins, 537 contract
-checks, 21 executable suites.
+**Live right now:** app `https://mouseflowapp.vercel.app`, docs site `https://mouse-flow.vercel.app`,
+agents at **0.28.0**. Whole suite green: 1264 source pins, 558 contract checks, 21 executable suites.
 
 **The four planning documents, and which to read when:**
 
@@ -48,7 +47,8 @@ in `web/`, and in the site.
    **Never paste key values into a file that is tracked, and never into a chat.**
 2. **The agent, installed and running.** Open the app → **Connect** and use the command it prints; it pipes
    the script straight into a scriptblock, so there is no file to unblock. The page shows the running
-   version — it must say **0.27.0**, because three fixes from 9–10 September are agent-side.
+   version — it must say **0.28.0**, because the fixes from 9–11 September are agent-side, `clickname`
+   among them.
 3. **The Chrome extension, loaded unpacked.** `chrome://extensions` → developer mode → **Load unpacked** →
    select the `extension/` folder. Its id is derived from the folder path, so it differs on every machine;
    that is expected and the app handles it.
@@ -68,10 +68,10 @@ before they were written down.
 
 ---
 
-## 2. What shipped on 9–10 September
+## 2. What shipped on 9–11 September
 
-Ten commits. The first three closed roadmap items; the rest were defects found by *playing recordings back
-on a real desktop*, which is the pattern worth keeping — none of them were visible from reading the code.
+Twelve commits. Four closed roadmap items; the rest were defects found by *playing recordings back on a real
+desktop*, which is the pattern worth keeping — none of them were visible from reading the code.
 
 | commit | what |
 |---|---|
@@ -86,6 +86,7 @@ on a real desktop*, which is the pattern worth keeping — none of them were vis
 | `53fb0a4` | [`MEMORY-PLAN.md`](MEMORY-PLAN.md) |
 | `4e9f017` | **Roadmap item 5-v2**: a case's check can name the moment it belongs to |
 | `6711318` | **Roadmap item 6, lever 1**: the turn's unchanging prefix is cached; two of the item's five levers dropped on measurement |
+| *this one* | **Roadmap item 6, lever 2**: `click_named` — one action where "find the button, then click it" was two turns. Agents at 0.28.0 |
 
 ### The two things worth carrying forward from that work
 
@@ -97,8 +98,11 @@ working, it keeps its docs page, it stops being invested in and comes off the he
 
 **A turn costs the same whatever it does.** Measured over ninety days: median model decision **5,035 ms**,
 and it barely moves between actions (`click` 5,238 · `press_key` 5,848 · `type_text` 5,504). The screenshot
-is **196 ms**. So the cost is the unchanging prefix re-sent every turn, and the only levers worth pulling
-are caching it (done) and **removing whole turns** (next).
+is **196 ms**. So the cost is the unchanging prefix re-sent every turn, and the only two levers worth pulling
+were caching it and **removing whole turns** — both now done, and everything that chased the 196 ms was
+dropped instead of built. The general form of the lesson, which outlives this item: **measure before
+optimising, and be willing to delete a planned task on the measurement.** Two of five levers here were
+worth more struck than shipped.
 
 ---
 
@@ -112,7 +116,7 @@ are caching it (done) and **removing whole turns** (next).
 | 4 · hybrid replay | **parked.** It was the bridge between coordinates and the model; with replay frozen the bridge is not needed. [`MEMORY-PLAN.md`](MEMORY-PLAN.md) proposes an application memory instead. **Not struck — the owner's call** |
 | 5-v1 · a case as an entity | done |
 | 5-v2 · checks bound to a step | done (`4e9f017`), **not as specified** — see below |
-| 6 · speed | lever 1 done; **levers 3 and 5 dropped on measurement**; lever 2 is the whole remaining item |
+| 6 · speed | levers 1 and 2 done; **3 and 5 dropped on measurement**; only lever 4 is left, and it is small. The item's done-condition is a *measurement* — re-run it in October, see below |
 | 7 · isolation | open, untouched |
 | 8 · web QA via the extension | done (`bcdb9ae`) |
 
@@ -132,14 +136,25 @@ are caching it (done) and **removing whole turns** (next).
 
 ## 4. What to do next
 
-**First: lever 2 of item 6 — one action instead of two turns.** Today "find the button, then click it" is
-two turns because `click` is aimed at the picture. A new `click_named` (agent action
-`action=clickname title=<name> [process=]`, capability flag `canClickName`) resolves and clicks in ~30 ms.
-At 5 s a turn and 13 turns a run, removing a third of the turns on form-heavy goals is the largest single
-win available anywhere in the project. Both agents; the brain offers the tool only when the flag is present.
-**~3 days.** Compile the agent's C# for real before pushing — see [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §0.
+**Lever 2 of item 6 is done** (this commit) — that was the largest single win available, and it is taken.
+`click_named` in the brain, `action=clickname` in both agents at **0.28.0**, gated on `canClickName`,
+with the flag reaching `toolsFor` on both driver paths. The whole of it, including the one lever
+deliberately left on the table, is written up in [`QA-ROADMAP.md`](QA-ROADMAP.md) §6.
 
-**Then, in order of value rather than roadmap number:**
+**Two things it leaves for whoever comes next, and neither is a loose end by accident:**
+
+- **The measurement, in October.** Item 6's done-condition is the median `model` ms under 4,000, and it
+  cannot be checked today: the thirty-day window still holds mostly runs decided before caching and before
+  `click_named`. Read **two** numbers then — the median (which is where lever 1 shows) and **steps per
+  successful run** (which is where lever 2 shows). Queries are in §6.
+- **Whether `click_named` may go SECOND in a turn.** It currently sits in the batch rule exactly where
+  `click` does, so "click Search, type, press Enter" is one turn. Letting it also *follow* another action
+  would make "type the value, then click Save" one turn on every form. The argument is strong and the
+  change is one line — but the batch rule is what holds "never aim blind", and item 6 asked that no
+  correctness pin change, so it was left as a decision rather than taken in passing. Pinned by absence, so
+  nobody makes it by accident.
+
+**Next, in order of value rather than roadmap number:**
 
 1. **`mouseflow.skill/2`** — [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §3. A skill whose body is a procedure in
    words with the recording as a *pointer*, not a copy. It is what makes the same artifact serve both
@@ -151,6 +166,8 @@ win available anywhere in the project. Both agents; the brain offers the tool on
 3. **The site pass** — [`SITE-DEBT.md`](SITE-DEBT.md). One entry is a ready-to-paste section plus the stale
    line it replaces; the other is the positioning the site has not caught up with.
 4. **Item 7, isolation** — a machine the tests may own. Untouched, and the least urgent of these.
+5. **Item 6, lever 4** — haiku for the wave hand-off and the plan preview. Small, and last on purpose: a
+   cheaper model must not be anywhere near a decision that aims a click.
 
 **One thing parked with a diagnosis, not a mystery.** On the owner's machine `TaskbarSwitch` still did not
 raise the terminal or Outlook. A read-only probe showed the taskbar *is* recognised (`GA_ROOT =

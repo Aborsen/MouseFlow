@@ -31,7 +31,7 @@ fast, safe and web-first.
 | `web/src/lib/desktop-engine.ts` | The browser driver: the same loop, run from the Create page against the local agent | **Both drivers must change together.** A tool handled in one and not the other is a bug the suite is written to catch. |
 | `api/mcp.js` | MCP over HTTP: tools, the queue (`?worker=claim`, `?worker=step`, `?worker=report`), schedules (`dueNow`), `?live=1`, `?pending=1` | The biggest file. Read the header comments before editing. |
 | `api/_schedule.mjs` | Time arithmetic for schedules and `defer_until` | Executable test `api/_test-schedule.mjs`. |
-| `agent/mouseflow-agent.ps1`, `agent/mouseflow-agent.swift` | The two local agents (Windows, macOS) | **Any new agent behaviour is declared by a flat boolean flag in `/health`** — `canSee`, `canWindows`, `canName`, `canKeys`, `canDrain` exist today (see `agent/PROTOCOL.md` → "The capability flags"; the web type is `AgentHealth` in `web/src/lib/agent.ts`, the wanted version is `AGENT_WANTS` there). Never inferred from a version; absent means "too old to say". Old agents stay valid. Both implementations, or the new one gated on its flag. |
+| `agent/mouseflow-agent.ps1`, `agent/mouseflow-agent.swift` | The two local agents (Windows, macOS) | **Any new agent behaviour is declared by a flat boolean flag in `/health`** — `canSee`, `canWindows`, `canName`, `canAnchor`, `canClickName`, `canKeys`, `canDrain` exist today (see `agent/PROTOCOL.md` → "The capability flags"; the web type is `AgentHealth` in `web/src/lib/agent.ts`, the wanted version is `AGENT_WANTS` there). Never inferred from a version; absent means "too old to say". Old agents stay valid. Both implementations, or the new one gated on its flag. |
 | `agent/PROTOCOL.md` | The normative loopback contract | Change it *with* the agent, in the same commit. |
 | `extension/` | The Chrome extension: element-level recording/replay, `page/run` goals, `skills.js` (selectors, params) | The web half. Selectors, not coordinates. |
 | `db/NNN_*.sql` | Migrations, applied by `npm run migrate` (reads `.env.local`) | Next free number: **022** (`021_user_case.sql` is the latest). Applying to production is the owner's decision — ask, never run unasked. |
@@ -364,7 +364,27 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
    lever rests on that position. `usage.cache_read_input_tokens` is recorded on the step as `cached`, so
    the gain is measured rather than believed. That file also now pins this module's caps, which nothing had
    pinned before. Original text: In `api/_vision.mjs`, `payloadFor(body)` is the one place both drivers' requests pass through (`api/_step.mjs` calls `callModel` directly; the browser driver posts to `/api/claude`, which calls the same `callModel`). There, turn `system` into `[{ type: 'text', text, cache_control: { type: 'ephemeral' } }]` and put `cache_control` on the last tool in `tools`. `SYSTEM` + `TOOLS` are several thousand tokens re-sent every turn; caching cuts time-to-first-token and cost on every turn after the first. Nothing sets `cache_control` today (checked). Verify with `usage.cache_read_input_tokens` in the response; log it into `ms`.
-2. **One action instead of two turns for the commonest pair.** Today "find the button, then click it" is two turns because `click` is aimed at the picture. Add `click_named` (agent action `action=clickname title=<name> [process=]`, flag `canClickName`): the agent resolves and clicks in ~30 ms. Expect a third of turns on form-heavy goals to disappear. Both agents; brain tool offered only when the flag is present (`toolsFor` already filters tools by situation — extend it).
+2. ~~**One action instead of two turns for the commonest pair.**~~ — **done 2026-09-11.** `click_named`
+   in the brain, `action=clickname` in both agents, gated on `canClickName`, agents at **0.28.0**. The
+   flag reaches `toolsFor(gated, success, caps)` on both driver paths: the browser driver is handed the
+   `/health` object the Create page already holds, and the cloud driver reads `caps` off each
+   `?worker=step` body — which is the only way it *can* travel, because nothing on that path may reach
+   into the machine. Both agents resolve the name through the same code their `find` uses (`NamedHits`
+   extracted on Windows, `findThings` already shared on macOS), so "is it there" and "click it" cannot
+   disagree about what they found; on Windows the click gesture was extracted to `ClickAt` for the same
+   reason. Three cases refuse to press rather than reporting `done` for nothing: no such name, several
+   matches, the control disabled.
+
+   **What was deliberately NOT done, and it is a real lever left on the table.** `click_named` sits in the
+   batch rule exactly where `click` sits — first in a turn, with typing and keys allowed after it. So
+   "click Search, type the query, press Enter" is one turn, and the two-turn pair is gone. Making it
+   `BATCHABLE` as well — letting it go *second*, so "type the value, then click Save" is also one turn —
+   is a further win on every form. It was not taken because the batch rule is what holds "never aim
+   blind", and this item's own done-condition says no correctness pin changed. The argument for it is
+   strong (a name is resolved live at execution, so the stale-picture failure the rule guards cannot
+   happen — what remains is the semantic risk the prompt's "no one-way action in a batch" already covers),
+   and it is one line plus its pins. **Left as a decision with a measurement rather than a drive-by
+   change**, and pinned by absence so nobody makes it by accident. Original text: Today "find the button, then click it" is two turns because `click` is aimed at the picture. Add `click_named` (agent action `action=clickname title=<name> [process=]`, flag `canClickName`): the agent resolves and clicks in ~30 ms. Expect a third of turns on form-heavy goals to disappear. Both agents; brain tool offered only when the flag is present (`toolsFor` already filters tools by situation — extend it).
 3. **DROPPED on the measurement (2026-09-10).** The screenshot median is **196 ms** — under 4 % of a turn.
    Two days of work to chase it, and the risk is a model reading a smaller picture than it needed. Do not
    revive this without a new measurement showing the shot has become expensive. Original text: `MIN_SHOT_W` and `shotWidth` already exist on the loop (`shrink`). Policy: after any turn in which the model used `read_window`/`find_element`/`expect` successfully, request the next frame at 960 px; go back to `DEFAULT_SHOT_W` after a click that changed the screen.
@@ -372,7 +392,14 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
 5. **DROPPED on the same measurement.** Overlapping the `/windows` fetch with `shot` saves part of that
    same 196 ms. Original text: in `runWave`, the frame is fetched and then `openWindows(machine, frame)` is awaited — but only the *conversion* of window rectangles into screenshot pixels needs the frame; the `/windows` request itself does not. Split `openWindows` into fetch and convert, start the fetch alongside `shot`, convert after both arrive.
 
-**Tests.** A pin that `callModel` sets `cache_control` on system and tools; a pin that `click_named` is gated on the capability; the executable step test asserting the shot-width policy.
+**Tests.** Both asked-for pins exist and were each proven by mutation. `cache_control` on system and
+tools: `api/_test-vision.mjs`. `click_named` gated on the capability: **executed**, not read — the gate in
+`api/_test-vision.mjs` (six combinations, plus `finish` still last in each, because the cache mark rides on
+that position), and end-to-end in `api/_test-step.mjs`, where the scripted model is checked to have been
+*offered* the tool with the flag and not offered it without, and the wire line is asserted to carry no
+coordinate at all. Both agents and the protocol: `agent/test-contract.mjs`. The plumbing on both paths:
+`mcp/test-mcp.mjs`. The shot-width policy pin was not written, because lever 3 was dropped — there is no
+policy to assert.
 
 **Docs.** `05-create.md` → the decision loop (the pace paragraph with the new measured number), `18-configuration.md` (constants), `10-agent-protocol.md` (`clickname`, the flag).
 
@@ -380,9 +407,18 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
 no correctness pin changed. Re-run the baseline query to check; caching moves time-to-first-token, so the
 median is where it shows.
 
-**What is left is lever 2 alone**, and it is now the whole item: a turn removed is 5 seconds, and a run is
-thirteen of them. Levers 3 and 5 were dropped for chasing 196 ms; lever 4 (a cheaper model for the
-hand-off and the plan preview) stays last and stays small. **Estimate:** 3 days for lever 2, both agents.
+**Where this item stands (2026-09-11).** Levers 1 and 2 are done; 3 and 5 were dropped for chasing 196 ms.
+**What is left is lever 4 alone** — a cheaper model for the hand-off and the plan preview — and it stays
+last and stays small.
+
+**The done-condition is not yet met, and cannot be checked from here.** It is a *measurement*: the median
+`model` ms over 30 days, from 5,035 down under 4,000. Caching landed on 10 September and `click_named` on
+the 11th, so the thirty-day window still contains mostly un-cached runs decided without it, and re-running
+the baseline query today would measure the past. **Re-run it in October**, and read two numbers rather than
+one: the median `model` ms, and — the better measure of this lever — **steps per successful run**, which
+is where a removed turn actually shows. Lever 1 moves time-to-first-token; lever 2 moves the step count.
+The query for the first is above; for the second, `jsonb_array_length(steps)` over `user_run` where
+`outcome` is ok.
 
 ---
 

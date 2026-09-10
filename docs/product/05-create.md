@@ -164,8 +164,31 @@ as `cached`, so the lever is measured rather than believed.
 
 **And two of the plan's five levers were dropped on this evidence.** Smaller screenshots after a good read,
 and parallelising the `/windows` fetch, both chase the *196 ms*: under 4% of a turn, for two days' work.
-What remains worth doing is removing whole turns — one action that finds a control and clicks it, instead of
-two turns to do the same thing — because a turn removed is 5 seconds, and a run is 13 of them.
+What is worth doing instead is removing whole turns, because a turn removed is 5 seconds and a run is 13 of
+them.
+
+### One action instead of two turns — `click_named`
+
+The commonest thing a run does is press a named control, and until agent **0.28.0** that cost **two** turns.
+`find_element` answers where the thing is, but its answer only reaches the model *with the next
+screenshot* — nothing can be aimed in the same turn, because until that picture arrives there is nothing to
+aim with. Then `click` aims at the coordinate. Two decisions, ten seconds, to press one button.
+
+`click_named` takes the **name** and no coordinate: the agent finds the control on the live window and
+clicks its centre, in about 30 ms. One turn instead of two, on the action a form-heavy run repeats most.
+And because it behaves in the batch rule exactly as `click` does, "click Search, type the query, press
+Enter" is still **one** turn — where before it was two, the first of them spent entirely on `find_element`.
+
+It is not `click` with a name in place of a point, and the difference is what happens when the name is
+wrong. On `click`, `label` is a *hint*: the point leads, the name only corrects the aim. Here the name is
+the target, so three answers are **refusals rather than presses** — the name is not on the window, several
+things match it, or what it found is disabled. Each of them would otherwise be a press that did nothing
+reported as `done`, which is the one thing this codebase does not do anywhere.
+
+Both agents resolve the name through the same code their `find` uses, because "is it there" and "click it"
+must never disagree about what they found. The tool is offered **only where the agent's `canClickName` flag
+says so** — an absent flag means "too old to say" and is read as "do not offer", since a tool the agent
+cannot perform costs precisely the turn this was added to save.
 
 ### Shape
 
@@ -178,6 +201,7 @@ The constants live in `api/_brain.mjs`, and both drivers read them from there.
 | Run | `MAX_WAVES = 10` waves — 240 steps |
 | Screenshot | 1280px wide by default, halved on a 413, floor 320px |
 | Prefix | `SYSTEM` + the tool schemas are **cached** — see *What a turn costs* |
+| Tools by machine | `click_named` is offered only where `/health` says `canClickName` — `toolsFor(gated, success, caps)` |
 | Settle poll | 1.5 s, two quiet frames, 120 s ceiling |
 
 **Waves** are why long tasks finish and why the tenth wave costs what the first did: at a seam the model

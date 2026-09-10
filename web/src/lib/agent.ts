@@ -28,6 +28,11 @@ export interface AgentHealth {
   /* Несёт ли клик прямоугольники окна и элемента, по которым повтор пересчитывает точку после переезда
    * окна (agent 0.25.0). Absent - у записи якоря нет, и повтор честно играет как записано. */
   canAnchor?: boolean;
+  /* Умеет ли агент нажать по ИМЕНИ, без координаты - action=clickname, с 0.28.0. Мозг предлагает модели
+   * инструмент только там, где этот флаг есть: инструмент, которого агент не умеет, стоит хода, а ход это
+   * 5 секунд из тринадцати - ровно то, ради чего действие и добавлено. Absent значит «слишком старый,
+   * чтобы сказать», и читается как «не предлагать». */
+  canClickName?: boolean;
   /** Whether typing is recorded as an EVENT - that a key was pressed and when, never which key. False when
    * the keyboard hook failed to install, absent before 0.7.0; either way a transcript then cannot tell
    * "typed nothing" from "was not watching", which is why the flag exists rather than being inferred. */
@@ -687,7 +692,7 @@ export const autostartEnable = (port: number) =>
  * переключает, и записанный «поднять» на уже поднятом окне сворачивал его. Какое окно - говорит сама
  * запись, пометкой Focus за нажатием. Старый агент делает и то и другое по-старому, и сказать об этом
  * человеку может только этот нудж. */
-export const AGENT_WANTS = '0.27.0';
+export const AGENT_WANTS = '0.28.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {

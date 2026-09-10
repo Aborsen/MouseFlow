@@ -41,7 +41,7 @@ import Foundation
 import ImageIO
 import ScreenCaptureKit
 
-let VERSION = "0.27.0"
+let VERSION = "0.28.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -3366,6 +3366,85 @@ func doFind(_ fields: [String: String]) -> String? {
     return nil
 }
 
+/* НАЖАТЬ ПО ИМЕНИ - один ход вместо двух, и это самая дорогая экономия во всём цикле.
+ *
+ * Чтобы нажать кнопку, модель ходит дважды: find отвечает координатой, и ответ его приезжает только со
+ * следующим снимком, потом click бьёт в эту координату. Ход стоит 5,035 мс медианой - измерено на девяноста
+ * днях прогонов, - а всё, что делает эта функция, около 30 мс. В успешном прогоне тринадцать ходов.
+ *
+ * ЧЕМ ЭТО ОТЛИЧАЕТСЯ ОТ `name=` НА КЛИКЕ ПО КООРДИНАТЕ. Там имя - подсказка: точка ведущая, а имя лишь
+ * сдвигает прицел, если под точкой оказалось другое (Accessibility.aim). Здесь точки нет вовсе, и разница
+ * видна в отказе: клик с ненайденным `name` всё равно нажмёт, где сказано, а это НЕ НАЖМЁТ НИЧЕГО и скажет
+ * почему.
+ *
+ * И ТРИ ОТКАЗА ВМЕСТО НАЖАТИЯ, каждый - ради того, чтобы не отчитаться успехом о ненажатом: имени нет на
+ * окне; подходит несколько - тогда имя не говорит, какое из них, и выбрать за модель значит нажать по чужой
+ * строке; найденное выключено - нажатие по выключенному не делает ничего, а «done» про него это ложное
+ * зелёное. Всё три возвращаются ОШИБКОЙ, а не Output.say: find имеет право ответить «такого тут нет», это
+ * его работа, а clickname в этом случае не сделал того, о чём его просили.
+ *
+ * Переиспользуется findThings, а не переписывается его правило, - по той же причине, по которой его
+ * переиспользует doScrollTo: «есть ли такое имя» и «нажми по этому имени» не имеют права разойтись в том,
+ * что нашли. И центр прямоугольника, а не какая-то своя точка: find говорит модели «click the centre». */
+func doClickNamed(_ fields: [String: String]) -> String? {
+    Geometry.read(fields)
+    let wanted = (fields["title"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if wanted.isEmpty { return "clickname needs a name to click" }
+
+    let looked = findThings(fields, wanted: wanted)
+    if let problem = looked.problem { return problem }
+    let hits = looked.hits
+
+    if hits.isEmpty {
+        return "nothing on that window is called \"\(clip(wanted, 60))\", so nothing was clicked. Read the "
+            + "window to see what it does call things, or look at the screenshot - it may not be there at all"
+    }
+    if hits.count > 1 {
+        /* Перечислено, а не просто посчитано: модели нужно, ПО ЧЕМУ выбирать - по положению или по более
+         * длинному имени, - и тот же список ей отдаёт find. Та же отсечка на шести. */
+        let said = hits.prefix(6).map { one in
+            elementLine(one) + ", centre \(Geometry.shotX(one.frame.midX)),\(Geometry.shotY(one.frame.midY))"
+        }
+        return "\(said.count) things match \"\(clip(wanted, 60))\", so the name alone does not say which to "
+            + "click and NOTHING was clicked: " + said.joined(separator: "; ")
+            + ". Click one of those centres, or use a longer name"
+    }
+
+    let one = hits[0]
+    if !one.enabled {
+        return (one.kind.isEmpty ? "what is called" : "\(one.kind) \"\(clip(one.name, 60))\"")
+            + " is DISABLED, so nothing was clicked - clicking it would have done nothing and reported "
+            + "success. Something else has to happen first"
+    }
+
+    /* Явно Double, а не CGFloat: Desktop.contains, Windows.at и Input.click объявлены на Double, и
+     * неявное приведение между ними - удобство компилятора, а не свойство этого файла. swiftc на машине,
+     * где это правилось, нет (см. MEMORY-PLAN §0), поэтому здесь не на что положиться, кроме явности. */
+    let cx = Double(one.frame.midX)
+    let cy = Double(one.frame.midY)
+    /* ТА ЖЕ ПРОВЕРКА ГРАНИЦ, что у координатного пути: macOS положила бы клик в ближайшую настоящую точку,
+     * то есть кривой прямоугольник от чужого провайдера стал бы нажатием по краю экрана, отчитавшимся
+     * успехом. Здесь это ещё менее ожидаемо, чем там: точку никто не называл. */
+    if !Desktop.contains(x: cx, y: cy) {
+        let r = Desktop.rect
+        return "\"\(clip(wanted, 60))\" says it is at \(Int(cx)),\(Int(cy)), which is off the desktop "
+            + "(\(Int(r.minX)),\(Int(r.minY)) to \(Int(r.maxX)),\(Int(r.maxY))), so nothing was clicked"
+    }
+    /* И НАШЕ СОБСТВЕННОЕ ОКНО - отказом, как на всяком другом пути: имя ищется на окне впереди, а впереди
+     * вполне может стоять MouseFlow. */
+    if let mine = Own.refusal(pid: Windows.at(x: cx, y: cy)?.pid ?? 0) { return mine }
+
+    Input.click(x: cx, y: cy, button: fields["button"] ?? "left",
+                double: (fields["double"] ?? "0") == "1",
+                flags: MouseFlowModFlags(fields["mods"]))
+
+    /* КУДА нажали - в пикселях снимка, теми же тремя числами наружу, какими они приехали внутрь. Модель
+     * после этого знает, где на экране оказалась цель, и следующий ход может целиться сам. */
+    Output.say("clicked " + (one.kind.isEmpty ? "" : one.kind + " ") + "\"\(clip(one.name, 60))\""
+        + " at \(Geometry.shotX(one.frame.midX)),\(Geometry.shotY(one.frame.midY))")
+    return nil
+}
+
 /* ТИХИЙ ЭКРАН, измеренный здесь, а не спрошенный у модели ещё раз. Тот же отпечаток и тот же порог, что у
  * ожидания в курьере (Courier.quiet), потому что два ответа на «оно устоялось» устоялись бы по-разному.
  * Возвращает, сколько ждали, - чтобы вызывающий мог сказать, дождался он или вышло время. */
@@ -3943,6 +4022,12 @@ func doAction(_ body: String) -> String? {
         return doRead(fields)
     case "find":
         return doFind(fields)
+    /* ------------------------------------------------------ 0.28.0: нажатие по имени
+     *
+     * Рядом с find нарочно: они делят разрешение имени (findThings), и читателю, который придёт менять
+     * правило поиска, надо видеть сразу обоих, кто по этому правилу отвечает. */
+    case "clickname":
+        return doClickNamed(fields)
     case "scrollto":
         return doScrollTo(fields)
     case "drag":
@@ -4967,6 +5052,10 @@ enum Courier {
              * row the deployment writes stamps it, exactly as the app's own does. */
             said["health"] = ["version": VERSION,
                               "canName": Permission.accessibility,
+                              /* Нажатие по имени, одним действием вместо двух ходов (0.28.0). Следует
+                               * Accessibility по той же причине, что canName: без разрешения дерево не
+                               * отвечает, а значит и имя не разрешить - нажимать было бы нечего. */
+                              "canClickName": Permission.accessibility,
                               "canKeys": eventTap != nil]
         }
         guard let data = try? JSONSerialization.data(withJSONObject: said) else { return }
@@ -4986,7 +5075,7 @@ enum Courier {
 
        So it moved, and this end became the hands:
 
-           this  ──POST ?worker=step { shot, windows, results }──►  the deployment decides
+           this  ──POST ?worker=step { shot, windows, results, caps }──►  the deployment decides
            this  ◄──────────  { actions: [...] }  ──────────────
                  does them, takes a new picture, posts again
 
@@ -5030,7 +5119,19 @@ enum Courier {
                     + ",\"active\":\(jsonBool(w.active)),\"minimized\":\(jsonBool(w.minimized))}"
             }.joined(separator: ",")
 
+            /* ЧТО ЭТА МАШИНА УМЕЕТ - с КАЖДЫМ шагом, а не один раз при получении работы.
+             *
+             * Иначе никак: на этом пути облако не может спросить агента ни о чём - агент сам держит
+             * запрос, а до его 127.0.0.1 оттуда не достаёт. Это то самое правило «машина спрашивает,
+             * ничто не тянется внутрь».
+             *
+             * И каждый шаг, а не один раз, потому что дёшево и потому что верно: строка работы живёт между
+             * шагами, а агент - нет, и объявление, сделанное при старте, пережило бы факт, который
+             * описывает. Те же флаги и то же написание, что в /health - включая то, что здесь этот флаг
+             * следует Accessibility: без дерева имя не разрешить, и нажимать было бы нечего. */
+            let caps = "{\"canClickName\":\(jsonBool(Permission.accessibility))}"
             let body = "{\"id\":\(jsonString(id)),\"shot\":\(shot),\"windows\":[\(windows)]"
+                + ",\"caps\":\(caps)"
                 + ",\"results\":[\(results.joined(separator: ","))]}"
             guard let data = body.data(using: .utf8) else { return }
 
@@ -5758,6 +5859,8 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         json += ",\"canSee\":\(jsonBool(Permission.screenRecording))"
         json += ",\"canWindows\":true"
         json += ",\"canName\":\(jsonBool(Permission.accessibility))"
+        /* И нажатие по имени (0.28.0) - по тому же разрешению, что canName: имя берётся из дерева. */
+        json += ",\"canClickName\":\(jsonBool(Permission.accessibility))"
         json += ",\"canKeys\":\(jsonBool(eventTap != nil))"
         json += ",\"canDrain\":true"
         /* Несёт ли клик прямоугольники окна и элемента - по ним повтор пересчитывает точку после переезда

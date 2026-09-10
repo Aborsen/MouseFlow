@@ -1864,7 +1864,7 @@ async function workerRoute(action, req, res, sql, who) {
    * run on the user's own machine, in a node process they had to install alongside the agent, for one
    * reason: it talked to 127.0.0.1. This is the same loop with the machine at the other end of a request.
    *
-   *   agent  ──POST ?worker=step { id, shot, windows, results }──►  here
+   *   agent  ──POST ?worker=step { id, shot, windows, results, caps }──►  here
    *                                                                 the model decides (~7s)
    *   agent  ◄──────────────  { actions: [...] }  ──────────────
    *          performs them, takes a new picture, posts again
@@ -2097,7 +2097,15 @@ async function workerRoute(action, req, res, sql, who) {
       }
     };
 
-    const out = await advance({ loop, shot: body.shot, windows: body.windows, results: body.results });
+    /* ВОЗМОЖНОСТИ МАШИНЫ - те, что агент прислал с этим шагом, и ничего вместо них.
+     *
+     * Плоский объект флагов из его же /health. Пустой у любого агента, который о них не говорит, и это
+     * правильный ответ для такого: инструмент, которого он не умеет, стоит хода - модель его зовёт, агент
+     * отвечает "unknown action", и пять секунд ушли на то, чтобы узнать про чужую машину. */
+    const out = await advance({
+      loop, shot: body.shot, windows: body.windows, results: body.results,
+      caps: body.caps && typeof body.caps === 'object' ? body.caps : null,
+    });
     await keepFrame(out.keep || (out.done && out.done.keep));
 
     /* ОТЛОЖЕНО, А НЕ СДЕЛАНО. Цель назвала время впереди, и модель вместо таймера из PowerShell позвала

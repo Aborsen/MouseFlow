@@ -55,10 +55,16 @@ of coordinates against a list of named actions. So each capability is **stated**
 | `canWindows` | `/windows` works |
 | `canName` | A click carries `#ctx` — the application, window, control and type it landed on |
 | `canAnchor` | …and the rectangles of that window and that control, so a replay survives the window moving |
+| `canClickName` | `action=clickname` works — clicking a control **by name**, with no coordinate (0.28.0) |
 | `canKeys` | Typing is recorded as an event (that a key was pressed, and when) |
 | `canDrain` | A recording can outlast one response (`/record/drain`) — i.e. long sessions are possible |
 | `platform` | `windows` or `macos`. Used for **exactly one thing**: which install command the Connections screen shows. Never to decide what an agent can do — that is what the `can*` flags are for. |
 | `permissions` | `{ accessibility, screenRecording }`, macOS only. On Windows both are unconditionally true and there is nothing to report. |
+
+`canClickName` is the flag whose absence costs the most to get wrong, and the deployment therefore offers
+the model that tool **only** where the flag is present: a tool the agent cannot perform costs exactly what
+the action was added to save — the model calls it, the agent answers "unknown action", and a five-second
+turn is gone. On macOS it follows Accessibility, because without the tree there is no name to resolve.
 
 **A missing flag is an answer**: the agent predates it. `canKeys` is the one that can be `false` rather than
 absent — the keyboard hook may fail to install, and the agent runs without it rather than refusing to start.
@@ -126,7 +132,20 @@ action=type enc=b64 nl=shift text=<base64 UTF-8>
 action=key key=Enter ctrl=0 shift=0 alt=0
 action=activate title=Outlook
 action=activate process=outlook
+action=clickname scale=1 ox=0 oy=0 [process=chrome] [button=left] [double=0] title=Save as
 ```
+
+**`clickname` is the only action here that clicks without a coordinate**, and it exists for one measured
+reason: pressing a named control used to cost two model turns — `find` to learn where it is (its answer
+arriving only with the next screenshot) and `click` to aim at that point — where the agent resolves the
+name itself in about 30 ms. A turn is 5,035 ms and a run is thirteen of them.
+
+The name is the target rather than a hint, so a name that does not resolve has nothing to fall back on, and
+this action **clicks nothing and says why** in three cases: the name is not on the window, several things
+match it (the matches are listed with their centres, so the caller can pick one), or what it found is
+disabled. Each would otherwise be a press that did nothing, reported as success. The name is resolved
+through the same code `find` uses, so the two can never disagree about what they found, and the point
+pressed is the centre of the found rectangle — which is what `find` tells its caller to click.
 
 Parsing rules that matter, all learned the hard way:
 
@@ -136,6 +155,10 @@ Parsing rules that matter, all learned the hard way:
   Hit-test the point, and only if something else is under it, look for that name nearby. A coordinate read
   off a downscaled screenshot is a point; a name is the thing. They part company the moment anything
   re-lays-out, which a tab strip does every time the number of tabs changes.
+- **On `clickname` the name is in `title=`, and it is a target rather than a hint** — which is why it goes
+  in the field that takes the rest of the line, and why `button`, `double` and `mods` are written before
+  it. The window is narrowed with `process=`, never with a window title: the wire has exactly one field
+  that may hold spaces, and this action spends it on the name, as `find` does.
 - **A field marker only counts at the start of a token**, or `subtitle=` matches `title=` and the parse
   begins four characters into the wrong word.
 - **`enc=b64` carries UTF-8 base64** so multi-line text survives. `nl=enter` presses Enter between lines,

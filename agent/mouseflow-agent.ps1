@@ -518,7 +518,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.27.0";
+        public const string Version = "0.28.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -2945,6 +2945,11 @@ namespace MouseFlow
 
             if (action == "read") return ReadWindow(a);
             if (action == "find") return FindElement(a);
+            /* ------------------------------------------------------ 0.28.0: clicking by name
+             *
+             * Рядом с find нарочно: они делят разрешение имени (NamedHits), и читателю, который придёт
+             * менять правило поиска, надо видеть сразу обоих, кто по этому правилу отвечает. */
+            if (action == "clickname") return ClickNamed(a);
             if (action == "scrollto") return ScrollTo(a);
 
             /* ------------------------------------------------------------------ 0.12.0 */
@@ -3080,34 +3085,7 @@ namespace MouseFlow
 
             if (action == "click")
             {
-                string button = Get(a, "button", "left");
-                bool twice = Get(a, "double", "0") == "1";
-                string mods = AskedMods(a);
-                string down = button == "right" ? "Right Click Down" : (button == "middle" ? "Middle Click Down" : "Left Click Down");
-                string up = button == "right" ? "Right Click Release" : (button == "middle" ? "Middle Click Release" : "Left Click Release");
-
-                /* Moved first and given a moment to land. Clicking at a position the pointer has not
-                   reached yet is how a click ends up on whatever was under the old position.
-                   The MOVE carries no modifier: a hover under Shift is not a thing anyone asks for, and
-                   holding it across the settle only widens the window in which it is held for the whole
-                   machine. */
-                Emit(At(x, y, "Mouse Movement"));
-                Thread.Sleep(40);
-                Emit(At(x, y, down, mods));
-                Thread.Sleep(30);
-                Emit(At(x, y, up));
-                if (twice)
-                {
-                    Thread.Sleep(60);
-                    /* The SECOND press needs it too. Emit lets go at a release, which is right for a
-                       gesture and means the second half of a double-click starts from nothing held. Miss
-                       this and a Shift-double-click is a Shift-click followed by a plain one - two
-                       different things, and the second would deselect what the first selected. */
-                    Emit(At(x, y, down, mods));
-                    Thread.Sleep(30);
-                    Emit(At(x, y, up));
-                }
-                return null;
+                return ClickAt(x, y, Get(a, "button", "left"), Get(a, "double", "0") == "1", AskedMods(a));
             }
 
             /* Named, and said in a way that distinguishes "no such action anywhere" from "not on this
@@ -3703,18 +3681,35 @@ namespace MouseFlow
          * person types "About" for a menu item called "About...". Ambiguity is REPORTED rather than resolved:
          * two controls with the same name is a fact the model needs, and picking one silently is how a click
          * lands on the wrong row. */
-        static string FindElement(Dictionary<string, string> a)
+        /* КОГО НАЗЫВАЮТ ЭТИМ ИМЕНЕМ - одним разрешением на всех, кто спрашивает.
+         *
+         * Вынесено из FindElement, когда появился clickname, и вынесено ЦЕЛИКОМ, а не переписано: «есть ли
+         * такое имя на окне» и «нажми по этому имени» не имеют права разойтись в том, что нашли. Ровно та
+         * же причина, по которой ScrollTo зовёт FindElement, а не повторяет его правило: два ответа на один
+         * вопрос расходятся молча, и расхождение видно только по клику не туда.
+         *
+         * Порядок тот же и он не случаен: точное имя одним серверным вызовом - это то, что передаст обратно
+         * модель, только что прочитавшая окно; потом регистронезависимая часть имени по тому же
+         * отфильтрованному списку, потому что человек пишет "About" про пункт меню "About...".
+         *
+         * НЕОДНОЗНАЧНОСТЬ ЗДЕСЬ НЕ РЕШАЕТСЯ. Список отдаётся целиком, и что с ним делать - дело
+         * вызывающего: find про два совпадения рассказывает, clickname отказывается нажимать. Выбрать
+         * первый молча - это клик по чужой строке, отчитавшийся успехом.
+         *
+         * Отсечка по Usable - ЗДЕСЬ, а не у каждого читателя: элемент шириной в пиксель нельзя ни описать,
+         * ни нажать, а посчитанный совпадением он превращает «нашёл одно» в «подходит два». */
+        static List<AutomationElement> NamedHits(Dictionary<string, string> a, string wanted,
+            out string problem)
         {
-            ReadGeometry(a);
-            string wanted = Get(a, "title", "").Trim();
-            if (wanted.Length == 0) return "find needs a name to look for";
-
             /* No window title here on purpose - see WindowToRead. `find` looks at whatever is in front, or
              * in the process it was given, and spends its one free-text field on the name. */
-            string problem;
             IntPtr hwnd;
             AutomationElement root = WindowToRead("", Get(a, "process", ""), out hwnd, out problem);
-            if (root == null) return problem == null ? "could not read that window" : problem;
+            if (root == null)
+            {
+                if (problem == null) problem = "could not read that window";
+                return null;
+            }
 
             AutomationElementCollection exact = Search(root, hwnd,
                 new AndCondition(new PropertyCondition(AutomationElement.NameProperty, wanted),
@@ -3729,7 +3724,11 @@ namespace MouseFlow
             if (hits.Count == 0)
             {
                 AutomationElementCollection all = Search(root, hwnd, NamedAndVisible(), 4000, out problem);
-                if (all == null) return problem == null ? "could not read that window" : problem;
+                if (all == null)
+                {
+                    if (problem == null) problem = "could not read that window";
+                    return null;
+                }
                 string low = wanted.ToLowerInvariant();
                 foreach (AutomationElement el in all)
                 {
@@ -3745,6 +3744,35 @@ namespace MouseFlow
                 }
             }
 
+            List<AutomationElement> usable = new List<AutomationElement>();
+            foreach (AutomationElement el in hits)
+            {
+                try
+                {
+                    System.Windows.Rect box = (System.Windows.Rect)el.GetCachedPropertyValue(
+                        AutomationElement.BoundingRectangleProperty);
+                    if (Usable(box)) usable.Add(el);
+                }
+                catch { }
+            }
+            /* Обнулено НАРОЧНО: Search мог оставить здесь жалобу на первый, точный проход, после которого
+             * второй прошёл успешно. Вернуть список И проблему значит дать вызывающему выбирать, что из
+             * этого правда. */
+            problem = null;
+            return usable;
+        }
+
+        /* Где на окне то, что называется этим именем - и ничего больше: find ТОЛЬКО СМОТРИТ. */
+        static string FindElement(Dictionary<string, string> a)
+        {
+            ReadGeometry(a);
+            string wanted = Get(a, "title", "").Trim();
+            if (wanted.Length == 0) return "find needs a name to look for";
+
+            string problem;
+            List<AutomationElement> hits = NamedHits(a, wanted, out problem);
+            if (hits == null) return problem == null ? "could not read that window" : problem;
+
             List<string> said = new List<string>();
             foreach (AutomationElement el in hits)
             {
@@ -3752,7 +3780,6 @@ namespace MouseFlow
                 {
                     System.Windows.Rect box = (System.Windows.Rect)el.GetCachedPropertyValue(
                         AutomationElement.BoundingRectangleProperty);
-                    if (!Usable(box)) continue;
                     int cx = ToShotX(box.X + box.Width / 2);
                     int cy = ToShotY(box.Y + box.Height / 2);
                     said.Add(Line(
@@ -3782,6 +3809,180 @@ namespace MouseFlow
             Say(said.Count.ToString(CultureInfo.InvariantCulture) + " things match \"" + Clip(wanted, 60)
                 + "\", so the name alone does not say which: " + string.Join("; ", said.ToArray())
                 + ". Pick by position, or use a longer name");
+            return null;
+        }
+
+        /* ЖЕСТ КЛИКА - ОДНОЙ РЕАЛИЗАЦИЕЙ, потому что нажимать умеют два вызывающих.
+         *
+         * Раньше это тело лежало внутри ветки `action == "click"`, и когда появился clickname, выбор был:
+         * скопировать двенадцать строк или вынести их. Копия разошлась бы - и разошлась бы именно в
+         * мелочах, которые тут все выстраданы: движение перед нажатием, пауза, чтобы оно долетело,
+         * модификатор на нажатии и НЕ на движении, и повторное нажатие с тем же модификатором у
+         * двойного клика. Разошедшуюся копию видно только по тому, что один из двух путей делает не тот
+         * жест, о котором отчитался. */
+        static string ClickAt(int x, int y, string button, bool twice, string mods)
+        {
+            string down = button == "right" ? "Right Click Down" : (button == "middle" ? "Middle Click Down" : "Left Click Down");
+            string up = button == "right" ? "Right Click Release" : (button == "middle" ? "Middle Click Release" : "Left Click Release");
+
+            /* Moved first and given a moment to land. Clicking at a position the pointer has not
+               reached yet is how a click ends up on whatever was under the old position.
+               The MOVE carries no modifier: a hover under Shift is not a thing anyone asks for, and
+               holding it across the settle only widens the window in which it is held for the whole
+               machine. */
+            Emit(At(x, y, "Mouse Movement"));
+            Thread.Sleep(40);
+            Emit(At(x, y, down, mods));
+            Thread.Sleep(30);
+            Emit(At(x, y, up));
+            if (twice)
+            {
+                Thread.Sleep(60);
+                /* The SECOND press needs it too. Emit lets go at a release, which is right for a
+                   gesture and means the second half of a double-click starts from nothing held. Miss
+                   this and a Shift-double-click is a Shift-click followed by a plain one - two
+                   different things, and the second would deselect what the first selected. */
+                Emit(At(x, y, down, mods));
+                Thread.Sleep(30);
+                Emit(At(x, y, up));
+            }
+            return null;
+        }
+
+        /* НАЖАТЬ ПО ИМЕНИ - один ход вместо двух, и это самая дорогая экономия во всём цикле.
+         *
+         * Модель, чтобы нажать кнопку, ходит дважды: find отвечает координатой, и ответ приезжает только со
+         * следующим снимком, потом click бьёт в эту координату. Ход стоит 5,035 мс медианой - измерено на
+         * девяноста днях прогонов, - а всё, что делает эта функция, около 30 мс. Тринадцать ходов в
+         * успешном прогоне, и треть из них на формах - это они.
+         *
+         * ЧЕМ ЭТО ОТЛИЧАЕТСЯ ОТ `name=` НА КЛИКЕ ПО КООРДИНАТЕ. Там имя - подсказка: точка ведущая, а имя
+         * лишь сдвигает прицел, если под точкой оказалось другое (см. Retarget). Здесь точки нет вовсе, и
+         * разница видна в отказе: клик с ненайденным name всё равно нажмёт, где сказано, а это
+         * НЕ НАЖМЁТ НИЧЕГО и скажет почему.
+         *
+         * И ТРИ ОТКАЗА ВМЕСТО НАЖАТИЯ, каждый - ради того, чтобы не отчитаться успехом о ненажатом:
+         * имени нет на окне; подходит несколько - тогда имя не говорит, какое из них, и выбрать за модель
+         * значит нажать по чужой строке; найденное выключено - нажатие по выключенному не делает ничего, а
+         * "done" про него это ложное зелёное, ровно то, чего этот код не делает нигде.
+         *
+         * Центр прямоугольника, а не TryGetClickablePoint: find говорит модели "click the centre", и две
+         * функции, разошедшиеся в том, ЧТО такое центр найденного, - это find, показавший одну точку, и
+         * clickname, нажавший другую. */
+        static string ClickNamed(Dictionary<string, string> a)
+        {
+            ReadGeometry(a);
+            string wanted = Get(a, "title", "").Trim();
+            if (wanted.Length == 0) return "clickname needs a name to click";
+
+            string problem;
+            List<AutomationElement> hits = NamedHits(a, wanted, out problem);
+            if (hits == null) return problem == null ? "could not read that window" : problem;
+
+            if (hits.Count == 0)
+            {
+                return "nothing on that window is called \"" + Clip(wanted, 60) + "\", so nothing was "
+                    + "clicked. Read the window to see what it does call things, or look at the screenshot - "
+                    + "it may not be there at all";
+            }
+
+            if (hits.Count > 1)
+            {
+                /* Перечислено, а не просто посчитано: модели нужно, ПО ЧЕМУ выбирать - по положению или по
+                 * более длинному имени, - и тот же список ей отдаёт find. Та же отсечка на шести. */
+                List<string> said = new List<string>();
+                foreach (AutomationElement el in hits)
+                {
+                    try
+                    {
+                        System.Windows.Rect box = (System.Windows.Rect)el.GetCachedPropertyValue(
+                            AutomationElement.BoundingRectangleProperty);
+                        said.Add(Line(
+                            (string)el.GetCachedPropertyValue(AutomationElement.LocalizedControlTypeProperty),
+                            (string)el.GetCachedPropertyValue(AutomationElement.NameProperty),
+                            box,
+                            (bool)el.GetCachedPropertyValue(AutomationElement.IsEnabledProperty),
+                            ValueOf(el), IsSecret(el))
+                            + ", centre " + ToShotX(box.X + box.Width / 2).ToString(CultureInfo.InvariantCulture)
+                            + "," + ToShotY(box.Y + box.Height / 2).ToString(CultureInfo.InvariantCulture));
+                        if (said.Count >= 6) break;
+                    }
+                    catch { }
+                }
+                /* НИ ОДНОГО НЕ УДАЛОСЬ ОПИСАТЬ - и тогда сказать «0 подходит» было бы неправдой о том,
+                 * что нашлось. Элементы прошли через NamedHits, то есть прямоугольник у них читался; если
+                 * второе чтение отказало, значит экран поехал под руками, и это ровно то, о чём и надо
+                 * сказать. Отсутствие описания - не отсутствие совпадений. */
+                if (said.Count == 0)
+                {
+                    return hits.Count.ToString(CultureInfo.InvariantCulture) + " things are called \""
+                        + Clip(wanted, 60) + "\" but none of them would say where it is - the screen moved "
+                        + "while it was being read. Nothing was clicked; look again";
+                }
+                return said.Count.ToString(CultureInfo.InvariantCulture) + " things match \""
+                    + Clip(wanted, 60) + "\", so the name alone does not say which to click and NOTHING was "
+                    + "clicked: " + string.Join("; ", said.ToArray())
+                    + ". Click one of those centres, or use a longer name";
+            }
+
+            AutomationElement one = hits[0];
+            System.Windows.Rect found;
+            string kind;
+            string name;
+            bool enabled;
+            try
+            {
+                found = (System.Windows.Rect)one.GetCachedPropertyValue(
+                    AutomationElement.BoundingRectangleProperty);
+                kind = (string)one.GetCachedPropertyValue(AutomationElement.LocalizedControlTypeProperty);
+                name = (string)one.GetCachedPropertyValue(AutomationElement.NameProperty);
+                enabled = (bool)one.GetCachedPropertyValue(AutomationElement.IsEnabledProperty);
+            }
+            catch (Exception e)
+            {
+                return "found \"" + Clip(wanted, 60) + "\" but could not read where it is: " + e.Message;
+            }
+
+            if (!enabled)
+            {
+                return (string.IsNullOrEmpty(kind) ? "what is called" : kind + " \"" + Clip(name, 60) + "\"")
+                    + " is DISABLED, so nothing was clicked - clicking it would have done nothing and "
+                    + "reported success. Something else has to happen first";
+            }
+
+            int cx = (int)Math.Round(found.X + found.Width / 2);
+            int cy = (int)Math.Round(found.Y + found.Height / 2);
+
+            /* ТА ЖЕ ПРОВЕРКА ГРАНИЦ, что у координатного пути, и по той же причине: Windows не отказывает
+             * в точке за краем стола, она ПРИЖИМАЕТ её к краю - то есть кривой прямоугольник от чужого
+             * провайдера стал бы кликом по углу экрана. Здесь это ещё менее ожидаемо, чем там: точку никто
+             * не называл. */
+            int vx = Native.GetSystemMetrics(Native.SM_XVIRTUALSCREEN);
+            int vy = Native.GetSystemMetrics(Native.SM_YVIRTUALSCREEN);
+            int vw = Native.GetSystemMetrics(Native.SM_CXVIRTUALSCREEN);
+            int vh = Native.GetSystemMetrics(Native.SM_CYVIRTUALSCREEN);
+            if (cx < vx || cy < vy || cx >= vx + vw || cy >= vy + vh)
+            {
+                return "\"" + Clip(wanted, 60) + "\" says it is at "
+                    + cx.ToString(CultureInfo.InvariantCulture) + ","
+                    + cy.ToString(CultureInfo.InvariantCulture)
+                    + ", which is off the screen, so nothing was clicked";
+            }
+
+            /* И НАШЕ СОБСТВЕННОЕ ОКНО - отказом, как на всяком другом пути. Имя ищется на окне впереди, а
+             * впереди вполне может стоять MouseFlow. */
+            string mine = Mine(Native.WindowFromPoint(new POINT { X = cx, Y = cy }));
+            if (mine != null) return mine;
+
+            string failed = ClickAt(cx, cy, Get(a, "button", "left"), Get(a, "double", "0") == "1",
+                AskedMods(a));
+            if (failed != null) return failed;
+
+            /* КУДА нажали - в пикселях снимка, теми же тремя числами наружу, какими они приехали внутрь.
+             * Модель после этого знает, где на экране оказалась цель, и следующий ход может целиться сам. */
+            Say("clicked " + (string.IsNullOrEmpty(kind) ? "" : kind + " ") + "\"" + Clip(name, 60)
+                + "\" at " + ToShotX(found.X + found.Width / 2).ToString(CultureInfo.InvariantCulture) + ","
+                + ToShotY(found.Y + found.Height / 2).ToString(CultureInfo.InvariantCulture));
             return null;
         }
 
@@ -5296,6 +5497,11 @@ namespace MouseFlow
                        reads "clicked the New mail button in OUTLOOK" or "clicked at 1030,1053". An
                        older agent omits the field, which is the answer. */
                     + ",\"canName\":true"
+                    /* Нажатие по имени, одним действием вместо двух ходов (0.28.0). Флагом, а не
+                     * версией, по той же причине, что у canName и canAnchor: мозг предлагает
+                     * инструмент только там, где он есть, а инструмент, которого агент не умеет,
+                     * стоит ровно того хода, который он должен был сэкономить. */
+                    + ",\"canClickName\":true"
                     /* Whether typing is recorded AS AN EVENT - that a key was pressed and when, never
                        which key. A recording from an older agent has no typing in it at all, so a
                        transcript cannot tell "did not type" from "was not recorded", and this is how it
@@ -6148,7 +6354,7 @@ namespace MouseFlow
 
            So it moved, and this end became the hands:
 
-               this  --POST ?worker=step { shot, windows, results }-->  the deployment decides
+               this  --POST ?worker=step { shot, windows, results, caps }-->  the deployment decides
                this  <-------------  { actions: [...] }  -------------
                      does them, takes a new picture, posts again
 
@@ -6199,6 +6405,18 @@ namespace MouseFlow
                 StringBuilder sb = new StringBuilder();
                 sb.Append("{\"id\":\"").Append(Agent.JsonText(id)).Append("\",\"shot\":").Append(shot)
                   .Append(",\"windows\":").Append(Agent.WindowsArray())
+                  /* ЧТО ЭТА МАШИНА УМЕЕТ - с КАЖДЫМ шагом, а не один раз при получении работы.
+                   *
+                   * Иначе никак: на этом пути облако не может спросить агента ни о чём - агент сам держит
+                   * запрос, а до его 127.0.0.1 оттуда не достаёт. Это то самое правило «машина
+                   * спрашивает, ничто не тянется внутрь».
+                   *
+                   * И каждый шаг, а не один раз, потому что дёшево и потому что верно: строка работы живёт
+                   * между шагами, а агент - нет, и объявление, сделанное при старте, пережило бы факт,
+                   * который описывает. Те же флаги и то же написание, что в /health: два места, называющие
+                   * одну возможность по-разному, - это возможность, о которой один из читателей не
+                   * узнает. */
+                  .Append(",\"caps\":{\"canClickName\":true}")
                   .Append(",\"results\":[").Append(results).Append("]}");
 
                 /* One retry, and only for the failures that pass.
@@ -6487,7 +6705,7 @@ namespace MouseFlow
                 /* What this agent is, at the moment of the recording - the only moment the answer exists.
                    The row the deployment writes stamps it, exactly as the app's own does. */
                 sb.Append(",\"health\":{\"version\":\"").Append(Agent.JsonText(Agent.Version))
-                  .Append("\",\"canName\":true,\"canKeys\":").Append(Agent.HookInstalled ? "true" : "false").Append("}");
+                  .Append("\",\"canName\":true,\"canClickName\":true,\"canKeys\":").Append(Agent.HookInstalled ? "true" : "false").Append("}");
             }
             sb.Append("}");
 

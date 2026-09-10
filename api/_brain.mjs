@@ -52,6 +52,7 @@ How to work:
 - For anything long, or anything with punctuation a keyboard layout might mangle, clipboard_write then Control+V beats type_text - and both can go in one turn.
 - NEVER TYPE THE SAME THING TWICE TO MAKE SURE. If you cannot tell whether text landed in a field, read the field back with read_window or find_element - both report what is in it. Typing it again is the one repair that can make things worse: the field may already hold it, and the second attempt appends. A measured run typed one file name four times, by three different mechanisms, and spent a minute of its budget on it.
 - A SAVE DIALOG OPENS WITH ITS NAME FIELD ALREADY FOCUSED AND SELECTED, on both platforms. After Control+S (Command+S on macOS) the next thing to do is type the name - not to click the field, not to open the File menu, and not to select-all first.
+- CLICK BY NAME WHENEVER THE THING HAS A NAME. click_named finds the control on the LIVE window and clicks it, so there is no coordinate to be approximate and no layout shift to miss by - and it does in ONE turn what find_element then click does in two, which is the difference between a run of eight steps and one of thirteen. Prefer it for a button, a menu item, a tab, a link, a labelled field. Keep click for a place with no name: a point in a canvas, a cell in a grid, somewhere in an image. It presses nothing and says why when the name is not there, when several things match it, or when what it found is disabled - so a refusal is information, not a lost turn. If click_named is not among your tools this computer's agent is too old for it; then find_element and click, as below.
 - COORDINATES FROM A PICTURE ARE A GUESS. The screenshot is scaled down, so a point read off it is approximate, and a layout that has shifted since makes it wrong. read_window lists what a window calls things and where they are, in the same pixels you click in; find_element answers where one named thing is. Both only LOOK, so either may be added after the aimed action in a turn - "click Help, then read the window" is one turn - but nothing can follow them, because their answer arrives with your next screenshot and until then there is nothing to aim with. When a click did not do what you expected, read the window rather than clicking again a few pixels over.
 - A wide table, a plan, a timeline or a board is reached SIDEWAYS: scroll with direction "left" or "right". A row of columns that runs off the edge of the screen is not reachable by scrolling down.
 - After opening or closing something, wait_for_window is sharper than waiting for the screen to settle: it names the thing it is waiting for, and says whether it happened.
@@ -132,6 +133,49 @@ export const TOOLS = [
         modifiers: MODIFIERS,
       },
       required: ['x', 'y'],
+      additionalProperties: false,
+    },
+  },
+  {
+    /* ОДНО ДЕЙСТВИЕ ВМЕСТО ДВУХ ХОДОВ - и это самая дорогая экономия во всём цикле.
+     *
+     * "Найди кнопку, потом нажми её" - это два хода, потому что click целится в КАРТИНКУ: сначала
+     * find_element отвечает координатой, и ответ его приезжает только со следующим снимком, потом click в
+     * эту координату бьёт. Ход стоит 5,035 мс медианой - измерено на девяноста днях прогонов, - а
+     * разрешение имени внутри агента около 30 мс. Значит цена не в том, что делает агент, а в том, сколько
+     * раз мы спрашиваем модель, и снятый ход это пять секунд из тринадцати таких же.
+     *
+     * ПОЧЕМУ ЭТО НЕ click С ИМЕНЕМ ВМЕСТО КООРДИНАТЫ. У click есть `label`, и это ПОДСКАЗКА: точка
+     * ведущая, имя лишь поправляет прицел, когда под точкой оказалось другое. Здесь наоборот - имя
+     * ведущее, точки нет вовсе, - и разница видна не в описании, а в ОТКАЗЕ: click с ненайденным label
+     * всё равно нажмёт по координате, а это действие не нажмёт НИЧЕГО и скажет почему. Инструмент, который
+     * иногда обещает одно, а иногда другое, приходится описывать словом «иногда», и модель читает его как
+     * «наверное».
+     *
+     * И ПОЧЕМУ ОТКАЗ, А НЕ ВЫБОР, когда подходит несколько. То же правило, что у find_element, и по той же
+     * причине: два контрола с одним именем - это факт, который модели нужен ДО нажатия, а молча выбранный
+     * первый - это клик по чужой строке, отчитавшийся успехом. Выключенный контрол тоже отказ: нажатие по
+     * нему не делает ничего, а «done» про него - это ложное зелёное. */
+    name: 'click_named',
+    description: 'Click something BY NAME, with no coordinate - ONE step where find_element then click is '
+      + 'two. The agent looks at the live window, finds the control and clicks its centre, so the aim '
+      + 'cannot be stale and the layout may have shifted since the screenshot. PREFER THIS TO click for '
+      + 'anything with a visible name: a button, a menu item, a tab, a link, a labelled field. Keep click '
+      + 'for a place on the picture that has no name - a point in a canvas, a cell in a grid, somewhere in '
+      + 'an image. Exact name first, then a case-insensitive part of a name. It clicks NOTHING and says why '
+      + 'when the name is not on the window, when SEVERAL things match - two controls with the same name is '
+      + 'something you need to know before clicking, not after - or when what it found is disabled. Says '
+      + 'where it clicked, in the pixels of the screenshot.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The name of the thing to click, as it appears on screen' },
+        process: { type: 'string', description: 'Narrow to a process instead of using the window in front' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'] },
+        double: { type: 'boolean' },
+        modifiers: MODIFIERS,
+      },
+      required: ['name'],
       additionalProperties: false,
     },
   },
@@ -579,8 +623,17 @@ export const TOOLS = [
  *
  * Копия описания, а не правка общего: TOOLS - модуль-константа, и дописать в неё строку значило бы, что
  * следующий прогон унаследует условие предыдущего. */
-export const toolsFor = (gated, success = null) => {
-  const list = gated ? TOOLS : TOOLS.filter((t) => t.name !== 'reached_checkpoint');
+export const toolsFor = (gated, success = null, caps = null) => {
+  const list = (gated ? TOOLS : TOOLS.filter((t) => t.name !== 'reached_checkpoint'))
+    /* ПО ФЛАГУ, А НЕ ПО ВЕРСИИ, и отсутствие флага - это ответ: «слишком старый, чтобы сказать», а не
+     * «нет». Инструмент, которого агент не умеет, стоит РОВНО ТОГО, что этот пункт снимает: модель зовёт
+     * его, агент отказывает, ход потрачен - пять секунд за то, чтобы узнать про свою же машину.
+     *
+     * Фильтром, а не веткой в TOOLS: TOOLS - модуль-константа, её читают оба драйвера и тесты, и агент с
+     * одними правами не должен уметь менять список, который увидит следующий. И порядок фильтр не трогает,
+     * а на порядке держится кеш: `finish` стоит в TOOLS последним, на нём метка cache_control, и
+     * выбрасывание элемента из середины оставляет его последним. См. payloadFor в api/_vision.mjs. */
+    .filter((t) => t.name !== 'click_named' || (caps && caps.canClickName === true));
   if (!success) return list;
   return list.map((tool) => (tool.name === 'finish'
     ? { ...tool, description: `${tool.description} The user said done looks like this: ${success}. `
@@ -638,6 +691,25 @@ export function actionBody(name, input, frame) {
     return `action=click x=${x()} y=${y()} button=${button} double=${input.double ? '1' : '0'}`
       + (mods ? ` mods=${mods}` : '')
       + (label ? ` name=${label.slice(0, 120)}` : '');
+  }
+  /* ЦЕЛЬ - ИМЯ, а не точка, поэтому здесь нет ни x, ни y и нечего переводить внутрь. Геометрия всё равно
+   * едет: агент отвечает тем, КУДА нажал, и отвечает в пикселях снимка - тем же обратным пересчётом, каким
+   * отвечают read, find, capture и scrollto. Разговор с двумя системами координат в нём - это неверный
+   * клик на любом масштабированном снимке.
+   *
+   * `title=` ПОСЛЕДНИМ, потому что оно забирает остаток строки: у провода одно поле, в котором могут быть
+   * пробелы, и find уже тратит его на имя - см. WindowToRead в агенте. Значит button, double и mods стоят
+   * ДО него, иначе они прочитаются как часть имени. Окно сужается process=, не заголовком. */
+  if (name === 'click_named') {
+    const wanted = String(input.name ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+    if (!wanted) return null;
+    const process = String(input.process ?? '').replace(/[\r\n\s]+/g, '').trim();
+    const button = input.button === 'right' || input.button === 'middle' ? input.button : 'left';
+    const mods = modsWire(input.modifiers);
+    return `action=clickname ${geometry()}${process ? ` process=${process}` : ''}`
+      + ` button=${button} double=${input.double ? '1' : '0'}`
+      + (mods ? ` mods=${mods}` : '')
+      + ` title=${wanted}`;
   }
   /* `move` - действие агента с 0.7.0; новым тут только то, что модель о нём наконец знает. Ничего в
    * агенте для этого менять не пришлось, поэтому волна едет деплоем. */

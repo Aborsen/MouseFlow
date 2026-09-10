@@ -1375,5 +1375,107 @@ const MISSING = 'nothing on that window is called "Saved". Read the window to se
   check('and the stillness counter was never touched by them', loop.still === 0, String(loop.still));
 }
 
+group('нажатие по имени - ход, снятый целиком, и только там, где машина его умеет');
+{
+  /* ПРОГНАНО, А НЕ ПРОЧИТАНО, и это здесь важнее обычного. Рычаг ломается ТИХО: если возможность не
+   * доехала до toolsFor, инструмент не предлагается, модель ходит как раньше, всё зелено - и обнаружится
+   * это только по счёту ходов через месяц. Значит надо проверить не форму кода, а то, что в запросе к
+   * модели инструмент действительно есть, и то, что на провод уходит clickname.
+   *
+   * Цена вопроса, измеренная: ход 5035 мс, шагов в успешном прогоне 13. "Найди кнопку, потом нажми" -
+   * два хода, потому что ответ find приезжает только со следующим снимком. */
+  const caps = { canClickName: true };
+
+  const ask = scripted([answer([
+    says('Saving it.'),
+    use('click_named', { name: 'Save as', process: 'excel' }),
+  ])]);
+  const out = await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask });
+
+  check('машина получает ровно одно дело', out.actions && out.actions.length === 1,
+    JSON.stringify(out.actions));
+  check('и это строка clickname, которую агенты уже понимают',
+    out.actions[0].body === 'action=clickname scale=0.5 ox=0 oy=0 process=excel button=left double=0'
+      + ' title=Save as',
+    out.actions[0].body);
+  /* НИ x, НИ y - в этом весь смысл: цель не точка на устаревшей картинке, а имя, которое агент разрешит
+   * живьём. Ход, который раньше уходил на find, не нужен. */
+  check('и в ней нет координат вовсе - целью было имя',
+    !/ x=| y=/.test(out.actions[0].body), out.actions[0].body);
+  check('инструмент был предложен модели, потому что машина сказала, что умеет',
+    JSON.stringify(ask.seen[0].tools).includes('click_named'));
+  check('шаг посчитан один раз', out.loop.stepNo === 1 && out.loop.turn === 1);
+  check('и записан в след под своим именем', out.loop.steps[0].tool === 'click_named',
+    String(out.loop.steps[0] && out.loop.steps[0].tool));
+
+  /* СТАРАЯ МАШИНА - и модель об инструменте даже не слышит. Отсутствие флага это ответ, а не false:
+   * предложить инструмент, которого нет, значит потратить ход на "unknown action" - ровно то, что рычаг
+   * убирает. */
+  const askOld = scripted([answer([use('find_element', { name: 'Save as' })])]);
+  await advance({ loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask: askOld });
+  check('без возможностей инструмент не предлагается вовсе',
+    !JSON.stringify(askOld.seen[0].tools).includes('click_named'));
+
+  /* И ФЛАГ false - тоже нет. Агент, который сказал «не умею», отличается от агента, который промолчал,
+   * только тем, что про первого мы знаем точно; предлагать нельзя ни там, ни там. */
+  const askNo = scripted([answer([use('find_element', { name: 'Save as' })])]);
+  await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [], ask: askNo,
+    caps: { canClickName: false },
+  });
+  check('и с флагом false - тоже не предлагается',
+    !JSON.stringify(askNo.seen[0].tools).includes('click_named'));
+
+  /* ПОСЛЕ НЕГО - НАБОР, В ОДНОМ ХОДУ. Это второй половина выигрыша: click_named ведёт себя как click,
+   * значит «нажми по имени, напечатай, нажми Enter» - один ход. Раньше на то же уходило два: ход на find
+   * и ход на всё остальное. */
+  const askBatch = scripted([answer([
+    use('click_named', { name: 'Search' }, 'tname'),
+    use('type_text', { text: 'quarterly report' }, 'ttype'),
+    use('press_key', { key: 'Enter' }, 'tkey'),
+  ])]);
+  const batch = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask: askBatch,
+  });
+  check('нажатие по имени, набор и Enter - ОДИН ход, три действия',
+    batch.actions.length === 3, JSON.stringify(batch.actions.map((a) => a.body)));
+  check('и первым идёт именно clickname',
+    batch.actions[0].body.startsWith('action=clickname '), batch.actions[0].body);
+
+  /* А ВТОРЫМ ПРИЦЕЛЬНЫМ - НЕТ, и правило пачки для этого не менялось: click_named стоит в нём ровно там,
+   * где click. Это осознанное решение - см. QA-ROADMAP §6: разрешить ему идти вторым это отдельный
+   * выигрыш и отдельный риск, и пункт просил не менять закрепления корректности. */
+  const askTwo = scripted([answer([
+    use('click', { x: 10, y: 20 }, 'tc1'),
+    use('click_named', { name: 'Save' }, 'tc2'),
+  ])]);
+  const two = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask: askTwo,
+  });
+  check('второе прицельное действие в том же ходу по-прежнему не выполняется',
+    two.actions.length === 1, JSON.stringify(two.actions.map((a) => a.body)));
+
+  /* И ОТКАЗ АГЕНТА - ЭТО ОТВЕТ, А НЕ ПОТЕРЯННЫЙ ХОД: агент говорит, почему не нажал, и модель читает это
+   * как результат шага. Проверяется, что текст доезжает до неё целиком. */
+  const askBack = scripted([
+    answer([use('click_named', { name: 'Save' }, 'tone')]),
+    answer([use('finish', { ok: false, said: 'Two things are called Save.' })]),
+  ]);
+  const one = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask: askBack,
+  });
+  const back = await advance({
+    loop: one.loop, shot: SHOT, windows: WINDOWS, caps, ask: askBack,
+    results: [{
+      id: one.actions[0].id,
+      isError: true,
+      output: '2 things match "Save", so the name alone does not say which to click and NOTHING was clicked',
+    }],
+  });
+  check('отказ агента приезжает модели дословно',
+    JSON.stringify(askBack.seen[1].messages).includes('NOTHING was clicked'));
+  check('и прогон не считает его успехом', back.done && back.done.ok === false);
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
