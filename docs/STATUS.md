@@ -23,9 +23,19 @@ checks, 21 executable suites.
 Two repositories, both on `D:` by convention:
 
 ```bash
-git clone https://github.com/Aborsen/Mouse.git         # the app  → poc/mouse-flow
+git clone https://github.com/Aborsen/MouseFlow.git     # the app  → poc/mouse-flow
 git clone https://github.com/Aborsen/MouseLanding.git  # the site → D:/MouseLanding
 ```
+
+**The app repo was renamed `Mouse` → `MouseFlow` at some point, and this checkout's remote still says the
+old name.** It works only because GitHub 301-redirects a renamed repository; `git remote -v` on the machine
+this was written from still prints `Aborsen/Mouse.git`, and so did the push output that produced the wrong
+URL in the first draft of this file. Use `MouseFlow`. If you keep an old checkout,
+`git remote set-url origin https://github.com/Aborsen/MouseFlow.git` stops it depending on a redirect.
+
+**`MouseLanding` is private**, so cloning it needs credentials — a GitHub login in the credential manager,
+or `gh auth login`. The app repo is public. (An unauthenticated API request for `MouseLanding` answers 404,
+which is what a private repository looks like from outside; the repo is there.)
 
 The site's working branch is **`codex/mouseflow-landing`**, not `main`. Then `npm install` in the app root,
 in `web/`, and in the site.

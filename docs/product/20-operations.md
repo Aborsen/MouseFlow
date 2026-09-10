@@ -350,9 +350,9 @@ documents say where things stand per platform, and **the commit messages say why
 is** rather than what changed — `git log` on this repository reads as an account of the reasoning.
 
 ```bash
-git clone https://github.com/Aborsen/Mouse.git
-cd Mouse
-npm --prefix web install
+git clone https://github.com/Aborsen/MouseFlow.git
+cd MouseFlow
+npm install && npm --prefix web install
 ```
 
 That approach has been tested in the strongest way available: the Windows tray icon was written on a Mac,

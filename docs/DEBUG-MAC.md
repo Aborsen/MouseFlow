@@ -51,9 +51,9 @@ the contract both agents implement, and the commit messages say why each decisio
 than what changed.
 
 ```bash
-git clone https://github.com/Aborsen/Mouse.git
-cd Mouse
-npm --prefix web install
+git clone https://github.com/Aborsen/MouseFlow.git
+cd MouseFlow
+npm install && npm --prefix web install
 ```
 
 Then start a session in that directory and give it this as the first message:
