@@ -769,7 +769,10 @@ Carried over from the project's own notes, and still current:
   half works with any agent). Both doors out of a recording were captured inside it, and the tray one was
   self-reproducing: the replay's last act was to press **Stop and Save Recording** again, which started a
   new recording. The agent cuts at the moment its own menu opened; the app cuts a trailing press on a
-  window carrying its own title. **What this costs, precisely:** a recording whose genuine last action was
+  window carrying its own title. **Why it takes two halves and not one:** a click on the tray icon carries no
+  window title at all — measured on the real recording — so the app-side rule cannot see that door even in
+  principle, and an agent older than 0.26.0 still writes its tray stop into the recording.
+  **What this costs, precisely:** a recording whose genuine last action was
   a click *in MouseFlow itself* loses that click — recording work on MouseFlow is rare, and a recording
   that presses Stop on replay is broken always. And the app half recognises our window **by title**, so a
   page in another browser window whose own title contains "MouseFlow" — the docs site, for instance —

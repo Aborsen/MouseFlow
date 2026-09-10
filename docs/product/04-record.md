@@ -58,11 +58,17 @@ The trim is split, because each half is the only one who can see its own door:
   (`dropOwnTail` in `api/_macro.mjs`). It knows its *title*; the agent cannot tell our window from any
   other. This half works with any agent.
 
-The rule is deliberately minimal: trailing movements, then **one** press-and-release, then the movements
-that led to it. Not "every click of ours at the end" — somebody may have been reading something in the app
-before they stopped — and never a click on somebody else's window, so a recording's real last action stays
-where it is. Not a clock either: "the last two seconds" would eat a real click after a slow stop and keep
-ours after a slow hand. A recording that consisted only of pressing Stop now correctly says **"Nothing was
+The rule is deliberately minimal, and **it finds the stop press or removes nothing**: from the end, skip
+any jitter, require a press-and-release, require that press to be on a window carrying our title — and only
+then take the pair *and* the pointer's travel to it. The first version stripped the trailing movement
+unconditionally, and a real recording showed why that is wrong: one stopped from a chat, where nobody
+pressed anything, would have lost twelve of its twenty-seven events. Movement comes off as the *road to a
+button that was found*, never on its own.
+
+Nor is it "every click of ours at the end" — somebody may have been reading something in the app before
+they stopped — and never a click on somebody else's window, so a recording's real last action stays where
+it is. Not a clock either: "the last two seconds" would eat a real click after a slow stop and keep ours
+after a slow hand. A recording that consisted only of pressing Stop now correctly says **"Nothing was
 captured."** — and "nothing" is decided by whether anything can be *played*, not by the length of the
 list: a real recording came back holding one `Focus` event, which is a note about a window change that
 the agent itself counts as unplayable, and a length check saved it to the account as a recording, and what this costs is written down in

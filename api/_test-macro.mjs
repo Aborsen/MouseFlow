@@ -86,6 +86,32 @@ group('ЗАПИСЬ ИЗ ОДНОГО «СТОП» - ЭТО ПУСТАЯ ЗАП�
   check('не осталось ничего', out.length === 0, JSON.stringify(out));
 }
 
+group('НЕ НАШЛИ ОСТАНОВКУ - НЕ ТРОГАЕМ НИЧЕГО, даже хвост движений');
+{
+  /* НАЙДЕНО НА ЖИВОЙ ЗАПИСИ (rnbf8qji9): запись остановили из чата, кнопку никто не нажимал - а первая
+   * версия правила сняла бы двенадцать движений из двадцати семи. Движения снимаются только как ДОРОГА к
+   * найденной кнопке; не найдя кнопки, снимать их не за что. */
+  const events = [...clickIn('Gmail — Google Chrome'), move(600, 700), move(900, 900)];
+  const out = dropOwnTail(events, OWN);
+  check('хвост движений без нашего нажатия остаётся', out.dropped === 0 && out.events.length === 4,
+    String(out.dropped));
+  check('и список отдан тем же, а не пересобранным', out.events === events || out.events.length === 4);
+
+  /* А С НАШИМ НАЖАТИЕМ - снимается и оно, и дорога к нему. */
+  const withStop = [...clickIn('Gmail — Google Chrome'), move(600, 700), move(900, 900),
+    ...clickIn('MouseFlow — Google Chrome', 960, 940)];
+  const cut = dropOwnTail(withStop, OWN);
+  check('а вместе с ним уходит и дорога', cut.dropped === 4 && cut.events.length === 2,
+    String(cut.dropped));
+
+  /* И ДРОЖАНИЕ ПОСЛЕ НАЖАТИЯ не мешает найти пару: мышь дёргается на кнопке, это норма. */
+  const shaky = [...clickIn('Gmail — Google Chrome'), move(900, 900),
+    ...clickIn('MouseFlow — Google Chrome', 960, 940), move(961, 941)];
+  const out3 = dropOwnTail(shaky, OWN);
+  check('дрожание после нажатия правило не сбивает', out3.dropped === 4 && out3.events.length === 2,
+    String(out3.dropped));
+}
+
 group('НЕТ ЗАГОЛОВКА - НЕТ ПРАВИЛА: запись остаётся как записана');
 {
   const events = [...clickIn('MouseFlow — Google Chrome')];

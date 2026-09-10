@@ -2416,8 +2416,16 @@ group('чем запись остановили - в запись не попа�
   const macro = read('api/_macro.mjs');
   check('правило живёт в одном месте и снимает одно нажатие, а не все свои с конца',
     /export function dropOwnTail\(events, ownTitle\)/.test(macro)
-      && /if \(list[.]length >= 2 && up\(list\[list[.]length - 1\]\)/.test(macro)
-      && !/while \(list[.]length >= 2 && up\(/.test(macro));
+      && /if \(end < 2 \|\| !up\(list\[end - 1\]\) \|\| !down\(list\[end - 2\]\) \|\| !ours\(list\[end - 2\]\)\)/
+        .test(macro)
+      /* Цикла по нашим нажатиям здесь нет и быть не должно: остановка - это ОДНО нажатие. */
+      && !/while \(.*up\(list\[end - 1\]\)/.test(macro));
+  /* И ДВИЖЕНИЯ СНИМАЮТСЯ ТОЛЬКО КАК ДОРОГА К НАЙДЕННОЙ КНОПКЕ. Первая версия снимала их безусловно, и
+   * это видно на живой записи: остановку из чата - где никто ничего не нажимал - правило укоротило бы
+   * на двенадцать событий из двадцати семи. Отказ стоит ДО реза, и порядок здесь и есть смысл. */
+  check('и не найдя остановки, не режет вообще ничего',
+    macro.indexOf('return { events: list, dropped: 0 };\n  }') > 0
+      && macro.indexOf('end -= 2;') > macro.indexOf('return { events: list, dropped: 0 };\n  }'));
   check('и прокрутку с конца не снимает - она действие, а не дорога',
     /const move = \(event\) => said\(event\) === .Mouse Movement.;/.test(macro));
 }
