@@ -787,6 +787,14 @@ Carried over from the project's own notes, and still current:
   bringing it to the front is how the next action lands in it — and **three windows of one application**
   with changed titles are still not matched, deliberately. Both end as an honest "nothing was raised"
   rather than a click somewhere else. See [04 — Record](04-record.md).
+- **A taskbar click replays as "show that window", and a replay releases only what it held — done in
+  September 2026** (agent 0.27.0). Both from one run: the recorded taskbar click toggled the window the
+  page had just raised, and the finish's unconditional right-button release opened a context menu at the
+  cursor. What remains: the translation needs the `Focus` note the agent writes after a foreground change, so
+  a taskbar click that did **not** change the foreground window — a button for a window already in front —
+  still plays as a click and still toggles; and a window whose *title* is not unique (two terminals both
+  called "Windows PowerShell") is raised by the first match. The Dock on macOS does not toggle, so it needs
+  nothing. See [10 — Agent protocol](10-agent-protocol.md).
 - **Agent authentication.** One seam, one scheme.
 - **Text for the steps that need it**, if it can be done safely. Keystroke *timing* is captured; the content
   is not, and adding it needs a redaction design rather than a hook. The alternative already works: a created

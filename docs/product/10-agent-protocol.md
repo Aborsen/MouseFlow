@@ -35,7 +35,7 @@ slow answer is worse than a refusal**.
 | POST | `/record/drain` | 15 s | **text/plain**, what has piled up; **the recording continues**. 409 when nothing is recording |
 | POST | `/record/stop` | 15 s | **text/plain**, one event per line (`.mmmacro`) |
 | POST | `/replay` | 5 s | `{ ok }` — starts a replay and returns immediately |
-| GET | `/replay/status` | 2.5 s | `{ playing, step, steps, pass, passes, flowPass, flowPasses, index, total, unplayable, retargeted }` |
+| GET | `/replay/status` | 2.5 s | `{ playing, step, steps, pass, passes, flowPass, flowPasses, index, total, unplayable, retargeted, switched }` |
 | POST | `/replay/abort` | 4 s | `{ ok }` |
 | POST | `/account` | 5 s | `{ ok, linked: true, taking }` — body `token=mf_… base=https://…`, and optionally `taking=0` |
 | DELETE | `/account` | 5 s | `{ ok, linked: false }` |
@@ -371,6 +371,15 @@ Two rules make it safe:
 
 - **Aim only on the PRESS**, and let the release follow wherever the press went. Releasing at the recorded
   coordinate after pressing somewhere else turns one click into a drag across the window.
+- **A taskbar click is "show that window", not a coordinate** (0.27.0). The button toggles — it minimises a
+  window that is already in front — so a recorded "raise" replayed after the page had raised that window
+  minimised it, and everything after landed underneath. The agent recognises the taskbar by window class
+  (`Shell_TrayWnd`), reads the window from the `Focus` line the recording wrote right after the press, and calls
+  `Activate` by title only; the release is skipped; anything that does not line up plays as recorded. Counted
+  as `switched`, separately from `retargeted`: there the press was moved, here it was replaced.
+- **The finish releases what the replay held, not all three buttons** (0.27.0). A bare right-button-up opens
+  a context menu on Windows — `WM_RBUTTONUP` becomes `WM_CONTEXTMENU` with no press — so every replay used to
+  end with the browser's menu open at the cursor. macOS had always released only what it held.
 - **Count the corrections** and report them as `retargeted`. A replay that quietly moved where it clicked is
   a replay whose report cannot be trusted.
 

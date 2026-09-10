@@ -301,6 +301,22 @@ Pressing Play on a row:
    Both numbers have been on the wire since agent 0.12.0 and no screen read them, so a replay that had to
    re-aim half its clicks looked exactly like one where everything landed.
 
+   A third number arrived with agent 0.27.0, and it names the one place where a replay deliberately does
+   **not** do what was recorded: `switched` — *"2 taskbar clicks were played as 'show that window'
+   instead."* A taskbar button toggles: it raises a window that is behind and *minimises* one that is in
+   front. A recording that starts by clicking the terminal's taskbar button records a "raise"; replayed
+   after step 1 has already raised the terminal, the same click minimised it, and the six clicks that
+   followed landed on whatever was underneath — reported from a run, with the button position matching to
+   the pixel. So the agent recognises the taskbar under the press by window class, reads which window that
+   press brought forward from the `Focus` note the recording wrote right after it, and calls the same
+   idempotent activate the chat tools use, by title only. Anything that does not line up plays as recorded.
+
+   The same run showed a second thing, on the screenshot rather than in the recording: every replay ended
+   with the browser's context menu open at the cursor's final position. The recording held no right click.
+   The agent's finish was releasing **all three** mouse buttons "to be safe", and Windows opens a context
+   menu on the *release* of the right button, press or no press. It now releases what the replay actually
+   held — which the macOS agent had done all along.
+
    That is the second level, and it is the agent's: the page gets the point into the right window, the agent
    walks it to the right control. Aiming by name was there before the anchor and could not work on its own —
    it starts from the recorded point, and after the window moved that point is in a different window, where

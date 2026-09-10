@@ -345,6 +345,10 @@ namespace MouseFlow
         [DllImport("user32.dll")]
         public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
         public const uint GA_ROOT = 2;
+        /* Класс окна. Нужен ровно одному месту - узнать панель задач под нажатием (Shell_TrayWnd), не
+         * разбирая подписей кнопок, которые зависят от языка системы. */
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern int GetClassName(IntPtr hWnd, StringBuilder buffer, int max);
         [DllImport("user32.dll")]
         public static extern bool SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")]
@@ -514,7 +518,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.26.0";
+        public const string Version = "0.27.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -596,6 +600,12 @@ namespace MouseFlow
         /* How many presses were aimed somewhere other than the recorded point. Reported, because a replay
          * that quietly moved where it clicked is a replay whose report cannot be trusted. */
         static int _retargeted;
+        /* Сколько нажатий по панели задач сыграно как «показать окно», а не как клик. Отдельно от
+         * retargeted: там нажатие сдвинули, здесь - заменили другим действием, и отчёт обязан это различать. */
+        static int _switched;
+        /* Какие кнопки мыши ДЕРЖИТ ПОВТОР - биты MOUSEEVENTF_*DOWN. Нужно ровно одному месту: финишу, который
+         * отпускает то, что держал, а не все три кнопки подряд. См. ReleaseHeldButtons. */
+        static uint _heldByReplay;
         static int _stepIdx, _stepCount, _pass, _passes, _evIdx, _evCount;
         static int _flowPass, _flowPasses;
 
@@ -2102,6 +2112,9 @@ namespace MouseFlow
                        this a replay of a recording that was half typing reports a clean run. */
                     + ",\"unplayable\":" + _unplayable.ToString(CultureInfo.InvariantCulture)
                     + ",\"retargeted\":" + _retargeted.ToString(CultureInfo.InvariantCulture)
+                    /* Нажатия по панели задач, сыгранные как «показать окно». Читается страницей рядом с
+                       retargeted - см. TaskbarSwitch. */
+                    + ",\"switched\":" + _switched.ToString(CultureInfo.InvariantCulture)
                     + "}";
             }
         }
@@ -2131,6 +2144,8 @@ namespace MouseFlow
                 _abort = false;
                 _unplayable = 0;
                 _retargeted = 0;
+                _switched = 0;
+                _heldByReplay = 0;
                 _stepIdx = 0;
                 _stepCount = flow.Steps.Count;
                 _pass = 0;
@@ -2185,12 +2200,24 @@ namespace MouseFlow
                                     _evIdx = 0;
                                 }
 
+                                /* Индекс отпускания, которое не играть: его нажатие сыграно как «показать
+                                 * окно», и отпускание без нажатия само по себе - событие (см. финиш). */
+                                int skipRelease = -1;
                                 for (int i = 0; i < st.Events.Count; i++)
                                 {
                                     if (ShouldStop()) { Finish(true); return; }
                                     Ev e = st.Events[i];
                                     if (!SleepAbortable((int)Math.Round(e.DelayMs / st.Speed))) { Finish(true); return; }
-                                    Emit(e);
+                                    if (i == skipRelease)
+                                    {
+                                        skipRelease = -1;
+                                    }
+                                    else
+                                    {
+                                        int pair = TaskbarSwitch(st.Events, i);
+                                        if (pair >= 0) skipRelease = pair;
+                                        else Emit(e);
+                                    }
                                     lock (Gate) { _evIdx = i + 1; }
                                 }
 
@@ -2211,7 +2238,7 @@ namespace MouseFlow
             {
                 /* Unconditionally, not only on abort: a flow whose last event is a button-down used to
                  * leave the mouse held down over the desktop, and everything after it dragged. */
-                ReleaseAllButtons();
+                ReleaseHeldButtons();
                 /* And the same argument for a modifier, which is worse: a button left down is visible and
                  * one click fixes it, while a Shift left down is invisible and silently changes every
                  * keystroke and click the person makes next. Reached whenever a modified drag is cut short
@@ -2306,7 +2333,7 @@ namespace MouseFlow
          * Command turned the next typing into Command+Z.
          *
          * So: pressed at a button-down, released at its pair, and released again unconditionally in
-         * Finish() - next to ReleaseAllButtons, for exactly the reason its comment gives about a flow
+         * Finish() - next to ReleaseHeldButtons, for exactly the reason its comment gives about a flow
          * whose last event is a button-down. A recording that was cut off between a press and its release
          * is not hypothetical; that is what a part boundary in a long session can look like.
          *
@@ -2478,6 +2505,16 @@ namespace MouseFlow
             inputs[0].mi.time = 0;
             inputs[0].mi.dwExtraInfo = IntPtr.Zero;
             Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT))), 1);
+
+            /* Что держим - для финиша, который отпускает ровно это. См. ReleaseHeldButtons. */
+            lock (Gate)
+            {
+                uint downBits = flags & (Native.MOUSEEVENTF_LEFTDOWN | Native.MOUSEEVENTF_RIGHTDOWN | Native.MOUSEEVENTF_MIDDLEDOWN);
+                _heldByReplay |= downBits;
+                if ((flags & Native.MOUSEEVENTF_LEFTUP) != 0) _heldByReplay &= ~Native.MOUSEEVENTF_LEFTDOWN;
+                if ((flags & Native.MOUSEEVENTF_RIGHTUP) != 0) _heldByReplay &= ~Native.MOUSEEVENTF_RIGHTDOWN;
+                if ((flags & Native.MOUSEEVENTF_MIDDLEUP) != 0) _heldByReplay &= ~Native.MOUSEEVENTF_MIDDLEDOWN;
+            }
 
             /* A press KEEPS them - through the movements of a drag and until its release, which is why
              * this is not a symmetric hold/release around one event. The release event itself carries no
@@ -4744,11 +4781,28 @@ namespace MouseFlow
             }
         }
 
-        static void ReleaseAllButtons()
+        /* ОТПУСКАЕТСЯ ТО, ЧТО ДЕРЖАЛИ, - НЕ ВСЕ ТРИ КНОПКИ.
+         *
+         * Сообщено с прогона, и на снимке это было видно буквально: в конце КАЖДОГО повтора на последней
+         * позиции курсора открывалось контекстное меню браузера. Запись была чистой - ни одного правого
+         * клика, - а меню открывал сам финиш: он слал RIGHTUP безусловно, «на всякий случай», а Windows
+         * открывает контекстное меню именно на ОТПУСКАНИИ правой кнопки (DefWindowProc делает из
+         * WM_RBUTTONUP WM_CONTEXTMENU, нажатия для этого не нужно). Отпускание кнопки, которую никто не
+         * нажимал, - это не уборка, это ещё одно действие.
+         *
+         * Поэтому ведётся счёт: Emit отмечает каждую кнопку, которую нажал, и снимает отметку на её
+         * отпускании, а финиш отпускает ровно отмеченные. macOS делает то же самое (`holding = down`),
+         * и это тот случай, где Windows стоило сравнить с ней раньше. */
+        static void ReleaseHeldButtons()
         {
+            uint held;
+            lock (Gate) { held = _heldByReplay; _heldByReplay = 0; }
+            if (held == 0) return;
+            uint[] downs = new uint[] { Native.MOUSEEVENTF_LEFTDOWN, Native.MOUSEEVENTF_RIGHTDOWN, Native.MOUSEEVENTF_MIDDLEDOWN };
             uint[] ups = new uint[] { Native.MOUSEEVENTF_LEFTUP, Native.MOUSEEVENTF_RIGHTUP, Native.MOUSEEVENTF_MIDDLEUP };
             for (int i = 0; i < ups.Length; i++)
             {
+                if ((held & downs[i]) == 0) continue;
                 INPUT[] inputs = new INPUT[1];
                 inputs[0].type = Native.INPUT_MOUSE;
                 inputs[0].mi.dwFlags = ups[i];
@@ -4756,6 +4810,67 @@ namespace MouseFlow
                 // exceptions - even on a cleanup path where nobody reads the answer.
                 Injected(Native.SendInput(1, inputs, Marshal.SizeOf(typeof(INPUT))), 1);
             }
+        }
+
+        /* КЛИК ПО ПАНЕЛИ ЗАДАЧ - ЭТО «ПОКАЗАТЬ ОКНО», А НЕ КООРДИНАТА.
+         *
+         * Сообщено с прогона: запись начиналась кликом по кнопке терминала на панели задач, повтор его
+         * воспроизвёл - и терминал СВЕРНУЛСЯ. Координата была верной до пикселя; неверной была семантика.
+         * Кнопка панели задач ПЕРЕКЛЮЧАЕТ: окно позади - поднять, окно впереди - свернуть. Страница перед
+         * повтором уже подняла то окно, в котором записаны клики, так что записанный «поднять» сыграл как
+         * «свернуть», и шесть следующих кликов ушли в то, что оказалось под ним.
+         *
+         * То же действие, но идемпотентное, у агента уже есть: Activate. Чем его звать - говорит САМА
+         * ЗАПИСЬ: сразу за таким нажатием стоит пометка Focus с окном, которое это нажатие вывело вперёд.
+         * Никакого разбора подписей («Terminal - 1 running window» - это текст на языке системы): панель
+         * узнаётся по классу окна под точкой, окно - по пометке.
+         *
+         * ТОЛЬКО ПО ЗАГОЛОВКУ, не по процессу: WindowMatching берёт первое окно, у которого совпал ИЛИ
+         * заголовок, ИЛИ процесс, и с process=chrome первым попадётся любое окно Chrome - то есть снова
+         * MouseFlow. Своё окно не поднимается, как и в /do. Не сошлось хоть что-то - нажатие играется как
+         * записано: клик по кнопке, которую не удалось понять, всё ещё лучше, чем не сделать ничего.
+         *
+         * Возвращает индекс ОТПУСКАНИЯ, которое теперь не играть, или -1, если нажатие обычное. */
+        static int TaskbarSwitch(List<Ev> events, int i)
+        {
+            Ev e = events[i];
+            if (e == null || e.Action != "Left Click Down") return -1;
+            if (!OnTaskbar(e.X, e.Y)) return -1;
+
+            int release = -1;
+            Ev focus = null;
+            /* Недалеко: пометка стоит через отпускание и несколько движений. Следующее нажатие - граница:
+             * пометка за ним говорит уже про него. */
+            for (int k = i + 1; k < events.Count && k <= i + 24; k++)
+            {
+                Ev n = events[k];
+                if (n == null) continue;
+                if (release < 0 && (n.Action == "Left Click Release" || n.Action == "Left Click Up")) { release = k; continue; }
+                if (n.Action == "Focus" && !string.IsNullOrEmpty(n.Window)) { focus = n; break; }
+                if (IsPress(n.Action)) break;
+            }
+            if (release < 0 || focus == null) return -1;
+
+            IntPtr wanted = WindowMatching(focus.Window, "");
+            if (wanted == IntPtr.Zero) return -1;
+            if (Mine(wanted) != null) return -1;
+            if (Activate(focus.Window, "") != null) return -1;
+            lock (Gate) { _switched++; }
+            return release;
+        }
+
+        /* Панель задач под точкой - по классу верхнего окна, Shell_TrayWnd (и Shell_SecondaryTrayWnd на
+         * втором мониторе). Класс, а не подпись: подпись зависит от языка системы, класс - нет. */
+        static bool OnTaskbar(int x, int y)
+        {
+            IntPtr under = Native.WindowFromPoint(new POINT { X = x, Y = y });
+            if (under == IntPtr.Zero) return false;
+            IntPtr top = Native.GetAncestor(under, Native.GA_ROOT);
+            if (top == IntPtr.Zero) top = under;
+            StringBuilder sb = new StringBuilder(64);
+            if (Native.GetClassName(top, sb, sb.Capacity) == 0) return false;
+            string cls = sb.ToString();
+            return cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd";
         }
 
         // ---------- flow body parsing ----------

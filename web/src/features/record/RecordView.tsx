@@ -783,8 +783,12 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
            * точно так же, как повтор, где всё село на место. */
           const aimed = Number(status.retargeted) || 0;
           const skipped = Number(status.unplayable) || 0;
+          /* И СКОЛЬКО КЛИКОВ ПО ПАНЕЛИ ЗАДАЧ СЫГРАНО КАК «ПОКАЗАТЬ ОКНО» (агент 0.27.0). Названо отдельно,
+           * потому что это единственное место, где повтор сделал НЕ ТО, что записано, - намеренно. */
+          const switched = Number(status.switched) || 0;
           setNote(`Finished "${playing}".`
             + (aimed ? ` The machine aimed ${aimed} click${aimed === 1 ? '' : 's'} at ${aimed === 1 ? 'its control' : 'their controls'} by name.` : '')
+            + (switched ? ` ${switched} taskbar click${switched === 1 ? '' : 's'} ${switched === 1 ? 'was' : 'were'} played as "show that window" instead.` : '')
             + (skipped ? ` ${skipped} event${skipped === 1 ? '' : 's'} could not be played back.` : ''));
         }
       } catch (_) {

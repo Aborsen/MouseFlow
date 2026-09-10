@@ -662,7 +662,27 @@ keeps its neighbours exactly there, which is the case that fails.
 
 Two rules make it safe. Aim only on the PRESS, and let the release follow wherever the press went - releasing
 at the recorded coordinate after pressing somewhere else turns one click into a drag across the window. And
-count the corrections, reporting them as `retargeted` on `/replay/status`: a replay that quietly moved where
+count the corrections, reporting them as `retargeted` on `/replay/status` — and, since 0.27.0, `switched`:
+how many presses on the taskbar were played as **show that window** rather than as a click. A taskbar button
+toggles — it raises a window that is behind and *minimises* one that is in front — so a recorded "raise"
+replayed on a window the client has already raised minimised it, and every click after that landed on
+whatever was underneath. The agent recognises the taskbar by the class of the top-level window under the
+press (`Shell_TrayWnd`, `Shell_SecondaryTrayWnd` — a class, not a button caption, which depends on the system
+language), reads which window the press brought forward from the `Focus` line the recording itself wrote right
+after it, and calls the same idempotent `Activate` the `/do` route uses — **by title only**, never by process,
+because matching by process would hand back the first window of that process, which in a browser is as
+likely to be MouseFlow as the one wanted. Its own console is refused exactly as in `/do`. Anything that does
+not line up — no `Focus`, no such window, a refusal — plays the press as recorded; the release of a press that
+was switched is skipped, because a release with no press is an event in its own right (below). On macOS a Dock
+click of the frontmost application does not minimise it, so the Dock needs no translation.
+
+**A replay ends by releasing what it held, not every button (0.27.0).** The finish used to send
+`MOUSEEVENTF_RIGHTUP` unconditionally, and Windows turns `WM_RBUTTONUP` into `WM_CONTEXTMENU` with no press
+required — so every replay ended with the browser's context menu open at the cursor's final position. It was
+reported from a run and visible on the screenshot; the recording itself held no right click. `Emit` now marks
+each button it presses and clears the mark on its release, and the finish releases the marks. The macOS agent
+had always done this (`holding = down`), and it is the case where the two should have been compared sooner.
+Counting: a replay that quietly moved where
 it clicked is a replay whose report cannot be trusted.
 
 **Abort must be immediate and must release what it holds.** Check the stop flag before every event *and*

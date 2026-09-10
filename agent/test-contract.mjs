@@ -796,10 +796,10 @@ const order = (body, ...calls) => {
 };
 check('и рамку повтора - там же, где отпускают кнопки мыши',
   /releaseEverything\(\)\s*\n\s*Acting\.end\(\.replay\)/.test(swift)
-    && order(finishBody, 'ReleaseAllButtons();', 'Acting.End("replay");'));
+    && order(finishBody, 'ReleaseHeldButtons();', 'Acting.End("replay");'));
 /* И модификатор убирается там же, в том порядке, который для этой платформы верен. */
 check('а модификатор - после кнопок на Windows и до них на маке',
-  order(finishBody, 'ReleaseAllButtons();', 'DropMods();', 'Acting.End("replay");')
+  order(finishBody, 'ReleaseHeldButtons();', 'DropMods();', 'Acting.End("replay");')
     && /Input\.releaseModifiers\(\)[\s\S]{0,600}?let holding = down/.test(swift));
 /* В САМОМ doAction, А НЕ В МАРШРУТЕ /do - и это не вкусовщина, а закрытая дыра.
  *
@@ -2482,6 +2482,68 @@ group('повтор поднимает то окно, в котором запи
   check('и перепривязка считает по прямоугольникам, прочитанным после подъёма',
     raiseAt > 0 && rereadAt > raiseAt && useAt > rereadAt,
     raiseAt + '/' + rereadAt + '/' + useAt);
+}
+
+group('повтор не заканчивается контекстным меню и не сворачивает окно, которое хотел показать');
+{
+  /* ОБЕ ПОЛОМКИ СООБЩЕНЫ С ПРОГОНА И ВИДНЫ НА ОДНОМ СНИМКЕ. Запись была чистой - ни одного правого клика,
+   * - а контекстное меню браузера стояло ровно в точке последнего клика. Его открывал ФИНИШ: он слал
+   * RIGHTUP «на всякий случай», а Windows делает из WM_RBUTTONUP WM_CONTEXTMENU без всякого нажатия.
+   * И терминал сворачивался, потому что записанный клик по его кнопке на панели задач - это переключатель,
+   * а страница уже подняла терминал перед повтором. */
+
+  /* 1. ФИНИШ ОТПУСКАЕТ ТО, ЧТО ДЕРЖАЛ. Emit отмечает нажатые кнопки, финиш отпускает отмеченные. Имя
+   *    старого метода не должно остаться нигде: «отпустить всё» и было поломкой. */
+  check('финиш отпускает только удержанные кнопки',
+    /static void ReleaseHeldButtons\(\)/.test(ps)
+      && /if \(\(held & downs\[i\]\) == 0\) continue;/.test(ps)
+      && !/ReleaseAllButtons/.test(ps));
+  check('и Emit ведёт счёт нажатому',
+    /_heldByReplay \|= downBits;/.test(ps)
+      && /_heldByReplay &= ~Native[.]MOUSEEVENTF_RIGHTDOWN;/.test(ps));
+  check('и счёт сбрасывается на старте повтора вместе с остальными',
+    /_retargeted = 0;\s*\n\s*_switched = 0;\s*\n\s*_heldByReplay = 0;/.test(ps));
+  /* macOS делал это с самого начала - образец, с которым Windows стоило сравнить раньше. */
+  check('и macOS отпускает так же - только удержанное',
+    /let holding = down\s*\n\s*down = \[\]/.test(swift) && /guard !holding[.]isEmpty else \{ return \}/.test(swift));
+
+  /* 2. КЛИК ПО ПАНЕЛИ ЗАДАЧ - «ПОКАЗАТЬ ОКНО». Узнаётся по классу окна под точкой, а не по подписи
+   *    (подпись зависит от языка системы); окно - по пометке Focus, стоящей за нажатием в самой записи. */
+  check('панель задач узнаётся по классу окна, а не по подписи',
+    /static bool OnTaskbar\(int x, int y\)/.test(ps)
+      && /cls == "Shell_TrayWnd" \|\| cls == "Shell_SecondaryTrayWnd"/.test(ps)
+      && /public static extern int GetClassName\(IntPtr hWnd, StringBuilder buffer, int max\);/.test(ps));
+  check('а окно - по пометке Focus за нажатием',
+    /static int TaskbarSwitch\(List<Ev> events, int i\)/.test(ps)
+      && /if \(n[.]Action == "Focus" && !string[.]IsNullOrEmpty\(n[.]Window\)\) \{ focus = n; break; \}/.test(ps));
+  /* ТОЛЬКО ПО ЗАГОЛОВКУ. WindowMatching берёт первое окно, у которого совпал заголовок ИЛИ процесс, и с
+   * process=chrome первым попадётся любое окно Chrome - то есть снова MouseFlow. */
+  check('и поднимает его только по заголовку, никогда по процессу',
+    /WindowMatching\(focus[.]Window, ""\)/.test(ps) && /Activate\(focus[.]Window, ""\)/.test(ps));
+  check('и своё окно не поднимает, как и /do',
+    /if \(Mine\(wanted\) != null\) return -1;/.test(ps));
+  /* НЕ СОШЛОСЬ - ИГРАЕТСЯ КАК ЗАПИСАНО. Каждый отказ - return -1, и цикл зовёт Emit. */
+  check('а не найдя окна, играет нажатие как записано',
+    /if \(wanted == IntPtr[.]Zero\) return -1;/.test(ps)
+      && /if \(Activate\(focus[.]Window, ""\) != null\) return -1;/.test(ps)
+      && /if \(pair >= 0\) skipRelease = pair;\s*\n\s*else Emit\(e\);/.test(ps));
+  /* И ОТПУСКАНИЕ ПАРЫ НЕ ИГРАЕТСЯ: отпускание без нажатия - само по себе событие, см. пункт 1. */
+  check('и отпускание сыгранного так нажатия пропускается',
+    /return release;/.test(ps) && /if \(i == skipRelease\)/.test(ps));
+  check('и это посчитано отдельно от retargeted',
+    /static int _switched;/.test(ps) && /,\\"switched\\":/.test(ps) && /_switched\+\+/.test(ps));
+
+  /* 3. СТРАНИЦА ЧИТАЕТ И ГОВОРИТ. Единственное место, где повтор намеренно сделал не то, что записано. */
+  const client = read('web/src/lib/agent.ts');
+  const playedView = read('web/src/features/record/RecordView.tsx');
+  check('клиент знает поле switched',
+    /switched\?: number;/.test(client));
+  check('и записка о финише называет его словами',
+    /const switched = Number\(status[.]switched\) \|\| 0;/.test(playedView)
+      && /played as "show that window" instead/.test(playedView));
+  check('и приложение просит сборку 0.27.0 - старая делает и то и другое по-старому',
+    /AGENT_WANTS = '0\.27\.0'/.test(client)
+      && /Version = "0[.]27[.]0"/.test(ps) && /let VERSION = "0[.]27[.]0"/.test(swift));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
