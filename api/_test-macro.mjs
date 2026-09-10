@@ -17,7 +17,7 @@
  *
  * Run: node api/_test-macro.mjs
  */
-import { dropOwnTail, parseMacro, summarize } from './_macro.mjs';
+import { dropOwnTail, hasPlayable, parseMacro, summarize } from './_macro.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -121,6 +121,33 @@ group('ПРАВИЛО СТОИТ НА ТОМ ЖЕ ФОРМАТЕ, ЧТО РАЗ�
   check('разобрано пять строк в четыре события', parsed.events.length === 4, String(parsed.events.length));
   check('и остановка снята', dropped === 2 && out.length === 2, String(dropped));
   check('сводка считается по остатку', summarize(out).count === 2, JSON.stringify(summarize(out)));
+}
+
+group('«НИЧЕГО НЕ ЗАПИСАНО» - ЭТО НЕ ТОЛЬКО ПУСТОЙ СПИСОК');
+{
+  /* НАЙДЕНО НА ЖИВОЙ ЗАПИСИ (rq2pjkuxw, 61 событие, один клик): человек нажал «Стоп» в приложении, и
+   * после отреза осталось РОВНО ОДНО событие - «Focus», пометка о смене переднего окна. Проверка на
+   * длину списка её пропускала, и на аккаунт уезжала запись, которая при повторе не делает ничего и
+   * отчитывается «1 событие сыграть не удалось». Сам агент относится к Focus так же: на повторе он идёт
+   * в _unplayable вместе с Key Down. */
+  const focus = { x: 1, y: 1, delayMs: 0, action: 'Focus', context: { app: 'powershell' } };
+  check('одна пометка - это ничего', hasPlayable([focus]) === false);
+  check('и три пометки тоже', hasPlayable([focus, focus, focus]) === false);
+  check('пустой список - тем более', hasPlayable([]) === false && hasPlayable(null) === false);
+
+  /* А ВОТ ЧТО ПОМЕТКОЙ НЕ ЯВЛЯЕТСЯ, и ни одно из этого терять нельзя. */
+  check('движение - действие: оно сдвигает курсор', hasPlayable([focus, move()]) === true);
+  check('набор - действие: содержимое не записано, а ВРЕМЯ записано, и повтор его выжидает',
+    hasPlayable([focus, { x: 0, y: 0, delayMs: 5, action: 'Key Down' }]) === true);
+  check('и клик, разумеется', hasPlayable([focus, ...clickIn('Gmail')]) === true);
+
+  /* И ВМЕСТЕ С ОТРЕЗОМ - ровно та живая запись: одна пометка, дорога к кнопке, нажатие в нашем окне. */
+  const asItWas = [focus, move(900, 900), move(950, 940), ...clickIn('MouseFlow', 960, 940)];
+  const cut = dropOwnTail(asItWas, OWN);
+  check('от записи из одного «Стоп» остаётся одна пометка',
+    cut.dropped === 4 && cut.events.length === 1 && cut.events[0].action === 'Focus',
+    JSON.stringify(cut.events));
+  check('и она считается за «ничего не записано»', hasPlayable(cut.events) === false);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

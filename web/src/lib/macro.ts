@@ -17,6 +17,7 @@ export {
   exportMacro,
   flowBody,
   fmtMs,
+  hasPlayable,
   parseMacro,
   summarize,
 } from '../../../api/_macro.mjs';

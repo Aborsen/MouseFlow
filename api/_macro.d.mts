@@ -67,6 +67,10 @@ export declare function dropOwnTail<T extends MacroEvent>(
   ownTitle: string,
 ): { events: T[]; dropped: number };
 
+/** Whether anything in the list can actually be replayed. `Focus` is a note - the agent counts it as
+ *  unplayable on a replay - so a list of nothing but notes is an empty recording. See _macro.mjs. */
+export declare function hasPlayable(events: { action?: string }[] | null | undefined): boolean;
+
 export declare function flowBody(
   flow: MacroStep[],
   recordings: MacroRecording[],

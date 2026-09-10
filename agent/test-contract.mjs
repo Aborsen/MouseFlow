@@ -2398,6 +2398,11 @@ group('чем запись остановили - в запись не попа�
     /const \{ events \} = dropOwnTail\(parseMacro\(text\)[.]events, document[.]title\);/.test(stopView));
   const stopAt = stopView.indexOf('dropOwnTail(parseMacro(text).events');
   const emptyAt = stopView.indexOf("setNote('Nothing was captured.')");
+  /* И «НИЧЕГО» СЧИТАЕТСЯ ПРАВИЛОМ, А НЕ ДЛИНОЙ СПИСКА. На живой записи после отреза оставалась одна
+   * пометка «Focus», и проверка на length сохраняла её на аккаунт как настоящую запись. */
+  check('и «ничего не записано» решается по тому, есть ли что сыграть',
+    /if \(!hasPlayable\(events\)\) \{ setNote\('Nothing was captured\.'\); return; \}/.test(stopView)
+      && /export function hasPlayable\(events\)/.test(read('api/_macro.mjs')));
   check('и отрез стоит до «Nothing was captured.»',
     stopAt > 0 && emptyAt > 0 && stopAt < emptyAt, stopAt + '/' + emptyAt);
   /* ОТРЕЗ ТОЛЬКО НА ОСТАНОВКЕ. Автоотрез (recordDrain) режет живую запись посередине - там никто ничего

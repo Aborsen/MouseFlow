@@ -63,7 +63,9 @@ that led to it. Not "every click of ours at the end" — somebody may have been 
 before they stopped — and never a click on somebody else's window, so a recording's real last action stays
 where it is. Not a clock either: "the last two seconds" would eat a real click after a slow stop and keep
 ours after a slow hand. A recording that consisted only of pressing Stop now correctly says **"Nothing was
-captured."**, and what this costs is written down in
+captured."** — and "nothing" is decided by whether anything can be *played*, not by the length of the
+list: a real recording came back holding one `Focus` event, which is a note about a window change that
+the agent itself counts as unplayable, and a length check saved it to the account as a recording, and what this costs is written down in
 [19 — Limits and known gaps](19-limits-and-known-gaps.md).
 
 What is **not** redacted is written down in

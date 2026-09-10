@@ -30,7 +30,7 @@ import {
 import { type Flow, pull, push } from '@/lib/api';
 import { askAbout } from '@/features/chat/ask-about';
 import { SKILL_ROLE, roleOf } from '@/lib/flow-role';
-import { dropOwnTail, flowBody, fmtMs, parseMacro, summarize } from '@/lib/macro';
+import { dropOwnTail, flowBody, fmtMs, hasPlayable, parseMacro, summarize } from '@/lib/macro';
 /* ПЕРЕПРИВЯЗКА ПЕРЕД ПОВТОРОМ - общий модуль, без сети и без DOM, проверяемый вычислением
  * (api/_test-anchor.mjs). Здесь только то, чего у него нет: спросить у агента, где окна сейчас. */
 import { anchoredSaid, matchWindow, reanchorAll, whichWindow } from '../../../../api/_anchor.mjs';
@@ -468,7 +468,10 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
        * и сказать про неё «Nothing was captured.» вернее, чем сохранить строку, которая при повторе
        * нажимает Стоп. */
       const { events } = dropOwnTail(parseMacro(text).events, document.title);
-      if (!events.length) { setNote('Nothing was captured.'); return; }
+      /* «НИЧЕГО» - ЭТО НЕ ТОЛЬКО ПУСТОЙ СПИСОК. Найдено на живой записи: после отреза остановки осталось
+       * одно событие «Focus» - пометка о смене окна, которую и сам агент на повторе считает несыгранной.
+       * Проверка на length сохраняла такую запись на аккаунт. */
+      if (!hasPlayable(events)) { setNote('Nothing was captured.'); return; }
 
       const where = seenWindows.current.slice();
       const s = summarize(events);
