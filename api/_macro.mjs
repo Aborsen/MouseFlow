@@ -167,6 +167,22 @@ export function dropOwnTail(events, ownTitle) {
   /* Только «Mouse Movement». Прокрутка - это действие: у неё есть последствие на экране, и снимать её с
    * конца значило бы менять запись, а не чистить её. */
   const move = (event) => said(event) === 'Mouse Movement';
+  /* «Focus» - ПОМЕТКА, а не действие: агент пишет её при смене переднего окна, и на повторе сам считает
+   * её несыгранной (см. hasPlayable). Мимо неё смотрят, а не через неё спотыкаются - и это не тонкость,
+   * а причина, по которой первая версия правила не срабатывала вовсе.
+   *
+   * СООБЩЕНО С ПРОГОНА, И ХВОСТ БЫЛ РОВНО ТАКОЙ:
+   *
+   *   Left Click Down     window=MouseFlow  control="Stop and save this recording"
+   *   Left Click Release
+   *   Focus               window=MouseFlow          <- последнее событие
+   *
+   * Клик по кнопке «Стоп» ВЕРНУЛ ФОКУС в наше окно, агент это заметил и дописал пометку ПОСЛЕ пары. Правило
+   * искало пару на самом конце, находило там Focus и уходило ни с чем - то есть остановка оставалась в
+   * записи, и повтор в конце снова её нажимал. Пометка после нажатия неизбежна: именно этот клик и меняет
+   * переднее окно. */
+  const note = (event) => said(event) === 'Focus';
+  const passable = (event) => move(event) || note(event);
   const down = (event) => /Click Down$/.test(said(event));
   const up = (event) => /Click (Release|Up)$/.test(said(event));
   /* НАШЕ ОКНО. Заголовок окна вкладки длиннее нашего («MouseFlow - Google Chrome»), а имя, дошедшее от
@@ -190,7 +206,8 @@ export function dropOwnTail(events, ownTitle) {
    * движений из двадцати семи. Снимать движения, не найдя того, ради чего их снимают, - это уже не чистка
    * записи, а её порча. */
   let end = list.length;
-  while (end > 0 && move(list[end - 1])) end--;
+  /* Мимо дрожания И мимо пометок: пометка после нажатия неизбежна - см. выше. */
+  while (end > 0 && passable(list[end - 1])) end--;
   if (end < 2 || !up(list[end - 1]) || !down(list[end - 2]) || !ours(list[end - 2])) {
     return { events: list, dropped: 0 };
   }

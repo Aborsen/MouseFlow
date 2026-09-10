@@ -176,5 +176,45 @@ group('«НИЧЕГО НЕ ЗАПИСАНО» - ЭТО НЕ ТОЛЬКО ПУС�
   check('и она считается за «ничего не записано»', hasPlayable(cut.events) === false);
 }
 
+group('ПОМЕТКА ПОСЛЕ НАЖАТИЯ НЕ ПРЯЧЕТ ЕГО - самая живучая из трёх поломок');
+{
+  /* СООБЩЕНО С ПРОГОНА, ХВОСТ ЗАПИСИ rwheys2rm БЫЛ РОВНО ТАКОЙ:
+   *
+   *   Left Click Down    window=MouseFlow  control="Stop and save this recording"
+   *   Left Click Release
+   *   Focus              window=MouseFlow          <- последнее событие
+   *
+   * Клик по «Стоп» ВЕРНУЛ ФОКУС в наше окно, агент дописал пометку ПОСЛЕ пары - и правило, искавшее пару
+   * на самом конце, находило там Focus и уходило ни с чем. Остановка оставалась в записи, и повтор в
+   * конце снова её нажимал, то есть начинал новую запись. Пометка тут неизбежна: именно этот клик и
+   * меняет переднее окно, так что мимо неё надо СМОТРЕТЬ, а не надеяться, что её не будет. */
+  const focus = (window) => ({ x: 1, y: 1, delayMs: 0, action: 'Focus', context: { window } });
+
+  const asItWas = [...clickIn('Windows PowerShell', 400, 300), move(1800, 250), move(1814, 248),
+    ...clickIn('MouseFlow', 1814, 246), focus('MouseFlow')];
+  const cut = dropOwnTail(asItWas, OWN);
+  check('пометка после нажатия не мешает найти остановку', cut.dropped === 5, String(cut.dropped));
+  check('и уходит вместе с ней - она про то же самое переключение',
+    cut.events.length === 2 && cut.events.at(-1).action === 'Left Click Release',
+    JSON.stringify(cut.events.at(-1)));
+  check('а работа в терминале остаётся на месте',
+    cut.events[0].context.window === 'Windows PowerShell');
+
+  /* И НЕСКОЛЬКО ПОМЕТОК ПОДРЯД, вперемешку с дрожанием, - тоже не прячут. */
+  check('пометки и дрожание в любом порядке',
+    dropOwnTail([...clickIn('Gmail'), ...clickIn('MouseFlow'), focus('MouseFlow'), move(2, 2),
+      focus('MouseFlow')], OWN).dropped === 5);
+
+  /* НО ПОМЕТКА САМА ПО СЕБЕ НИЧЕГО НЕ РАЗРЕШАЕТ: не найдя нашего нажатия, правило по-прежнему не
+   * снимает ничего - ни пометку, ни движения. Это и есть та осторожность, которую добавили до этого. */
+  const noStop = [...clickIn('Gmail'), move(600, 700), focus('Gmail')];
+  check('без нашего нажатия пометка остаётся, и движения тоже',
+    dropOwnTail(noStop, OWN).dropped === 0);
+
+  /* И ЧУЖОЕ НАЖАТИЕ ПОД ПОМЕТКОЙ - по-прежнему чужое. Пропуск пометок расширяет ПОИСК, а не право резать. */
+  check('чужое нажатие под пометкой не снимается',
+    dropOwnTail([...clickIn('MouseFlow'), ...clickIn('Gmail'), focus('Gmail')], OWN).dropped === 0);
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;

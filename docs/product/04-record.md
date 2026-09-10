@@ -59,8 +59,28 @@ The trim is split, because each half is the only one who can see its own door:
   other. This half works with any agent.
 
 The rule is deliberately minimal, and **it finds the stop press or removes nothing**: from the end, skip
-any jitter, require a press-and-release, require that press to be on a window carrying our title — and only
-then take the pair *and* the pointer's travel to it. The first version stripped the trailing movement
+any jitter *and any note*, require a press-and-release, require that press to be on a window carrying our
+title — and only then take the pair *and* the pointer's travel to it.
+
+**"And any note" is the whole fix, and it took a third run to find.** The tail of a real recording read:
+
+    Left Click Down     window=MouseFlow  control="Stop and save this recording"
+    Left Click Release
+    Focus               window=MouseFlow          <- last event
+
+The stop press *returned focus to our own window*, so the agent wrote its foreground note **after** the
+pair — and a rule that looked for the pair at the very end found a `Focus` there and gave up. The stop
+stayed in the recording, and the replay pressed it again. That note is unavoidable: this click is precisely
+what changes the foreground window. So the search looks *past* notes; skipping them widens the **search**,
+never the licence to cut — a press on somebody else's window under a note is still somebody else's.
+
+**The start needs no trimming, and that is measured rather than assumed.** Capture begins at
+`/record/start`, which the page calls after the button's click has completed, so the press is outside the
+recording by construction; the agent's foreground watcher also refuses to write a marker mid-gesture, which
+is what would have turned one click into an unreleased press plus a stray release. Checked across the 25
+most recent recordings on a live account: none begins with a stray release, and in none is the first press
+the Record button. What does sometimes sit near the start is an ordinary click somewhere in the app's page —
+real work, and trimming it would be wrong. The first version stripped the trailing movement
 unconditionally, and a real recording showed why that is wrong: one stopped from a chat, where nobody
 pressed anything, would have lost twelve of its twenty-seven events. Movement comes off as the *road to a
 button that was found*, never on its own.
