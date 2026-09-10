@@ -4,8 +4,9 @@ Written 2026-09-10 for whoever picks this up next, in a fresh session, with none
 produced it. Everything below was checked against the code on that date; where a claim depends on a line
 number, the symbol is named too, so `grep` finds it after the line moves.
 
-**Read `docs/QA-ROADMAP.md` → section 0 first** ("How to work in this repository"). It is still correct with
-one exception: it says the next free migration number is 019. **It is 022** (`db/021_user_case.sql` exists).
+**Read `docs/QA-ROADMAP.md` → section 0 first** ("How to work in this repository"), and
+[`STATUS.md`](STATUS.md) for what is already done — this file is a plan, not a report, and section 1 below
+is only current to 2026-09-10.
 
 ## 0. What section 0 of the roadmap does not yet say
 

@@ -1,5 +1,7 @@
 # What the public site still owes the product
 
+> Part of the handover in [`STATUS.md`](STATUS.md) — see its `4, item 3.
+
 The app repo and the site repo (`D:/MouseLanding`, branch `codex/mouseflow-landing`) are deliberately kept
 in step: the MCP tool `mouseflow_help` reads the **live** site, so a feature is "documented" only once the
 site is deployed. From 2026-09-10 they are updated in separate passes — code and `docs/product/**` land

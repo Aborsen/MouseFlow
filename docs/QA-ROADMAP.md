@@ -1,5 +1,9 @@
 # MouseFlow → regression QA: the roadmap, in enough detail to be executed
 
+> **Starting fresh, or on another machine? Read [STATUS.md](STATUS.md) first** — where things stand as of
+> 2026-09-11, what shipped, what is next, and the three things a clone does not carry. This file is the
+> plan; that one is the state.
+
 Written 2026-09-09 from the code as it stands at `8eb5c68`, for whoever picks this up next — including a
 smaller model. Every file, function and constant named below was checked against that commit by grep before
 handing over; §0 still says to grep again before trusting any of them, because the code moves. Every item
