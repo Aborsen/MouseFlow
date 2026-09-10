@@ -2442,7 +2442,22 @@ group('повтор поднимает то окно, в котором запи
   const playView = read('web/src/features/record/RecordView.tsx');
   check('окно выбирают клики, а не сэмплер',
     /const want = whichWindow\(playing[.]events\);/.test(playView)
-      && /const front = \(want && matchWindow\(want, open\)\)/.test(playView));
+      && /const named = want \? matchWindow\(want, open, \{ evenMinimized: true \}\) : null;/
+        .test(playView));
+  /* СВЁРНУТОЕ ОКНО - ЭТО ТО, КОТОРОЕ И НАДО ПОДНЯТЬ. Сообщено с прогона: запись в терминале, терминал
+   * свернули - и повтор поднял MouseFlow, потому что совпадение отказывало свёрнутому, а вызывающий
+   * откатывался на первое окно сэмплера. Запрет остаётся там, где он верен - у пересчёта координат. */
+  check('подъём ищет окно, даже если оно свёрнуто',
+    /matchWindow\(want, open, \{ evenMinimized: true \}\)/.test(playView)
+      && /evenMinimized \|\| !one[.]minimized/.test(read('api/_anchor.mjs')));
+  /* И НИКОГДА НЕ ПОДНИМАТЬ СЕБЯ. Откат на первое окно сэмплера и был ловушкой: сэмплер начинает смотреть
+   * в момент нажатия «Записать», когда впереди сам MouseFlow. */
+  check('и не подменяет ненайденное окно первым, что видел сэмплер',
+    !/rec[.]windows\?\.\[0\]/.test(playView)
+      && /const sampled = want \? undefined : rec[.]windows\?\.find\(\(one\) => !ourWindow\(one\)\);/
+        .test(playView));
+  check('и говорит человеку, когда поднимать было нечего',
+    /is not open, so nothing was raised/.test(playView));
   /* ЗАГОЛОВОК БЕРЁТСЯ ЖИВОЙ, А НЕ ЗАПИСАННЫЙ: у вкладки он меняется, а activate ищет по нему. */
   check('и поднимают его по живому заголовку найденного окна',
     /const title = front && 'title' in front \? front[.]title : undefined;/.test(playView));

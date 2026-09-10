@@ -37,8 +37,18 @@ export interface OpenWindow {
  */
 export function whichWindow(events: unknown): { app: string | null; window: string; n: number } | null;
 
-/** The same window now, or nothing - see the three rungs in _anchor.mjs. */
-export function matchWindow(ctx: unknown, list: OpenWindow[] | null | undefined): OpenWindow | null;
+/**
+ * The same window now, or nothing - see the three rungs in _anchor.mjs.
+ *
+ * `evenMinimized` picks which of the two questions is being asked. Default (false) answers "where is this
+ * window now", where a minimised window must be refused because its rectangle is a placeholder. Pass true
+ * for "which window do I raise", where a minimised window is exactly the one to raise.
+ */
+export function matchWindow(
+  ctx: unknown,
+  list: OpenWindow[] | null | undefined,
+  opts?: { evenMinimized?: boolean },
+): OpenWindow | null;
 
 /**
  * Re-anchor a whole recording before it is sent to /replay. Events with no window anchor are handed back

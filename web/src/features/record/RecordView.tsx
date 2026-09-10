@@ -677,7 +677,27 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
        * Заголовок берётся ТЕКУЩИЙ, а не записанный: у вкладки он меняется, а activate ищет по нему. */
       let open = await windows(port).then((it) => it.windows).catch(() => [] as AgentWindow[]);
       const want = whichWindow(playing.events);
-      const front = (want && matchWindow(want, open)) || rec.windows?.[0] || null;
+      /* СВЁРНУТОЕ ОКНО - ЭТО ТО, КОТОРОЕ И НАДО ПОДНЯТЬ, и потому здесь evenMinimized. Найдено прогоном:
+       * запись в терминале, терминал свернули - matchWindow отказывал, потому что у свёрнутого окна
+       * прямоугольник условный, вызывающий откатывался на первое окно сэмплера (то есть на MouseFlow), и
+       * клики уходили в чужое приложение. Прямоугольники ниже перечитываются ПОСЛЕ подъёма. */
+      const named = want ? matchWindow(want, open, { evenMinimized: true }) : null;
+      /* НЕ НАШЛИ НАЗВАННОЕ - НЕ ПОДМЕНЯЕМ ЕГО ЧУЖИМ. Откат на rec.windows[0] и был той самой ловушкой:
+       * первое окно сэмплера - это MouseFlow, потому что запись начинают кнопкой в MouseFlow. Поднять СЕБЯ
+       * хуже, чем не поднять ничего: развёрнутое окно приложения накрывает то, в которое надо клацать.
+       *
+       * Поэтому: клики назвали окно - поднимаем только его; клики не назвали ничего (бывает - все клики по
+       * панели задач) - берём первое окно сэмплера, КРОМЕ нашего. */
+      const ourWindow = (one: { title?: string } | undefined) => {
+        const title = String(one?.title || '').trim();
+        const own = document.title.trim();
+        return !!title && !!own && (title.includes(own) || own.includes(title));
+      };
+      const sampled = want ? undefined : rec.windows?.find((one) => !ourWindow(one));
+      const front = named || sampled || null;
+      /* И СКАЗАТЬ, ЕСЛИ ОКНА НЕТ. Повтор всё равно играется - человек мог собираться его открыть, - но
+       * молчаливый повтор по координатам в чужое окно и есть та поломка, о которой сообщили. */
+      const missing = want && !named ? want.window : '';
       const title = front && 'title' in front ? front.title : undefined;
       const process = front && 'process' in front ? front.process : undefined;
       if (front && (title || process)) {
@@ -727,7 +747,8 @@ export const RecordView = ({ recorder = true }: RecordViewProps = {}) => {
       /* СКАЗАТЬ, ЧТО ИМЕННО СДЕЛАЛИ. Повтор, тихо сыгравший по записанным координатам, - это ровно та
        * хрупкость, которую перепривязка убирает; молчащий об этом отчёт оставляет человека выяснять её из
        * результата. Сколько кликов агент довёл до контролов по имени, скажет он сам, когда кончит. */
-      setNote(`Replaying "${rec.name}" — press Escape to stop.${anchored ? ` ${anchored}` : ''}`);
+      setNote(`Replaying "${rec.name}" — press Escape to stop.${anchored ? ` ${anchored}` : ''}`
+        + (missing ? ` The window these clicks were in — ${missing} — is not open, so nothing was raised.` : ''));
     } catch (err) {
       setNote(err instanceof Error ? err.message : 'could not start the replay');
     }

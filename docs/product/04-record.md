@@ -236,8 +236,25 @@ Pressing Play on a row:
    now, and `action=activate` raises it by its **current** title — a tab's title changes, and activate
    searches by it — then 350 ms for the window to actually raise. The window list is then **re-read**,
    because a minimised window reports a placeholder rectangle and step 2 has to measure the restored one.
-   A replay is coordinates and clicks: it has no idea what is under them. Best effort, and the message says
-   what was tried.
+
+   **A minimised window is the one to raise, and that took a second run to get right.** `matchWindow`
+   refused minimised windows, correctly, for the question step 2 asks — where is this window *now*, whose
+   answer must not be a placeholder rectangle 160×28 pixels wide somewhere off-screen. Raising is the other
+   question, and there a minimised window is exactly the answer: the agent restores it (`ShowWindow` with
+   `SW_RESTORE`, which it has always done) and the rectangles are re-read afterwards. One rule, one honest
+   caveat at the door (`evenMinimized`), and both answers stay right. Reported from a run: recorded in a
+   terminal, terminal minimised, and the replay walked the cursor to the taskbar, restored nothing, and
+   clicked into another application.
+
+   **And nothing is raised in place of a window that is not there.** The fallback used to be the sampler's
+   first window, which is *us* — so a missing window became "raise MouseFlow", which is the original defect
+   by another road. Now: if the clicks named a window, only that window is raised, and if it is not open
+   the note says so — *"The window these clicks were in — Windows PowerShell — is not open, so nothing was
+   raised."* If the clicks named nothing at all (it happens: every press landed on the taskbar), the
+   sampler's list is used, skipping our own window.
+
+   A replay is coordinates and clicks: it has no idea what is under them, and the click goes to whoever is
+   on top. Best effort, and the message says what was tried.
 2. **Puts every click back inside the window it was recorded in.** A recorded coordinate is true until the
    window moves; after that "click at 1074,159" lands in empty space, or worse, on the button next to the
    one it meant. Since agent 0.25.0 a click carries the rectangle of its window and of the control it hit

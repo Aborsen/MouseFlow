@@ -779,6 +779,14 @@ Carried over from the project's own notes, and still current:
   would be read as ours if a click on it were the very last thing in a recording. One click, only at the
   very end, only on a title match: the alternative was a clock, which is wrong more often and in both
   directions. See [04 — Record](04-record.md).
+- **Raising the right window before a replay — done in September 2026.** Three defects on one road, each
+  found by playing a recording back rather than by reading: the sampler's first window is MouseFlow itself,
+  a minimised window was refused by the matcher that decides what to raise, and a window that was not open
+  fell back to raising us. What remains, and it is a real limit: a recording made in the **agent's own
+  terminal window** cannot be raised at all — `activate` refuses its own console by design, because
+  bringing it to the front is how the next action lands in it — and **three windows of one application**
+  with changed titles are still not matched, deliberately. Both end as an honest "nothing was raised"
+  rather than a click somewhere else. See [04 — Record](04-record.md).
 - **Agent authentication.** One seam, one scheme.
 - **Text for the steps that need it**, if it can be done safely. Keystroke *timing* is captured; the content
   is not, and adding it needs a redaction design rather than a hook. The alternative already works: a created

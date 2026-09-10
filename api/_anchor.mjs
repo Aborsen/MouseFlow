@@ -201,11 +201,26 @@ function sharesEdge(a, b) {
   return edge >= EDGE_MIN && edge >= short * 0.4;
 }
 
-export function matchWindow(ctx, list) {
+export function matchWindow(ctx, list, opts) {
   const it = ctx && typeof ctx === 'object' ? ctx : {};
   const wanted = String(it.window || '').trim();
   const app = String(it.app || '').trim().toLowerCase();
-  const open = (Array.isArray(list) ? list : []).filter((one) => one && !one.minimized
+  /* СВЁРНУТОЕ ОКНО ГОДИТСЯ ИЛИ НЕТ - ЗАВИСИТ ОТ ВОПРОСА, И ВОПРОСОВ ДВА.
+   *
+   * «Где это окно сейчас» - не годится: у свёрнутого прямоугольник условный (на Windows это примерно
+   * 160x28 где-то за краем экрана), и пересчитывать по нему клик значит целиться в никуда. Это и есть
+   * причина, по которой запрет здесь стоит.
+   *
+   * «Какое окно поднять» - годится, и обязано: именно свёрнутое и нужно поднять. Найдено прогоном:
+   * запись сделали в терминале, терминал свернули, и здесь возвращался null - а вызывающий откатывался на
+   * первое окно сэмплера, то есть на сам MouseFlow. Курсор дошёл до панели задач, ничего не развернул, и
+   * клики ушли в чужое приложение. Поднять его агент умеет (ShowWindow SW_RESTORE в Activate), а
+   * прямоугольники вызывающий перечитывает ПОСЛЕ подъёма - когда они уже настоящие.
+   *
+   * Поэтому не два правила совпадения, а одно с честной оговоркой на входе. */
+  const evenMinimized = !!(opts && opts.evenMinimized === true);
+  const open = (Array.isArray(list) ? list : []).filter((one) => one
+    && (evenMinimized || !one.minimized)
     && rectOf([one.x, one.y, one.w, one.h]));
   if (!open.length) return null;
 

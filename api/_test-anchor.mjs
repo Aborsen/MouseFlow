@@ -239,5 +239,45 @@ group('КАКОЕ ОКНО ПОДНЯТЬ - ТО, В КОТОРОМ ЗАПИСА
     now && now.process === 'OUTLOOK', JSON.stringify(now));
 }
 
+group('СВЁРНУТОЕ ОКНО: НЕГОДНО ДЛЯ ПЕРЕСЧЁТА, ГОДНО ДЛЯ ПОДЪЁМА - и это два разных вопроса');
+{
+  /* НАЙДЕНО ПРОГОНОМ, И ЭТО БЫЛА ТРЕТЬЯ ПОЛОМКА ОДНОГО И ТОГО ЖЕ ПОВТОРА. Запись сделали в терминале,
+   * терминал СВЕРНУЛИ, нажали Play - курсор дошёл до панели задач, ничего не развернул, и клики ушли в
+   * чужое приложение. Причина: matchWindow отказывал свёрнутому окну, вызывающий откатывался на первое
+   * окно сэмплера - то есть на сам MouseFlow, - и поднимал его.
+   *
+   * Запрет был поставлен ВЕРНО, но для другого вопроса: у свёрнутого окна прямоугольник условный
+   * (160x28 где-то за краем экрана), и пересчитывать по нему клик значит целиться в никуда. А на вопрос
+   * «какое окно поднять» свёрнутое - это ровно то, которое и нужно поднять. Одно правило, честная
+   * оговорка на входе, и оба ответа остаются верными. */
+  const term = { app: 'WindowsTerminal', window: 'Windows PowerShell' };
+  const hidden = [{ title: 'Windows PowerShell', process: 'WindowsTerminal', minimized: true,
+    x: -32000, y: -32000, w: 160, h: 28 }];
+
+  check('«где это окно сейчас» свёрнутому отказывает - его прямоугольник врёт',
+    matchWindow(term, hidden) === null);
+  check('«какое окно поднять» его находит - иначе поднимать нечего',
+    matchWindow(term, hidden, { evenMinimized: true }) !== null,
+    JSON.stringify(matchWindow(term, hidden, { evenMinimized: true })));
+  check('и это то же самое окно, а не какое попало',
+    (matchWindow(term, hidden, { evenMinimized: true }) || {}).process === 'WindowsTerminal');
+
+  /* И ОГОВОРКА НЕ ОТКЛЮЧАЕТ ОСТАЛЬНОЕ ПРАВИЛО: три ступени совпадения работают как работали, и чужое
+   * приложение свёрнутым не становится подходящим. */
+  check('чужое приложение не подходит и со оговоркой',
+    matchWindow(term, [{ title: 'Inbox — Outlook', process: 'OUTLOOK', minimized: true,
+      x: 0, y: 0, w: 100, h: 100 }], { evenMinimized: true }) === null);
+  check('и окно без прямоугольника не годится ни при каком вопросе',
+    matchWindow(term, [{ title: 'Windows PowerShell', process: 'WindowsTerminal', minimized: true }],
+      { evenMinimized: true }) === null);
+
+  /* И ПОСЛЕ ПОДЪЁМА - тот же самый вопрос уже другому списку: агент разворачивает окно (ShowWindow
+   * SW_RESTORE), страница перечитывает /windows, и вот тут прямоугольник настоящий. */
+  const restored = [{ title: 'Windows PowerShell', process: 'WindowsTerminal', minimized: false,
+    x: 100, y: 100, w: 1200, h: 800 }];
+  check('развёрнутое окно годится для пересчёта - именно на этом списке он и считается',
+    (matchWindow(term, restored) || {}).w === 1200);
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exitCode = fail ? 1 : 0;
