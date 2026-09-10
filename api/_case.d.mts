@@ -13,6 +13,12 @@ export function checksFor(surface: 'desktop' | 'browser' | string | undefined): 
 /** What a case asserts. The same shape the `expect` tool takes - deliberately one language, not two. */
 export interface Expect extends Want {
   process?: string | null;
+  /**
+   * WHEN it is checked, as a sentence the case's author wrote - "the message has been sent". Absent means
+   * at the end of the run, which is what every v1 case does. Deliberately not a checkpoint number: a saved
+   * skill carries no plan, and the unattended driver has no checkpoint tool. See _case.mjs.
+   */
+  after?: string | null;
 }
 
 /** The four outcomes of a case run. `blocked` is not a red: it means nothing was proven. */
@@ -24,6 +30,8 @@ export function caseGoal(goal: string, expects: unknown): string;
 export function stripCase(args: unknown): Record<string, unknown>;
 export function caseIdOf(args: unknown): string | null;
 export function repairsOf(steps: unknown): number;
+/** How many checks bound to a moment were made at the end anyway. Reported, never folded into a verdict. */
+export function lateBound(steps: unknown, expects: unknown): number;
 export function caseVerdict(run: {
   outcome?: string | null;
   checks?: { passed: number; failed: number; unchecked: number } | null;

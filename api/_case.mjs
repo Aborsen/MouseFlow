@@ -49,6 +49,10 @@ export const EXPECTS_MAX = 8;
 const NAME_MAX = 200;
 const TEXT_MAX = 400;
 const WHY_MAX = 300;
+/* МОМЕНТ, В КОТОРЫЙ УТВЕРЖДЕНИЕ ПРОВЕРЯЕТСЯ, - одним предложением. Двести знаков потому, что это фраза
+ * («письмо отправлено»), а не процедура: момент, который не описывается предложением, - это не момент, а
+ * второй кейс. */
+const AFTER_MAX = 200;
 
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 
@@ -85,6 +89,8 @@ export function readExpects(input, allowed) {
     const text = str(one.text).slice(0, TEXT_MAX);
     const process = str(one.process).slice(0, NAME_MAX);
     const why = str(one.why).slice(0, WHY_MAX);
+    /* КОГДА проверять. Пусто - в конце прогона, как было всегда и как работает v1. */
+    const after = str(one.after).slice(0, AFTER_MAX);
     const at = `check ${i + 1}`;
     if (!kinds.includes(check)) {
       return { expects: [], why: `${at}: "${check || '(nothing)'}" is not a kind of check here. `
@@ -106,7 +112,10 @@ export function readExpects(input, allowed) {
       return { expects: [], why: `${at}: say what it proves, in the goal's own words - it is what somebody `
         + 'reads in the report.' };
     }
-    expects.push({ check, name, ...(text ? { text } : {}), ...(process ? { process } : {}), why });
+    expects.push({
+      check, name, ...(text ? { text } : {}), ...(process ? { process } : {}), why,
+      ...(after ? { after } : {}),
+    });
   }
   return { expects, why: '' };
 }
@@ -127,23 +136,112 @@ export const expectLine = (want) => {
  * Цель прогона кейса: та же цель скилла плюс проверки, которые обязаны быть сделаны в конце.
  *
  * СЛОВАМИ, А НЕ ПОЛЕМ. Утверждения могли бы ехать в цикл отдельным полем и превращаться в вызовы expect
- * механически, без модели, - и это правильная форма для v2, где проверка привязана к шагу. Здесь они
- * дописаны к цели, потому что в конце прогона машина находится там, куда её привёл сам прогон: «Sent Items»
- * может быть за одним щелчком, а может требовать открыть папку, и решить это может только тот, кто видит
- * экран. Модель обязана ВЫЗВАТЬ expect - в brain уже сказано, что проверку решает машина, а не картинка, -
- * и вердикт считается по записанным шагам, а не по словам модели. Соврать в отчёте ей нечем.
+ * механически, без модели. Они дописаны к цели, потому что в конце прогона машина находится там, куда её
+ * привёл сам прогон: «Sent Items» может быть за одним щелчком, а может требовать открыть папку, и решить
+ * это может только тот, кто видит экран. Модель обязана ВЫЗВАТЬ expect - в brain уже сказано, что проверку
+ * решает машина, а не картинка, - и вердикт считается по записанным шагам, а не по словам модели. Соврать в
+ * отчёте ей нечем.
+ *
+ * ДВЕ ГРУППЫ С 5-v2. У утверждения появилось поле `after` - момент, в который его надо проверить, а не
+ * дожидаться конца. Пустое `after` - конец прогона, ровно как в v1, и старый кейс не меняет поведения.
+ *
+ * ПОЧЕМУ МОМЕНТ - ФРАЗА, А НЕ НОМЕР ЧЕКПОИНТА. План пункта 5 говорил «привязать к чекпоинтам плана», и это
+ * оказалось невыполнимо в том виде: чекпоинты приходят параметром в browser-драйвер от мастера Create
+ * (`checkpoints` в desktop-engine.ts), у СОХРАНЁННОГО скилла их нет вовсе, а облачный драйвер получает
+ * `toolsFor(false, …)` - без reached_checkpoint, потому что чекпоинт останавливает прогон, а на том конце
+ * никого нет. То есть номер чекпоинта у ночного кейса указывал бы в пустоту.
+ *
+ * Фраза не требует ничего: момент называет АВТОР КЕЙСА, а решает, наступил ли он, тот же, кто видит экран, -
+ * так же, как он решает, где искать «Sent Items». Ни плана, ни изменений в драйверах, ни нового поля на
+ * проводе.
+ *
+ * И ЧТО ЭТО НЕ СТАЛО СЛОВОМ БЕЗ ПОСЛЕДСТВИЙ: сделать все проверки в конце - другой тест, чем сделать их по
+ * ходу («Sent Items» пуста до отправки и после неё же и проверяется). Поэтому `lateBound` считает
+ * привязанные проверки, сделанные всё равно в конце, и отчёт их называет. Не вердиктом: одна запоздавшая
+ * проверка не отменяет найденного дефекта - но и молчать о ней нельзя, иначе `after` был бы украшением.
  */
 export function caseGoal(goal, expects) {
   const list = Array.isArray(expects) ? expects : [];
   if (!list.length) return String(goal || '');
-  const lines = list.map((want, i) => `${i + 1}. ${expectLine(want)}`);
-  return `${String(goal || '')}\n\n`
-    + 'THIS IS A TEST CASE. When the goal above is done, and before finish, check every one of these with '
-    + 'the expect tool - one call each, all of them, even when the screen makes the answer look obvious:\n'
-    + `${lines.join('\n')}\n`
+  /* Нумерация СКВОЗНАЯ по всему списку, а не по группе: человек читает отчёт по номерам, и «проверка 3»
+   * обязана значить третью в кейсе, независимо от того, в какой она группе оказалась. */
+  const numbered = list.map((want, i) => ({ want, n: i + 1 }));
+  const bound = numbered.filter((one) => str(one.want.after));
+  const atEnd = numbered.filter((one) => !str(one.want.after));
+  const said = (one) => `${one.n}. ${expectLine(one.want)}`;
+
+  let out = `${String(goal || '')}\n\nTHIS IS A TEST CASE.`;
+
+  if (bound.length) {
+    out += '\n\nThese checks belong to a MOMENT in the work, not to the end of it. The moment is named; '
+      + 'you decide when it has arrived, from the screen. Call the expect tool for a check the moment its own is '
+      + 'true, BEFORE doing anything that comes after it - leaving them all to the end is a different test, '
+      + 'because what you would be checking has moved on by then:\n'
+      + bound.map((one) => `${said(one)}  [when: ${str(one.want.after)}]`).join('\n');
+  }
+
+  if (atEnd.length) {
+    out += `\n\n${bound.length ? 'And these belong to the end' : 'When the goal above is done'}`
+      + ', before finish - check every one of them with the expect tool, one call each, all of them, '
+      + `even when the screen makes the answer look obvious:\n${atEnd.map(said).join('\n')}`;
+  }
+
+  return `${out}\n\n`
     + 'A failed check does not end the run: say what it means and finish. Do not decide any of them by '
     + 'looking at the picture, and do not skip one because the goal appeared to succeed - a check nobody '
     + 'made is the whole reason a suite stops being trusted.';
+}
+
+/**
+ * ПРИВЯЗАННЫЕ ПРОВЕРКИ, СДЕЛАННЫЕ ВСЁ РАВНО В КОНЦЕ.
+ *
+ * Признак простой и считается по записанным шагам: проверка «на месте», если ПОСЛЕ неё в прогоне было хоть
+ * одно действие, кроме проверки. Всё, за чем не последовало ничего кроме проверок и finish, сделано в конце.
+ *
+ * Сопоставление с кейсом - по (check, name, text): ровно те поля, которые модели и велено передать, и ровно
+ * те, что печатает expectLine. Кейс с двумя одинаковыми утверждениями, различающимися только моментом, здесь
+ * не различится - но такой кейс и человеку не различить, а значит это два кейса.
+ *
+ * ИМЯ ШАГА ЧИТАЕТСЯ КАК `tool || name`, И ЭТО НЕ ПЕРЕСТРАХОВКА: драйверов три, и пишут они по-разному -
+ * облачный (api/_step.mjs) и браузерный (desktop-engine.ts) кладут `tool`, расширение (extension/agent.js)
+ * кладёт `name`. Правило, прочитавшее одно поле, тихо считало бы ноль на веб-кейсах - то есть ровно там,
+ * где проверок больше всего. Идиома та же, что в checksOf (extension/checks.js) и в api/chat.js.
+ *
+ * Отдельной функцией, а не внутри caseVerdict, потому что читателей два и им нужно разное: вердикт этим не
+ * меняется (см. комментарий к caseGoal), а отчёт число называет.
+ *
+ * @param {unknown} steps шаги прогона: [{ name, input }]
+ * @param {unknown} expects утверждения кейса
+ * @returns {number} сколько привязанных проверок оказались в конце
+ */
+/** Имя шага, как его записал ЛЮБОЙ из трёх драйверов. См. lateBound. */
+const named = (step) => str(step && (step.tool || step.name));
+
+export function lateBound(steps, expects) {
+  const want = (Array.isArray(expects) ? expects : []).filter((one) => one && str(one.after));
+  if (!want.length) return 0;
+  const list = Array.isArray(steps) ? steps : [];
+  const key = (one) => `${str(one && one.check)}\u0000${str(one && one.name)}\u0000${str(one && one.text)}`;
+  const bound = new Set(want.map(key));
+
+  let late = 0;
+  for (let i = 0; i < list.length; i++) {
+    const step = list[i];
+    if (!step || typeof step !== 'object' || named(step) !== 'expect') continue;
+    if (!bound.has(key(step.input))) continue;
+    /* Было ли ПОСЛЕ неё хоть одно действие, кроме проверки. finish действием не считается: прогон,
+     * закончившийся проверкой и finish, сделал её в конце. */
+    let acted = false;
+    for (let k = i + 1; k < list.length; k++) {
+      const next = list[k];
+      const name = next && typeof next === 'object' ? named(next) : '';
+      if (!name || name === 'expect' || name === 'finish') continue;
+      acted = true;
+      break;
+    }
+    if (!acted) late++;
+  }
+  return late;
 }
 
 /** Аргументы скилла без служебных ключей: скилл не знает и не должен знать, что его гоняет кейс. */

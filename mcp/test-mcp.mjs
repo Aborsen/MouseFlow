@@ -5304,8 +5304,42 @@ group('тест-кейс: утверждения заранее, вердикт 
     /export function caseGoal/.test(rules) && /const goal = caseGoal\(filled, expects\);/.test(route));
   /* Строка склеена в исходнике, поэтому пин ловит её вторую половину - ту, что несёт смысл. */
   check('и модель обязана вызвать expect, а не решить глазом',
-    /'the expect tool - one call each/.test(rules)
+    /with the expect tool, one call each/.test(rules)
       && /Do not decide any of them by [\s\S]{0,40}?looking at the picture/.test(rules));
+
+  /* 5-v2: МОМЕНТ ПРОВЕРКИ. Утверждение с `after` проверяется по ходу, а не в конце, и цель говорит обе
+   * вещи: КОГДА (рядом с самим утверждением) и ПОЧЕМУ нельзя отложить.
+   *
+   * ПОЧЕМУ ФРАЗА, А НЕ НОМЕР ЧЕКПОИНТА - план пункта 5 предполагал номер, и это оказалось невыполнимо:
+   * чекпоинты приходят параметром в browser-драйвер от мастера Create, у СОХРАНЁННОГО скилла их нет, а
+   * облачный драйвер получает toolsFor(false) - без reached_checkpoint, потому что чекпоинт
+   * останавливает прогон, а на том конце никого нет. Номер указывал бы в пустоту, и этот пин стоит,
+   * чтобы привязка не переехала обратно на номер, не заметив этого. */
+  check('проверка привязывается к МОМЕНТУ, названному фразой',
+    /\[when: \$\{str\(one[.]want[.]after\)\}\]/.test(rules)
+      && /belong to a MOMENT in the work/.test(rules));
+  check('и сказано, почему отложить их на конец - другой тест',
+    /leaving them all to the end is a different test/.test(rules));
+  check('и номера сквозные по кейсу, а не по группе',
+    /const numbered = list[.]map\(\(want, i\) => \(\{ want, n: i \+ 1 \}\)\);/.test(rules));
+  /* И ЭТО НЕ СЛОВО БЕЗ ПОСЛЕДСТВИЙ: привязанная проверка, сделанная в конце, посчитана и названа. */
+  check('запоздавшая привязанная проверка считается',
+    /export function lateBound\(steps, expects\)/.test(rules)
+      && /if \(!acted\) late\+\+;/.test(rules));
+  check('и вердикта она не меняет - названа в отчёте, а не подмешана в вердикт',
+    !/lateBound/.test(rules.slice(rules.indexOf('export function caseVerdict'),
+      rules.indexOf('export const VERDICTS'))));
+  /* ИМЯ ШАГА - `tool || name`: расширение пишет одно, оба десктопных драйвера другое. Правило,
+   * прочитавшее одно поле, тихо считало бы ноль на веб-кейсах. */
+  check('имя шага читается в обеих формах, какие пишут три драйвера',
+    /const named = \(step\) => str\(step && \(step[.]tool \|\| step[.]name\)\);/.test(rules));
+  check('и та же поправка в отчёте тула - иначе он молчал бы о веб-кейсах',
+    /\(step[.]tool \|\| step[.]name\) === 'expect'/.test(read('../api/mcp.js')));
+  /* ЧИСЛО СЧИТАЕТСЯ ТАМ, ГДЕ ШАГИ НА РУКАХ, и в перечень кейсов не едет: шаги весят до сотен килобайт. */
+  check('и считается только у раскрытого прогона, не в перечне',
+    /[.][.][.]\(withSteps \? \{ late: lateBound\(row[.]steps, expects\) \} : \{\}\)/.test(read('../api/cases.js')));
+  check('а утверждения кейса для этого спрашиваются в одном месте',
+    /select expects from user_case/.test(read('../api/cases.js')));
 
   /* СЛУЖЕБНЫЙ КЛЮЧ НЕ ДОЕЗЖАЕТ ДО СКИЛЛА: тем же объектом кормится агент при реплее записи. */
   check('__case снимается до подстановки в цель',

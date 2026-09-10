@@ -97,6 +97,10 @@ const Checks = ({ expects }: { expects: Expect[] }) => (
     {expects.map((one, i) => (
       <Typography key={`${one.check}${one.name}${i}`} variant="p" className="font-mono text-[0.78rem] text-ink-secondary">
         {i + 1}. {expectLine(one)}
+        {/* МОМЕНТ - ТЕМИ ЖЕ СЛОВАМИ, ЧТО В ЦЕЛИ. Модель читает «[when: …]», и человек обязан видеть
+          * ровно это: строка отчёта и строка цели, разошедшиеся формулировкой, - две разные проверки
+          * на вид. */}
+        {one.after ? <span className="text-ink-tertiary"> [when: {one.after}]</span> : null}
       </Typography>
     ))}
   </div>
@@ -137,6 +141,15 @@ const RunRow = ({ run }: { run: CaseRun }) => {
               {run.checks.passed} held · {run.checks.failed} did not · {run.checks.unchecked} could not be checked
             </Typography>
           )}
+          {/* ПРИВЯЗАННАЯ ПРОВЕРКА, СДЕЛАННАЯ ВСЁ РАВНО В КОНЦЕ (5-v2). Вердикта это не меняет - одна
+            * запоздавшая проверка не отменяет найденного дефекта, - но промолчать нельзя: снаружи такой
+            * прогон выглядит честным, а проверял он то, что к концу уже сдвинулось. */}
+          {run.late ? (
+            <Typography variant="p" className="text-[0.78rem] text-fb-attention">
+              {run.late} check{run.late === 1 ? '' : 's'} bound to a moment {run.late === 1 ? 'was' : 'were'}
+              {' '}made at the end anyway — a weaker test than this case says
+            </Typography>
+          ) : null}
           {words.map((word, i) => <StepLine key={`w${i}`} kind="say">{word}</StepLine>)}
           {steps.map((step, i) => (
             <StepLine key={`s${i}`} kind={verdictKind(step)}>
@@ -275,6 +288,16 @@ const NewCase = ({ onMade }: { onMade: (made: Case) => void }) => {
                 placeholder="What it proves — this is what you read in a red report"
                 aria-label="What it proves"
                 className={cn(FIELD, 'max-w-[24rem] flex-1')}
+              />
+              {/* КОГДА. Пусто - в конце прогона, и так работает каждый кейс v1; поэтому поле стоит
+                * последним и ничего не требует. Заполненное - момент, который решает тот, кто видит
+                * экран: у сохранённого скилла плана нет, привязывать к номеру шага было бы нечему. */}
+              <input
+                value={one.after || ''}
+                onChange={(e) => setOne(i, { after: e.target.value })}
+                placeholder="When? — empty means at the end"
+                aria-label="When this is checked"
+                className={cn(FIELD, 'max-w-[18rem] flex-1')}
               />
               {expects.length > 1 && (
                 <Button

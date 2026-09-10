@@ -23,7 +23,7 @@ import { neon } from '@neondatabase/serverless';
 import { whoIsCalling } from './_session.js';
 import { report, wrap } from './_report.js';
 import { cors } from './_cors.mjs';
-import { CASE_KEY, caseVerdict, checksFor, readExpects } from './_case.mjs';
+import { CASE_KEY, caseVerdict, checksFor, lateBound, readExpects } from './_case.mjs';
 import { queueOne } from './_queue.mjs';
 
 const fail = (res, status, message) =>
@@ -59,7 +59,7 @@ const shape = (row, extra = {}) => ({
 });
 
 /** Один прогон кейса - без шагов, если их не просили. */
-const runShape = (row, withSteps) => ({
+const runShape = (row, withSteps, expects) => ({
   id: row.client_id,
   caseId: row.case_id,
   outcome: row.outcome,
@@ -75,6 +75,14 @@ const runShape = (row, withSteps) => ({
     outcome: row.outcome, checks: row.checks, repairs: Number(row.repairs) || 0,
   }),
   ...(withSteps ? { steps: Array.isArray(row.steps) ? row.steps : [], said: Array.isArray(row.said) ? row.said : [] } : {}),
+  /* ПРИВЯЗАННЫЕ ПРОВЕРКИ, СДЕЛАННЫЕ ВСЁ РАВНО В КОНЦЕ - только там, где шаги на руках.
+   *
+   * В перечень кейсов это не едет НАРОЧНО, и по той же причине, по которой там же считается запросом число
+   * починенных шагов: шаги весят до сотен килобайт, и тащить их за одним числом в список из тридцати ночей
+   * значило бы качать мегабайты на страницу. Выражением в SQL это не выписать - правило сопоставляет шаг с
+   * утверждением кейса, - поэтому в списке числа просто нет, и отсутствие здесь значит «не спрашивали», а
+   * не «ноль». */
+  ...(withSteps ? { late: lateBound(row.steps, expects) } : {}),
 });
 
 /* ЧИСЛО ПОЧИНЕННЫХ ШАГОВ считается ЗАПРОСОМ, а не перекачкой шагов в браузер, и выражение выписано в оба
@@ -154,6 +162,16 @@ export async function casesFor(sql, userId) {
 
 /** Прогоны одного кейса - с шагами: это то, что читают, когда разбираются, почему красное. */
 export async function runsForCase(sql, userId, id, limit = RUNS) {
+  /* УТВЕРЖДЕНИЯ КЕЙСА СПРАШИВАЮТСЯ ЗДЕСЬ, а не параметром, и это выбор в пользу одного места: правило
+   * «проверка сделана не в свой момент» сопоставляет шаг с утверждением, а значит нужны оба - и три
+   * вызывающих, каждый со своей копией этого знания, разошлись бы первым же изменением правила. Один
+   * лишний дешёвый select против трёх мест, которые обязаны помнить, что его надо сделать. */
+  const own = await sql`
+    select expects from user_case
+    where id = ${id} and user_id = ${userId} and deleted_at is null
+    limit 1
+  `;
+  const expects = own.length && Array.isArray(own[0].expects) ? own[0].expects : [];
   const rows = await sql`
     select case_id, client_id, outcome, summary, error, checks, steps, said, started_at, finished_at,
            case when jsonb_typeof(steps) = 'array'
@@ -165,7 +183,7 @@ export async function runsForCase(sql, userId, id, limit = RUNS) {
     order by started_at desc nulls last
     limit ${Math.max(1, Math.min(50, Math.round(limit)))}
   `;
-  return rows.map((row) => runShape(row, true));
+  return rows.map((row) => runShape(row, true, expects));
 }
 
 async function list(res, sql, userId) {

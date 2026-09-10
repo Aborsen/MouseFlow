@@ -160,8 +160,8 @@ runs only while its machine is awake and taking work*.
 
 ## What v1 does not do
 
-- **Checks in the middle of a procedure.** All of them run at the end. Binding a check to a checkpoint of a
-  plan is v2 (roadmap item 5-v2) and needs unattended runs to pass their own checkpoints.
+- ~~**Checks in the middle of a procedure.**~~ **Done (5-v2, 2026-09-10)** — see *When a check is made*
+  below. Not the way the roadmap proposed: a check names a **moment in words**, not a checkpoint number.
 - **Repairs.** `passed · repaired` is in the vocabulary and computed, and nothing marks a repaired step yet —
   that is roadmap item 4. It is here because the first repaired run must not arrive in a report as plain
   green.
@@ -173,11 +173,49 @@ runs only while its machine is awake and taking work*.
   survivable — but a selector that matches nothing or several is not yet marked as repaired. That mark is
   roadmap item 4, and the verdict `passed · repaired` is waiting for it.
 
+## When a check is made
+
+By default at the **end** of the run, which is what every case written before 2026-09-10 does and what they
+keep doing. A check may instead name the **moment** it belongs to:
+
+| | |
+|---|---|
+| `check` | `present` |
+| `name` | `Sent Items` |
+| `why` | the reply left the outbox |
+| `after` | **the message has been sent** |
+
+The goal then arrives at the machine in two groups, numbered **continuously across the case** — check 2 is
+the second check *of the case*, whichever group it landed in, because that is the number somebody reads in a
+red report.
+
+**Why this exists at all.** An outbox is empty after it sends. A check on it at the end of the run is a
+different test from a check on it at the moment it mattered, and the first one passes for the wrong reason.
+Anything whose subject moves on belongs to a moment: a progress bar, a toast, a draft before it is saved, a
+row before it is filed.
+
+**Why a sentence and not a checkpoint number.** Roadmap item 5 said "bound to the plan's checkpoints". That
+turned out not to be buildable as written, and the reason is worth keeping: checkpoints reach the browser
+driver as a parameter from the Create wizard (`checkpoints` in `desktop-engine.ts`), a **saved skill carries
+none**, and the unattended cloud driver is handed `toolsFor(false, …)` — no `reached_checkpoint` at all,
+because a checkpoint stops the run until a person answers and on that path there is nobody. A number would
+have pointed at nothing. A sentence needs none of it: the **author of the case** names the moment, and
+whoever can see the screen decides when it has arrived — the same division of labour that already lets the
+model work out where "Sent Items" is.
+
+**And it is not a word without consequences.** Doing every check at the end anyway would look identical in
+a report, so it is counted: a bound check with no action of any kind after it was made at the end, and the
+case's run says so — *"1 check bound to a moment was made at the end anyway — a weaker test than this case
+says"*. It does **not** change the verdict. One late check does not cancel a defect that was found, and
+grey-ing out a green run over ordering would be the same false red as collapsing `blocked` into `fail`.
+The number appears on the run in the Tests page and in `mouseflow_case_results`; it is absent from the case
+list, where the runs' steps are deliberately not shipped.
+
 ## Where the reasoning is written
 
 | | |
 |---|---|
-| `api/_case.mjs` | the four verdicts and their order, the goal text, and why the id travels rather than a copy |
+| `api/_case.mjs` | the four verdicts and their order, the goal text, why the id travels rather than a copy, and why a check's moment is a sentence (`lateBound`, `after`) |
 | `api/_test-case.mjs` | executable: no run without evidence is green, and a failed check is never hidden |
 | `api/cases.js` | the page's door, and why the list asks the database for a count instead of shipping steps |
 | `api/_queue.mjs` | one door into the queue, so *Run now* refuses in the same words the tools do |

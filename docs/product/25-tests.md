@@ -204,6 +204,13 @@ four verdicts, why nothing without evidence is green, and why *no verdict* is gr
 The difference is not only scheduling. A model that decides at run time what to check checks something
 slightly different every night, and a row of nights is then not comparable with itself.
 
+**And a written-down check can name its moment.** `expect` inside a run happens where the run happens; a
+case's check happens at the end unless it says otherwise. Since 2026-09-10 it can: `after` names the moment
+in a sentence — *"the message has been sent"* — and the machine is told to check it then, before going on.
+That matters for anything whose subject moves on: an outbox is empty after it sends, so checking it at the
+end passes for the wrong reason. Bound checks made at the end anyway are counted and said out loud, and do
+not change the verdict. See [27 — Test cases](27-cases.md) → *When a check is made*.
+
 ## Where the reasoning is written
 
 | | |

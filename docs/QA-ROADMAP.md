@@ -83,7 +83,11 @@ window and element rectangles, and a replay puts the point back inside the windo
 by name) are built, tested and live — see
 [25 — Checks and tests](product/25-tests.md) and [27 — Test cases](product/27-cases.md). What 5-v1
 deliberately left for later is listed at the end of page 27: checks bound to a step (5-v2), the repaired-step
-mark (item 4), and choosing the machine (item 7). Remaining order: **4 → 5-v2 → 6 → 7.**
+mark (item 4), and choosing the machine (item 7).
+
+**5-v2 shipped on 2026-09-10** — a check can name the moment it belongs to, and the moment is a sentence
+rather than a checkpoint number (item 5, step 7, says why the plan's own version was not buildable).
+**Remaining order: 6 → 7**, with item 4 parked: see [MEMORY-PLAN.md](MEMORY-PLAN.md).
 
 **2026-09-10.** Two things changed the shape of what comes next; both are written up in
 [MEMORY-PLAN.md](MEMORY-PLAN.md), which a fresh session should read after this section. First, the product
@@ -298,7 +302,16 @@ tonight), and the three new tools do not include running or scheduling — `mous
 4. **Schedule it** with what exists: `mouseflow_schedule` and the Skills strip already take a `flow_id` + `args`; a case row is scheduled by queueing `{ flow_id, args: { …, __case } }`. Add a "Run nightly" button on the case that calls `scheduleAdd` with `at: '02:00'`, `days: 'weekdays'`, the browser's zone.
 5. **Pages.** New route `/tests` (`web/src/features/tests/TestsView.tsx`): case list with the last 10 verdicts as coloured dots and a "last ran / next run" line (from `user_schedule` joined by flow_id + args.__case.id); a case view with its runs (steps, expect lines, artifact thumbnails). Sidebar entry after Skills. Mock fixtures in `web/src/dev/mock-api.ts` for all four verdict kinds.
 6. **Routes and tools.** `api/cases.js` (GET/POST/DELETE, session-scoped, expected-routes pin) and three MCP tools `mouseflow_case` (create from a skill + expects), `mouseflow_cases` (list with last verdicts), `mouseflow_case_results` (one case's history). Update `web/src/features/mcp/facts.ts` and the tool-count pins (15 → 18).
-7. **v2**: per-step expects — `expects[i].after: <checkpoint title>` bound to the plan's checkpoints so a check runs mid-procedure; needs `reached_checkpoint` to work unattended (auto-"go" when no gate) — small change in both drivers.
+7. **v2 — done 2026-09-10, and not as written here.** Per-step expects exist: `expects[i].after` names the
+   **moment** a check belongs to, *as a sentence* ("the message has been sent"). The plan above said "bound
+   to the plan's checkpoints", and that is not buildable: checkpoints reach the browser driver as a
+   parameter from the Create wizard, a **saved skill carries none**, and the unattended cloud driver gets
+   `toolsFor(false, …)` — no `reached_checkpoint`, because a checkpoint stops the run until a person
+   answers and on that path there is nobody. A number would point at nothing. A sentence needs no plan, no
+   driver change and no new field on the wire; the author names the moment and whoever sees the screen
+   decides it has come. Counted so it is not decorative: `lateBound` reports bound checks made at the end
+   anyway, and does **not** touch the verdict. See [27 — Test cases](product/27-cases.md) → *When a check is
+   made*.
 
 **Tests.** `api/_test-case.mjs` for the verdict function (all four outcomes × repairs). Pins: `__case` stripped before `fillGoal`; `case_id` written; the four verdicts rendered with four different words; tools count.
 

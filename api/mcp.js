@@ -485,8 +485,9 @@ const CASE_TOOL = {
       },
       expects: {
         type: 'array',
-        description: 'What must be true at the END of the run - checked one by one with the expect tool. '
-          + 'Say what each one proves: that sentence is what somebody reads in a red report.',
+        description: 'What must be true - checked one by one with the expect tool. Say what each one '
+          + 'proves: that sentence is what somebody reads in a red report. Each is checked at the END of '
+          + 'the run unless it carries `after`, which names the moment it belongs to instead.',
         items: {
           type: 'object',
           properties: {
@@ -506,6 +507,15 @@ const CASE_TOOL = {
             text: { type: 'string', description: 'For value_is and value_contains' },
             process: { type: 'string', description: 'Narrow to a process instead of the window in front' },
             why: { type: 'string', description: 'What this proves, in the case\'s own words' },
+            /* КОГДА проверять - фразой, а не номером чекпоинта: у сохранённого скилла плана нет, а
+             * ночной драйвер получает toolsFor(false) - без reached_checkpoint. См. api/_case.mjs. */
+            after: {
+              type: 'string',
+              description: 'The moment this belongs to, as a sentence - "the message has been sent". '
+                + 'Leave it out for a check that belongs at the end. Use it when the thing being checked '
+                + 'would have moved on by the end: an outbox is empty after it sends, so checking it at '
+                + 'the end is a different test.',
+            },
           },
           required: ['check', 'name', 'why'],
           additionalProperties: false,
@@ -1278,12 +1288,26 @@ async function callTool(sql, who, params, req) {
       if (run.summary) bits.push(`  said: ${run.summary}`);
       if (run.error) bits.push(`  error: ${run.error}`);
       /* ЧТО ИМЕННО НЕ СОШЛОСЬ - словами самого утверждения, из записанных шагов. Иначе красная строка
-       * оставляет человека с числом «1 check failed» и догадкой. */
+       * оставляет человека с числом «1 check failed» и догадкой.
+       *
+       * `tool || name`, А НЕ `tool`: расширение пишет имя шага в `name` (extension/agent.js), оба
+       * десктопных драйвера - в `tool`. Читая одно поле, эта строка молчала о ВЕБ-кейсах - то есть о той
+       * половине, где проверок больше всего, и молчала бы тем убедительнее, чем больше их там становится.
+       * Та же идиома, что в checksOf (extension/checks.js) и в lateBound (api/_case.mjs). */
       const failed = (Array.isArray(run.steps) ? run.steps : [])
-        .filter((step) => step && step.tool === 'expect' && step.outcome && step.outcome.pass === false)
+        .filter((step) => step && (step.tool || step.name) === 'expect'
+          && step.outcome && step.outcome.pass === false)
         .map((step) => `    ${expectLine(step.input || {})} -> ${step.outcome.evidence || 'did not hold'}`
           + `${step.outcome.how ? ` (${step.outcome.how})` : ''}`);
       if (failed.length) bits.push('  did not hold:', ...failed);
+      /* ПРОВЕРКА, ПРИВЯЗАННАЯ К МОМЕНТУ И СДЕЛАННАЯ ВСЁ РАВНО В КОНЦЕ. Названа, но вердикта не меняет:
+       * одна запоздавшая проверка не отменяет найденного дефекта - а промолчать о ней значило бы сделать
+       * `after` украшением, потому что снаружи такой прогон выглядит как честный. */
+      if (run.late > 0) {
+        bits.push(`  ${run.late} check${run.late === 1 ? '' : 's'} bound to a moment `
+          + `${run.late === 1 ? 'was' : 'were'} made at the end anyway - what they check had moved on by `
+          + 'then, so this ran as a weaker test than it says');
+      }
       if (run.checks) {
         bits.push(`  checks: ${run.checks.passed} held, ${run.checks.failed} did not, `
           + `${run.checks.unchecked} could not be checked`);

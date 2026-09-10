@@ -11,8 +11,8 @@
  * Run: node api/_test-case.mjs
  */
 import {
-  CASE_KEY, EXPECTS_MAX, VERDICTS, caseGoal, caseIdOf, caseVerdict, expectLine, readExpects, repairsOf,
-  stripCase, tallyOf, verdictSaid,
+  CASE_KEY, EXPECTS_MAX, VERDICTS, caseGoal, caseIdOf, caseVerdict, expectLine, lateBound, readExpects,
+  repairsOf, stripCase, tallyOf, verdictSaid,
 } from './_case.mjs';
 
 let pass = 0;
@@ -166,6 +166,81 @@ group('служебный ключ не доезжает до скилла');
   check('скилл получает только свои аргументы',
     Object.keys(clean).join(',') === 'who' && clean.who === 'Ann', Object.keys(clean).join(','));
   check('и ничего не ломается на мусоре', Object.keys(stripCase(null)).length === 0);
+}
+
+group('МОМЕНТ ПРОВЕРКИ - 5-v2: часть утверждений проверяется по ходу, а не в конце');
+{
+  /* ПОЧЕМУ ФРАЗА, А НЕ НОМЕР ЧЕКПОИНТА, написано в _case.mjs: у сохранённого скилла плана нет, а
+   * облачный драйвер получает toolsFor(false) - без reached_checkpoint, потому что чекпоинт
+   * останавливает прогон, а на том конце никого. Номер указывал бы в пустоту. */
+  const bound = { check: 'present', name: 'Sent Items', why: 'the reply left the outbox',
+    after: 'the message has been sent' };
+  const atEnd = { check: 'value_is', name: 'Subject', text: 'Re: hi', why: 'it kept the subject' };
+  const kinds = ['present', 'value_is'];
+
+  const read = readExpects([bound, atEnd], kinds);
+  check('момент принимается и сохраняется', read.expects[0].after === 'the message has been sent',
+    JSON.stringify(read.expects[0]));
+  check('а без момента поля нет вовсе - отсутствие остаётся отсутствием',
+    !('after' in read.expects[1]), JSON.stringify(read.expects[1]));
+  /* СТАРЫЙ КЕЙС НЕ МЕНЯЕТ ПОВЕДЕНИЯ: v1 писал утверждения без момента, и они по-прежнему в конце. */
+  const v1 = caseGoal('Reply to Ann', [atEnd]);
+  check('кейс без моментов не упоминает их ни словом',
+    !/MOMENT|when:/.test(v1) && /When the goal above is done/.test(v1), v1.slice(0, 120));
+
+  const goal = caseGoal('Reply to Ann', read.expects);
+  check('в цели две группы, и обе названы',
+    /belong to a MOMENT/.test(goal) && /And these belong to the end/.test(goal));
+  check('момент напечатан рядом со своим утверждением',
+    /1[.] present "Sent Items".*\[when: the message has been sent\]/.test(goal),
+    (goal.match(/^1[.].*$/m) || [])[0]);
+  /* НУМЕРАЦИЯ СКВОЗНАЯ. «Проверка 2» в отчёте обязана значить вторую В КЕЙСЕ, а не вторую в группе -
+   * иначе красная строка отчёта указывает не на то утверждение, которое не сошлось. */
+  check('нумерация сквозная по кейсу, а не по группе',
+    /^2[.] value_is "Subject"/m.test(goal), (goal.match(/^2[.].*$/m) || [])[0]);
+  /* И МОДЕЛИ СКАЗАНО, ЧТО ОТЛОЖИТЬ ИХ НА КОНЕЦ - ДРУГОЙ ТЕСТ. Без этой фразы `after` был бы намёком. */
+  check('и сказано, почему нельзя отложить на конец',
+    /leaving them all to the end is a different test/.test(goal));
+
+  /* ВСЕ УТВЕРЖДЕНИЯ ПРИВЯЗАНЫ - тогда группы конца нет, и фраза про конец не печатается. */
+  const allBound = caseGoal('Reply to Ann', readExpects([bound], kinds).expects);
+  check('кейс целиком из привязанных не выдумывает группу конца',
+    /belong to a MOMENT/.test(allBound) && !/belong to the end/.test(allBound));
+}
+
+group('И ПРИВЯЗКА НЕ СЛОВО БЕЗ ПОСЛЕДСТВИЙ: проверка, сделанная всё равно в конце, посчитана');
+{
+  /* Сделать все проверки в конце - другой тест, чем сделать их по ходу: «Sent Items» пуста до отправки
+   * и после неё же и проверяется. Признак: за проверкой «на месте» следует хоть одно ДЕЙСТВИЕ. */
+  const expects = [
+    { check: 'present', name: 'Sent Items', why: 'x', after: 'the message has been sent' },
+    { check: 'value_is', name: 'Subject', text: 'Re: hi', why: 'y' },
+  ];
+  const step = (name, input = {}) => ({ name, input });
+  const sent = { check: 'present', name: 'Sent Items' };
+  const subj = { check: 'value_is', name: 'Subject', text: 'Re: hi' };
+
+  check('за привязанной проверкой было действие - она на месте',
+    lateBound([step('click'), step('expect', sent), step('click'), step('expect', subj),
+      step('finish')], expects) === 0);
+  check('а если после неё только проверки и finish - она в конце',
+    lateBound([step('click'), step('expect', sent), step('expect', subj), step('finish')],
+      expects) === 1);
+  /* finish ДЕЙСТВИЕМ НЕ СЧИТАЕТСЯ: прогон, кончившийся проверкой и finish, сделал её в конце. */
+  check('finish не спасает проверку от «в конце»',
+    lateBound([step('click'), step('expect', sent), step('finish')], expects) === 1);
+  /* НЕПРИВЯЗАННЫЕ НЕ СЧИТАЮТСЯ НИКОГДА: их место - конец, это и есть их правило. */
+  check('проверка без момента в счёт не идёт',
+    lateBound([step('expect', subj), step('finish')], [expects[1]]) === 0);
+  check('и кейс без моментов не считается вовсе',
+    lateBound([step('expect', subj), step('finish')], []) === 0);
+  check('мусор на входе отвечает нулём, а не падает',
+    lateBound(null, expects) === 0 && lateBound([], null) === 0);
+
+  /* И ВЕРДИКТ ЭТИМ НЕ МЕНЯЕТСЯ. Одна запоздавшая проверка не отменяет найденного дефекта и не красит
+   * зелёное в серое: отчёт число называет, вердикт считается по доказательствам. */
+  check('вердикт от запоздавшей проверки не меняется',
+    caseVerdict({ outcome: 'ok', checks: checks(2), steps: [] }) === 'pass');
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
