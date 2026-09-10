@@ -1442,18 +1442,59 @@ group('нажатие по имени - ход, снятый целиком, и 
   check('и первым идёт именно clickname',
     batch.actions[0].body.startsWith('action=clickname '), batch.actions[0].body);
 
-  /* А ВТОРЫМ ПРИЦЕЛЬНЫМ - НЕТ, и правило пачки для этого не менялось: click_named стоит в нём ровно там,
-   * где click. Это осознанное решение - см. QA-ROADMAP §6: разрешить ему идти вторым это отдельный
-   * выигрыш и отдельный риск, и пункт просил не менять закрепления корректности. */
+  /* И ВТОРЫМ - ТОЖЕ МОЖНО, что и есть вторая половина рычага: «напечатай значение, потом нажми
+   * Сохранить» - один ход, на каждой форме. Разрешено потому, что список запрещает целиться вторым, а не
+   * жать вторым: у click_named цель - имя, и разрешает его агент в момент выполнения. */
+  const askAfter = scripted([answer([
+    use('type_text', { text: '42' }, 'tt'),
+    use('click_named', { name: 'Save' }, 'tn'),
+  ])]);
+  const after = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask: askAfter,
+  });
+  check('набор, а потом нажатие по имени - ОДИН ход',
+    after.actions.length === 2, JSON.stringify(after.actions.map((a) => a.body)));
+  check('и вторым уехало именно clickname',
+    after.actions[1].body.startsWith('action=clickname '), after.actions[1].body);
+
+  /* А ВОТ ЧТО ОСТАЛОСЬ НЕТРОНУТЫМ, и это здесь важнее нового: целиться вторым по-прежнему нельзя. Слепой
+   * второй клик по КООРДИНАТЕ - это клик по тому, что было на месте цели полсекунды назад, и разрешение
+   * для click_named не имеет к этому никакого отношения. */
   const askTwo = scripted([answer([
     use('click', { x: 10, y: 20 }, 'tc1'),
-    use('click_named', { name: 'Save' }, 'tc2'),
+    use('click', { x: 30, y: 40 }, 'tc2'),
   ])]);
   const two = await advance({
     loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask: askTwo,
   });
-  check('второе прицельное действие в том же ходу по-прежнему не выполняется',
+  check('а второй клик ПО КООРДИНАТЕ в том же ходу по-прежнему не выполняется',
     two.actions.length === 1, JSON.stringify(two.actions.map((a) => a.body)));
+
+  /* И ПОСЛЕ НЕГО - тоже нельзя целиться: click_named не TERMINAL, поэтому набор за ним идёт, но клик по
+   * точке за ним не идёт, потому что нажатие меняет экран, а точка приехала из прежней картинки. */
+  const askThen = scripted([answer([
+    use('click_named', { name: 'Save' }, 'tn1'),
+    use('click', { x: 10, y: 20 }, 'tc3'),
+  ])]);
+  const then = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask: askThen,
+  });
+  check('и после нажатия по имени клик по координате в том же ходу не выполняется',
+    then.actions.length === 1, JSON.stringify(then.actions.map((a) => a.body)));
+
+  /* И НИЧЕГО НЕ ИДЁТ ЗА TERMINAL - разрешение не проделало дыру в этой половине правила: после
+   * activate_window окно могло и не найтись, и тогда нажатие по имени уехало бы искать его в чужом
+   * приложении. */
+  const askAfterTerminal = scripted([answer([
+    use('activate_window', { title: 'Excel' }, 'ta'),
+    use('click_named', { name: 'Save' }, 'tn2'),
+  ])]);
+  const afterTerminal = await advance({
+    loop: start(), shot: SHOT, windows: WINDOWS, results: [], caps, ask: askAfterTerminal,
+  });
+  check('после activate_window нажатие по имени в том же ходу не выполняется',
+    afterTerminal.actions.length === 1,
+    JSON.stringify(afterTerminal.actions.map((a) => a.body)));
 
   /* И ОТКАЗ АГЕНТА - ЭТО ОТВЕТ, А НЕ ПОТЕРЯННЫЙ ХОД: агент говорит, почему не нажал, и модель читает это
    * как результат шага. Проверяется, что текст доезжает до неё целиком. */

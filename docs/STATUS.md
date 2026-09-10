@@ -86,7 +86,8 @@ desktop*, which is the pattern worth keeping — none of them were visible from 
 | `53fb0a4` | [`MEMORY-PLAN.md`](MEMORY-PLAN.md) |
 | `4e9f017` | **Roadmap item 5-v2**: a case's check can name the moment it belongs to |
 | `6711318` | **Roadmap item 6, lever 1**: the turn's unchanging prefix is cached; two of the item's five levers dropped on measurement |
-| *this one* | **Roadmap item 6, lever 2**: `click_named` — one action where "find the button, then click it" was two turns. Agents at 0.28.0 |
+| `86aed7e` | **Roadmap item 6, lever 2**: `click_named` — one action where "find the button, then click it" was two turns. Agents at 0.28.0 |
+| *this one* | …and it may go **second** in a turn, so "type the value, then click Save" is one turn too. The owner's decision; the batch rule's one pressing exception |
 
 ### The two things worth carrying forward from that work
 
@@ -147,12 +148,14 @@ deliberately left on the table, is written up in [`QA-ROADMAP.md`](QA-ROADMAP.md
   cannot be checked today: the thirty-day window still holds mostly runs decided before caching and before
   `click_named`. Read **two** numbers then — the median (which is where lever 1 shows) and **steps per
   successful run** (which is where lever 2 shows). Queries are in §6.
-- **Whether `click_named` may go SECOND in a turn.** It currently sits in the batch rule exactly where
-  `click` does, so "click Search, type, press Enter" is one turn. Letting it also *follow* another action
-  would make "type the value, then click Save" one turn on every form. The argument is strong and the
-  change is one line — but the batch rule is what holds "never aim blind", and item 6 asked that no
-  correctness pin change, so it was left as a decision rather than taken in passing. Pinned by absence, so
-  nobody makes it by accident.
+- ~~Whether `click_named` may go second in a turn.~~ **Decided yes, same day, by the owner** — so "type
+  the value, then click Save" is one turn, on every form. It is the only pressing action in `BATCHABLE`,
+  and the reason it belongs there is that the set forbids **aiming** second, not pressing second: a
+  coordinate came from the picture handed out at the start of the turn, while `click_named` resolves its
+  target in the agent at the moment it runs. The remaining risk is semantic and is held where it always
+  was — by the prompt's "no one-way action in a batch", the same rule that has always covered `press_key`
+  with Enter. **The suite says the exception is narrow:** adding `click_named` broke no existing check,
+  while adding `click` to the same set turns thirteen red.
 
 **Next, in order of value rather than roadmap number:**
 

@@ -190,6 +190,32 @@ must never disagree about what they found. The tool is offered **only where the 
 says so** — an absent flag means "too old to say" and is read as "do not offer", since a tool the agent
 cannot perform costs precisely the turn this was added to save.
 
+**And it is the one pressing action that may go SECOND in a turn** — so "type the value, then click Save" is
+one turn, on every form. That is a deliberate exception to the batch rule, and the reason it is safe is
+worth stating precisely, because the rule looks like it forbids this.
+
+What `BATCHABLE` forbids is not *pressing* second but **aiming** second. A coordinate came from the
+screenshot handed out at the start of the turn, and the first action may already have made it untrue: a
+blind second click lands on whatever was at the target's place half a second ago. That is why `click`,
+`hover`, `scroll` and `drag` are not in that set. `click_named` has no point at all — the name is
+resolved *in the agent*, at the moment it runs, against the live tree of the window in front — so the
+prohibition does not apply to it by reason, not merely by form.
+
+The risk that remains is a different one, and it is named rather than left to be discovered: the model
+decided "click Save" while looking at the earlier screen, and by the time it runs "Save" may mean something
+else. That is a risk of *meaning*, not of aim, and it is held where it has always been held — by the
+prompt's "do not put a one-way action in a batch", exactly as that rule has always held `press_key` with
+Enter, which has been batchable from the start and can just as easily send an email. There is no code for
+"do not blindly press what cannot be undone", and there cannot be: nothing about a press says whether it
+sends a message or searches Google.
+
+Two things make the exception narrow. Nothing aimed may follow `click_named` either — it changes the
+screen, so a coordinate after it is stale again. And nothing follows a `TERMINAL` action at all, so
+`activate_window` then `click_named` is still two turns: the window may not have been found, and the name
+would then be looked for in the wrong application. The evidence that the exception is narrow is in the
+suite: adding `click_named` to `BATCHABLE` breaks nothing, while adding `click` to it turns **thirteen**
+existing checks red.
+
 ### Shape
 
 The constants live in `api/_brain.mjs`, and both drivers read them from there.

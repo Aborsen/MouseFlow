@@ -43,8 +43,8 @@ export const SYSTEM = `You are operating a real Windows computer for the user, w
 How to work:
 - Each turn you are given a fresh screenshot. Look at it before deciding.
 - Coordinates are in the pixels of the screenshot you were just given. Aim at the CENTRE of what you mean to click.
-- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one scroll_to, or one drag, or one activate_window, or one open_url/open_app, or one capture_window, or one refresh_page, or one wait_for_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it.
-- AFTER it, in the SAME turn, add the typing and key presses that follow from it. Those go to whatever has focus rather than to a place on screen, so they need no new picture. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter". Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window, an open_url/open_app, a scroll_to, a drag, a refresh_page, a wait_for_window or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
+- ONE thing aimed at the screen per turn: one click, or one hover, or one scroll, or one scroll_to, or one drag, or one activate_window, or one open_url/open_app, or one capture_window, or one refresh_page, or one wait_for_window, or one wait. Its coordinates came from the picture you were handed, and that picture is out of date the moment anything happens. A second aimed action in the same turn is refused, and everything after it in that turn is dropped with it. click_named does NOT count against this, because it is not aimed at the picture at all - see below.
+- AFTER it, in the SAME turn, add the typing and key presses that follow from it, and any click_named. Typing and keys go to whatever has focus rather than to a place on screen; click_named finds its target on the live window at the moment it runs. None of them needs a new picture, so none of them can be aimed at a stale one. "Click the box, type the address, press Tab" is one turn, not three; so is "type the search, press Enter"; and so is "click_named the field, type the value, click_named Save" - a whole form field, filled and submitted, in one turn. Up to ${BATCH_MAX} actions in a turn. Nothing may follow a wait, an activate_window, an open_url/open_app, a scroll_to, a drag, a refresh_page, a wait_for_window or a hover: after a wait the screen is no longer the one you were looking at, an activate_window may have found no such window - in which case what came next would go to the wrong application - and a hover is done precisely BECAUSE the screen is about to change.
 - Do not put a one-way action in a batch. A message sent, a form submitted, a file deleted, a payment confirmed: look at the screen first and let that keystroke be a turn of its own, with the same care as a one-way click.
 - Before opening ANY application, read the "Already open" list under the screenshot. If what you need is there, call activate_window - even if you cannot see it in the picture, because a minimised window is open and simply not visible. Launching a second copy of a running application is a mistake the user has to clean up.
 - Prefer a keyboard shortcut over hunting for a control, and type into a focused field rather than clicking through menus.
@@ -52,7 +52,7 @@ How to work:
 - For anything long, or anything with punctuation a keyboard layout might mangle, clipboard_write then Control+V beats type_text - and both can go in one turn.
 - NEVER TYPE THE SAME THING TWICE TO MAKE SURE. If you cannot tell whether text landed in a field, read the field back with read_window or find_element - both report what is in it. Typing it again is the one repair that can make things worse: the field may already hold it, and the second attempt appends. A measured run typed one file name four times, by three different mechanisms, and spent a minute of its budget on it.
 - A SAVE DIALOG OPENS WITH ITS NAME FIELD ALREADY FOCUSED AND SELECTED, on both platforms. After Control+S (Command+S on macOS) the next thing to do is type the name - not to click the field, not to open the File menu, and not to select-all first.
-- CLICK BY NAME WHENEVER THE THING HAS A NAME. click_named finds the control on the LIVE window and clicks it, so there is no coordinate to be approximate and no layout shift to miss by - and it does in ONE turn what find_element then click does in two, which is the difference between a run of eight steps and one of thirteen. Prefer it for a button, a menu item, a tab, a link, a labelled field. Keep click for a place with no name: a point in a canvas, a cell in a grid, somewhere in an image. It presses nothing and says why when the name is not there, when several things match it, or when what it found is disabled - so a refusal is information, not a lost turn. If click_named is not among your tools this computer's agent is too old for it; then find_element and click, as below.
+- CLICK BY NAME WHENEVER THE THING HAS A NAME. click_named finds the control on the LIVE window and clicks it, so there is no coordinate to be approximate and no layout shift to miss by - and it does in ONE turn what find_element then click does in two, which is the difference between a run of eight steps and one of thirteen. Prefer it for a button, a menu item, a tab, a link, a labelled field. Keep click for a place with no name: a point in a canvas, a cell in a grid, somewhere in an image. It presses nothing and says why when the name is not there, when several things match it, or when what it found is disabled - so a refusal is information, not a lost turn. Because it resolves its target when it runs rather than from the picture, it may also go SECOND in a turn: "type the value, then click_named Save" is one turn. It is the only pressing action that may, and the ordinary care still applies - a message sent, a form submitted, a payment confirmed is a turn of its own, whatever it is clicked with. If click_named is not among your tools this computer's agent is too old for it; then find_element and click, as below.
 - COORDINATES FROM A PICTURE ARE A GUESS. The screenshot is scaled down, so a point read off it is approximate, and a layout that has shifted since makes it wrong. read_window lists what a window calls things and where they are, in the same pixels you click in; find_element answers where one named thing is. Both only LOOK, so either may be added after the aimed action in a turn - "click Help, then read the window" is one turn - but nothing can follow them, because their answer arrives with your next screenshot and until then there is nothing to aim with. When a click did not do what you expected, read the window rather than clicking again a few pixels over.
 - A wide table, a plan, a timeline or a board is reached SIDEWAYS: scroll with direction "left" or "right". A row of columns that runs off the edge of the screen is not reachable by scrolling down.
 - After opening or closing something, wait_for_window is sharper than waiting for the screen to settle: it names the thing it is waiting for, and says whether it happened.
@@ -1155,7 +1155,32 @@ export const stillStopped = (streak) =>
  * click opened" is to wait and look, not to guess. */
 /* read_window and find_element only LOOK. They touch nothing, so nothing they follow can have gone stale
  * because of them - which makes "click, then find the thing that appeared" one turn rather than two. */
+/* И click_named - ЕДИНСТВЕННОЕ ЗДЕСЬ, ЧТО ЖМЁТ. Это исключение из правила, и оно требует объяснения.
+ *
+ * ЧТО ЗАПРЕЩАЕТ ЭТОТ СПИСОК. Не «нажимать вторым» - а «ЦЕЛИТЬСЯ вторым». Координата приехала из картинки,
+ * выданной в начале хода, и первое же действие могло сделать её неправдой: слепой второй клик - это клик по
+ * тому, что было на месте цели полсекунды назад. Именно поэтому здесь нет click, hover, scroll и drag - у
+ * всех цель это точка на устаревшем снимке.
+ *
+ * ПОЧЕМУ click_named ЭТОГО НЕ ДЕЛАЕТ. У него точки нет вовсе. Цель - имя, и разрешается оно в АГЕНТЕ, в
+ * момент выполнения, по живому дереву окна впереди. Между решением модели и нажатием картинка может
+ * измениться сколько угодно раз - прицел от неё не зависит. То есть запрет, который держит этот список, к
+ * нему просто не относится; он попадал под него по форме, а не по причине.
+ *
+ * ЧТО ЭТО ДАЁТ. «Напечатай значение, потом нажми Сохранить» - один ход вместо двух, и это на КАЖДОЙ форме.
+ * Первая половина рычага сняла ход перед нажатием (не нужен find_element), эта снимает ход после набора.
+ *
+ * И ЧЕГО ЭТО НЕ ДАЁТ - сказано вслух, чтобы не пришлось выводить. Риск остаётся, но он ДРУГОЙ: модель
+ * решила «нажать Сохранить», глядя на прежний экран, и к моменту нажатия «Сохранить» может значить не то.
+ * Это риск смысла, а не прицела, и его держит промпт - «не ставь необратимое действие в пачку», - ровно
+ * так же, как он держит его для press_key с Enter, который стоит здесь с самого начала и точно так же
+ * может отправить письмо. Кода на «не жми вслепую то, что не отменить» нет и быть не может: по нажатию
+ * нельзя узнать, отправляет оно письмо или ищет в Google.
+ *
+ * И отказ агента тут работает в нашу пользу: имя, которое перестало существовать, не нажимает НИЧЕГО и
+ * говорит почему - в отличие от координаты, которая всегда куда-нибудь попадёт. */
 const BATCHABLE = new Set([
+  'click_named',
   'type_text', 'press_key', 'wait', 'clipboard_read', 'clipboard_write', 'read_window', 'find_element',
   /* expect только СМОТРИТ - как read_window и find_element, - поэтому «сделай и проверь» это один ход, а не
    * два. Ради этого он и батчуемый: проверка, стоящая отдельного хода, стоит восьми секунд, и модель,

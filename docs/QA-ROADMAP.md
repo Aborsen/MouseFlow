@@ -375,16 +375,25 @@ where r.kind = 'agent' and s->'ms' is not null and r.started_at > now() - interv
    reason. Three cases refuse to press rather than reporting `done` for nothing: no such name, several
    matches, the control disabled.
 
-   **What was deliberately NOT done, and it is a real lever left on the table.** `click_named` sits in the
-   batch rule exactly where `click` sits — first in a turn, with typing and keys allowed after it. So
-   "click Search, type the query, press Enter" is one turn, and the two-turn pair is gone. Making it
-   `BATCHABLE` as well — letting it go *second*, so "type the value, then click Save" is also one turn —
-   is a further win on every form. It was not taken because the batch rule is what holds "never aim
-   blind", and this item's own done-condition says no correctness pin changed. The argument for it is
-   strong (a name is resolved live at execution, so the stale-picture failure the rule guards cannot
-   happen — what remains is the semantic risk the prompt's "no one-way action in a batch" already covers),
-   and it is one line plus its pins. **Left as a decision with a measurement rather than a drive-by
-   change**, and pinned by absence so nobody makes it by accident. Original text: Today "find the button, then click it" is two turns because `click` is aimed at the picture. Add `click_named` (agent action `action=clickname title=<name> [process=]`, flag `canClickName`): the agent resolves and clicks in ~30 ms. Expect a third of turns on form-heavy goals to disappear. Both agents; brain tool offered only when the flag is present (`toolsFor` already filters tools by situation — extend it).
+   **And the second half, taken on the owner's decision the same day:** `click_named` is in `BATCHABLE`,
+   so it may go *second* in a turn — "type the value, then click Save" is one turn, on every form. It is
+   the only pressing action allowed there, and the reason it is allowed is that the set forbids **aiming**
+   second rather than pressing second: a coordinate came from the picture handed out at the start of the
+   turn and the first action may have made it untrue, whereas `click_named` resolves its target in the
+   agent at the moment it runs. The prohibition does not apply to it by reason, not just by form.
+
+   The remaining risk is *semantic* — the model chose "Save" while looking at the earlier screen — and it
+   is held where it always was, by the prompt's "no one-way action in a batch", which has held exactly
+   that risk for `press_key` with Enter since the beginning. There is no code for it and cannot be:
+   nothing about a press says whether it sends a message or searches Google.
+
+   **The exception is narrow, and the suite is what says so.** Adding `click_named` to `BATCHABLE` broke
+   no existing check; adding `click` to it turns **thirteen** red — the eleven that already defended
+   "never aim blind" plus the two new ones. Nothing aimed may follow `click_named` either, and nothing at
+   all may follow a `TERMINAL` action, so `activate_window` then `click_named` is still two turns.
+   Pinned by execution in `api/_test-step.mjs`: typing then `click_named` is one turn; a second
+   *coordinate* click is still refused; a coordinate click after `click_named` is refused; and
+   `click_named` after `activate_window` is refused. Original text: Today "find the button, then click it" is two turns because `click` is aimed at the picture. Add `click_named` (agent action `action=clickname title=<name> [process=]`, flag `canClickName`): the agent resolves and clicks in ~30 ms. Expect a third of turns on form-heavy goals to disappear. Both agents; brain tool offered only when the flag is present (`toolsFor` already filters tools by situation — extend it).
 3. **DROPPED on the measurement (2026-09-10).** The screenshot median is **196 ms** — under 4 % of a turn.
    Two days of work to chase it, and the risk is a model reading a smaller picture than it needed. Do not
    revive this without a new measurement showing the shot has become expensive. Original text: `MIN_SHOT_W` and `shotWidth` already exist on the loop (`shrink`). Policy: after any turn in which the model used `read_window`/`find_element`/`expect` successfully, request the next frame at 960 px; go back to `DEFAULT_SHOT_W` after a click that changed the screen.
