@@ -41,6 +41,8 @@ address or a document title, and a gallery is public.
 | `source` | `web` \| `desktop` — **which half can run it.** Defaulted to `web` when the column was added, because everything that existed then came from the extension |
 | `name`, `description` | |
 | `payload` | jsonb — the whole thing, in the format `extension/skills.js` owns. For a recorded flow the payload's events **are** the pointer path, clicks and scrolls |
+| `payload.format` | `mouseflow.skill/2` on anything made since 2026-09-11, `mouseflow.skill/1` on anything older or imported as such. **Both are read, the newest is written, and the stored one is never rewritten** — an export has to return what was imported, and stamping `/2` on a `/1` would promise a reader a tier the file does not have |
+| `payload.procedure` | On a `/2` recorded flow: the work in sentences — `{ whenToUse, steps[], pitfalls[], verification[] }`. A row is a valid recorded skill with a procedure **or** events: the first reads as a document, the second replays, and only having neither is refused. See [06 — Skills](06-skills.md) |
 | `origins` | text[] |
 | `created_at`, `updated_at` | |
 | `deleted_at` | **tombstone**, so a delete on one machine can propagate instead of the flow reappearing from the next machine that syncs |

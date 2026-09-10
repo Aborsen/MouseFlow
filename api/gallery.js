@@ -17,7 +17,7 @@
  */
 
 import { neon } from '@neondatabase/serverless';
-import { SKILL_FORMAT } from './_gallery-skill.mjs';
+import { SKILL_FORMAT, SKILL_FORMATS_READ } from './_gallery-skill.mjs';
 /* Server-side crashes reach Sentry from here. See api/_report.js — no dependency, and it
  * deliberately sends the route and the message, never the query string or the body. */
 import { report, wrap } from './_report.js';
@@ -225,13 +225,21 @@ async function publish(req, res, sql) {
    * is. */
   /* Строка одна на обе половины продукта - см. api/_gallery-skill.mjs. Здесь она стояла литералом, а
    * ставило её только расширение, так что приложение получало этот отказ на каждый свой скилл. */
-  if (payload.format !== SKILL_FORMAT) {
-    return fail(res, 400, 'unrecognised skill format — this needs a skill in the '
-      + SKILL_FORMAT + ' shape');
+  if (!SKILL_FORMATS_READ.includes(payload.format)) {
+    return fail(res, 400, 'unrecognised skill format — this reads '
+      + SKILL_FORMATS_READ.join(' and ') + ', and writes ' + SKILL_FORMAT);
   }
   const kind = payload.kind === 'created' ? 'created' : 'recorded';
-  if (kind === 'recorded' && (!Array.isArray(payload.events) || !payload.events.length)) {
-    return fail(res, 400, 'a recorded skill needs steps in it');
+  /* ПРОЦЕДУРА **ИЛИ** СОБЫТИЯ, а не события. С `/2` у записанного скилла содержимого два вида, и каждый
+   * сам по себе - скилл: процедура без событий ЧИТАЕТСЯ, и это весь продукт-документация; события без
+   * процедуры ИГРАЮТСЯ, и это каждый `/1`, который уже у кого-то лежит. Требовать событий значило бы
+   * отказывать документу за то, что он документ. Отвергается ровно то, в чём нет ни того, ни другого. */
+  const hasSteps = Array.isArray(payload.events) && payload.events.length > 0;
+  const hasWords = !!(payload.procedure && typeof payload.procedure === 'object'
+    && Array.isArray(payload.procedure.steps) && payload.procedure.steps.length > 0);
+  if (kind === 'recorded' && !hasSteps && !hasWords) {
+    return fail(res, 400, 'a recorded skill needs something in it - a procedure to read, or recorded '
+      + 'steps to replay');
   }
   if (kind === 'created' && !String(payload.goalTemplate || '').trim()) {
     return fail(res, 400, 'a created skill needs a goal in it');

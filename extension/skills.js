@@ -21,7 +21,22 @@
  * matters for the part of the product intended to leave one machine and arrive on another.
  */
 
-export const SKILL_FORMAT = 'mouseflow.skill/1';
+import { hasProcedure, procedureFrom } from './procedure.js';
+
+/* ЧТО ПИШЕТСЯ - и что ЧИТАЕТСЯ, а это разные списки, и разделение здесь главное.
+ *
+ * `/2` добавляет уровень 1 - процедуру словами: что этот навык делает, предложениями. Тем самым один
+ * артефакт начинает служить обоим продуктам - `steps` читаются как документ, `verification` исполняется
+ * как проверки, - и до этого у продукта-документации артефакта не было вовсе.
+ *
+ * `/1` ОСТАЁТСЯ ЧИТАЕМЫМ НАВСЕГДА, и это не вежливость, а свойство формата обмена. Навык уже уехал с
+ * чьей-то машины в файле; отказаться его читать - значит сломать то, что человек считает своим. Поэтому
+ * пишем всегда последний формат, а принимаем оба, и `/1` на чтении ДОПОЛНЯЕТСЯ процедурой, выведенной из
+ * его же событий, а не переписывается.
+ *
+ * Порядок в списке - от нового к старому, чтобы отказ называл первым тот формат, который стоит иметь. */
+export const SKILL_FORMAT = 'mouseflow.skill/2';
+export const SKILL_FORMATS_READ = ['mouseflow.skill/2', 'mouseflow.skill/1'];
 
 /* ------------------------------------------------------------------------ parameters */
 
@@ -164,6 +179,8 @@ function slug(text) {
 
 export function skillFromRecording(rec, now) {
   const events = rec.events || [];
+  const origins = rec.origins || [];
+  const params = blanksOf(events);
   return {
     format: SKILL_FORMAT,
     id: id(),
@@ -171,10 +188,18 @@ export function skillFromRecording(rec, now) {
     name: rec.name || suggestName('recording'),
     description: describeRecording(events, rec.tabs),
     created: now,
-    origins: rec.origins || [],
+    origins,
     tabs: rec.tabs || 1,
     events,
-    params: blanksOf(events),
+    params,
+    /* УРОВЕНЬ 1: ЧТО ЭТО ДЕЛАЕТ, СЛОВАМИ. Выводится ЗДЕСЬ, в момент создания, а не при показе - потому
+     * что события у нас в руках именно сейчас, и потому что процедура должна уехать вместе с навыком: тот,
+     * кому его передали, читает документ, а не запускает макрос, чтобы узнать, что тот делает.
+     *
+     * `params` передаются внутрь, а не выводятся там заново: шаг, называющий параметр, обязан называть
+     * ТОТ параметр, который человеку предложит форма запуска. Два вывода одного имени - это документ,
+     * обещающий поле, которого в форме нет. */
+    procedure: procedureFrom(events, { origins, params }),
   };
 }
 
@@ -267,13 +292,15 @@ export function importSkills(text) {
   const out = [];
   for (const raw of list) {
     if (!raw || typeof raw !== 'object') continue;
-    if (raw.format !== SKILL_FORMAT) {
+    if (!SKILL_FORMATS_READ.includes(raw.format)) {
       throw new Error('Unrecognised skill format' + (raw.format ? ' "' + raw.format + '"' : '') +
-        ' - this needs MouseFlow ' + SKILL_FORMAT + '.');
+        ' - this reads ' + SKILL_FORMATS_READ.join(' and ') + '.');
     }
     const kind = raw.kind === 'created' ? 'created' : 'recorded';
     const skill = {
-      format: SKILL_FORMAT,
+      /* ТОТ, С КОТОРЫМ ПРИЕХАЛИ - см. заметку выше. Список уже проверен, так что здесь это знакомая
+       * строка, а не что попало. */
+      format: raw.format,
       id: id(),                                   // local identity; two people may hold the same skill
       kind,
       name: String(raw.name || 'Imported skill').slice(0, 80),
@@ -285,11 +312,27 @@ export function importSkills(text) {
     };
 
     if (kind === 'recorded') {
-      if (!Array.isArray(raw.events) || !raw.events.length) {
-        throw new Error('"' + skill.name + '" is a recorded skill with no steps in it.');
+      /* НИ СОБЫТИЙ, НИ ПРОЦЕДУРЫ - вот это отказ, а не «нет событий».
+       *
+       * У `/1` события были единственным содержимым, и требовать их было то же, что требовать
+       * содержимого вообще. У `/2` содержимого два вида, и каждый сам по себе - навык: процедура без
+       * событий читается (и это весь продукт-документация), события без процедуры играются (и это каждый
+       * `/1`, который уже у кого-то лежит). Отказать надо ровно тому, у чего нет ни того, ни другого, и
+       * сказать это словами - иначе человек видит «no steps» про файл, в котором шаги написаны текстом. */
+      const events = Array.isArray(raw.events) ? raw.events : [];
+      const arrived = readProcedure(raw.procedure);
+      if (!events.length && !hasProcedure(arrived)) {
+        throw new Error('"' + skill.name + '" is a recorded skill with nothing in it - no procedure to '
+          + 'read and no recorded steps to replay.');
       }
-      skill.events = raw.events;
+      if (events.length) skill.events = events;
       skill.tabs = Number(raw.tabs) > 0 ? Number(raw.tabs) : 1;
+      /* `/1` ДОПОЛНЯЕТСЯ, А НЕ ПЕРЕПИСЫВАЕТСЯ. Процедура выводится из его же событий - то есть навык,
+       * приехавший старым форматом, сразу читается как документ, - но исходные поля остаются как были,
+       * потому что экспорт обязан вернуть то, что импортировали. */
+      skill.procedure = hasProcedure(arrived)
+        ? arrived
+        : procedureFrom(events, { origins: skill.origins, params: skill.params });
     } else {
       const goal = String(raw.goalTemplate || raw.goal || '').trim();
       if (!goal) throw new Error('"' + skill.name + '" is a created skill with no goal in it.');
@@ -301,6 +344,67 @@ export function importSkills(text) {
 
   if (!out.length) throw new Error('No skills found in that.');
   return out;
+}
+
+/* ПРОЦЕДУРА ИЗВНЕ - ПЕРЕСОБИРАЕТСЯ ПОЛЕ ЗА ПОЛЕМ, как и всё остальное в этом файле: вставленный навык -
+ * это данные, и он не должен уметь занести ключ, по которому потом кто-то что-то сделает.
+ *
+ * И ОДНО РЕШЕНИЕ, КОТОРОЕ НАДО НАЗВАТЬ ВСЛУХ: `verification` здесь ПЕРЕВОЗИТСЯ, а не судится.
+ *
+ * Единственный судья того, годится ли утверждение, - `readExpects` в api/_case.mjs: он знает, какие виды
+ * проверок существуют, каким нужен `text`, и что без `why` утверждение бесполезно в отчёте. Повторить это
+ * правило здесь значило бы иметь два представления о том, что такое проверка, - ровно то, чего принцип
+ * «одна реализация, много читателей» и не допускает, - а импортировать его сюда нельзя: этот файл живёт в
+ * расширении, у него нет доступа к api/.
+ *
+ * Поэтому здесь только ТРАНСПОРТ: шесть известных строковых полей, обрезанных по длине, и ничего больше.
+ * Судит та сторона, где проверка будет выполняться. Что эти два уровня согласуются - закреплено
+ * ИСПОЛНЕНИЕМ в api/_test-skills.mjs, который может импортировать оба и сверить их на одних данных. */
+const VERIFY_MAX = 8;
+const PITFALL_MAX = 20;
+const str = (value, max) => (typeof value === 'string' ? value.trim().slice(0, max) : '');
+
+function readProcedure(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const steps = (Array.isArray(raw.steps) ? raw.steps : []).slice(0, 40)
+    .map((one, i) => {
+      const said = str(one && one.said, 160);
+      if (!said) return null;
+      return {
+        n: i + 1,
+        said,
+        ...(str(one && one.selector, 300) ? { selector: str(one.selector, 300) } : {}),
+        ...(str(one && one.param, 31) ? { param: str(one.param, 31) } : {}),
+      };
+    })
+    .filter(Boolean)
+    .map((one, i) => ({ ...one, n: i + 1 }));
+
+  const verification = (Array.isArray(raw.verification) ? raw.verification : []).slice(0, VERIFY_MAX)
+    .map((one) => {
+      const check = str(one && one.check, 40);
+      if (!check) return null;
+      return {
+        check,
+        ...(str(one && one.name, 200) ? { name: str(one.name, 200) } : {}),
+        ...(str(one && one.text, 400) ? { text: str(one.text, 400) } : {}),
+        ...(str(one && one.process, 200) ? { process: str(one.process, 200) } : {}),
+        ...(str(one && one.why, 300) ? { why: str(one.why, 300) } : {}),
+        ...(str(one && one.after, 200) ? { after: str(one.after, 200) } : {}),
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    whenToUse: str(raw.whenToUse, 300) || null,
+    steps,
+    pitfalls: (Array.isArray(raw.pitfalls) ? raw.pitfalls : []).slice(0, PITFALL_MAX)
+      .map((one) => (typeof one === 'string'
+        ? { said: str(one, 300) }
+        : { said: str(one && one.said, 300) }))
+      .filter((one) => !!one.said),
+    verification,
+  };
 }
 
 function cleanParams(params) {

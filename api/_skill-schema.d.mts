@@ -39,6 +39,12 @@ export interface SkillStructure {
   params: SkillParam[];
   /** What one successful run did. Evidence beside a created skill, never the thing replayed. */
   steps: { name: string; input: string | null }[];
+  /* ЧТО ЭТО ДЕЛАЕТ, СЛОВАМИ - уровень 1 формата mouseflow.skill/2.
+   *
+   * Пустые steps - честный ответ, а не пропуск: у `/1` процедуры нет и быть не может, и экран тогда
+   * показывает счёт событий, как показывал всегда. `more` - сколько шагов не поместилось; числом,
+   * потому что «и ещё» читается как «и ничего важного». */
+  procedure: { whenToUse: string | null; steps: string[]; more: number };
   /** For a recorded skill: how many events it replays. */
   events: number;
   origins: string[];

@@ -220,6 +220,71 @@ Who does the work, when the asking is done by a model rather than by a person co
 It derives them from `structureOf()` and `wireFor('mcp')` rather than from a copy, so what a model is told
 about a skill is the same sentence this panel shows.
 
+### `mouseflow.skill/2` — the skill as a tiered artifact
+
+A `mouseflow.skill/1` recorded skill **was** its events. The skill was a copy of the recording, so the only
+thing anybody could do with it was replay it — and two problems came out of that at once. Somebody handed
+such a skill could not tell what it did without running it, and running it is the expensive, irreversible
+way to find out. And the documentation product had no artifact at all: "record what you did, get a process
+document" needs the document to exist, and it existed nowhere.
+
+So a `/2` skill carries a **procedure in words** and points at the recording as reference material rather
+than swallowing it. One artifact then serves both products, which is the whole reason for the version.
+
+| Tier | Field | What |
+|---|---|---|
+| 0 | `name`, `description` | as before |
+| 1 | `procedure` | `{ whenToUse, steps[], pitfalls[], verification[] }` — `steps` are sentences; `verification` is the `expects` shape from [25 — Checks and tests](25-tests.md) |
+| 2 | `source` | a **pointer** to the recording, never a copy |
+
+`steps` read as documentation, `verification` runs as checks, and `pitfalls` is the shelf a memory of
+applications will fill. The panel shows the procedure **above** the event count, and that order is the
+point: "42 recorded actions" answers a question nobody asked — events per human step run to about ten, and
+somebody opening the panel wants to know what this *does*.
+
+```
+Use it in mail.google.com. It ends by: click "Send".
+  1. Open mail.google.com
+  2. Click "Compose"
+  3. Type {{to_recipients}} into "To recipients"
+  4. Type {{subject}} into "Subject"
+  5. Scroll
+  6. Click "Send"
+```
+
+Four rules the derivation follows, each of them a decision rather than an implementation detail:
+
+- **Movement is not a step.** `path` events are the pointer travelling, and "moved 340px" is noise in a
+  document about what the work *was*. Consecutive scrolls fold into one, because eleven "Scroll" lines are
+  the log this is meant to replace.
+- **Typing names a PARAMETER, never a value.** The recorder never keeps what was typed — it keeps that a
+  field was typed into. So the sentence names the parameter whose value the person supplies at run time,
+  and it is read from the skill's own `params` rather than derived twice, so the document cannot promise a
+  field the run form does not offer.
+- **A long text is not a label.** A click on a paragraph brings the paragraph back; past 60 characters the
+  step names the *kind* of thing instead ("Click the button"). The alternative is a procedure that quotes
+  somebody's mail at them — the same rule, and the same reason, as the desktop recorder's landmark search.
+- **No check is invented.** It would be easy to derive one — the last URL a recording reached — and wrong
+  to. A check carries `why`: the one line somebody reads in a red report at nine in the morning, in the
+  goal's own words. Nothing in the derivation knows the goal, so a derived check would assert a condition
+  nobody chose with a reason nobody wrote. `verification` exists to be **filled**, and `readExpects` in
+  `api/_case.mjs` stays its only judge.
+
+**`/1` stays readable forever, and keeps its own version.** A `/1` file has already left somebody's
+machine; refusing to read it would break what they consider theirs. So both formats are accepted, the
+newest is written, and a `/1` skill is *augmented* on read — a procedure is derived from its own events, so
+an old skill reads as a document immediately — while the stored format stays `/1` and the export returns
+what was imported. Stamping `/2` on it would promise a reader a tier the file does not have.
+
+**Where the derivation lives, and why it is only in one place.** `extension/procedure.js`, because the
+extension is the only side that ever *derives* one: a skill is made there and a `/1` is upgraded there. The
+server only ever **reads** what is stored — `structureOf()` counts `procedure.steps` when they are there
+and events when they are not, and `gallery.js` accepts a recorded skill with a procedure *or* events and
+refuses one with neither. Neither derives, so there is no second implementation to drift. The format string
+itself is the exception that proves the rule: it is written twice, in two runtimes with no import between
+them, and `api/_test-skills.mjs` exists to stop the two halves disagreeing — it is the one place that can
+load both.
+
 ### Parameter extraction, in order
 
 Order matters, and this is the order:

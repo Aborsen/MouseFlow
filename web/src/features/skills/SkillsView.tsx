@@ -280,6 +280,36 @@ const Structure = ({ skill, flowId, wire, onWire }: {
             </>
           )}
 
+          {/* ПРОЦЕДУРА - ПЕРЕД СЧЁТОМ СОБЫТИЙ, и порядок здесь и есть смысл всей версии /2.
+            *
+            * «42 recorded actions» отвечает не на тот вопрос, который задал человек, раскрывший панель:
+            * он хочет знать, ЧТО это делает, а не из скольких событий это состоит. Событий на один
+            * человеческий шаг бывает десяток. Поэтому сверху то, что читается, а счёт остаётся ниже -
+            * справкой, а не ответом.
+            *
+            * Показывается только когда есть: у /1 процедуры нет и быть не может, и пустой заголовок
+            * «Procedure» был бы обещанием, за которым ничего нет. */}
+          {skill.procedure.steps.length > 0 && (
+            <>
+              <dt className={DT}>Procedure</dt>
+              <dd className="text-ink-body">
+                {skill.procedure.whenToUse && (
+                  <p className="mb-1 text-[0.78rem] text-ink-secondary">{skill.procedure.whenToUse}</p>
+                )}
+                <ol className="list-inside list-decimal space-y-0.5">
+                  {skill.procedure.steps.map((said, i) => (
+                    <li key={`${i}-${said}`} className="break-words">{said}</li>
+                  ))}
+                </ol>
+                {skill.procedure.more > 0 && (
+                  <p className="mt-1 text-[0.78rem] text-ink-inactive">
+                    and {skill.procedure.more} more step{skill.procedure.more === 1 ? '' : 's'}
+                  </p>
+                )}
+              </dd>
+            </>
+          )}
+
           {skill.kind === 'recorded' && (
             <>
               <dt className={DT}>Replays</dt>

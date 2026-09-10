@@ -117,6 +117,16 @@ const REPLAY_PROPERTIES = {
   },
 };
 
+/* Сколько шагов процедуры уходит на экран и в описание. Больше десятка пунктов в панели - это уже
+ * журнал, а панель раскрывают, чтобы решить, запускать ли; остаток назван числом. */
+const STEPS_SHOWN = 12;
+
+const saidSteps = (procedure, limit) =>
+  (procedure && Array.isArray(procedure.steps) ? procedure.steps : [])
+    .map((one) => (one && typeof one.said === 'string' ? one.said.trim() : ''))
+    .filter(Boolean)
+    .slice(0, limit);
+
 export function structureOf(flow) {
   const payload = flow.payload ?? {};
   const kind = flow.kind === 'created' ? 'created' : 'recorded';
@@ -124,6 +134,16 @@ export function structureOf(flow) {
   const params = kind === 'created' ? paramsOf(payload) : [];
   const goalTemplate = str(payload.goalTemplate) ?? str(payload.goal);
   const events = Array.isArray(payload.events) ? payload.events.length : 0;
+  /* СКОЛЬКО ШАГОВ У ЭТОГО СКИЛЛА - предложениями, если они есть, и событиями иначе.
+   *
+   * Порядок именно такой, и это не вкус. Событий у одного человеческого шага бывает десяток - движение,
+   * нажатие, отпускание, - поэтому «42 recorded actions» отвечает не на тот вопрос, который читатель
+   * задал: он хочет знать, сколько тут РАБОТЫ, а не сколько событий её описывают. Процедура из `/2`
+   * отвечает ровно на это, и там, где она есть, она и есть правда о размере.
+   *
+   * Событий не выводим и не считаем заново: у `/1` их и так только события, и это верный ответ для него. */
+  const words = payload.procedure && typeof payload.procedure === 'object'
+    && Array.isArray(payload.procedure.steps) ? payload.procedure.steps.length : 0;
   const origins = Array.isArray(flow.origins) ? flow.origins.filter((o) => !!str(o)) : [];
 
   const properties = {};
@@ -158,7 +178,9 @@ export function structureOf(flow) {
    * sentence, so the stored one wins and the synthesised one is only the fallback. */
   const what = kind === 'created'
     ? (goalTemplate ? `Carries out: ${goalTemplate}` : (said ?? 'A created skill with no goal recorded.'))
-    : (said ?? `Replays ${events} recorded action${events === 1 ? '' : 's'}.`);
+    : (said ?? (words
+      ? `Carries out ${words} step${words === 1 ? '' : 's'}: ${saidSteps(payload.procedure, 6).join('; ')}.`
+      : `Replays ${events} recorded action${events === 1 ? '' : 's'}.`));
   // And the origins only when they are not already in there, for the same reason.
   const named = origins.some((origin) => what.includes(origin));
   const where = origins.length && !named ? ` Works in ${origins.slice(0, 3).join(', ')}.` : '';
@@ -199,6 +221,21 @@ export function structureOf(flow) {
     success: str(payload.success) ?? null,
     params,
     steps: stepsOf(payload),
+    /* ПРОЦЕДУРА СЛОВАМИ - то, что человек читает вместо счёта событий (mouseflow.skill/2).
+     *
+     * Отдаётся ОТДЕЛЬНО от `description`, хотя описание её уже пересказывает первыми шестью шагами.
+     * Потому что это два разных читателя: `description` уезжает модели одной строкой, а это - список,
+     * который рисуется на экране пунктами, и склеивать его точками с запятой для показа значило бы
+     * отдавать глазу то, что готовили для промпта.
+     *
+     * Пусто у `/1` и у всего, что процедуры не несёт, - и пусто честно: экран тогда показывает счёт
+     * событий, как показывал всегда, а не пустой заголовок «Процедура». */
+    procedure: {
+      whenToUse: str(payload.procedure && payload.procedure.whenToUse) ?? null,
+      steps: saidSteps(payload.procedure, STEPS_SHOWN),
+      /* Сколько НЕ показано - числом, потому что «и ещё» читается как «и ничего важного». */
+      more: Math.max(0, words - STEPS_SHOWN),
+    },
     events,
     origins,
     /* A description assembled from clauses has to read as sentences, and a stored one may not end in a

@@ -87,6 +87,32 @@ the memory with provenance `builtin`, read-only, shown in the ledger, **never in
 
 ## 3. Step 1 — `mouseflow.skill/2`: the skill as a tiered artifact
 
+> **Tiers 0 and 1 shipped 2026-09-11.** The format is `/2`, both versions are read, the newest is written,
+> a `/1` is augmented on read and keeps its own version, and the procedure shows on the Skills page above
+> the event count. `extension/procedure.js` derives it; the server only reads. New executable suite
+> `api/_test-skills.mjs` (47 checks) — the one place that can load both halves of the product and stop the
+> two copies of the format string disagreeing. Every pin proven by mutation.
+>
+> **Tier 2 — `source` as a pointer — is NOT done, and it is the next commit.** It was split off on
+> purpose: it changes the replay path rather than the artifact. What it needs, and the one hazard already
+> found by reading:
+>
+> - **The extension has no road back to the events.** `eventsFor` (`web/src/features/record/events-for.ts`)
+>   is web-app code using `fetchPayload`; the extension is a separate runtime and reaches the account
+>   through its own bridge. So `flowFor` resolving `source.flowId` means giving the extension that road,
+>   or resolving before the job is handed over.
+> - **`mouseflow_run` would hand out an unrunnable job.** `api/mcp.js` (~1813) builds the replay body only
+>   when `payload.events` is non-empty, and then answers with `body: null, goal: false` — an agent reads
+>   that as "not a goal, and nothing to do". Today unreachable, because a `/2` skill still carries its
+>   events; the moment tier 2 drops them it is reachable, and the honest fix belongs in the same commit:
+>   resolve the source flow there, or refuse **with words**. It must not become a job that quietly does
+>   nothing and reports done.
+> - **A shared `/2` skill points at a flow on the AUTHOR's account**, which the recipient cannot read. That
+>   is consistent with two products - a document travels, a run stays on your own account - but it is a
+>   product decision worth stating on the Skills page rather than discovering.
+
+
+
 ### Why
 
 A `kind: 'recorded'` skill today **is** its events: `skillFromRecording` (`extension/skills.js`) copies
@@ -127,10 +153,17 @@ Found by `grep -n "skill\.events\|payload\.events" extension api`; keep the list
 
 ### Tests, pins, docs
 
-- Executable: `api/_test-skills.mjs` (new; add to `package.json`): `/1` imports and exports unchanged
-  byte-for-byte; `/2` imports; a `/1` upgraded on read has a `procedure` and still its events; a `/2` with no
-  `source` and no `events` is refused *with words*; `verification` entries validate through
-  `readExpects` from `api/_case.mjs` (one rule, imported — principle 3).
+- Executable: `api/_test-skills.mjs` — **done**, and one line of this was not buildable as written.
+  "`/1` imports and exports unchanged **byte-for-byte**" was never true and could not be: `importSkills`
+  has always minted a fresh local `id` and set `imported: true`, because two people may hold the same
+  skill. What is pinned instead is the meaning behind it — the **version, the events and the params survive
+  the round trip untouched** — plus the derived procedure being added rather than substituted.
+  `verification` is **not** validated by `readExpects` inside the extension, either: that module lives in
+  `api/` and the extension is a different runtime with no import between them. Duplicating the rule would
+  have been two opinions about what a check is — the thing principle 3 forbids — so the extension
+  **transports** the six known string fields and judges nothing, and the suite asserts that what it carries
+  `readExpects` accepts, on the same data. That is what makes this file worth having in `api/`: it is the
+  only place both halves can be loaded at once.
 - Pins (`mcp/test-mcp.mjs`): every reader in the table handles both formats; `SKILL_FORMAT` is `/2`;
   `structureOf` counts steps before events.
 - Docs: `docs/product/06-skills.md` (format, tiers, the pointer rule), `docs/product/15-data-model.md`,

@@ -5702,6 +5702,80 @@ group('ход снимается целиком: нажатие по имени 
     /case 'click_named':/.test(read('../web/src/features/create/describe.ts')));
 }
 
+group('mouseflow.skill/2 - навык как многоуровневый артефакт (MEMORY-PLAN §3, шаг 1)');
+{
+  /* ЧТО ЗАКРЕПЛЕНО ЗДЕСЬ, А ЧТО ИСПОЛНЕНИЕМ. Формат, круговой путь, вывод процедуры и согласие двух
+   * половин прогоняются по-настоящему в api/_test-skills.mjs - он единственное место, откуда видны обе
+   * половины продукта сразу. Здесь - то, что проверяется только по тексту: что вывод процедуры живёт в
+   * ОДНОМ месте, что сервер её не выводит, и что каждый читатель из таблицы плана остался на месте.
+   *
+   * Зачем вообще версия: `/1` навык БЫЛ своими событиями, поэтому единственное, что с ним можно было
+   * сделать, - воспроизвести. Человек, которому его передали, не мог узнать, что тот делает, не запустив
+   * его, - а запуск это дорогой и необратимый способ узнать. И у продукта-документации не было артефакта
+   * вовсе. `/2` несёт процедуру словами и указывает на запись как на справочный материал. */
+  const skills = read('../extension/skills.js');
+  const procedure = read('../extension/procedure.js');
+  const schema = read('../api/_skill-schema.mjs');
+  const galleryRoute = read('../api/gallery.js');
+  const gallerySkill = read('../api/_gallery-skill.mjs');
+  const role = read('../api/_flow-role.mjs');
+  const pkg = read('../package.json');
+
+  /* ВЫВОД - В ОДНОМ МЕСТЕ, и это принцип 3 из §0 роадмапа. Два вывода одной процедуры разошлись бы, и
+   * разошлись бы незаметно: документ обещал бы поле, которого форма запуска не предлагает. */
+  check('процедуру выводит один модуль',
+    /export function procedureFrom\(/.test(procedure)
+      && /import \{ hasProcedure, procedureFrom \} from '\.\/procedure\.js'/.test(skills));
+  check('и он не тянет за собой ничего - чтобы мог переехать, если понадобится',
+    !/^import /m.test(procedure), 'procedure.js has imports');
+
+  /* СЕРВЕР ПРОЦЕДУРУ ТОЛЬКО ЧИТАЕТ. Если он начнёт её выводить, у нас два представления о том, что такое
+   * шаг, - и то, что показано на экране, разойдётся с тем, что уехало в файле. */
+  check('сервер её не выводит, а читает сохранённые строки',
+    !/procedureFrom/.test(schema) && /const saidSteps = /.test(schema));
+  check('и считает шаги РАНЬШЕ событий - событий на один шаг бывает десяток',
+    /\? `Carries out \${words} step/.test(schema));
+
+  /* КАЖДЫЙ ЧИТАТЕЛЬ ИЗ ТАБЛИЦЫ ПЛАНА. Список держится текущим нарочно: читатель, о котором забыли, -
+   * это половина продукта, которая про новый уровень не знает. */
+  check('импорт принимает оба формата, а не один',
+    /!SKILL_FORMATS_READ\.includes\(raw\.format\)/.test(skills));
+  check('и хранит тот формат, с которым приехали - экспорт обязан вернуть то, что импортировали',
+    /format: raw\.format,/.test(skills));
+  check('галерея принимает оба и требует процедуру ИЛИ события',
+    /!SKILL_FORMATS_READ\.includes\(payload\.format\)/.test(galleryRoute)
+      && /!hasSteps && !hasWords/.test(galleryRoute));
+  check('а свой формат ставит только тому, кто не назвал никакого',
+    /SKILL_FORMATS_READ\.includes\(out\.format\) \? out\.format : SKILL_FORMAT/.test(gallerySkill));
+  /* РОЛЬ СТРОКИ НЕ ИЗМЕНИЛАСЬ, и это то, что должно было остаться нетронутым: она читается из
+   * `payload.role`, а не из событий и не из формата, - значит версия скилла на неё не влияет вовсе. Пин
+   * стоит потому, что план просил его поставить: «must not change meaning». */
+  check('роль строки по-прежнему решается штампом, а не содержимым',
+    /payload && typeof payload\.role === 'string' \? payload\.role/.test(role)
+      && !/procedure/.test(role));
+
+  /* ЭКРАН ПОКАЗЫВАЕТ ТО, ЧТО ЧИТАЕТСЯ, ПЕРВЫМ. Порядок и есть смысл версии: «42 recorded actions»
+   * отвечает не на тот вопрос, который задал человек, раскрывший панель. */
+  const skillsView = read('../web/src/features/skills/SkillsView.tsx');
+  check('панель показывает процедуру',
+    /<dt className=\{DT\}>Procedure<\/dt>/.test(skillsView));
+  check('и показывает её ВЫШЕ счёта событий',
+    skillsView.indexOf('>Procedure<') < skillsView.indexOf('>Replays<'),
+    `${skillsView.indexOf('>Procedure<')} vs ${skillsView.indexOf('>Replays<')}`);
+  check('а у /1 заголовка нет вовсе - пустое обещание хуже отсутствия',
+    /skill\.procedure\.steps\.length > 0 && \(/.test(skillsView));
+
+  /* И НАБОР ЗАРЕГИСТРИРОВАН: исполняемый набор, который npm test не зовёт, не защищает ничего. */
+  check('исполняемый набор зовётся из npm test',
+    /node api\/_test-skills\.mjs/.test(pkg));
+
+  /* ПРОВЕРКИ НЕ ВЫДУМЫВАЮТСЯ, и это решение, а не пропуск: у выведенной проверки `why` был бы не
+   * авторский, а `why` - единственная строка, которую человек читает в красном отчёте в девять утра.
+   * Закреплено отсутствием, чтобы следующий читатель не «дозаполнил» поле из лучших побуждений. */
+  check('процедура не выдумывает проверок',
+    /verification: \[\],/.test(procedure) && !/check: '/.test(procedure));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 /* Exited rather than left to drain. Two servers and three spawned children have been closed and killed by
  * here, and a keep-alive socket that outlives them keeps the loop open - which turns a suite that has

@@ -16,7 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { flowFor } from './_flow-for.mjs';
-import { SKILL_FORMAT, skillForGallery } from './_gallery-skill.mjs';
+import { SKILL_FORMAT, SKILL_FORMATS_READ, skillForGallery } from './_gallery-skill.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -33,10 +33,14 @@ const read = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'ut
 const gallery = read('./gallery.js');
 function refuse(payload) {
   if (!payload || typeof payload !== 'object') return 'expected { skill }';
-  if (payload.format !== SKILL_FORMAT) return 'unrecognised skill format';
+  if (!SKILL_FORMATS_READ.includes(payload.format)) return 'unrecognised skill format';
   const kind = payload.kind === 'created' ? 'created' : 'recorded';
-  if (kind === 'recorded' && (!Array.isArray(payload.events) || !payload.events.length)) {
-    return 'a recorded skill needs steps in it';
+  /* Процедура ИЛИ события - см. маршрут. Записанный скилл с `/2` может быть документом без событий. */
+  const hasSteps = Array.isArray(payload.events) && payload.events.length > 0;
+  const hasWords = !!(payload.procedure && typeof payload.procedure === 'object'
+    && Array.isArray(payload.procedure.steps) && payload.procedure.steps.length > 0);
+  if (kind === 'recorded' && !hasSteps && !hasWords) {
+    return 'a recorded skill needs something in it';
   }
   if (kind === 'created' && !String(payload.goalTemplate || '').trim()) {
     return 'a created skill needs a goal in it';
@@ -47,17 +51,34 @@ function refuse(payload) {
 group('вырезанные правила - те же, что в маршруте');
 {
   /* Иначе этот файл проверял бы собственную выдумку. Каждая строка ниже должна найтись в gallery.js. */
-  check('формат сверяется тем же полем', /payload\.format !== SKILL_FORMAT/.test(gallery));
+  check('формат сверяется тем же списком - и их два, потому что /1 читается навсегда',
+    /!SKILL_FORMATS_READ\.includes\(payload\.format\)/.test(gallery));
   check('вид определяется тем же выражением',
     /payload\.kind === 'created' \? 'created' : 'recorded'/.test(gallery));
-  check('у записанного требуются события',
-    /kind === 'recorded' && \(!Array\.isArray\(payload\.events\) \|\| !payload\.events\.length\)/.test(gallery));
+  /* ПРОЦЕДУРА ИЛИ СОБЫТИЯ, а не события: с `/2` документ без событий - это тоже скилл, и требовать
+   * событий значило бы отказывать документу за то, что он документ. */
+  check('у записанного требуется процедура ИЛИ события',
+    /kind === 'recorded' && !hasSteps && !hasWords/.test(gallery)
+      && /a procedure to read, or recorded /.test(gallery));
   check('у созданного требуется цель',
     /kind === 'created' && !String\(payload\.goalTemplate \|\| ''\)\.trim\(\)/.test(gallery));
   /* И строка формата у второй половины продукта - та же самая. Расширение собирается отдельно и импортировать
    * из api/ не может, так что копия там останется; разойтись ей не даёт эта проверка. */
   check('расширение говорит на том же формате',
     new RegExp(`SKILL_FORMAT = '${SKILL_FORMAT.replace('/', '\\/')}'`).test(read('../extension/skills.js')));
+  /* И ПРИНИМАЕТ ТОТ ЖЕ НАБОР. Половина, пишущая `/2` и читающая только `/2`, отвергала бы файлы, которые
+   * вторая половина принимает, - и человек видел бы, что скилл импортируется в браузере и не публикуется,
+   * или наоборот. Обе строки в обеих половинах, и разъехаться им не даёт эта проверка. */
+  check('и принимает тот же набор форматов',
+    new RegExp(`SKILL_FORMATS_READ = \\[${SKILL_FORMATS_READ.map((f) => `'${f}'`).join(', ')}\\]`)
+      .test(read('../extension/skills.js')),
+    SKILL_FORMATS_READ.join(' '));
+  /* ПИШЕМ - ПОСЛЕДНЕЕ, и это первый элемент списка чтения. Список, у которого первым стоит не то, что
+   * мы пишем, - это отказ, называющий человеку формат, который ему не нужен. */
+  check('а пишем последний, и он первый в списке чтения',
+    SKILL_FORMATS_READ[0] === SKILL_FORMAT, SKILL_FORMATS_READ[0]);
+  check('и старый в нём остался - иначе уехавший файл перестаёт читаться',
+    SKILL_FORMATS_READ.includes('mouseflow.skill/1'));
 }
 
 /* ------------------------------------------------------------------ настоящая запись с рабочего стола */
