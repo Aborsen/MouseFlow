@@ -1501,7 +1501,7 @@ group('на застрявшем ходу окно читается само, о
       && !/What earlier work already found about these applications/.test(local));
   check('оба драйвера строят блок одной и той же функцией, а не своей копией',
     /memoryForOpen\(windows, null, new Map\(\)\)/.test(cloud)
-      && /memoryForOpen\(rawWindows, memoryPlatform, new Map\(\)\)/.test(local));
+      && /memoryForOpen\(rawWindows, memoryPlatform, o\.memoryEntries\)/.test(local));
 
   /* 4.8: память читается на пути, который ДЕЙСТВУЕТ, никогда - на пути, который СУДИТ. Ночной вердикт
    * доказывает что-то только потому, что кейс не менялся между постановкой и прогоном; если бы память

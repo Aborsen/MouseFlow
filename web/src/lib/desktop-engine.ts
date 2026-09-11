@@ -30,6 +30,7 @@ import type { Machine } from './agent';
 /* Память приложений (MEMORY-PLAN.md §4.6) - тот же выбор, что у _schedule.mjs и _expect.mjs чуть ниже:
  * один разбор на оба драйвера, а не своя копия правила здесь. */
 import { memoryForOpen } from '../../../api/_memory.mjs';
+import { type AppMemoryEntry, appMemory } from './api';
 import { desktopModel } from './model-config';
 /* Всё, что модель ВИДИТ и что её ответ ЗНАЧИТ, живёт в одном месте на двоих - здесь и в облачном шаге,
  * который ведёт тот же разговор по одному ходу на запрос. Этот файл - драйвер: чей ход, что делать в
@@ -308,6 +309,19 @@ export async function runOnDesktop({
   let handoff: string | null = null;
   let stepNo = 0;
 
+  /* ОДИН РАЗ НА ПРОГОН, а не на каждый ход - память меняется от правок человека, не от секунды к секунде,
+   * и запрос на каждом ходу стоил бы хода, которого сама память должна сберегать, а не отнимать. Отказ
+   * (счёт не подключён, сеть легла) - пустая карта: memoryForOpen тогда просто не находит ничего, ровно
+   * как если бы на аккаунте не было ни одной записи. */
+  const memoryEntries = await appMemory().then((res) => {
+    const byKey = new Map<string, AppMemoryEntry[]>();
+    for (const entry of res.entries) {
+      if (!byKey.has(entry.key)) byKey.set(entry.key, []);
+      byKey.get(entry.key)?.push(entry);
+    }
+    return byKey;
+  }).catch(() => new Map<string, AppMemoryEntry[]>());
+
   for (let wave = 1; wave <= MAX_WAVES; wave++) {
     /* План уезжает в цикл - этим вариант 3 и отличается от варианта 1, где он существовал только в
      * интерфейсе. Модель обязана объявлять каждый чекпоинт по достижении, и на объявлении цикл останавливается
@@ -330,7 +344,7 @@ export async function runOnDesktop({
 
     const outcome = await runWave({
       messages, success, gate, plan, machine, caps, onEvent, isAborted, steps, wave, stepFrom: stepNo,
-      onArtifact,
+      onArtifact, memoryEntries,
     });
     stepNo = outcome.stepNo;
     if (outcome.result) return outcome.result;
@@ -367,6 +381,8 @@ async function runWave(o: {
   onArtifact?: Options['onArtifact'];
   wave: number;
   stepFrom: number;
+  /** Загружено один раз в runOnDesktop - что известно об открытых приложениях, по ключу (§4.6). */
+  memoryEntries: Map<string, AppMemoryEntry[]>;
 }): Promise<{ stepNo: number; result?: RunResult }> {
   const { messages, machine, onEvent, isAborted, steps, wave } = o;
   let stepNo = o.stepFrom;
@@ -421,14 +437,15 @@ async function runWave(o: {
     }
 
     forgetOldPictures(messages as { content?: unknown }[]);
-    /* За флагом MEMORY_LIVE (выключен сегодня) - memoryForOpen сама отвечает null, пока он не включён, так
-     * что этот вызов пока ничего не меняет. Платформа - догадка браузера (hostOS): здесь оправданно, в
-     * отличие от облачного драйвера, потому что агент и браузер - ОДНА машина (страница Create ведёт
-     * локальный агент). entriesByKey пуста - читать её пока неоткуда, миграция 023 не применена. */
+    /* MEMORY_LIVE включён 2026-09-11 - этот вызов теперь настоящий. Платформа - догадка браузера (hostOS):
+     * здесь оправданно, в отличие от облачного драйвера, потому что агент и браузер - ОДНА машина (страница
+     * Create ведёт локальный агент). entriesByKey загружена один раз в runOnDesktop (o.memoryEntries), а не
+     * тут: она не меняется от хода к ходу, и перечитывать её на каждом было бы ходом, которого сама память
+     * должна сберегать, а не отнимать. */
     const memoryPlatform = hostOS() === 'windows' ? 'win32' : hostOS() === 'macos' ? 'darwin' : null;
     const rawWindows = await machine.windows().then((r) => r.windows).catch(() => []);
     messages.push(screenMessage(frame, await openWindows(machine, frame), saw, clockSaid(Date.now(), hereZone()),
-      memoryForOpen(rawWindows, memoryPlatform, new Map())));
+      memoryForOpen(rawWindows, memoryPlatform, o.memoryEntries)));
     saw = null;
 
     stepNo++;

@@ -121,19 +121,22 @@ group('memoryForOpen (§5 шаг 4): один флаг на оба драйве�
     ['win32:OUTLOOK', [{ provenance: 'taught', body: 'the stable part of the title is " - Outlook"', createdAt: '2026-09-01', state: 'live' }]],
   ]);
 
-  check('флаг сегодня выключен', MEMORY_LIVE === false);
-  check('и пока он выключен - null, даже с настоящими записями под рукой',
-    memoryForOpen(windows, 'win32', entries) === null);
-  check('без платформы - тоже null, не гадает', memoryForOpen(windows, null, entries) === null);
+  check('флаг включён 2026-09-11, по слову владельца', MEMORY_LIVE === true);
+  check('без платформы - null, не гадает (сегодня так у облачного драйвера)', memoryForOpen(windows, null, entries) === null);
   check('без списка окон - null, не бросает', memoryForOpen(null, 'win32', entries) === null);
   check('без карты записей - null, не бросает', memoryForOpen(windows, 'win32', null) === null);
 
-  /* `live: true` - только для теста, флага это не трогает; см. комментарий у функции. */
-  const on = memoryForOpen(windows, 'win32', entries, true);
-  check('под флагом: ключ строится из process + платформы, и запись находится', /app: win32:OUTLOOK/.test(on) && /§ taught/.test(on), on);
+  /* По умолчанию (без четвёртого аргумента) - то, что реально шлют драйверы. */
+  const on = memoryForOpen(windows, 'win32', entries);
+  check('ключ строится из process + платформы, и запись находится', /app: win32:OUTLOOK/.test(on) && /§ taught/.test(on), on);
   check('окно без process - молча пропущено, а не падает ключом "win32:undefined"', !/undefined/.test(on));
   check('ключ без записей в карте не печатает пустой блок', !/app: win32:chrome/.test(on), on);
-  check('пустых записей нигде - весь блок null, а не пустая строка', memoryForOpen([{ process: 'chrome' }], 'win32', new Map(), true) === null);
+  check('пустых записей нигде - весь блок null, а не пустая строка', memoryForOpen([{ process: 'chrome' }], 'win32', new Map()) === null);
+
+  /* `live: false` - только для теста, флага это не трогает; см. комментарий у функции. Проверяет, что
+   * выключатель ещё работает и не был случайно вычищен вместе с переключением дефолта. */
+  check('а с live: false - снова null, даже с теми же записями под рукой',
+    memoryForOpen(windows, 'win32', entries, false) === null);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');

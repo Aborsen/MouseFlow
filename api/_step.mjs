@@ -421,8 +421,11 @@ export async function advance({ loop, shot, windows, results, caps, ask }) {
   forgetOldPictures(loop.messages);
   /* platform: null - облачный драйвер ведёт агента с другой машины, и ничто в проводе `?worker=step`
    * сегодня не говорит, Windows это или Mac (MEMORY-PLAN.md §4.7.1 note, §5 шаг 3). memoryForOpen с
-   * платформой null уже честно отвечает null сама, не читая карту; entriesByKey пуста, потому что читать
-   * её пока неоткуда - миграция 023 не применена (§5 шаг 5). */
+   * платформой null уже честно отвечает null сама, не читая карту, - и по этой же причине карта здесь
+   * пустая ЗАДАЧЕЙ, а не за отсутствием таблицы (та уже есть, §5 шаг 5 применён): читать app_memory на
+   * каждом ходу ради ответа, который платформа всё равно обнулит раньше, чем до карты дойдёт очередь, -
+   * это ход, потраченный без единого шанса на пользу. Появится смысл, когда что-то узнает платформу
+   * облачного агента - см. открытый вопрос в MEMORY-PLAN.md §4.6/§5 (row 3 и 4 обе о нём). */
   loop.messages.push(screenMessage(shot, openList(windows, shot), saw, clockSaid(Date.now(), loop.zone || 'UTC'),
     memoryForOpen(windows, null, new Map())));
   loop.stepNo += 1;

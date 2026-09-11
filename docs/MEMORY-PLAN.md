@@ -260,13 +260,31 @@ pointer away, not gone.
 > as `applied`. `app_memory` exists; `api/memory.js` is live, not 503; the ledger card can teach, edit and
 > forget a `taught` fact right now.
 >
-> **`MEMORY_LIVE` was left `false` on purpose — not flipped as part of applying the migration.** The
-> table existing and the block reaching a live turn are two different decisions: flipping the flag changes
-> what every turn costs and reads, unmeasured, and 4.13 says that call needs a measurement (turns per
-> successful run, before/after), not "the table is there now so why not". A person can already close row
-> 5's literal done-condition — teach one Outlook fact on the card and read the row back — without the flag,
-> since that only needs `api/memory.js`, not a live turn. Flipping `MEMORY_LIVE` is row 5's real remaining
-> question, for the owner: say when, and it is one constant.
+> **`MEMORY_LIVE` flipped to `true` 2026-09-11, by the owner's word in chat ("включай").** It stayed
+> `false` through the migration itself on purpose — the table existing and the block reaching a live turn
+> were two different decisions — but the owner made the second one explicitly, so it is one constant, not a
+> silent default.
+>
+> **The web driver (`desktop-engine.ts`) now actually reads `app_memory`, once per run.** `runOnDesktop`
+> calls `appMemory()` before the wave loop (not inside `runWave`'s per-turn code — memory does not change
+> turn to turn, and a fetch on every one would be a step spent for no chance of a different answer, the
+> same reasoning `_step.mjs` already uses for skipping the cloud fetch entirely), groups the entries by
+> `key`, and threads the map through as `memoryEntries` on `runWave`'s options object — a real payload for
+> `memoryForOpen` now, not `new Map()`. **The cloud driver (`_step.mjs`) still passes an empty map,
+> unchanged** — `platform` is `null` there and `memoryForOpen` returns `null` before ever consulting the
+> map, so fetching real rows would be a query with no possible effect: cloud-driven runs still see nothing
+> until something answers the platform question (§4.6/§4.7.1's open item, restated once more — it has not
+> moved).
+>
+> Pin in `agent/test-contract.mjs` updated for the new call shape (`o.memoryEntries` in place of
+> `new Map()`, cloud driver's call unchanged). `_test-memory.mjs`'s flag-state checks flipped with it (now
+> asserts `MEMORY_LIVE === true`, and separately that `live: false` still forces `null` — the escape hatch
+> was not accidentally deleted along with the default). `npm test`/`tsc`/`web/` build all green.
+>
+> **Still unmeasured**, per 4.13 — there is exactly one account with any `taught`/`derived` rows so far
+> (none yet, in fact: nobody has taught anything through the card yet), so there is nothing to measure
+> until someone does. Watch turns-per-successful-run once facts accumulate; roll `MEMORY_LIVE` back to
+> `false` if it costs more than it saves.
 
 ### 4.1 The claim it rests on
 
