@@ -40,7 +40,164 @@ const rec = {
   startedAt: 0,
   lastAt: 0,
   events: [],
+  /* Пережила ли эта запись выгрузку воркера, и потеряла ли при этом движение. Оба факта уезжают в
+   * сохранённую запись: «часть работы не записана» человек обязан узнать от нас, а не по тому, что повтор
+   * ведёт себя не так. */
+  resumed: false,
+  motionDropped: false,
 };
+
+/* --------------------------------------------------- ЗАПИСЬ, ПЕРЕЖИВАЮЩАЯ ВЫГРУЗКУ ВОРКЕРА
+ *
+ * ЧТО БЫЛО СЛОМАНО, И ПОЧЕМУ ЭТОГО НЕ ВИДЕЛ НИКТО. Запись жила ТОЛЬКО в `rec.events` - в памяти модуля
+ * этого воркера. MV3 выгружает воркер, когда тот простаивает, и `holdWorker` пингом раз в 20 секунд это
+ * оттягивает - но не гарантирует: перезагрузка расширения, обновление, падение, давление по памяти
+ * выгружают его всё равно. А дальше начиналось самое плохое:
+ *
+ *   1. воркер поднимается заново, область модуля инициализируется, `rec.active === false`;
+ *   2. страница при этом НЕ перезагружалась - content.js жив и продолжает присылать события;
+ *   3. `captureFromPage` и `captureMoves` отвечают им `'not recording'` и ВЫБРАСЫВАЮТ каждое;
+ *   4. бейдж всё ещё показывает REC, попап всё ещё снят - интерфейс продолжает утверждать, что запись идёт;
+ *   5. человек нажимает иконку, чтобы остановить, - `rec.active` ложь, ветка стопа не срабатывает,
+ *      открывается попап с «Ready», нулями и пустым списком.
+ *
+ * То есть запись умирала молча, а интерфейс об этом врал. Ровно это и было предъявлено: «нажал старт,
+ * запись пошла, возвращаюсь нажать паузу - обнулилось и ничего не записано».
+ *
+ * ЧТО СДЕЛАНО. Запись пишется в `chrome.storage.local` по ходу дела, а при подъёме воркера
+ * ВОССТАНАВЛИВАЕТСЯ и продолжается. Страница и так продолжает присылать - забыл только воркер, - поэтому
+ * восстановление, а не «закрыть и сохранить остаток»: терять надо лишь то, что пришло в зазор.
+ *
+ * ПОЧЕМУ ДВЕ СКОРОСТИ ЗАПИСИ. Действия - клики, печать, переходы - редки и дороги: они пишутся СРАЗУ.
+ * Движение приходит шестьюдесятью пробами в секунду, и писать его по событию значило бы молотить
+ * хранилище; оно пишется отложенно. Цена названа вслух: при выгрузке теряется до
+ * ${REC_FLUSH_MS} мс движения и ни одного действия. */
+const REC_KEY = 'recLive';
+const REC_FLUSH_MS = 700;
+
+let recFlushTimer = null;
+
+/* Снимок для хранилища. Без `events` он бесполезен, поэтому и пишется вместе с ними: заголовок отдельно
+ * от событий означал бы две записи, которые могут разъехаться на выгрузке между ними. */
+const recSnapshot = () => ({
+  active: true,
+  activeTabId: rec.activeTabId,
+  tabKeys: rec.tabKeys,
+  nextKey: rec.nextKey,
+  startedAt: rec.startedAt,
+  lastAt: rec.lastAt,
+  motionDropped: rec.motionDropped,
+  events: rec.events,
+});
+
+/* КВОТА - ЭТО ОТВЕТ ХРАНИЛИЩА, А НЕ НАША ДОГАДКА.
+ *
+ * Считать байты заранее значило бы угадывать предел, который у разных сборок разный. Поэтому пишем как
+ * есть, а на отказ по месту отвечаем тем, что можно: движение выкладываем, действия оставляем. Движение -
+ * это объём, действия - это смысл, и если выбирать, то так. И флаг, потому что человек обязан узнать, что
+ * часть движения не пережила бы перезапуск, - от нас, а не по странному повтору. */
+async function recWrite() {
+  try {
+    await chrome.storage.local.set({ [REC_KEY]: recSnapshot() });
+  } catch (_) {
+    rec.motionDropped = true;
+    try {
+      await chrome.storage.local.set({
+        [REC_KEY]: Object.assign(recSnapshot(), {
+          events: rec.events.filter((e) => e.action !== 'path'),
+        }),
+      });
+    } catch (__) {
+      /* Хранилище недоступно вовсе. Запись продолжается в памяти - это не повод её прерывать, - но
+       * выгрузку она не переживёт, и сказать об этом можно только по факту, при подъёме. */
+    }
+  }
+}
+
+/** @param {boolean} precious действие (сразу) или движение (отложенно). */
+function recTouch(precious) {
+  if (!rec.active) return;
+  if (precious) {
+    if (recFlushTimer) { clearTimeout(recFlushTimer); recFlushTimer = null; }
+    void recWrite();
+    return;
+  }
+  if (recFlushTimer) return;
+  recFlushTimer = setTimeout(() => { recFlushTimer = null; void recWrite(); }, REC_FLUSH_MS);
+}
+
+async function recForget() {
+  if (recFlushTimer) { clearTimeout(recFlushTimer); recFlushTimer = null; }
+  try { await chrome.storage.local.remove(REC_KEY); } catch (_) { /* nothing to lose */ }
+}
+
+/* ОДНА ЗАПИСКА ДЛЯ ЧЕЛОВЕКА, которую покажет панель. Нужна потому, что всё это происходит там, где
+ * интерфейса нет: воркер поднимается сам, иконка нажимается без попапа. Молчание здесь - это ровно тот
+ * грех, который уже разбирали на десктопной половине: «ничего не записано» и «запись потеряна» human
+ * обязан различать, и сказать это может только тот, кто знает. Одноразовая: панель читает и стирает. */
+async function recSay(text) {
+  try { await chrome.storage.local.set({ recNote: { said: text, at: Date.now() } }); } catch (_) {}
+}
+
+/* ВОССТАНОВЛЕНИЕ ПРИ ПОДЪЁМЕ. Страница продолжает присылать события - забыл только воркер, - поэтому
+ * запись ПРОДОЛЖАЕТСЯ, а не закрывается остатком.
+ *
+ * Обещание этой функции: после неё `rec.active` говорит правду. Её промис ждут маршруты capture/*, иначе
+ * событие, которое разбудило воркер, было бы отвергнуто раньше, чем восстановление доработает, - то есть
+ * починка теряла бы ровно тот случай, для которого написана. */
+async function restoreRecording() {
+  let live;
+  try {
+    ({ [REC_KEY]: live } = await chrome.storage.local.get(REC_KEY));
+  } catch (_) {
+    return;
+  }
+  if (!live || !live.active || rec.active) return;
+
+  rec.active = true;
+  rec.activeTabId = live.activeTabId ?? null;
+  rec.tabKeys = live.tabKeys || {};
+  rec.nextKey = live.nextKey || 0;
+  rec.startedAt = live.startedAt || Date.now();
+  rec.lastAt = live.lastAt || Date.now();
+  rec.events = Array.isArray(live.events) ? live.events : [];
+  rec.resumed = true;
+  rec.motionDropped = !!live.motionDropped;
+  holdWorker(true);
+
+  /* Бейдж и снятый попап - состояние браузера, оно выгрузку пережило; здесь они ставятся заново потому,
+   * что после падения могли и не пережить, а два разных ответа на «идёт ли запись» - это то, с чего всё
+   * началось. */
+  try {
+    await chrome.action.setBadgeText({ text: 'REC' });
+    await chrome.action.setBadgeBackgroundColor({ color: '#f85149' });
+    await chrome.action.setPopup({ popup: '' });
+  } catch (_) {}
+
+  /* И СНОВА ВООРУЖИТЬ СТРАНИЦУ. Обычно content.js жив и всё ещё присылает - тогда это ничего не меняет.
+   * Но если выгрузка случилась вместе с перезагрузкой страницы, слушателей там уже нет, и без этого
+   * запись продолжалась бы пустой, отчитываясь, что идёт. Провал не отменяет записи: остальные вкладки и
+   * то, что уже записано, от этого не хуже, - но сказать о нём надо. */
+  if (rec.activeTabId != null) {
+    try {
+      await ensureCapturing(rec.activeTabId);
+    } catch (err) {
+      await recSay('The recording was interrupted and could not be re-armed on that page ('
+        + (err && err.message ? err.message : 'the tab is gone')
+        + '). What was captured up to then is kept - press the icon to stop and keep it.');
+      return;
+    }
+  }
+
+  await recSay('The recording was interrupted - the browser stopped this extension\'s worker - and has '
+    + 'been picked up again. Up to '
+    + Math.round(REC_FLUSH_MS / 100) / 10
+    + 's of pointer movement around that moment is missing; every click and keystroke is kept.');
+}
+
+/* Ждут это маршруты capture/*: событие, разбудившее воркер, должно попасть в запись, а не быть
+ * отвергнутым, пока восстановление ещё идёт. Один промис на подъём - не по событию. */
+const recReady = restoreRecording().catch(() => {});
 
 const play = {
   active: false, abort: false,
@@ -354,6 +511,8 @@ function pushEvent(ev, tabKey) {
     tab: tabKey,
   }, ev));
   rec.lastAt = now;
+  /* СРАЗУ: это действие - клик, печать, переход. Их мало, они дороги, и терять их на выгрузке нельзя. */
+  recTouch(true);
   return rec.events.length;
 }
 
@@ -408,6 +567,7 @@ function captureMoves(msg, sender) {
     points[0].dt = gap;
     last.points.push(...points);
     rec.lastAt = lastAt;
+    recTouch(false);
     return { ok: true, count: rec.events.length };
   }
 
@@ -417,6 +577,9 @@ function captureMoves(msg, sender) {
   if (frame) ev.frame = frame;
   rec.events.push(Object.assign({ delay: rec.events.length === 0 ? 0 : gap }, ev));
   rec.lastAt = lastAt;
+  /* ОТЛОЖЕННО: движение приходит шестьюдесятью пробами в секунду, и запись по событию молотила бы
+   * хранилище без всякой пользы - см. две скорости выше. */
+  recTouch(false);
   return { ok: true, count: rec.events.length };
 }
 
@@ -550,9 +713,12 @@ function compact(events) {
 async function recordStart(tabId) {
   const tab = tabId ? await chrome.tabs.get(tabId) : await activeTab();
 
-  /* A recording exists only as rec.events in this worker's memory, so it must keep the worker
-   * resident - alone among the three run kinds it did not, and an idle teardown discarded the
-   * whole recording while the badge still read REC. */
+  /* Keeps the worker resident - alone among the three run kinds it did not, and an idle teardown
+   * discarded the whole recording while the badge still read REC.
+   *
+   * ЭТОГО ОКАЗАЛОСЬ НЕДОСТАТОЧНО, и «недостаточно» тут значит «молча теряет всё»: пинг оттягивает
+   * выгрузку, но перезагрузка расширения, обновление и падение выгружают воркер всё равно. Поэтому запись
+   * ещё и пишется в хранилище по ходу дела и восстанавливается при подъёме - см. restoreRecording. */
   holdWorker(true);
   rec.active = true;
   rec.activeTabId = tab.id;
@@ -561,6 +727,11 @@ async function recordStart(tabId) {
   rec.startedAt = Date.now();
   rec.lastAt = Date.now();
   rec.events = [];
+  rec.resumed = false;
+  rec.motionDropped = false;
+  /* Заголовок в хранилище - ДО первого события: воркер, выгруженный между стартом и первым кликом, иначе
+   * не оставил бы о записи вообще никакого следа, и бейдж REC было бы нечем объяснить. */
+  await recWrite();
 
   const { key } = keyForTab(tab.id);
   // Opening step for tab 0, so replay starts from a known page instead of whatever
@@ -598,10 +769,15 @@ async function recordStatus() {
 }
 
 async function recordStop() {
+  /* Сначала - восстановление, если воркер только что поднялся. Без этого стоп, пришедший первым же
+   * сообщением после подъёма, честно ответил бы «нечего останавливать» и выбросил бы запись, которая
+   * лежит в хранилище целая. */
+  await recReady;
   if (!rec.active) return { ok: true, events: [], saved: null };
 
   rec.active = false;
   holdWorker(false);
+  await recForget();
   // Stop capture in every tab this recording touched.
   for (const realId of Object.keys(rec.tabKeys)) {
     chrome.tabs.sendMessage(Number(realId), { mf: 'capture/stop' }).catch(() => {});
@@ -630,6 +806,12 @@ async function recordStop() {
     origins,
     tabs: tabCount,
     events,
+    /* ПЕРЕЖИЛА ЛИ ОНА ПРЕРЫВАНИЕ - едет с записью, а не остаётся в логе. Повтор такой записи может
+     * вести себя не так, как ожидает человек, и причина должна быть у него под рукой, а не в консоли
+     * воркера, которую никто не открывает. Отсутствует у обычной записи: absent значит «не прерывалась»,
+     * а не false, - то же правило, что у флагов агента. */
+    ...(rec.resumed ? { interrupted: true } : {}),
+    ...(rec.motionDropped ? { motionIncomplete: true } : {}),
   };
   pending.push(saved);
   await chrome.storage.local.set({ pending });
@@ -2030,17 +2212,28 @@ function fromBridge(sender) {
 /* -------------------------------------------------------------------- routing */
 
 const ROUTES = {
-  ping: async () => ({
-    ok: true, version: VERSION, mode: 'extension',
-    recording: rec.active, playing: play.active, agentRunning: agent.running,
-  }),
-  'capture/event': async (msg, sender) => captureFromPage(msg.event, sender),
-  'capture/moves': async (msg, sender) => captureMoves(msg, sender),
+  ping: async () => {
+    /* То же, что у record/status: «идёт ли запись» обязано быть правдой и на первом сообщении после
+     * подъёма воркера. */
+    await recReady;
+    return {
+      ok: true, version: VERSION, mode: 'extension',
+      recording: rec.active, playing: play.active, agentRunning: agent.running,
+    };
+  },
+  /* ЖДУТ ВОССТАНОВЛЕНИЯ, и это не осторожность, а весь смысл починки: воркер чаще всего будят именно
+   * этим сообщением, и без ожидания событие, разбудившее его, было бы отвергнуто как «not recording»
+   * раньше, чем restoreRecording успеет вернуть правду. Тогда починка теряла бы ровно тот случай, для
+   * которого написана. */
+  'capture/event': async (msg, sender) => { await recReady; return captureFromPage(msg.event, sender); },
+  'capture/moves': async (msg, sender) => { await recReady; return captureMoves(msg, sender); },
   // The worker owns the defaults so the popup cannot drift from them.
   'settings/get': async () => ({ ok: true, settings: await loadSettings() }),
   'settings/set': async (msg) => ({ ok: true, settings: await saveSettings(msg.settings || {}) }),
   'record/start': (msg) => recordStart(msg.tabId),
-  'record/status': () => recordStatus(),
+  /* И статус - тоже: панель, открытая сразу после подъёма воркера, иначе показала бы «Ready» и нули про
+   * запись, которая идёт. Именно это и было предъявлено. */
+  'record/status': async () => { await recReady; return recordStatus(); },
   'record/stop': () => recordStop(),
   /* What a recording can have done to it once it exists - see the block above pendingList for why these
    * had to be added rather than merely used. */
@@ -2754,11 +2947,27 @@ chrome.action.onClicked.addListener(async () => {
     return;
   }
 
+  /* СНАЧАЛА - ВОССТАНОВЛЕНИЕ. Иначе клик по иконке сразу после подъёма воркера не находил записи, падал
+   * в последнюю ветку и открывал панель с «Ready» и нулями - при том что запись лежала в хранилище целая.
+   * Это и был предъявленный симптом. */
+  await recReady;
+
   if (rec.active) {
     const res = await recordStop().catch((err) => ({ ok: false, error: err.message }));
     if (res && res.saved) {
       await chrome.action.setBadgeText({ text: String(res.saved.events.length) });
       await chrome.action.setBadgeBackgroundColor({ color: '#2ea043' });
+    } else {
+      /* НИЧЕГО НЕ СОХРАНЕНО - И ОБ ЭТОМ ГОВОРЯТ. Молчащий стоп выглядит ровно как удачный: бейдж
+       * гаснет, панель открывается пустой, и «ничего не записалось» неотличимо от «запись потеряна».
+       * Эту же ошибку уже разбирали на десктопной половине - «нечего играть» решается тем, что можно
+       * сыграть, а не длиной списка, - и здесь она была этажом выше. */
+      await chrome.action.setBadgeText({ text: '0' });
+      await chrome.action.setBadgeBackgroundColor({ color: '#f85149' });
+      await recSay(res && res.error
+        ? 'The recording could not be stopped cleanly: ' + res.error
+        : 'That recording captured nothing, so nothing was kept. If the page was a Chrome page, the Web '
+          + 'Store or a PDF, the extension cannot see it - the whole computer is the recorder for those.');
     }
     try { await chrome.action.openPopup(); } catch (_) {}
     return;

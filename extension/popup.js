@@ -259,7 +259,13 @@ $('btn-stop').addEventListener('click', async () => {
   if (!res.ok) { $('rec-note').textContent = res.error; return; }
   $('rec-note').textContent = res.saved
     ? 'Saved: ' + summarize(res.saved.events)
-    : 'Nothing was captured.';
+      + (res.saved.interrupted
+        /* Прерывание едет в записи, и здесь оно называется вслух: повтор такой записи может вести себя
+         * не так, как человек ожидает, и узнать причину он должен сейчас, а не тогда. */
+        ? ' — this one was interrupted while recording, so some pointer movement is missing.'
+        : '')
+    : 'Nothing was captured, so nothing was kept. On a Chrome page, the Web Store or a PDF the '
+      + 'extension cannot see the page — the whole computer is the recorder for those.';
   renderList();
 });
 
@@ -441,6 +447,25 @@ $('copy-log').addEventListener('click', async (ev) => {
   }
 });
 
+/* ЗАПИСКА ОТ ВОРКЕРА - ОДНОРАЗОВАЯ, и она здесь потому, что всё интересное про запись происходит там,
+ * где панели нет: воркер поднимается сам, иконка нажимается без попапа. Молчание в этих местах и было
+ * поломкой - «запись потеряна» выглядело ровно как «записи не было».
+ *
+ * Читается и СТИРАЕТСЯ: записка про прерывание, оставшаяся на экране после следующей удачной записи,
+ * пугает на пустом месте. Не перекрывает того, что панель хочет сказать сама, - показывается только в
+ * пустое поле. */
+async function showWorkerNote() {
+  let note;
+  try {
+    ({ recNote: note } = await chrome.storage.local.get('recNote'));
+  } catch (_) {
+    return;
+  }
+  if (!note || !note.said) return;
+  try { await chrome.storage.local.remove('recNote'); } catch (_) {}
+  if (!$('rec-note').textContent) $('rec-note').textContent = note.said;
+}
+
 async function refreshRecordView() {
   const s = await ask('ping');
   /* Order matters, and used to be wrong. setPlaying(false) un-hides #btn-record and #list, so
@@ -452,6 +477,8 @@ async function refreshRecordView() {
   if (s.recording) refreshRecording();
   if (s.playing) refreshReplay();
   await renderList();
+  /* После списка: записка про прерванную запись читается вместе с тем, что от неё осталось. */
+  await showWorkerNote();
 }
 
 /* ------------------------------------------------------------------- skills */

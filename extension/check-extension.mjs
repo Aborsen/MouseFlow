@@ -113,7 +113,15 @@ globalThis.chrome = {
     setTitle: async () => {},
   },
   scripting: { executeScript: async () => [{ result: null }] },
-  webNavigation: { onCommitted: listener(), onCompleted: listener() },
+  /* getAllFrames ОБЯЗАН БЫТЬ: ensureCapturing его зовёт, и без него он падал TypeError - то есть
+   * record/start в стенде НЕ доходил до конца, хотя тест рядом и проходил. Проходил он потому, что
+   * `rec.active = true` стоит раньше падения, а проверялся именно статус; то есть стенд молча
+   * проверял половину пути. Один кадр, как у обычной страницы без iframe'ов. */
+  webNavigation: {
+    onCommitted: listener(),
+    onCompleted: listener(),
+    getAllFrames: async () => [{ frameId: 0 }],
+  },
   sidePanel: { setPanelBehavior: async () => {}, open: async () => {} },
   alarms: {
     made: [], cleared: [], live: new Set(),
@@ -1612,6 +1620,145 @@ group('веб-кейс: цель приезжает готовой, id кейс�
     /if \(checksOf\(agent\.trace\)\) \{[\s\S]{0,200}?'final'\)/.test(src));
   check('кадр - jpeg, потому что png страницы почти всегда тяжелее потолка',
     /format: 'jpeg', quality: FRAME_QUALITY/.test(src));
+}
+
+group('запись переживает выгрузку воркера - иначе она умирает молча, а интерфейс врёт');
+{
+  /* ЧТО ЗДЕСЬ ВОСПРОИЗВОДИТСЯ, И ПОЧЕМУ ЭТО НАСТОЯЩАЯ ВЫГРУЗКА, А НЕ ЕЁ ИМИТАЦИЯ.
+   *
+   * MV3 выгружает воркер, когда тот простаивает: область модуля пропадает, а `chrome.storage` остаётся.
+   * Повторный импорт с другим запросом в адресе даёт ровно это - модуль вычисляется заново, со свежими
+   * `rec`, `play` и всем прочим, а `store` в заглушке тот же. Заглушка `addListener` переписывает
+   * `listeners.message`, так что дальше сообщения идут в НОВЫЙ воркер - как в браузере.
+   *
+   * ЧТО БЫЛО СЛОМАНО. Запись жила только в `rec.events`, в памяти. После выгрузки: воркер поднимается,
+   * `rec.active === false`, а страница НЕ перезагружалась - content.js жив и продолжает присылать
+   * события, и каждое получало `'not recording'` и выбрасывалось. Бейдж при этом показывал REC, попап
+   * был снят, и человек, нажав иконку «остановить», попадал в ветку «записи нет»: открывалась панель с
+   * «Ready», нулями и пустым списком. Предъявлено это было так: «нажал старт, запись пошла, возвращаюсь
+   * нажать паузу - обнулилось и ничего не записано». */
+  const sendAs = (msg, sender) => new Promise((resolve) => {
+    const answered = listeners.message(msg, sender, resolve);
+    if (!answered) resolve({ ok: false, error: 'route declined to answer' });
+  });
+  const click = (n) => ({
+    mf: 'capture/event',
+    event: { action: 'click', selector: '#b' + n, tag: 'button', text: 'Button ' + n },
+  });
+
+  delete store[ 'recLive' ];
+  delete store.recNote;
+  seed([]);
+
+  const tab = chrome.tabs.open[0];
+  const started = await sendAs({ mf: 'record/start' }, {});
+  check('запись началась', started.ok === true, show(started));
+
+  const first = await sendAs(click(1), { tab: { id: tab.id }, frameId: 0 });
+  check('и событие со страницы принято', first.ok === true && !first.ignored, show(first));
+
+  /* ДО ВЫГРУЗКИ ОНА УЖЕ В ХРАНИЛИЩЕ. Действия пишутся сразу - они редки и дороги; движение отложенно. */
+  check('запись лежит в хранилище, а не только в памяти',
+    !!store.recLive && store.recLive.active === true, show(store.recLive && store.recLive.active));
+  const savedEarly = (store.recLive.events || []).filter((e) => e.action === 'click').length;
+  check('и нажатие в неё попало сразу, не дожидаясь стопа', savedEarly === 1, String(savedEarly));
+
+  /* ---- ВЫГРУЗКА ---- */
+  const revived = await import('./background.js?worker=2');
+  void revived;
+
+  /* И ГЛАВНОЕ: событие, которое РАЗБУДИЛО воркер, обязано попасть в запись. Именно его и терял старый
+   * код - причём первым же, то есть терялось ровно то, для чего починка написана. */
+  const afterWake = await sendAs(click(2), { tab: { id: tab.id }, frameId: 0 });
+  check('событие, разбудившее воркер, не отвергнуто',
+    afterWake.ok === true && !afterWake.ignored && afterWake.error !== 'not recording', show(afterWake));
+
+  /* И ИНТЕРФЕЙС ГОВОРИТ ПРАВДУ. Это тот самый экран из предъявленного: «Ready» и нули при живой записи. */
+  const status = await sendAs({ mf: 'record/status' }, {});
+  check('статус после подъёма говорит, что запись ИДЁТ',
+    status.ok === true && status.recording === true, show(status));
+  const ping = await sendAs({ mf: 'ping' }, {});
+  check('и ping тоже - панель открывается по нему', ping.recording === true, show(ping));
+
+  /* И НИЧЕГО НЕ ПОТЕРЯНО, КРОМЕ ЗАЗОРА. Оба нажатия - то, что было до выгрузки, и то, что после. */
+  const stopped = await sendAs({ mf: 'record/stop' }, {});
+  check('стоп сохраняет запись', stopped.ok === true && !!stopped.saved, show(stopped).slice(0, 120));
+  const clicks = (stopped.saved.events || []).filter((e) => e.action === 'click').length;
+  check('и в ней оба нажатия - и до выгрузки, и после', clicks === 2, String(clicks));
+
+  /* ПРЕРЫВАНИЕ ЕДЕТ С ЗАПИСЬЮ. Повтор такой записи может вести себя не так, как человек ожидает, и
+   * причина должна быть у него под рукой - а не в консоли воркера, которую никто не открывает. */
+  check('и сказано, что она была прервана', stopped.saved.interrupted === true,
+    show(stopped.saved.interrupted));
+  check('а человеку оставлена записка про это', !!(store.recNote && store.recNote.said),
+    show(store.recNote));
+  check('и она объясняет, что клики целы, а движение частично нет',
+    /every click and keystroke is kept/.test(String(store.recNote && store.recNote.said)),
+    String(store.recNote && store.recNote.said).slice(0, 90));
+
+  /* И ПОСЛЕ СТОПА В ХРАНИЛИЩЕ НИЧЕГО НЕ ОСТАЁТСЯ: иначе следующий подъём воркера «восстановил» бы
+   * законченную запись и начал бы дописывать в неё чужие события. */
+  check('после стопа живой записи в хранилище нет', store.recLive === undefined, show(store.recLive));
+
+  /* ---- ГОНКА, КОТОРУЮ ЭТОТ СТЕНД ВОСПРОИЗВЕСТИ НЕ МОЖЕТ, И ЭТО СКАЗАНО ВСЛУХ ----
+   *
+   * В браузере воркер будят ИМЕННО событием со страницы: сообщение и подъём идут одновременно, и
+   * маршруты capture/* ждут `recReady` ровно поэтому - иначе первое же событие после подъёма получило бы
+   * `'not recording'`, то есть починка теряла бы тот случай, для которого написана.
+   *
+   * Исполнением это здесь не проверить, и попытка была: прежний экземпляр модуля в стенде НЕ УМИРАЕТ.
+   * `listeners.message` переписывается только когда новый модуль досчитается до своего addListener, так
+   * что сообщение, отправленное раньше, уходит СТАРОМУ воркеру - а у того запись жива, и он отвечает
+   * успехом независимо от того, есть починка или нет. Такая проверка проходила в обе стороны, то есть
+   * не была проверкой; её убрали, а не оставили зелёной для вида.
+   *
+   * Поэтому здесь закрепляется СТРОКА. Это слабее исполнения, и лучше слабого закрепления с честной
+   * причиной не бывает только одно - настоящий стенд на два экземпляра воркера, которого у нас нет. */
+  /* CRLF свёрнут - ровно та ловушка, о которой предупреждает шапка этого файла: в рабочей копии файлы
+   * лежат с возвратом каретки, и регулярка с \n в ней не находит ничего, хотя исходник верен. */
+  const bgSrc = readFileSync(new URL('./background.js', import.meta.url), 'utf8')
+    .replace(/\r\n/g, '\n');
+  check('маршруты capture/* ждут восстановления - гонку стенд не ловит, поэтому по строке',
+    /'capture\/event': async \(msg, sender\) => \{ await recReady;/.test(bgSrc)
+      && /'capture\/moves': async \(msg, sender\) => \{ await recReady;/.test(bgSrc));
+  check('и статус с ping - тоже: панель открывается по ним сразу после подъёма',
+    /'record\/status': async \(\) => \{ await recReady;/.test(bgSrc)
+      && /await recReady;\n    return \{\n      ok: true, version: VERSION/.test(bgSrc));
+  check('и клик по иконке - иначе он не найдёт записи и откроет пустую панель',
+    /await recReady;\n\n  if \(rec\.active\) \{/.test(bgSrc));
+  check('и стоп - иначе он выбросит запись, лежащую в хранилище целой',
+    /async function recordStop\(\) \{[\s\S]{0,400}?await recReady;/.test(bgSrc));
+
+  /* И ОБЫЧНАЯ ЗАПИСЬ НЕ ПОМЕЧЕНА ПРЕРВАННОЙ - absent значит «не прерывалась», а не false. */
+  delete store.recNote;
+  await sendAs({ mf: 'record/start' }, {});
+  await sendAs(click(3), { tab: { id: tab.id }, frameId: 0 });
+  const clean = await sendAs({ mf: 'record/stop' }, {});
+  check('у непрерванной записи метки нет вовсе',
+    clean.saved && clean.saved.interrupted === undefined, show(clean.saved && clean.saved.interrupted));
+}
+
+group('стоп, который ничего не сохранил, об этом говорит');
+{
+  /* ТОТ ЖЕ ГРЕХ, ЧТО УЖЕ РАЗБИРАЛИ НА ДЕСКТОПНОЙ ПОЛОВИНЕ: «нечего играть» решается тем, что можно
+   * сыграть, а не длиной списка. Здесь он этажом выше: молчащий стоп выглядит ровно как удачный -
+   * бейдж гаснет, панель открывается пустой, - и «ничего не записалось» неотличимо от «запись потеряна».
+   * Отказ должен быть словами, и слова должны называть самую частую причину. */
+  const bg = readFileSync(new URL('./background.js', import.meta.url), 'utf8');
+  check('иконка на пустом стопе ставит красный ноль, а не гасит бейдж',
+    /setBadgeText\(\{ text: '0' \}\)/.test(bg));
+  /* По СКЛЕЕННОМУ тексту, а не по исходнику: сообщение разбито по строкам переносами и склейками, и
+   * регулярка по исходнику проверяла бы форматирование вместо смысла. */
+  const bgSaid = bg.replace(/\s+/g, ' ');
+  check('и оставляет записку, называющую причину',
+    /captured nothing, so nothing was kept/.test(bgSaid)
+      && /Web ' \+ 'Store or a PDF/.test(bgSaid),
+    bgSaid.slice(bgSaid.indexOf('captured nothing'), bgSaid.indexOf('captured nothing') + 150));
+  const pop = readFileSync(new URL('./popup.js', import.meta.url), 'utf8');
+  check('и панель говорит то же самое, а не «Nothing was captured.»',
+    /Nothing was captured, so nothing was kept/.test(pop));
+  check('а прерванную запись называет прерванной',
+    /was interrupted while recording/.test(pop));
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
