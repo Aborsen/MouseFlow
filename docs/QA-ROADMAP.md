@@ -435,23 +435,76 @@ The query for the first is above; for the second, `jsonb_array_length(steps)` ov
 
 **Goal.** Regression runs happen on a machine nobody is typing at, and no other process on any machine can drive the agent.
 
-**Exists today.**
-- Agent auth: none. `-AllowOrigin` is echoed, not enforced (`agent/mouseflow-agent.ps1` header; `19-limits-and-known-gaps.md` → "No agent authentication"). Any local process can `POST /do`.
+> **Done 2026-09-11, and three things in this item were wrong when the work started.** Corrections are
+> inline below; the short version: `-AllowOrigin` was already enforced, the key had to cover *more* doors
+> than the plan proposed, and part 2 needed almost no new code because the pieces were already there.
+
+**Exists today.** *(Corrected — this paragraph was stale.)*
+- Agent auth: **`-AllowOrigin` IS enforced**, since 0.9.7 — this said "echoed, not enforced" and that had
+  stopped being true. Empty means "this product's own pages and loopback" and refuses the rest, so a remote
+  page cannot drive the agent. A request with **no Origin** is allowed on purpose, and that is the real
+  gap: it is not a browser, and the code's reason ("a local process can do anything anyway") holds for a
+  process running as the **same user** and fails for another **session** on the machine — a second
+  logged-in user, fast user switching, Screen Sharing, a service under its own account. Those cannot post
+  input into somebody else's desktop but can reach loopback. **That** is what the key is for, and it is
+  the case a machine owned by tests actually has.
 - Device tokens (`device_token`, minted from Settings) identify an *installation* to the account; the claim body says `kind`/`steps`; `run_queue.claimed_by` records who took a job.
 - The cloud path is safe by direction (the agent dials out).
 
 **Build.**
 
-1. **Loopback key** (flag `canAuth`, reported by `/health` which stays open): at start the agent generates a random 32-byte key, keeps it in memory and in its per-user config, and shows "Copy pairing key" in the tray/menu. Every mutating loopback endpoint (`/do`, `/replay`, `/record/*`, `/account`) requires `X-MouseFlow-Key`; `/health`, `/windows`, `/shot` stay open (discovery and pictures the person can already see — decide `/shot` explicitly and write the reason down). The web keeps the key per port in `localStorage` and, when a 401 comes back, shows "Paste the key from the agent's tray" once. Both agents; the web tolerates agents without the flag.
-2. **Pin a case to a machine.** Device tokens already have a `label`; the agent sends its label in the claim body (`machine=<label>`); `run_queue` gets `machine` (from `user_case.machine` when queued); `?worker=claim` filters `and (machine is null or machine = ${label})`. A case pinned to "QA-VM" never runs on the owner's laptop.
-3. **The QA machine recipe** (docs, not code): a Windows VM (Hyper-V or Parallels) with the agent autostarted, paired with its own device token labelled "QA-VM", screen never locked (regression needs a desktop), and every case pinned to it. Cost note: one mouse per machine ⇒ cases run serially; 100 cases × 2 min ≈ 3.5 h a night is fine, 1000 is not — a second VM is a second label.
+1. ~~**Loopback key**~~ — **done**, with one correction and one addition. `canAuth` plus `keyRequired`,
+   because "understands keys" and "is asking now" are different facts and a client reading one field could
+   not tell an old agent from a permissive one. **`/shot` and `/windows` are BEHIND the key, not open** —
+   this item asked for that decision to be made explicitly, and the decision went the other way from the
+   proposal: a screenshot is the whole desktop and a window list is content ("Inbox — Outlook", document
+   names), and "pictures the person can already see" is true of the person *at* the machine and false for
+   exactly the other-session attacker the key exists to stop. Leaving them open would have left the two
+   most valuable doors open. **Only `/health` is open**, and it must be: it is how the agent is found and
+   how a client learns a key is wanted. Key in memory only (**not** in a per-user config file — a key on
+   disk outlives the process that meant it, and a fresh one per start costs one paste); 32 bytes,
+   base64url, constant-time comparison. **Off by default**, on with `-RequireKey` / `--require-key`, the
+   owner's call: on a single-user machine the key protects against nobody, and requiring it there would
+   make everyone paste a key for no gain.
+2. ~~**Pin a case to a machine.**~~ — **done, and it needed almost no new code**: two of the three pieces
+   already existed. `user_case.machine` was added by migration 021 with a note saying nothing read it
+   yet, and the agent **already** sends its machine name in the claim body as `worker`
+   (`Environment.MachineName`), which `claimed_by` already records. So no agent change at all — the plan
+   assumed a device-token label would have to be plumbed, and comparing against what already arrives is
+   both simpler and correct, since a pin you cannot compare at row-selection time does not work.
+
+   What was added: `db/022_queue_machine.sql` (**written, not applied** — the owner's standing rule), the
+   `machine` argument on `queueOne`, and the filter in `?worker=claim`. **The filter reads the column
+   through `to_jsonb(q) ->> 'machine'` rather than naming it**, which is the whole trick that lets this
+   ship before the migration: a query naming a missing column fails *entirely*, so a direct reference
+   would have broken claiming on every account instead of merely not filtering. Through `to_jsonb` a
+   missing key is NULL, the condition is identically true, and the pin simply has no effect until the
+   migration lands — after which it works with no further edit. The pin itself is applied by a **second
+   statement**, for the same reason, and a pin that fails to stick is **reported in the answer**: a case
+   you believe ran on the VM and did not is worse than one that did not run.
+3. ~~**The QA machine recipe**~~ — **done**, in [`docs/product/27-cases.md`](product/27-cases.md) →
+   "The machine that tests own", with the arithmetic stated rather than implied and the second-VM
+   threshold named as something to plan for at 400 cases rather than discover at 1000.
 4. **Stop everything on that machine** stays `mouseflow_stop`; add `mouseflow_stop` per machine label when 2 lands.
 
 **Tests.** Pins: `/do` refuses without the key when `health.canAuth`; the web sends the header; claim filters by machine; the docs recipe exists (`check-promises` phrase pin).
 
 **Docs.** `09-connections.md` (the key, the QA machine), `10-agent-protocol.md` (`auth` flag, header), `17-privacy-security.md` (close the "no agent authentication" gap), `19-limits` (remove it), site `install-the-agent.md` and `privacy-and-data.md`.
 
-**Done when** `curl -X POST localhost:8787/do` from another process is refused, and a case labelled "QA-VM" is only ever claimed by that VM. **Estimate:** 4–5 days (agents 3, web 1, docs 1).
+**Done when** — and this needs restating, because as written it asked for something the code deliberately
+refuses. `curl -X POST localhost:8787/do` **from a process running as you** is *still* allowed with the key
+off, which is the default, and that is correct: such a process can call `SendInput` itself, so refusing it
+here would obstruct only the honest. With `-RequireKey` it **is** refused — verified by driving the
+compiled agent, not by reading it: `/do`, `/shot` and `/windows` closed, `/health` open, a wrong key, a
+null and a prefix all rejected.
+
+And a case pinned to a machine is only ever claimed by that machine **once `db/022` is applied**. Until
+then the pin is inert and says so when a pinned case is queued. That is the honest state, and it is the
+owner's to change with one migration.
+
+**Item 7 is closed.** With items 1, 2, 3, 5, 6 and 8 done and 4 parked, **the QA roadmap has nothing open
+left**: what remains of the whole plan is item 6's lever 4 (haiku for the hand-off and the plan preview,
+small, last on purpose) and the October measurement of item 6's done-condition.
 
 ---
 

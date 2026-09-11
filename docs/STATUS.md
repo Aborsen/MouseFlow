@@ -118,7 +118,7 @@ worth more struck than shipped.
 | 5-v1 · a case as an entity | done |
 | 5-v2 · checks bound to a step | done (`4e9f017`), **not as specified** — see below |
 | 6 · speed | levers 1 and 2 done; **3 and 5 dropped on measurement**; only lever 4 is left, and it is small. The item's done-condition is a *measurement* — re-run it in October, see below |
-| 7 · isolation | open, untouched |
+| 7 · isolation | **done.** Loopback key in both agents (off by default, on with -RequireKey), a case pinned to a machine, and the QA-machine recipe. Three of the item's own premises were wrong and are corrected in it |
 | 8 · web QA via the extension | done (`bcdb9ae`) |
 
 **Three places the roadmap was wrong, now corrected in it:**
@@ -168,7 +168,7 @@ deliberately left on the table, is written up in [`QA-ROADMAP.md`](QA-ROADMAP.md
    Ships behind a flag and is judged by one number — turns per successful run — or rolled back.
 3. **The site pass** — [`SITE-DEBT.md`](SITE-DEBT.md). One entry is a ready-to-paste section plus the stale
    line it replaces; the other is the positioning the site has not caught up with.
-4. **Item 7, isolation** — a machine the tests may own. Untouched, and the least urgent of these.
+4. ~~Item 7, isolation~~ — **done.** With it the QA roadmap has **nothing open left**: items 1, 2, 3, 5, 6 and 8 are done, 4 is parked, and what remains of the whole plan is item 6 lever 4 (small, last) plus the October measurement.
 5. **Item 6, lever 4** — haiku for the wave hand-off and the plan preview. Small, and last on purpose: a
    cheaper model must not be anywhere near a decision that aims a click.
 

@@ -329,7 +329,7 @@ async function edit(req, res, sql, userId, id) {
  */
 async function run(res, sql, userId, id) {
   const rows = await sql`
-    select id, name, flow_id, expects from user_case
+    select id, name, flow_id, expects, machine from user_case
     where id = ${id} and user_id = ${userId} and deleted_at is null
   `;
   if (!rows.length) return fail(res, 404, 'no case with that id on this account');
@@ -341,7 +341,10 @@ async function run(res, sql, userId, id) {
 
   /* Значения параметров НЕ КОПИРУЮТСЯ в работу: их читает драйвер из строки кейса в момент старта - как и
    * утверждения, и по той же причине. В работе едет только указатель. */
+  /* МАШИНА КЕЙСА едет в очередь вместе с работой - см. queueOne и db/022. Пусто у кейса без привязки,
+   * и пусто значит «любая»: отсутствие привязки это отсутствие требования. */
   const put = await queueOne(sql, userId, {
+    machine: rows[0].machine || null,
     flowId: rows[0].flow_id,
     /* Имя работы - имя кейса, а не «mouseflow_run»: на Activity человек читает строку «Outlook still
      * sends», а не имя тула, которым её поставили. */
@@ -353,11 +356,19 @@ async function run(res, sql, userId, id) {
    * веб-кейс ждёт не агента на машине, а открытый Chrome с расширением, и человек, ждущий не того, чего
    * надо, решит, что продукт сломан. */
   const web = surfaceOf(found.skill) === 'browser';
+  /* ПРИВЯЗКА, КОТОРАЯ НЕ ЛЕГЛА, НАЗВАНА ВСЛУХ. Это случается, пока db/022 не применена: работа стоит, а
+   * требование к машине к ней не приклеилось - и тогда её возьмёт первая свободная. Сказать это здесь
+   * дешевле, чем разбираться утром, почему кейс «прошёл» не на той машине. */
+  const drifted = put.unpinned
+    ? ` It was NOT pinned to "${put.unpinned}" - this deployment cannot hold a pin yet (migration 022 is `
+      + 'not applied), so whichever machine is listening will take it.'
+    : '';
   return res.status(200).json({ ok: true, queued: put.id, said: `Queued "${rows[0].name}". `
     + (web
       ? 'It runs as soon as that Chrome takes it - the extension has to be on, with "Let my AI run skills '
         + 'in this browser" switched on. Watch it on Activity.'
-      : 'It runs as soon as that machine takes it - watch it on Activity.') });
+      : 'It runs as soon as that machine takes it - watch it on Activity.')
+    + drifted });
 }
 
 async function remove(res, sql, userId, id) {

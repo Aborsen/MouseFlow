@@ -42,10 +42,15 @@ export async function workerSeen(sql, userId) {
 /**
  * Положить одну работу в очередь, если её есть куда положить.
  *
- * @returns {Promise<{ id: string, why?: undefined } | { id?: undefined, why: string, kind: 'no-machine'|'busy' }>}
+ * @returns {Promise<{ id: string, unpinned?: string, why?: undefined }
+ *   | { id?: undefined, why: string, kind: 'no-machine'|'busy' }>}
  *   `why` - готовый ответ человеку, а не код ошибки: у обоих отказов ровно один способ быть полезным.
+ *   `unpinned` - работа поставлена, но привязать её к машине НЕ УДАЛОСЬ; вызывающий обязан сказать это
+ *   вслух, см. ниже.
  */
-export async function queueOne(sql, userId, { flowId, toolName, args, scheduleId = null }) {
+export async function queueOne(
+  sql, userId, { flowId, toolName, args, scheduleId = null, machine = null },
+) {
   const seen = await workerSeen(sql, userId);
   if (seen === null) {
     return {
@@ -72,5 +77,22 @@ export async function queueOne(sql, userId, { flowId, toolName, args, scheduleId
     insert into run_queue (id, user_id, flow_id, tool_name, args, schedule_id)
     values (${id}, ${userId}, ${flowId}, ${toolName}, ${JSON.stringify(args || {})}, ${scheduleId})
   `;
-  return { id };
+
+  /* ПРИВЯЗКА К МАШИНЕ - ВТОРЫМ ОПЕРАТОРОМ, И ЭТО ПРО НЕПРИМЕНЁННУЮ МИГРАЦИЮ.
+   *
+   * 022 (run_queue.machine) написана и НЕ применена - применяется только по явному разрешению владельца.
+   * Назвать колонку во вставке выше значило бы, что до применения падает вся постановка в очередь, то
+   * есть ломается всё, а не «не работает привязка». Отдельный UPDATE падает один и ничего за собой не
+   * уносит: работа уже стоит.
+   *
+   * НО НЕ МОЛЧА. Кейс, привязанный к QA-VM и запущенный где угодно, - это ровно ложное зелёное: человек
+   * думает, что проверял на той машине, а проверяли на этой. Поэтому неудача привязки ВОЗВРАЩАЕТСЯ, и
+   * вызывающий обязан сказать её словами. Тихий catch тут был бы худшим из возможных решений. */
+  if (!machine) return { id };
+  try {
+    await sql`update run_queue set machine = ${machine} where id = ${id} and user_id = ${userId}`;
+    return { id };
+  } catch (_) {
+    return { id, unpinned: machine };
+  }
 }

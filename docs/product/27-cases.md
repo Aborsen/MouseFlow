@@ -223,3 +223,37 @@ list, where the runs' steps are deliberately not shipped.
 | `web/src/features/tests/TestsView.tsx` | the two cards, the row of nights, and one button for nightly |
 | `web/src/features/tests/verdicts.ts` | why `no verdict` is grey |
 | `docs/QA-ROADMAP.md` | item 5, and the six items still open |
+
+## The machine that tests own
+
+A regression run needs a desktop nobody is typing at. One mouse per machine is the whole constraint, and
+every number below follows from it.
+
+**The recipe.**
+
+1. A Windows VM — Hyper-V, Parallels, whatever the host runs. It needs a **real desktop session**: a
+   regression clicks things, so the screen must not be locked and the session must not be disconnected.
+   (An RDP window that is closed rather than signed out leaves the session running, which is what you
+   want; locking it is what you do not.)
+2. Install the agent there and let it **autostart**, so a reboot does not end the night's run.
+3. Attach that machine to the account with its **own** device token, labelled for the machine — see
+   [09 — Connections](09-connections.md).
+4. Start the agent with **`-RequireKey`** and paste its key once in that VM's browser. This is the machine
+   the key exists for: loopback is reachable by every session on it, and a QA machine is precisely the one
+   with more than one.
+5. **Pin every case to it.** A case carries the name of the machine it may run on; a job queued for it is
+   only ever handed to a claimer reporting that name. A case pinned to the VM never runs on your laptop,
+   which is the point — a nightly regression that steals your pointer at 02:00 is a regression nobody keeps.
+
+**What this costs, in arithmetic rather than adjectives.** One mouse means cases run **serially**. At about
+two minutes a case, 100 cases is roughly 3.5 hours — fine for a night. 1000 cases is not, and no amount of
+tuning changes that: the answer is a **second VM with a second label**, and the cases split between them.
+Plan for that before you have 400 cases, not after.
+
+**Stopping it** is `mouseflow_stop`, which stops what that machine is doing.
+
+**Where the pin is honoured.** In the queue, when the job is taken — so a case edited this morning does not
+change the machine of a job already queued tonight. If a deployment cannot hold the pin yet (the column is
+added by `db/022_queue_machine.sql`, which is applied by hand), queueing **says so in the answer** rather
+than quietly running the case wherever: a case you believe ran on the VM and did not is worse than one that
+did not run.
