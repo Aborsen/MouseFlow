@@ -177,6 +177,16 @@ pointer away, not gone.
 
 ## 4. Step 2 — a memory of applications
 
+> **Sequence row 2 shipped 2026-09-11: `api/_memory.mjs` (+ `.d.mts`).** Pure, no DB, no UI, exactly as
+> specified — `parseKey`/`webKeyFor` enforce the 4.3 key shapes (`web:` is origin only, no path, no query),
+> `redactionProblem`/`writeMemory` refuse a coordinate, a name over 60 chars, a URL with a query string and
+> a password field (4.5), `fitBlock` evicts the oldest `learned` first and never touches `taught` or
+> `derived` (4.10), and `builtinEntries()` holds the four 4.9 lines with `provenance: 'builtin'` so
+> `fitBlock` never renders them into a turn's block. New executable suite `api/_test-memory.mjs` (51
+> checks), added to `npm test`. Not done yet: rows 3–6 — `derived` over the existing recordings, the
+> `screenMessage()` wiring in both drivers, migration 023 + the ledger card, `learned` staging. No DB
+> row shape decided yet beyond 4.11's sketch; nothing calls this module yet.
+
 ### 4.1 The claim it rests on
 
 Two places guess *per application*, and a heuristic cannot know the answer:
