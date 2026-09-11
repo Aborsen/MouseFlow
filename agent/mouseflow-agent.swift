@@ -40,8 +40,9 @@ import Darwin
 import Foundation
 import ImageIO
 import ScreenCaptureKit
+import Security
 
-let VERSION = "0.28.0"
+let VERSION = "0.29.0"
 
 // ---------------------------------------------------------------- arguments
 
@@ -71,6 +72,12 @@ let SHIPPED_ORIGINS = [
     "https://mouse-agent.vercel.app",
 ]
 var allowOrigin = ""
+/* КЛЮЧ НА LOOPBACK - ДАННЫЕ ЗДЕСЬ, РЯДОМ С port И allowOrigin, потому что их читает разбор аргументов
+ * ниже, а на верхнем уровне main.swift глобальная переменная обязана быть объявлена ВЫШЕ того, кто её
+ * трогает. Функции, которые с ними работают, стоят у originAllowed - там же, где остальной порог. */
+var loopbackKey = ""
+var keyRequired = false
+
 var moveThrottleMsDefault = 10
 var moveMinPx = 3
 
@@ -83,6 +90,12 @@ do {
             if let v = args.first, let n = UInt16(v) { port = n; args.removeFirst() }
         case "--allow-origin":
             if let v = args.first { allowOrigin = v; args.removeFirst() }
+        /* ТРЕБОВАТЬ КЛЮЧ. Ключ делается всегда; флаг решает, отвергать ли без него - см. заметку у
+         * loopbackKey. По умолчанию выключен: на машине одного человека процесс, запущенный им же, и без
+         * нас может нажать клавишу, а вставлять ключ пришлось бы каждому. На машине, которой владеют
+         * тесты, включается - там это единственная дверь, которую Origin не закрывает. */
+        case "--require-key":
+            keyRequired = true
         case "--move-throttle-ms":
             if let v = args.first, let n = Int(v) { moveThrottleMsDefault = n; args.removeFirst() }
         case "--move-min-px":
@@ -102,6 +115,7 @@ do {
 
               --port N              listen on 127.0.0.1:N (default 8787)
               --allow-origin URL    echoed in Access-Control-Allow-Origin
+              --require-key         demand X-MouseFlow-Key on everything but /health
               --move-throttle-ms N  minimum gap between recorded moves (default 10)
               --move-min-px N       minimum cursor travel before a move is recorded (default 3)
             """)
@@ -110,6 +124,20 @@ do {
             break
         }
     }
+}
+
+/* КЛЮЧ - ДО ТОГО, как поднимется сокет: агент, успевший принять хоть один запрос без ключа, - это окно,
+ * и на медленной машине оно шире. Делается всегда, даже без --require-key: тогда он просто есть и ничего
+ * не сторожит, а человек, решивший включить флаг, уже знает, где ключ. */
+loopbackKey = makeLoopbackKey()
+if keyRequired {
+    /* Печатается только когда требуется: ключ, напечатанный без нужды, приучают копировать, а ключ,
+     * который копируют без нужды, начинают хранить в переписке. */
+    print("")
+    print("  pairing key \(loopbackKey)")
+    print("              every request except /health needs it, as X-MouseFlow-Key.")
+    print("              Paste it on the app's Connections screen for this machine.")
+    print("")
 }
 
 // ---------------------------------------------------------------- permissions
@@ -5722,7 +5750,8 @@ func respond(_ fd: Int32, _ res: Response, origin: String? = nil) {
     }
 }
 
-func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, body: String, origin: String?)? {
+func readRequest(_ fd: Int32)
+    -> (method: String, path: String, query: String, body: String, origin: String?, key: String?)? {
     var raw = [UInt8]()
     var chunk = [UInt8](repeating: 0, count: 4096)
     var headerEnd: Int?
@@ -5758,12 +5787,14 @@ func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, b
      * who may talk to it is --allow-origin, checked elsewhere, and a second gate here would be a second
      * place for the two agents to disagree. */
     var origin: String?
+    var key: String?
     for line in lines.dropFirst() {
         let bits = line.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
         guard bits.count == 2 else { continue }
         let name = bits[0].lowercased()
         if name == "content-length" { length = Int(bits[1]) ?? 0 }
         if name == "origin", !bits[1].isEmpty { origin = bits[1] }
+        if name == "x-mouseflow-key", !bits[1].isEmpty { key = bits[1] }
     }
 
     var body = [UInt8](raw[start...])
@@ -5772,7 +5803,7 @@ func readRequest(_ fd: Int32) -> (method: String, path: String, query: String, b
         if n <= 0 { break }
         body.append(contentsOf: chunk[0..<n])
     }
-    return (method, path, query, String(bytes: body.prefix(length), encoding: .utf8) ?? "", origin)
+    return (method, path, query, String(bytes: body.prefix(length), encoding: .utf8) ?? "", origin, key)
 }
 
 func find(_ haystack: [UInt8], _ needle: [UInt8]) -> Int? {
@@ -5785,12 +5816,66 @@ func find(_ haystack: [UInt8], _ needle: [UInt8]) -> Int? {
     return nil
 }
 
+/* КЛЮЧ НА LOOPBACK - та же схема, что у Windows-агента, и одна схема на два агента это требование
+ * PROTOCOL.md, а не совпадение.
+ *
+ * ПОЧЕМУ ОН НУЖЕН, если абзац выше говорит «локальный процесс и так может всё». Для процесса ТОГО ЖЕ
+ * пользователя это правда, и ключ ему не помеха. Неправда это для ДРУГОЙ СЕССИИ на той же машине: у
+ * macOS это второй вошедший пользователь, «Общий экран», служба под своей учётной записью. Такой сессии
+ * события в чужой рабочий стол не отправить, а loopback доступен - и до ключа она могла печатать в него
+ * как угодно. Ровно этот случай и есть «машина, которой владеют тесты».
+ *
+ * ОТКРЫТ ТОЛЬКО /health, а не «/health, /windows и /shot», как предлагал план: снимок экрана и список
+ * окон - это СОДЕРЖИМОЕ («Inbox - Outlook», имена документов, весь рабочий стол целиком), и довод
+ * «человек это и так видит» верен для человека ЗА этой машиной и неверен для чужой сессии, от которой
+ * ключ и защищает. /health обязан остаться открытым: по нему находят агента и узнают, что нужен ключ. */
+/* Base64url: ключ переносят копированием, и `+`, `/`, `=` в таком пути ломаются молча. */
+func makeLoopbackKey() -> String {
+    var bytes = [UInt8](repeating: 0, count: 32)
+    /* Настоящий генератор, а не arc4random по байту: ключ и должен быть ключом. */
+    _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+    return Data(bytes).base64EncodedString()
+        .replacingOccurrences(of: "+", with: "-")
+        .replacingOccurrences(of: "/", with: "_")
+        .replacingOccurrences(of: "=", with: "")
+}
+
+/* Постоянного времени: ключ проверяется по сети, пусть и петлевой, и побайтовое сравнение с ранним
+ * выходом отдаёт длину совпавшего префикса временем ответа. Дёшево сделать правильно. */
+func keyMatches(_ said: String?) -> Bool {
+    guard !loopbackKey.isEmpty, let said, said.count == loopbackKey.count else { return false }
+    var diff: UInt8 = 0
+    for (a, b) in zip(Array(said.utf8), Array(loopbackKey.utf8)) { diff |= a ^ b }
+    return diff == 0
+}
+
+/** Одна дверь открыта - та, по которой узнают, что остальные закрыты. */
+func needsKey(_ path: String) -> Bool {
+    guard keyRequired else { return false }
+    return path != "/health"
+}
+
+/** Что видит вызывающий без ключа. Словами: «401» сам по себе не говорит, где взять ключ. */
+func refusedKey() -> Response {
+    Response(
+        status: 401,
+        contentType: "application/json",
+        body: "{\"ok\":false,\"error\":\"this agent needs its pairing key - it was started with "
+            + "--require-key. Copy the key from the agent's menu bar item and paste it on the "
+            + "Connections screen.\",\"needsKey\":true}"
+    )
+}
+
 /* КТО ВООБЩЕ МОЖЕТ ГОВОРИТЬ С ЭТИМ АГЕНТОМ.
  *
- * Отсутствие Origin - это НЕ браузер: curl, mcp/worker.mjs, node fetch. Такие пропускаются, и это не дыра.
- * Страница forge'ить Origin не может - его ставит браузер, - а локальный процесс, который мог бы обойтись
- * без него, и так может всё: прочитать account.json, вызвать osascript, нажать клавиши сам. Порог здесь
+ * Отсутствие Origin - это НЕ браузер: curl, mcp/worker.mjs, node fetch. Такие пропускаются, и это не дыра
+ * ДЛЯ ПРОЦЕССА ТОГО ЖЕ ПОЛЬЗОВАТЕЛЯ: страница forge'ить Origin не может - его ставит браузер, - а такой
+ * процесс и так может всё: прочитать account.json, вызвать osascript, нажать клавиши сам. Порог здесь
  * стоит против УДАЛЁННОЙ страницы, и ровно её он и держит.
+ *
+ * От ДРУГОЙ СЕССИИ на этой машине он не держит ничего, а она есть: второй вошедший пользователь, «Общий
+ * экран», служба под своей учётной записью. Ей события в чужой рабочий стол не отправить, а сюда
+ * постучаться - можно. Это закрывает ключ: см. loopbackKey и --require-key.
  *
  * Loopback разрешён без пина по той же причине: `npm run dev` на localhost:4400 - это разработка продукта,
  * а злонамеренный локальный сервер уже находится по ту сторону порога, где выигрывать нечего.
@@ -5861,6 +5946,12 @@ func route(method: String, path: String, query: String, body: String) -> Respons
         json += ",\"canName\":\(jsonBool(Permission.accessibility))"
         /* И нажатие по имени (0.28.0) - по тому же разрешению, что canName: имя берётся из дерева. */
         json += ",\"canClickName\":\(jsonBool(Permission.accessibility))"
+        /* ДВА ФАКТА, А НЕ ОДИН: «умею ключ» и «требую ключ». Клиент, читающий одно поле, не отличил бы
+         * агента, который ключа не понимает, от того, кто его не требует, - а решения это разные: первому
+         * заголовок посылать не нужно вовсе, второму нужен, если ключ у нас есть. То же разделение, что у
+         * linked/taking, и по той же причине. */
+        json += ",\"canAuth\":true"
+        json += ",\"keyRequired\":\(jsonBool(keyRequired))"
         json += ",\"canKeys\":\(jsonBool(eventTap != nil))"
         json += ",\"canDrain\":true"
         /* Несёт ли клик прямоугольники окна и элемента - по ним повтор пересчитывает точку после переезда
@@ -6248,6 +6339,11 @@ let acceptThread = Thread {
             let result: Response
             if !originAllowed(request.origin) {
                 result = refusedOrigin(request.origin ?? "")
+            /* КЛЮЧ - НА ТОМ ЖЕ ШВЕ, что и Origin, и по той же причине: маршрут, добавленный завтра,
+             * наследует проверку, а не забывает её. OPTIONS проходит: предполётный запрос ставит браузер,
+             * ключа в нём нет и быть не может, а выполнить он ничего не выполняет. */
+            } else if request.method != "OPTIONS" && needsKey(request.path) && !keyMatches(request.key) {
+                result = refusedKey()
             } else {
                 result = route(
                     method: request.method, path: request.path, query: request.query, body: request.body

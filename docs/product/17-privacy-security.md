@@ -213,9 +213,24 @@ about one's own history, and masking would make it unanswerable.
   page; `--allow-origin '*'` turns the check off and says so in the banner. A request with **no** `Origin` is
   allowed — that is not a browser, and a local process is already past this threshold. See the protocol's
   "Who may talk to the agent" for the table both agents implement.
-- **A process on the machine can still POST `/do`.** An origin check cannot address that, and anything with
-  that much access has better tools than this port. What changed is that a *remote page* is no longer one of
-  those things.
+- **A process running as YOU can still POST `/do`, and no key fixes that.** Anything with that much access
+  has better tools than this port — it can call `SendInput` itself and read the account file. An origin
+  check cannot address it and neither can a pairing key; a key there would obstruct only the honest. What
+  changed at 0.9.7 is that a *remote page* is no longer one of those things.
+- **A process in ANOTHER SESSION on the machine could too, and from 0.29.0 a key stops it.** This is the
+  case the entry above quietly covered over: loopback is reachable by every session on the machine — a
+  second logged-in user, fast user switching, Screen Sharing, a service under its own account — and none of
+  those can post input into somebody else's desktop, while all of them could type into this port. Started
+  with `-RequireKey` / `--require-key`, the agent answers nothing but `/health` without
+  `X-MouseFlow-Key`: 32 random bytes made fresh at every start, held in memory, printed and shown in the
+  tray, compared in constant time.
+
+  **Off by default**, because on a single-user machine it protects against nobody; on for a machine that is
+  shared, or that tests own. **Only `/health` is left open** — deliberately narrower than the plan asked,
+  which would also have left `/windows` and `/shot` open as "what the person can already see". A
+  screenshot is the whole desktop and window titles are content, and "already sees it" is true of the
+  person *at* the machine and false for exactly the session this is defending against. The key is kept in
+  the browser, per port, and never sent to the account.
 - **Loopback only.** Never bind `0.0.0.0`.
 - **Autostart is restricted twice**, because a web page asking a local service to create a persistent launcher
   is exactly the shape of an attack: the launcher is built only from the agent's own launch arguments (nothing

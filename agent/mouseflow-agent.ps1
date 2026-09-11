@@ -138,7 +138,18 @@ param(
     # The tray icon is how a person reaches the agent - starting and stopping a recording without the
     # browser, and seeing that one is running. Off for a headless run or when something about the tray
     # itself is being debugged; the HTTP half is identical either way.
-    [switch]$NoTray
+    [switch]$NoTray,
+    # ТРЕБОВАТЬ КЛЮЧ НА КАЖДОМ ЗАПРОСЕ, КРОМЕ /health.
+    #
+    # Ключ печатается и показывается в трее ВСЕГДА; этот флаг решает, отвергать ли без него. По умолчанию
+    # выключен: на машине одного человека процесс, запущенный им же, и без нас может нажать клавишу через
+    # SendInput - ключ от него не защищает, а вставлять его пришлось бы каждому.
+    #
+    # А вот на машине, которой владеют тесты, он нужен, и именно от того, чего Origin не ловит: loopback
+    # доступен ЛЮБОЙ сессии на этой машине - другому пользователю по RDP, через смену пользователя, - и
+    # такой сессии SendInput в чужой рабочий стол недоступен, а HTTP-запрос доступен. Отсюда и флаг:
+    # включается на QA-машине, где это единственная дверь.
+    [switch]$RequireKey
 )
 
 $ErrorActionPreference = 'Stop'
@@ -518,7 +529,7 @@ namespace MouseFlow
 
     public static class Agent
     {
-        public const string Version = "0.28.0";
+        public const string Version = "0.29.0";
 
         static readonly object Gate = new object();
         static Native.HookProc _proc;   // must outlive the hook or the GC eats it
@@ -5292,6 +5303,61 @@ namespace MouseFlow
            Пусто теперь значит "собственные страницы продукта и loopback", а не "все". */
         public static string AllowOrigin = "";
 
+        /* КЛЮЧ НА LOOPBACK - и три решения, которые надо назвать вслух.
+         *
+         * ПОЧЕМУ ОН ВООБЩЕ НУЖЕН, если в OriginAllowed сказано «локальный процесс и так может всё». Для
+         * процесса ТОГО ЖЕ пользователя это правда и ключ ему не помеха: он вызовет SendInput напрямую.
+         * Неправда это для ДРУГОЙ СЕССИИ на той же машине - другой пользователь по RDP, смена
+         * пользователя, служба под своей учётной записью. Такой сессии чужой рабочий стол через SendInput
+         * недоступен, а loopback доступен, и до этого ключа она могла печатать в него как угодно. Ровно
+         * этот случай и есть «машина, которой владеют тесты».
+         *
+         * ПОЧЕМУ ОТКРЫТ ТОЛЬКО /health, а не «/health, /windows и /shot», как предлагал план. Потому что
+         * снимок экрана и список окон - это СОДЕРЖИМОЕ, а не метаданные: заголовки окон это «Inbox -
+         * Outlook» и имена документов, а /shot - это весь рабочий стол целиком. Довод «человек это и так
+         * видит» верен для человека ЗА этой машиной и неверен для чужой сессии, от которой ключ и
+         * защищает, - то есть он оправдывает открытыми ровно те две двери, через которые утекает самое
+         * важное. Открытым остаётся /health, и он обязан: по нему находят агента и узнают, что нужен ключ.
+         *
+         * ПОЧЕМУ СРАВНЕНИЕ ПОСТОЯННОГО ВРЕМЕНИ. Ключ проверяется по сети, пусть и по петлевой; побайтовое
+         * сравнение с ранним выходом отдаёт длину совпавшего префикса временем ответа. Дёшево сделать
+         * правильно, поэтому незачем делать иначе. */
+        public static string LoopbackKey = "";
+        public static bool KeyRequired = false;
+
+        /* Base64url: ключ переносят копированием - из трея в поле на странице, иногда через мессенджер, -
+         * и `+`, `/` и `=` в таком пути ломаются молча. 32 байта, потому что это ключ, а не пароль. */
+        public static void MakeKey()
+        {
+            byte[] bytes = new byte[32];
+            using (System.Security.Cryptography.RandomNumberGenerator rng =
+                System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(bytes);
+            }
+            LoopbackKey = Convert.ToBase64String(bytes)
+                .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+        }
+
+        /* Постоянного времени, и длина сравнивается тоже - но не выходом, а тем, что разная длина даёт
+         * гарантированное несовпадение. */
+        public static bool KeyMatches(string said)
+        {
+            if (LoopbackKey.Length == 0) return false;
+            if (said == null) return false;
+            if (said.Length != LoopbackKey.Length) return false;
+            int diff = 0;
+            for (int i = 0; i < said.Length; i++) diff |= said[i] ^ LoopbackKey[i];
+            return diff == 0;
+        }
+
+        /* Одна дверь открыта - та, по которой узнают, что остальные закрыты. */
+        public static bool NeedsKey(string path)
+        {
+            if (!KeyRequired) return false;
+            return path != "/health";
+        }
+
         /* Собственные origin'ы продукта. Два, потому что развёртывания два, и агент, отказывающий
            второму, - это агент, который "просто не находится". */
         public static readonly string[] ShippedOrigins = new string[] {
@@ -5303,7 +5369,12 @@ namespace MouseFlow
            macOS-агента, и то же поведение на каждой ветке - PROTOCOL.md запрещает две схемы на два агента.
 
            Отсутствие Origin - это не браузер: curl, mcp/worker.mjs, node fetch. Пропускается, и это не
-           дыра: страница Origin не подделает, его ставит браузер, а локальный процесс и так может всё. */
+           дыра ДЛЯ ПРОЦЕССА ТОГО ЖЕ ПОЛЬЗОВАТЕЛЯ: страница Origin не подделает, его ставит браузер, а
+           такой процесс и так может всё - вызвать SendInput сам, прочитать account.json.
+
+           А вот ДРУГАЯ СЕССИЯ на этой машине - второй пользователь по RDP, смена пользователя, служба
+           под своей учётной записью - чужой рабочий стол через SendInput не тронет, а сюда постучится.
+           От неё Origin не защищает вовсе, и защищает ключ: см. LoopbackKey и -RequireKey. */
         public static bool OriginAllowed(string origin)
         {
             if (origin == null || origin.Length == 0) return true;
@@ -5385,6 +5456,7 @@ namespace MouseFlow
 
                 int contentLength = 0;
                 string origin = null;
+                string key = null;
                 for (int i = 1; i < headLines.Length; i++)
                 {
                     int colon = headLines[i].IndexOf(':');
@@ -5393,6 +5465,7 @@ namespace MouseFlow
                     string value = headLines[i].Substring(colon + 1).Trim();
                     if (name == "content-length") int.TryParse(value, out contentLength);
                     else if (name == "origin") origin = value;
+                    else if (name == "x-mouseflow-key") key = value;
                 }
 
                 string body = "";
@@ -5415,6 +5488,17 @@ namespace MouseFlow
                 {
                     Respond(stream, 403, "application/json",
                         "{\"ok\":false,\"error\":\"this agent does not answer that page - it is pinned to another origin\"}",
+                        origin);
+                }
+                /* КЛЮЧ - ЗДЕСЬ ЖЕ, РЯДОМ С ПОРОГОМ ПО ORIGIN, и по той же причине: маршрут, добавленный
+                   завтра, наследует проверку, а не забывает её. OPTIONS проходит: предполётный запрос
+                   ставит браузер, ключа в нём нет и быть не может, а выполнить он ничего не выполняет. */
+                else if (method != "OPTIONS" && NeedsKey(path) && !KeyMatches(key))
+                {
+                    Respond(stream, 401, "application/json",
+                        "{\"ok\":false,\"error\":\"this agent needs its pairing key - it was started with "
+                        + "-RequireKey. Copy the key from the agent's tray menu and paste it on the "
+                        + "Connections screen.\",\"needsKey\":true}",
                         origin);
                 }
                 else
@@ -5502,6 +5586,12 @@ namespace MouseFlow
                      * инструмент только там, где он есть, а инструмент, которого агент не умеет,
                      * стоит ровно того хода, который он должен был сэкономить. */
                     + ",\"canClickName\":true"
+                    /* ДВА ФАКТА, А НЕ ОДИН: «умею ключ» и «требую ключ». Клиент, читающий одно поле, не
+                     * отличил бы агента, который ключа не понимает, от того, кто его не требует, - а
+                     * решения это разные: первому не надо посылать заголовок вовсе, второму надо, если он
+                     * у нас есть. То же разделение, что у linked/taking. */
+                    + ",\"canAuth\":true"
+                    + ",\"keyRequired\":" + (KeyRequired ? "true" : "false")
                     /* Whether typing is recorded AS AN EVENT - that a key was pressed and when, never
                        which key. A recording from an older agent has no typing in it at all, so a
                        transcript cannot tell "did not type" from "was not recorded", and this is how it
@@ -7317,6 +7407,11 @@ namespace MouseFlow
 [MouseFlow.Agent]::Configure($MoveThrottleMs, $MoveMinPx)
 [MouseFlow.Agent]::AllowOrigin = $AllowOrigin
 [MouseFlow.Agent]::Port = $Port
+# КЛЮЧ - ДО ТОГО, как поднимется сокет. Агент, успевший принять хоть один запрос без ключа, - это окно,
+# и на медленной машине оно шире. Делается ВСЕГДА, даже без -RequireKey: тогда он просто показан и ничего
+# не сторожит, и человек, решивший включить флаг, уже знает, где ключ.
+[MouseFlow.Agent]::MakeKey()
+[MouseFlow.Agent]::KeyRequired = [bool]$RequireKey
 # Empty when the script was piped in rather than run from a file. Autostart needs a real path.
 if ($PSCommandPath) { [MouseFlow.Agent]::ScriptPath = $PSCommandPath }
 [MouseFlow.Agent]::StartHookPump()
@@ -7348,6 +7443,15 @@ Write-Host ""
 # was 0.2.0, so the one place a user checks which build they are running was the one place that lied.
 Write-Host ("  MouseFlow agent " + [MouseFlow.Agent]::Version) -ForegroundColor Cyan
 Write-Host "  listening   http://127.0.0.1:$Port"
+if ($RequireKey) {
+    # ПЕЧАТАЕТСЯ ТОЛЬКО КОГДА ТРЕБУЕТСЯ, и это не экономия строк: ключ, напечатанный без нужды, приучает
+    # его копировать, а ключ, который копируют без нужды, начинают хранить в переписке.
+    Write-Host ""
+    Write-Host "  pairing key $([MouseFlow.Agent]::LoopbackKey)"
+    Write-Host "              every request except /health needs it, as X-MouseFlow-Key."
+    Write-Host "              Paste it on the app's Connections screen for this machine."
+    Write-Host ""
+}
 if ($AllowOrigin) {
     Write-Host "  origin      $AllowOrigin"
 } else {

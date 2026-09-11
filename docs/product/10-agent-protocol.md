@@ -56,6 +56,8 @@ of coordinates against a list of named actions. So each capability is **stated**
 | `canName` | A click carries `#ctx` — the application, window, control and type it landed on |
 | `canAnchor` | …and the rectangles of that window and that control, so a replay survives the window moving |
 | `canClickName` | `action=clickname` works — clicking a control **by name**, with no coordinate (0.28.0) |
+| `canAuth` | This agent understands a pairing key at all (0.29.0) |
+| `keyRequired` | …and is demanding one **right now**. Two flags, because "cannot" and "is not asking" need different behaviour from a client |
 | `canKeys` | Typing is recorded as an event (that a key was pressed, and when) |
 | `canDrain` | A recording can outlast one response (`/record/drain`) — i.e. long sessions are possible |
 | `platform` | `windows` or `macos`. Used for **exactly one thing**: which install command the Connections screen shows. Never to decide what an agent can do — that is what the `can*` flags are for. |
@@ -117,6 +119,38 @@ already running. **That is not hypothetical — it is what happened.** `/windows
 Enumerate real top-level windows only, and expect the fiddly cases to matter — on Windows those were
 DWM-cloaked Store windows, owned dialogs, helper windows too small to be real, and the desktop shell itself.
 `title` and `process` are what the model reasons about, so they must be the names a person would recognise.
+
+## The pairing key — `X-MouseFlow-Key`
+
+From **0.29.0** the agent can require a key on every request but `/health`. Started with `-RequireKey`
+(Windows) or `--require-key` (macOS), it generates 32 random bytes at every start, base64url so the key
+survives being copied through anything, holds it in memory only, prints it, and shows it in its tray or
+menu bar. It is **off by default**.
+
+**Why a key exists when "a local process can do anything anyway".** That is true of a process running as
+**the same user**: it can call `SendInput` itself and read the account file, so a key obstructs only the
+honest. It is **not** true of another **session** on the same machine — a second logged-in user, fast user
+switching, Screen Sharing, a service under its own account. None of those can post input into somebody
+else's desktop; all of them can reach loopback, and until this key they could type into it freely. That is
+the case a machine owned by tests actually has, which is why the key is off by default and on for a QA
+machine.
+
+**Only `/health` stays open**, which is a deliberate correction to the QA roadmap's proposal to leave
+`/windows` and `/shot` open as well ("pictures the person can already see"). A screenshot is the whole
+desktop; a window list is content — "Inbox — Outlook", document names. "The person already sees it" is true
+of the person *at* the machine and false for exactly the other-session case the key is for, so it would
+have left the two most valuable doors open. `/health` has to stay open: it is how the agent is found and
+how a client learns a key is needed at all.
+
+A refusal is **401** with `needsKey: true` and a sentence naming where to get the key. `OPTIONS` passes
+without one — a preflight is composed by the browser, cannot carry the header, and performs nothing.
+Comparison is constant-time on both sides: the key crosses a socket, and an early-exit comparison leaks the
+matching prefix length in the response time.
+
+The app keeps the key **per port**, in that browser's `localStorage`, and **never sends it to the account**.
+It belongs to the agent rather than to the person — two agents on one machine need two keys — and on a
+server it would be one more secret to guard for no benefit, since the requests come from the browser. Paste
+it on **Settings → Connections**, which shows the field only when the agent says `keyRequired`.
 
 ## `/do` — the action body
 

@@ -191,6 +191,25 @@ the desktop half is Chrome/Edge in practice.
 | macOS | The menu bar's **Stop Until Next Login** or **Quit and Turn Off Start at Login** |
 | macOS, by command | `launchctl bootout gui/$(id -u)/com.mouseflow.agent` — `pkill` does **not** work: `KeepAlive` starts it again a second later, so a "stop" that killed the process would be a switch that does nothing |
 
+## The pairing key, and the machine that tests own
+
+The agent answers loopback, and loopback is reachable by **every session on that machine** — a second
+logged-in user, fast user switching, Screen Sharing, a service under its own account. `-AllowOrigin` does
+not help there: it stops a remote *page*, and none of those are pages.
+
+So from agent **0.29.0** the agent can demand a key. Start it with `-RequireKey` (Windows) or
+`--require-key` (macOS): it prints a fresh key, shows it in the tray or menu bar, and then answers nothing
+but `/health` without it. Paste the key into **Settings → Connections**, where the field appears only when
+the agent says it wants one. The key lives in that browser, per port, and never reaches your account.
+
+**It is off by default, and that is deliberate.** On a machine you are the only user of, the key protects
+against nobody: a program running as you can drive the mouse itself without asking the agent. Turn it on
+where the machine is shared, or where the machine is a **QA machine** whose whole job is to run cases
+nobody is sitting at — see [27 — Test cases](27-cases.md).
+
+A restart makes a **new** key: the old one is refused, and the app says so in those words rather than
+reporting the agent as offline.
+
 ## Letting an AI act on this computer
 
 Everything above gets the agent running so **you** can press Record. One more switch decides whether an

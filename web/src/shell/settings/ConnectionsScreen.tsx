@@ -21,13 +21,57 @@ import {
   startCommand,
 } from '@/lib/agent';
 import { useAgent, useConsole } from '@/lib/store';
-import { linkAccount, unlinkAccount } from '@/lib/agent';
+import { agentKey, linkAccount, setAgentKey, unlinkAccount } from '@/lib/agent';
 import { mintDeviceToken } from '@/lib/api';
 import {
   Command, DownloadLink, PlatformPicker, needsRestart, usePlatform,
 } from '@/features/connect/platform';
 import { CONSENT_LINE, mcpUrl } from '@/features/mcp/facts';
 import { Row, type Say } from '../SettingsDialog';
+
+/* ОДНО ПОЛЕ, И ОНО НЕ СПРАШИВАЕТ ПОДТВЕРЖДЕНИЯ.
+ *
+ * Ключ либо подходит, либо нет, и узнать это можно только попробовав - поэтому здесь нет кнопки
+ * «проверить»: следующий же запрос к агенту и есть проверка, а его отказ объяснён словами в agentCall.
+ * Кнопка, отвечающая «сохранено», про ключ ничего не доказывала бы.
+ *
+ * type="password" - потому что это ключ от чужого рабочего стола, а экран настроек открывают при людях;
+ * «Show» рядом, потому что вставленное надо иногда сверить глазами. */
+function KeyField({ port }: { port: number }) {
+  const [value, setValue] = useState(() => agentKey(port));
+  const [shown, setShown] = useState(false);
+  const [said, setSaid] = useState('');
+
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <input
+        type={shown ? 'text' : 'password'}
+        className="w-56 rounded-lg border border-stroke/60 bg-surface-card2 px-2 py-1 font-mono text-[0.78rem]"
+        placeholder="paste the agent's key"
+        value={value}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(e) => { setValue(e.target.value); setSaid(''); }}
+      />
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => {
+          setAgentKey(port, value);
+          /* СКАЗАНО, ЧТО ИМЕННО СЛУЧИЛОСЬ, а не «сохранено»: пустое поле СТИРАЕТ ключ, и человек,
+           * очистивший его случайно, должен это увидеть. */
+          setSaid(value.trim() ? 'Saved for this browser.' : 'Removed.');
+        }}
+      >
+        Save
+      </Button>
+      <Button size="sm" variant="ghost" onClick={() => setShown((on) => !on)}>
+        {shown ? 'Hide' : 'Show'}
+      </Button>
+      {said && <Typography variant="span" className="text-[0.76rem] text-ink-secondary">{said}</Typography>}
+    </span>
+  );
+}
 
 export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => void }) => {
   const { health, stale } = useAgent();
@@ -214,6 +258,29 @@ export const ConnectionsScreen = ({ say, onClose }: { say: Say; onClose: () => v
           Show it again
         </Button>
       </Row>
+
+      {/* КЛЮЧ ЭТОЙ МАШИНЫ - и он стоит ВЫШЕ «пусть Claude водит этот компьютер» нарочно: без ключа та
+        * кнопка и не сработает (привязка идёт через /account, а он за ключом), и человек, которому
+        * отказали, должен найти причину выше кнопки, а не под ней.
+        *
+        * Показывается только там, где агент сказал, что ключ ТРЕБУЕТ. Не «умеет»: агент 0.29.0 умеет
+        * всегда, и поле, висящее у каждого, кто ничего не включал, - это вопрос, на который девяти из
+        * десяти отвечать не надо. Absent у старого агента, и absent значит «не требует».
+        *
+        * Ключ живёт в этом браузере, по порту, и никогда не уезжает на аккаунт - см. agentKey(). */}
+      {health && health.keyRequired === true && (
+        <Row
+          label="Pairing key for this computer"
+          note={agentKey(console_.port)
+            ? 'A key is saved for this agent in this browser. If the agent has been restarted it has made '
+              + 'a new one, and this one will be refused - paste the new key over it.'
+            : 'This agent was started with -RequireKey, so everything except its health check needs the '
+              + 'key. It prints the key when it starts and shows it in its tray menu. It is kept in this '
+              + 'browser only, per port, and never sent to your account.'}
+        >
+          <KeyField port={console_.port} />
+        </Row>
+      )}
 
       {/* Letting a chat that is not on this computer ask it to do something.
         *

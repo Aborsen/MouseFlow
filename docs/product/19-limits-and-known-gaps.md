@@ -281,8 +281,19 @@ These are not bugs and no amount of work inside the current design removes them.
 - **Electron applications name almost nothing** in either accessibility tree.
 - **Safari cannot reach the agent.** It has no Local Network Access permission to grant and blocks the
   loopback hop outright. The desktop half is Chrome/Edge in practice.
-- **No agent authentication.** Any process on the machine can drive the agent while it runs; `-AllowOrigin`
-  is echoed, never enforced. A design is being chosen.
+- ~~**No agent authentication.**~~ **Closed in two passes, and the entry was wrong by the end of the
+  first.** `-AllowOrigin` is *enforced*, not echoed — empty now means "this product's own pages and
+  loopback", not "anybody", so no remote page can drive the agent. And from agent **0.29.0** a **pairing
+  key** can be required on everything but `/health` (`-RequireKey` / `--require-key`; see
+  [10 — Agent protocol](10-agent-protocol.md)).
+
+  What is left is **stated rather than hidden**: with the key off — the default — a process running as
+  **the same user** can still drive the agent. That is not a hole a key can close, because such a process
+  can call `SendInput` itself and read the account file; a key would be an obstacle only to the honest.
+  What the key does close is the case that is *not* the same user: a second logged-in session, fast user
+  switching, Screen Sharing, a service under its own account — none of which can post events into
+  somebody else's desktop, all of which can reach loopback. That is the case a machine owned by tests
+  actually has, and it is why the key is off by default and on for a QA machine.
 - **The rate limits are per serverless instance**, so the real ceiling is the stated number times however many
   are warm. They stop a stuck client, not a determined caller.
 - **`find_repeated` matches identical goal text.** Two goals differing by one name are not clustered.

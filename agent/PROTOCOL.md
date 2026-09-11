@@ -29,7 +29,7 @@ the user as the agent being unreachable, so a slow answer is worse than a refusa
 
 | Method | Path | Deadline | Returns |
 |---|---|---|---|
-| GET | `/health` | 4s | `{ok, version, screen:{w,h}, recording, playing, canSee, canWindows, canName, canClickName, canKeys}` |
+| GET | `/health` | 4s | `{ok, version, screen:{w,h}, recording, playing, canSee, canWindows, canName, canClickName, canAuth, keyRequired, canKeys}` |
 | GET | `/shot` | 12s | `{ok, png, format, bytes, w, h, scale, originX, originY}` |
 | GET | `/shot?w=640` | 12s | the same, smaller — asked for after a 413 upstream |
 | GET | `/pulse` | 5s | `{ok, grid}` — 64×36 greyscale samples as a short string |
@@ -822,6 +822,43 @@ breaks the run it is warning about is worse than no border, and `goal` and `repl
 still show one.
 
 The colour is the product's own accent (`#bdff7a`), not red: this is not a failure and not a system alert.
+
+## The pairing key — `X-MouseFlow-Key`
+
+From **0.29.0** the agent can require a key on every request but `/health`. It is generated fresh at every
+start (32 random bytes, base64url so it survives being copied through anything), held in memory only, and
+printed at startup; the tray/menu item shows it. `-RequireKey` on Windows, `--require-key` on macOS turns
+the requirement on. Two flags say so, and they say different things: `canAuth` means this agent understands
+keys at all, `keyRequired` means it is demanding one right now. A client reading one field could not tell
+an agent that has never heard of keys from one that simply is not asking — and those need different
+behaviour, so they are two facts, like `linked`/`taking`.
+
+**Why a key exists at all, given that "a local process can do anything anyway".** That sentence is true of a
+process running as **the same user** — it can call `SendInput` itself and read the account file, and a key
+is no obstacle to it. It is **not** true of another **session** on the same machine: a second logged-in
+user, fast user switching, Screen Sharing, a service under its own account. Such a session cannot post
+events into somebody else's desktop, but it can reach loopback — and until this key it could type into it
+freely. That is exactly the case item 7 of the QA roadmap calls "a machine the tests may own".
+
+**Only `/health` stays open, and that is a correction to the plan**, which proposed leaving `/windows` and
+`/shot` open too as "pictures the person can already see". A screenshot is the whole desktop and a window
+list is content — "Inbox — Outlook", document names. The "already sees it" argument holds for the person
+*at* that machine and fails for exactly the other-session attacker the key exists to stop, so it would have
+left the two most valuable doors open. `/health` must stay open: it is how the agent is discovered and how
+a client learns a key is needed.
+
+A refusal is **401** with `needsKey: true` and a sentence saying where to get the key — a bare 401 tells
+nobody anything. `OPTIONS` passes without a key: a preflight is composed by the browser, cannot carry the
+header, and performs nothing.
+
+Comparison is **constant-time** on both sides. The key crosses a socket, even a loopback one, and a
+byte-by-byte comparison with an early exit leaks the length of the matching prefix in the response time.
+It is cheap to do properly.
+
+The web keeps the key **per port**, in `localStorage`, in that browser only: it belongs to the *agent*, not
+to the account, and two agents on one machine need two keys. It is never sent to the account — it is a key
+to somebody's desktop, and on a server it would be one more thing a server has to guard for no benefit,
+since the requests come from the browser.
 
 ## Who may talk to the agent
 

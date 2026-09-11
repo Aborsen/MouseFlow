@@ -33,6 +33,11 @@ export interface AgentHealth {
    * 5 секунд из тринадцати - ровно то, ради чего действие и добавлено. Absent значит «слишком старый,
    * чтобы сказать», и читается как «не предлагать». */
   canClickName?: boolean;
+  /* Понимает ли агент ключ на loopback (0.29.0) и ТРЕБУЕТ ли он его прямо сейчас. Два факта, а не один:
+   * агенту, который ключа не понимает, заголовок посылать не нужно вовсе, а тому, кто понимает и не
+   * требует, - не обязательно. Absent значит «слишком старый, чтобы сказать». */
+  canAuth?: boolean;
+  keyRequired?: boolean;
   /** Whether typing is recorded as an EVENT - that a key was pressed and when, never which key. False when
    * the keyboard hook failed to install, absent before 0.7.0; either way a transcript then cannot tell
    * "typed nothing" from "was not watching", which is why the flag exists rather than being inferred. */
@@ -180,6 +185,33 @@ interface CallOptions {
   text?: boolean;
 }
 
+/* КЛЮЧ ЭТОЙ МАШИНЫ - ПО ПОРТУ, И В localStorage, А НЕ В ПАМЯТИ.
+ *
+ * По порту, потому что ключ принадлежит АГЕНТУ, а не аккаунту: на одной машине их может быть два (8787 и
+ * запасной), и один ключ на оба означал бы, что второй не открыть. В localStorage, потому что он должен
+ * переживать перезагрузку страницы - иначе его пришлось бы вставлять каждое утро, а ключ, который
+ * вставляют каждое утро, кладут в заметки.
+ *
+ * НЕ НА АККАУНТ И НИКОГДА НА ПРОВОД. Это ключ от чужого рабочего стола; уехав на сервер, он стал бы тем,
+ * что сервер обязан охранять, - а он там не нужен ни для чего: запросы к агенту идут из браузера. То же
+ * правило, что у токена устройства в обратную сторону.
+ *
+ * try/catch, потому что в приватном окне и при заблокированных данных сайта обращение САМО бросает. */
+const KEY_AT = (port: number) => `mf.agentKey.${port}`;
+
+export function agentKey(port: number): string {
+  try { return localStorage.getItem(KEY_AT(port)) ?? ''; } catch (_) { return ''; }
+}
+
+/** Пустое значение СТИРАЕТ: «убрать ключ» и «положить пустой» - это одно и то же намерение. */
+export function setAgentKey(port: number, key: string): void {
+  try {
+    const given = key.trim();
+    if (given) localStorage.setItem(KEY_AT(port), given);
+    else localStorage.removeItem(KEY_AT(port));
+  } catch (_) { /* нечего хранить - тогда ключ живёт один сеанс, и это лучше отказа */ }
+}
+
 export async function agentCall<T>(port: number, path: string, options: CallOptions = {}): Promise<T> {
   const key = Object.keys(DEADLINE).find((p) => path.startsWith(p));
   const cutoff = new AbortController();
@@ -192,7 +224,13 @@ export async function agentCall<T>(port: number, path: string, options: CallOpti
       mode: 'cors',
       targetAddressSpace: 'loopback',
       signal: cutoff.signal,
-      headers: options.contentType ? { 'content-type': options.contentType } : undefined,
+      /* КЛЮЧ ПОСЫЛАЕТСЯ ВСЕГДА, КОГДА ОН ЕСТЬ, и не спрашивается, нужен ли: агент, который его не
+       * ждёт, заголовок игнорирует, а спросить /health перед каждым вызовом значило бы удвоить все
+       * запросы к машине ради поля, которое всё равно может измениться между двумя из них. */
+      headers: {
+        ...(options.contentType ? { 'content-type': options.contentType } : {}),
+        ...(agentKey(port) ? { 'x-mouseflow-key': agentKey(port) } : {}),
+      },
       body: options.body,
     } as LoopbackInit);
   } catch (err) {
@@ -203,6 +241,26 @@ export async function agentCall<T>(port: number, path: string, options: CallOpti
     );
   } finally {
     clearTimeout(timer);
+  }
+
+  /* 401 - ЭТО НЕ «АГЕНТ НЕДОСТУПЕН», И РАЗНИЦА ЗДЕСЬ ВАЖНЕЕ ОБЫЧНОГО.
+   *
+   * Агент жив, отвечает и знает, чего от него хотят, - у него просто нет разрешения это делать. Экран,
+   * сказавший «ничего не отвечает на 127.0.0.1», отправил бы человека переустанавливать работающий
+   * агент. Поэтому отдельная фраза, и в ней сказано, ГДЕ взять ключ: сам по себе «401» не говорит
+   * ничего. Один разбор на оба вида ответа - текстовый и JSON, - иначе половина вызовов (/record/stop
+   * отдаёт text/plain) объясняла бы это иначе. */
+  if (res.status === 401) {
+    throw new AgentError(
+      agentKey(port)
+        ? 'this agent refused the pairing key saved for it here. It was probably restarted, which makes a '
+          + 'new key - copy the new one from the agent and paste it on the Connections screen.'
+        : 'this agent was started with -RequireKey and needs its pairing key. Copy it from the agent '
+          + '(it prints the key at startup and shows it in the tray) and paste it on the Connections '
+          + 'screen.',
+      false,
+      401,
+    );
   }
 
   if (options.text) {
@@ -692,7 +750,7 @@ export const autostartEnable = (port: number) =>
  * переключает, и записанный «поднять» на уже поднятом окне сворачивал его. Какое окно - говорит сама
  * запись, пометкой Focus за нажатием. Старый агент делает и то и другое по-старому, и сказать об этом
  * человеку может только этот нудж. */
-export const AGENT_WANTS = '0.28.0';
+export const AGENT_WANTS = '0.29.0';
 
 /** Numeric, part by part: "0.10.0" is not behind "0.5.0", which a string comparison gets wrong. */
 export function olderThan(running: string | null | undefined, wanted = AGENT_WANTS): boolean {
