@@ -1761,5 +1761,41 @@ group('стоп, который ничего не сохранил, об это�
     /was interrupted while recording/.test(pop));
 }
 
+group('всё, что импортирует копируемый файл, само попадает в сборку');
+{
+  /* ЧТО ЭТО ЛОВИТ, И ПОЧЕМУ ОНО УЖЕ СЛУЧИЛОСЬ. Сборка расширения копирует рукописную половину ПОИМЁННО -
+   * глоб отправил бы в пакет тесты и черновики. Цена поимённого списка: файл, который появился и который
+   * импортирует уже копируемый, молча не попадает в dist, и ломается это не при сборке, а в Chrome, при
+   * загрузке модуля, у человека. Ровно так и вышло с procedure.js: skills.js стал его импортировать
+   * (mouseflow.skill/2), список не тронули, и собранное расширение получило импорт в пустоту.
+   *
+   * Проверяется ЗАМЫКАНИЕ: у каждого копируемого .js берутся относительные импорты, и каждый обязан сам
+   * быть в списке. Это единственное, что делает поимённый список безопасным - и падает оно здесь, на
+   * npm test, а не у человека в браузере. */
+  const config = readFileSync(new URL('../web/vite.extension.config.ts', import.meta.url), 'utf8');
+  const from = config.indexOf('const COPY = [');
+  const block = config.slice(from, config.indexOf('];', from));
+  const copied = [...block.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+
+  check('список копируемых файлов разобрался', copied.length >= 7, copied.join(','));
+  check('и procedure.js в нём есть - его читает skills.js',
+    copied.includes('procedure.js'), copied.join(','));
+
+  const missing = [];
+  for (const name of copied.filter((n) => n.endsWith('.js'))) {
+    let src;
+    try {
+      src = readFileSync(new URL('./' + name, import.meta.url), 'utf8');
+    } catch (_) {
+      continue;
+    }
+    for (const m of src.matchAll(/from\s+'\.\/([^']+)'/g)) {
+      if (!copied.includes(m[1])) missing.push(name + ' -> ' + m[1]);
+    }
+  }
+  check('и ни один копируемый файл не импортирует того, чего в сборке не будет',
+    missing.length === 0, missing.join('; '));
+}
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

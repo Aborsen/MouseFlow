@@ -41,7 +41,16 @@ const DESIGN_SYSTEM = [
   { find: /^@\/hooks\/(.+)$/, replacement: ui('src/hooks/$1') },
 ];
 
-/** The hand-written half, copied in whole. Named one by one: a glob would quietly ship whatever is added. */
+/** The hand-written half, copied in whole. Named one by one: a glob would quietly ship whatever is added.
+ *
+ * И ОБОРОТНАЯ СТОРОНА ЭТОГО РЕШЕНИЯ, которая стоила одной поломки: файл, который ПОЯВИЛСЯ и который
+ * импортирует уже копируемый, в сборку молча не попадает - и ломается она не здесь, а в Chrome, при
+ * загрузке модуля, у человека. Ровно это случилось с `procedure.js` (mouseflow.skill/2): `skills.js`
+ * стал его импортировать, список не тронули, и собранное расширение получило импорт в пустоту.
+ *
+ * Список остаётся поимённым - глоб отправил бы в пакет что угодно, включая тесты и черновики, - но
+ * теперь его полнота ПРОВЕРЯЕТСЯ: каждый относительный импорт копируемого файла обязан сам быть в
+ * списке. Проверка живёт в extension/check-extension.mjs, то есть падает на `npm test`, а не в Chrome. */
 const COPY = [
   'manifest.json',
   'background.js',
@@ -49,6 +58,12 @@ const COPY = [
   'bridge.js',
   'agent.js',
   'skills.js',
+  /* Читается skills.js - см. заметку выше про то, почему это отдельная строка, а не глоб. */
+  'procedure.js',
+  /* Читается background.js. ОТСУТСТВОВАЛ С bcdb9ae (пункт 8 роадмапа): файл добавили, список не
+   * тронули, и с того коммита собранный воркер не поднимался вовсе - импорт вёл в никуда. Нашла это
+   * проверка замыкания в extension/check-extension.mjs, добавленная из-за procedure.js. */
+  'checks.js',
   'icons',
 ];
 

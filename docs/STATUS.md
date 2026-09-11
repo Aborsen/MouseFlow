@@ -49,9 +49,19 @@ in `web/`, and in the site.
    the script straight into a scriptblock, so there is no file to unblock. The page shows the running
    version — it must say **0.28.0**, because the fixes from 9–11 September are agent-side, `clickname`
    among them.
-3. **The Chrome extension, loaded unpacked.** `chrome://extensions` → developer mode → **Load unpacked** →
-   select the `extension/` folder. Its id is derived from the folder path, so it differs on every machine;
-   that is expected and the app handles it.
+3. **The Chrome extension — BUILT, then loaded unpacked.** This said "select the `extension/` folder",
+   and that is the wrong folder: `extension/` is the source, and what Chrome loads is **`extension/dist`**
+   — built by `npm run build:extension` in `web/`, gitignored, so a fresh clone does not have it at all.
+   Load the source folder and you get the old hand-written popup, no side panel, and a manifest pointing at
+   a `sidepanel.html` that only exists in the build.
+
+   ```bash
+   cd web && npm run build:extension        # writes extension/dist
+   ```
+
+   Then `chrome://extensions` → developer mode → **Load unpacked** → select **`extension/dist`**. Its id is
+   derived from the folder path, so it differs on every machine; that is expected and the app handles it.
+   Rebuild after any change to the extension — Chrome loads the build, not the source.
 
 ### Verify the machine before starting work
 
