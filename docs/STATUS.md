@@ -55,9 +55,13 @@ in `web/`, and in the site.
    Load the source folder and you get the old hand-written popup, no side panel, and a manifest pointing at
    a `sidepanel.html` that only exists in the build.
 
-   ```bash
-   cd web && npm run build:extension        # writes extension/dist
    ```
+   npm run build:extension        # from the repo root; writes extension/dist
+   ```
+
+   From the **root**, not from `web/` — the root script exists precisely so nobody has to `cd` first. And
+   with no `&&`: the usual shell here is Windows PowerShell 5.1, where `&&` is a parse error, not a
+   separator. If you do want two commands, PowerShell joins them with `;`.
 
    Then `chrome://extensions` → developer mode → **Load unpacked** → select **`extension/dist`**. Its id is
    derived from the folder path, so it differs on every machine; that is expected and the app handles it.
