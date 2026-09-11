@@ -212,6 +212,30 @@ pointer away, not gone.
 > run *from* the agent (which knows its own OS via `/health`) could pass `platform` in and cover native
 > keys too — untried here, not an owner decision yet, just unbuilt.
 
+> **Sequence row 4 shipped 2026-09-11: `memoryForOpen` (`_memory.mjs`) and the `screenMessage()` wiring,
+> both drivers.** `MEMORY_LIVE = false` is the flag — a plain exported constant, not an env read (the
+> module stays browser-shareable), flipped in one place, read once inside `memoryForOpen` itself so neither
+> driver carries its own copy of the check. `screenMessage(frame, open, saw, clock, memory)` gained a fifth,
+> optional argument; the words explaining what the block *is* live only in `api/_brain.mjs`, per the same
+> rule that already governs `saw`/`waitReport`. Both drivers now call `memoryForOpen(...)` and pass the
+> result in — the cloud driver (`api/_step.mjs`) with `platform: null`, because **nothing in the
+> `?worker=step` wire says which OS the agent is on today** (this is the live-turn twin of row 3's finding
+> about historical recordings — same gap, different path); the web driver (`desktop-engine.ts`) with a
+> `hostOS()` guess, which is honest *there specifically* because the browser and the agent are the same
+> machine (Create drives a local agent). Not touched: the Windows/Mac agent binaries themselves — no
+> `.ps1`/`.swift` edit landed, since neither can be compiled/verified from this Mac session and the feature
+> is dormant behind the flag regardless. `entriesByKey` is an empty `Map` at both call sites — nothing
+> reads `app_memory` yet (migration 023, row 5).
+>
+> New pins in `agent/test-contract.mjs`: the memory prose lives in the brain and nowhere else; both drivers
+> call `memoryForOpen` (not their own logic); `_case.mjs`/`_expect.mjs` never import `_memory.mjs` (4.8 —
+> memory acts, never judges). `npm test`/`tsc`/`web/` build all green; nothing user-visible changed (flag
+> off). Row 3's existing pin on `screenMessage(...)`'s exact signature was updated for the new 5th param —
+> the invariant it guards (clock comes from the brain) is unchanged, only the string.
+>
+> **Next (row 5) needs the owner: apply migration 023**, then build `taught` + the ledger card before
+> `MEMORY_LIVE` can flip to true for anything beyond an empty map.
+
 ### 4.1 The claim it rests on
 
 Two places guess *per application*, and a heuristic cannot know the answer:

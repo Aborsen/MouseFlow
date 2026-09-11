@@ -199,3 +199,41 @@ export function builtinEntries() {
     },
   ].map((e) => ({ ...e, provenance: 'builtin' }));
 }
+
+/* §5 шаг 4: блок памяти для СЕЙЧАС ОТКРЫТЫХ окон — единственное, что drivers передают в screenMessage
+ * (MEMORY-PLAN.md §4.6). ЗА ФЛАГОМ, одним местом на оба драйвера: пока `MEMORY_LIVE` ложь, оба вызывают
+ * `memoryForOpen` как обычно, и оба честно получают `null` - ни один не пишет свою собственную проверку
+ * флага, а значит им и не разойтись. Переключается здесь, когда измерение (roadmap, пункт 6, §4.13) готово
+ * судить фичу, а не выключателем в каждом драйвере по отдельности. */
+export const MEMORY_LIVE = false;
+
+/**
+ * @param {{process?: string}[]} windows          то же, что уже идёт в openList (api/_brain.mjs)
+ * @param {'win32'|'darwin'|null} platform         null — платформа неизвестна (сегодня так у облачного
+ *                                                  драйвера: ничего в проводе `?worker=step` её не несёт)
+ * @param {Map<string, object[]>} entriesByKey     что уже загружено с account'а, по ключу памяти
+ * @param {boolean} [live]                          по умолчанию MEMORY_LIVE; параметр существует только
+ *                                                   для того, чтобы тест мог проверить логику под флагом,
+ *                                                   не трогая сам переключатель
+ * @returns {string|null}
+ */
+export function memoryForOpen(windows, platform, entriesByKey, live = MEMORY_LIVE) {
+  if (!live || !platform || !Array.isArray(windows) || !entriesByKey) return null;
+  const keys = [];
+  const seen = new Set();
+  for (const w of windows) {
+    const proc = w && typeof w.process === 'string' ? w.process : null;
+    if (!proc) continue;
+    const key = `${platform}:${proc}`;
+    if (seen.has(key) || !parseKey(key)) continue;
+    seen.add(key);
+    keys.push(key);
+    if (keys.length >= MAX_KEYS_PER_TURN) break;
+  }
+  const blocks = [];
+  for (const key of keys) {
+    const fit = fitBlock(entriesByKey.get(key) || [], KEY_BUDGET);
+    if (fit.text) blocks.push(`app: ${key}\n${fit.text}`);
+  }
+  return blocks.length ? blocks.join('\n\n') : null;
+}

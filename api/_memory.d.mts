@@ -53,3 +53,12 @@ export function fitBlock(entries: MemoryEntry[] | null | undefined, budget?: num
 };
 
 export function builtinEntries(): BuiltinEntry[];
+
+export const MEMORY_LIVE: boolean;
+
+export function memoryForOpen(
+  windows: { process?: string | null }[] | null | undefined,
+  platform: 'win32' | 'darwin' | null,
+  entriesByKey: Map<string, MemoryEntry[]> | null | undefined,
+  live?: boolean,
+): string | null;

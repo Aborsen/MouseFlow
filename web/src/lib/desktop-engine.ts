@@ -25,8 +25,11 @@
  *   finish must claim success   ok is required; anything else is a failure, because a run that gave up
  *                 used to report as green.
  */
-import { AgentError } from './agent';
+import { AgentError, hostOS } from './agent';
 import type { Machine } from './agent';
+/* Память приложений (MEMORY-PLAN.md §4.6) - тот же выбор, что у _schedule.mjs и _expect.mjs чуть ниже:
+ * один разбор на оба драйвера, а не своя копия правила здесь. */
+import { memoryForOpen } from '../../../api/_memory.mjs';
 import { desktopModel } from './model-config';
 /* Всё, что модель ВИДИТ и что её ответ ЗНАЧИТ, живёт в одном месте на двоих - здесь и в облачном шаге,
  * который ведёт тот же разговор по одному ходу на запрос. Этот файл - драйвер: чей ход, что делать в
@@ -418,7 +421,14 @@ async function runWave(o: {
     }
 
     forgetOldPictures(messages as { content?: unknown }[]);
-    messages.push(screenMessage(frame, await openWindows(machine, frame), saw, clockSaid(Date.now(), hereZone())));
+    /* За флагом MEMORY_LIVE (выключен сегодня) - memoryForOpen сама отвечает null, пока он не включён, так
+     * что этот вызов пока ничего не меняет. Платформа - догадка браузера (hostOS): здесь оправданно, в
+     * отличие от облачного драйвера, потому что агент и браузер - ОДНА машина (страница Create ведёт
+     * локальный агент). entriesByKey пуста - читать её пока неоткуда, миграция 023 не применена. */
+    const memoryPlatform = hostOS() === 'windows' ? 'win32' : hostOS() === 'macos' ? 'darwin' : null;
+    const rawWindows = await machine.windows().then((r) => r.windows).catch(() => []);
+    messages.push(screenMessage(frame, await openWindows(machine, frame), saw, clockSaid(Date.now(), hereZone()),
+      memoryForOpen(rawWindows, memoryPlatform, new Map())));
     saw = null;
 
     stepNo++;

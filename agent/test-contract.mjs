@@ -1485,11 +1485,31 @@ group('на застрявшем ходу окно читается само, о
    * двум разным привычкам. */
   check('слова про прочитанное складывает мозг',
     /Nothing on screen moved when the last actions ran/.test(brain)
-      /* Четвёртый аргумент - часы (см. defer_until): время едет с каждым снимком, и тоже из мозга. */
-      && /export function screenMessage\(frame, open, saw, clock = null\)/.test(brain));
+      /* Четвёртый аргумент - часы (см. defer_until), пятый - память приложений (MEMORY-PLAN.md §4.6):
+       * оба едут с каждым снимком, и оба тоже из мозга, той же причиной. */
+      && /export function screenMessage\(frame, open, saw, clock = null, memory = null\)/.test(brain));
   /* И тип для TS-половины - иначе локальный драйвер просто не соберётся. */
   check('и TypeScript-половина объявлена',
     /export function shouldPeek\(still: number\): boolean;/.test(read('api/_brain.d.mts')));
+
+  /* MEMORY-PLAN.md §4.6/§5 шаг 4: та же дисциплина для блока памяти, что чуть выше - для «прочитанного».
+   * Слова о памяти (что это вообще такое для модели) живут в мозге РОВНО ОДИН РАЗ; драйверы только решают,
+   * ЧТО подставить (memoryForOpen), а не КАК это сказать. */
+  check('слова про память приложений - тоже в мозге, и тоже один раз',
+    /What earlier work already found about these applications/.test(brain)
+      && !/What earlier work already found about these applications/.test(cloud)
+      && !/What earlier work already found about these applications/.test(local));
+  check('оба драйвера строят блок одной и той же функцией, а не своей копией',
+    /memoryForOpen\(windows, null, new Map\(\)\)/.test(cloud)
+      && /memoryForOpen\(rawWindows, memoryPlatform, new Map\(\)\)/.test(local));
+
+  /* 4.8: память читается на пути, который ДЕЙСТВУЕТ, никогда - на пути, который СУДИТ. Ночной вердикт
+   * доказывает что-то только потому, что кейс не менялся между постановкой и прогоном; если бы память
+   * могла тронуть expects или вердикт, зелёная строка ночного прогона не доказывала бы ничего. Пин, а не
+   * декларация - как и остальные инварианты в этом файле. */
+  check('_case.mjs и _expect.mjs никогда не импортируют модуль памяти (4.8)',
+    !/from '\.\/_memory(\.mjs)?'/.test(read('api/_case.mjs')) && !/_memory\.mjs/.test(read('api/_case.mjs'))
+      && !/from '\.\/_memory(\.mjs)?'/.test(read('api/_expect.mjs')) && !/_memory\.mjs/.test(read('api/_expect.mjs')));
 }
 
 /* ПАНЕЛЬ СОХРАНЕНИЯ - НЕ ОКНО, КОТОРОЕ МОЖНО ПОДНЯТЬ, и стоило это живого хода.

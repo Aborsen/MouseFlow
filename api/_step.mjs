@@ -65,6 +65,7 @@ import {
 /* Момент, на который цель просит отложиться, считается там же, где считаются расписания, - одним и тем
  * же способом для этого драйвера, для браузерного и для проверки на claim. */
 import { clockSaid, deferInstant } from './_schedule.mjs';
+import { memoryForOpen } from './_memory.mjs';
 /* Вердикт по проверке - одним разбором на оба драйвера, потому что «прошло» обязано значить одно и то же,
  * откуда бы прогон ни шёл. См. api/_expect.mjs. */
 import { checksOf, expectSaid, judge } from './_expect.mjs';
@@ -418,7 +419,12 @@ export async function advance({ loop, shot, windows, results, caps, ask }) {
   }
 
   forgetOldPictures(loop.messages);
-  loop.messages.push(screenMessage(shot, openList(windows, shot), saw, clockSaid(Date.now(), loop.zone || 'UTC')));
+  /* platform: null - облачный драйвер ведёт агента с другой машины, и ничто в проводе `?worker=step`
+   * сегодня не говорит, Windows это или Mac (MEMORY-PLAN.md §4.7.1 note, §5 шаг 3). memoryForOpen с
+   * платформой null уже честно отвечает null сама, не читая карту; entriesByKey пуста, потому что читать
+   * её пока неоткуда - миграция 023 не применена (§5 шаг 5). */
+  loop.messages.push(screenMessage(shot, openList(windows, shot), saw, clockSaid(Date.now(), loop.zone || 'UTC'),
+    memoryForOpen(windows, null, new Map())));
   loop.stepNo += 1;
   loop.turn += 1;
 

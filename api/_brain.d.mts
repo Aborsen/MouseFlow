@@ -77,7 +77,7 @@ export function openList(windows: WindowLike[] | null | undefined, frame?: ShotF
 export const PEEK_ID: string;
 export function shouldPeek(still: number): boolean;
 export function peekBody(frame: ShotFrame): string;
-export function screenMessage(frame: ShotLike, open: string | null, saw?: string | null, clock?: string | null): Message;
+export function screenMessage(frame: ShotLike, open: string | null, saw?: string | null, clock?: string | null, memory?: string | null): Message;
 
 /** Actions that only LOOK, so a turn made only of them says nothing about whether the screen is stuck. */
 export const LOOKS_ONLY: Set<string>;

@@ -927,7 +927,12 @@ export const peekBody = (frame) =>
 /* `clock` - который час, словами (см. clockSaid в _schedule.mjs). С каждым снимком, а не один раз в начале:
  * прогон идёт минуты, и модель, которой сказали время на первом ходу, на десятом читает часы с такс-бара -
  * с чего и начинался таймер из PowerShell. Отсутствует - строки нет: старый драйвер не соврёт о времени. */
-export function screenMessage(frame, open, saw, clock = null) {
+/* `memory` - MEMORY-PLAN.md §4.6: словами здесь, а не в драйвере, той же причиной, что у `open` и `saw` -
+ * два драйвера, сказавшие это по-разному, научили бы модель двум разным привычкам. Драйвер решает, ЧТО
+ * запомнилось про открытые сейчас приложения (memoryForOpen, api/_memory.mjs, за флагом MEMORY_LIVE); эта
+ * функция только кладёт готовый текст в ход, ровно как уже делает с `open` и `saw`. Отсутствует - и ход
+ * выглядит ровно как до этого шага, что и происходит, пока флаг выключен. */
+export function screenMessage(frame, open, saw, clock = null, memory = null) {
   return {
     role: 'user',
     content: [
@@ -949,6 +954,11 @@ export function screenMessage(frame, open, saw, clock = null) {
               + 'can type into. Aim by THIS rather than by the picture, and if a field already holds what '
               + 'you meant to type, it landed:\n'
               + saw
+            : '')
+          + (memory
+            ? '\n\nWhat earlier work already found about these applications, so it is not learned again '
+              + 'this run - names of controls, the stable part of a title, where an unnamed press lands:\n'
+              + memory
             : ''),
       },
     ],

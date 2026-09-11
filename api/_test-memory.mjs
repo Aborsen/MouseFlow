@@ -5,7 +5,7 @@
  *
  * Run: node api/_test-memory.mjs
  */
-import { builtinEntries, fitBlock, KEY_BUDGET, MAX_NAME_LENGTH, parseKey, PROVENANCE, redactionProblem, webKeyFor, writeMemory } from './_memory.mjs';
+import { builtinEntries, fitBlock, KEY_BUDGET, MAX_NAME_LENGTH, MEMORY_LIVE, memoryForOpen, parseKey, PROVENANCE, redactionProblem, webKeyFor, writeMemory } from './_memory.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -112,6 +112,28 @@ group('builtin (4.9): в ledger виден, в блок хода - никогд�
 
   const mixed = fitBlock([...b, { provenance: 'taught', body: 'a real fact', createdAt: '2026-09-01' }], KEY_BUDGET);
   check('и не среди настоящих записей тоже', !mixed.text.includes('WM_RBUTTONUP') && mixed.text.includes('a real fact'));
+}
+
+group('memoryForOpen (§5 шаг 4): один флаг на оба драйвера, а не по проверке в каждом');
+{
+  const windows = [{ process: 'OUTLOOK' }, { process: 'chrome' }, { title: 'no process field' }];
+  const entries = new Map([
+    ['win32:OUTLOOK', [{ provenance: 'taught', body: 'the stable part of the title is " - Outlook"', createdAt: '2026-09-01', state: 'live' }]],
+  ]);
+
+  check('флаг сегодня выключен', MEMORY_LIVE === false);
+  check('и пока он выключен - null, даже с настоящими записями под рукой',
+    memoryForOpen(windows, 'win32', entries) === null);
+  check('без платформы - тоже null, не гадает', memoryForOpen(windows, null, entries) === null);
+  check('без списка окон - null, не бросает', memoryForOpen(null, 'win32', entries) === null);
+  check('без карты записей - null, не бросает', memoryForOpen(windows, 'win32', null) === null);
+
+  /* `live: true` - только для теста, флага это не трогает; см. комментарий у функции. */
+  const on = memoryForOpen(windows, 'win32', entries, true);
+  check('под флагом: ключ строится из process + платформы, и запись находится', /app: win32:OUTLOOK/.test(on) && /§ taught/.test(on), on);
+  check('окно без process - молча пропущено, а не падает ключом "win32:undefined"', !/undefined/.test(on));
+  check('ключ без записей в карте не печатает пустой блок', !/app: win32:chrome/.test(on), on);
+  check('пустых записей нигде - весь блок null, а не пустая строка', memoryForOpen([{ process: 'chrome' }], 'win32', new Map(), true) === null);
 }
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
