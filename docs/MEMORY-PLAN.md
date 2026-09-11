@@ -182,10 +182,35 @@ pointer away, not gone.
 > `redactionProblem`/`writeMemory` refuse a coordinate, a name over 60 chars, a URL with a query string and
 > a password field (4.5), `fitBlock` evicts the oldest `learned` first and never touches `taught` or
 > `derived` (4.10), and `builtinEntries()` holds the four 4.9 lines with `provenance: 'builtin'` so
-> `fitBlock` never renders them into a turn's block. New executable suite `api/_test-memory.mjs` (51
-> checks), added to `npm test`. Not done yet: rows 3–6 — `derived` over the existing recordings, the
+> `fitBlock` never renders them into a turn's block. New executable suite `api/_test-memory.mjs` (now 53
+> checks — 2 more from the email finding below), added to `npm test`. Not done yet: rows 4–6 — the
 > `screenMessage()` wiring in both drivers, migration 023 + the ledger card, `learned` staging. No DB
 > row shape decided yet beyond 4.11's sketch; nothing calls this module yet.
+>
+> **Sequence row 3 shipped 2026-09-11: `api/_memory-derive.mjs` (+ `.d.mts`).** `touchesOf(flow, {platform})`
+> pulls `{key, title, control, near, side}` out of a recording's events — web keyed unambiguously from
+> `context.url`; native (win32/darwin) requires the caller to name the platform, because **nothing in a
+> recording says which OS wrote it** (PROTOCOL.md's `mods` section says this outright — "there is no
+> correct translation without knowing which platform wrote the line, and the body does not say"). Native
+> touches without a named platform are silently skipped rather than guessed. `deriveEntries` computes, per
+> key: the stable title edge as the longest common suffix of titles seen (filters out per-item content by
+> construction — a subject line never repeats, " - Outlook" always does), the most-pressed named control,
+> and the top landmark for nameless presses; every candidate goes through `writeMemory`, so redaction is
+> one choke point, not two. New suite `api/_test-memory-derive.mjs` (18 checks).
+>
+> **Ran once against the owner's real 61 recordings (throwaway probe, deleted after) — found a real
+> redaction gap, now fixed.** One event's `context.control` held an email address, not a control name —
+> an accessibility tree sometimes hands back typed content as "the name". 4.5 predicted this exactly ("a
+> learned entry... will carry a customer's name... unless refused explicitly") and it was not hypothetical.
+> `redactionProblem` now also refuses an email address in `body` or `name`. Real output otherwise looked
+> right: `win32:chrome` derived to `"Address and search bar" — 488/7716`, `web:mail.google.com` to the
+> title edge `"@gmail.com - Gmail - Google Chrome"`; ~61 recordings, ~28k touches, ~55 keys, three refused
+> for a malformed native key (a space in the process name — correctly refused, not this module's bug).
+>
+> **Still open before row 4:** an account's *historical* recordings carry no platform marker, so a real
+> `derived` pass over old data can only safely cover `web:` keys until that's added somewhere. A live pass
+> run *from* the agent (which knows its own OS via `/health`) could pass `platform` in and cover native
+> keys too — untried here, not an owner decision yet, just unbuilt.
 
 ### 4.1 The claim it rests on
 

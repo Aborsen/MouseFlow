@@ -75,6 +75,11 @@ export function webKeyFor(url) {
 const COORD_RE = /-?\d{2,5}\s*,\s*-?\d{2,5}/;
 const QUERY_RE = /https?:\/\/\S*\?\S*/i;
 const SECRET_MARK_RE = /\(password, not read\)/i;
+/* Найдено на реальных данных владельца (2026-09-11): "control" одного события оказался не именем
+ * контрола, а строкой с адресом почты — accessibility-дерево иногда отдаёт то, что человек ВВЁЛ, за имя.
+ * 4.5 предсказывает это дословно: «a learned entry... will carry a customer's name... unless refused
+ * explicitly» - и здесь это была не гипотеза. */
+const EMAIL_RE = /[\w.+-]+@[\w-]+\.[a-z]{2,}/i;
 
 /**
  * Причина отказать записи — или `null`, если её можно запомнить (4.5). Проверяет то, что запомнить
@@ -87,10 +92,12 @@ export function redactionProblem({ body, name, secret } = {}) {
   if (name != null && String(name).length > MAX_NAME_LENGTH) {
     return `the name is ${String(name).length} characters, over the ${MAX_NAME_LENGTH}-character limit the recorder itself uses`;
   }
+  if (name != null && EMAIL_RE.test(String(name))) return 'an email address was in the name — that is content, not a control label';
   const text = String(body == null ? '' : body);
   if (SECRET_MARK_RE.test(text)) return 'a password field is never remembered, whatever the text says';
   if (QUERY_RE.test(text)) return 'a URL with a query string was in the text — memory keeps origins only, never a query string';
   if (COORD_RE.test(text)) return 'a coordinate was in the text — memory holds names and rules, never points';
+  if (EMAIL_RE.test(text)) return 'an email address was in the text — memory never carries what somebody typed';
   return null;
 }
 

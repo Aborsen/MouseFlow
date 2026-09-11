@@ -51,6 +51,8 @@ group('редакция (4.5): что нельзя запомнить, ни пр
   check('поле пароля - флагом', redactionProblem({ body: 'the password field', secret: true }) != null);
   check('поле пароля - и по тексту агента, дословно', redactionProblem({ body: '"Password" at 10,10 = (password, not read)' }) != null);
   check('обычный текст без имён - можно', redactionProblem({ body: 'the send button sits just right of "Attach"' }) === null);
+  check('адрес почты в тексте - отказ (найдено на реальных данных 2026-09-11)', redactionProblem({ body: 'send welcome email to victorg@devart.com from gmail' }) != null);
+  check('и в имени - тоже отказ', redactionProblem({ name: 'victorg@devart.com', body: 'ok' }) != null);
 }
 
 group('writeMemory: ключ и редакция проверяются вместе, отказ - словами');
