@@ -212,21 +212,10 @@ Part of it will be cut. Do not add screens to it. Two consequences for whoever p
 4. **The web memory key** — [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §4.3. Proposed default: two tiers,
    `win32:chrome` for the browser shell and `web:<origin>` for the page. Needs a yes or a different answer
    before that plan's step 3.
-5. **Migration `db/022_queue_machine.sql` is approved but NOT YET APPLIED** — the one thing left over from
-   this session, and it needs a machine that has the database.
-
-   The owner approved it on 2026-09-11; it could not be run because this machine has no `.env.local`, which
-   is the connection string and one of the three things a clone does not carry (§1). On a machine that has
-   it, from the repo root:
-
-   ```
-   npm run migrate
-   npm run migrate -- --list
-   ```
-
-   Until it runs, pinning a case to a machine is **inert and says so** when a pinned case is queued — the
-   code was deliberately written to work without the column rather than to require it. Nothing is broken by
-   waiting.
+5. **Both `db/022_queue_machine.sql` and `db/023_app_memory.sql` were applied on 2026-09-11**, from a Mac
+   session that had `.env.local` — `npm run migrate` ran both in one pass (022 had never run either, on
+   any machine), `npm run migrate -- --list` confirms all 23 as `applied`. Pinning a case to a machine and
+   `app_memory` are both live now; nothing further needed here.
 
    **The memory plan's own migration was renumbered 022 → `023_app_memory.sql`** because item 7 took 022.
    Never reuse a number: `migrate.mjs` walks the files in name order and records what it ran by name, so

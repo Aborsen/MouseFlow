@@ -253,10 +253,20 @@ pointer away, not gone.
 > `docs.js`) has one either — this codebase's page routes are exercised live, not mocked, and adding one
 > only for this route would be a second convention, not consistency with the rest.
 >
-> `npm test`/`tsc`/`web/` build all green. **Not runnable yet**: the table does not exist until migration
-> 023 is applied, and `api/memory.js` answers 503 with that fact until then (mirrors `schedules.js`'s own
-> "needs db/018 applied" message). Once applied: `npm run migrate -- --list` to confirm, then teach one
-> fact through the card to close row 5's own done-condition.
+> `npm test`/`tsc`/`web/` build all green.
+>
+> **Migrations 022 and 023 both applied 2026-09-11**, by explicit owner approval in chat — `npm run
+> migrate` ran both (022 had never run on any machine either), `npm run migrate -- --list` confirms all 23
+> as `applied`. `app_memory` exists; `api/memory.js` is live, not 503; the ledger card can teach, edit and
+> forget a `taught` fact right now.
+>
+> **`MEMORY_LIVE` was left `false` on purpose — not flipped as part of applying the migration.** The
+> table existing and the block reaching a live turn are two different decisions: flipping the flag changes
+> what every turn costs and reads, unmeasured, and 4.13 says that call needs a measurement (turns per
+> successful run, before/after), not "the table is there now so why not". A person can already close row
+> 5's literal done-condition — teach one Outlook fact on the card and read the row back — without the flag,
+> since that only needs `api/memory.js`, not a live turn. Flipping `MEMORY_LIVE` is row 5's real remaining
+> question, for the owner: say when, and it is one constant.
 
 ### 4.1 The claim it rests on
 
