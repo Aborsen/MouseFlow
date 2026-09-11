@@ -236,6 +236,28 @@ pointer away, not gone.
 > **Next (row 5) needs the owner: apply migration 023**, then build `taught` + the ledger card before
 > `MEMORY_LIVE` can flip to true for anything beyond an empty map.
 
+> **Row 5 code shipped 2026-09-11, migration NOT applied — that part is the owner's, same as 022.**
+> `db/023_app_memory.sql` (the 4.11 table, `builtin` kept in the CHECK for a future one-query ledger even
+> though nothing ever inserts it — `writeMemory` already refuses that provenance at the door). A new page
+> route, `api/memory.js` (GET list, POST teach-or-edit, DELETE forget — session-cookie scoped like
+> `schedules.js`/`cases.js`, added to the routes pin in `mcp/test-mcp.mjs`), calls `writeMemory` for every
+> write rather than re-checking redaction itself. The fourth Activity card, `Memory.tsx` — builtin read-only,
+> `taught` with edit/delete, `derived`/`learned` shown without action buttons (no approve/reject exists
+> yet; row 6 is "or never"). Client wrappers in `web/src/lib/api.ts` (`appMemory`, `teachMemory`,
+> `forgetMemory`). Docs: `docs/product/26-activity.md` gained the fourth-card section.
+>
+> **Deliberately not built this round:** a live `derived` read through this route (the derive module from
+> row 3 only ever ran as a throwaway probe; wiring it into a request path is separate work, not asked for
+> here) and `learned` write/approve — nothing produces a `learned` row yet, so there is nothing to approve.
+> No test harness added for `api/memory.js` itself: no sibling page route (`schedules.js`, `cases.js`,
+> `docs.js`) has one either — this codebase's page routes are exercised live, not mocked, and adding one
+> only for this route would be a second convention, not consistency with the rest.
+>
+> `npm test`/`tsc`/`web/` build all green. **Not runnable yet**: the table does not exist until migration
+> 023 is applied, and `api/memory.js` answers 503 with that fact until then (mirrors `schedules.js`'s own
+> "needs db/018 applied" message). Once applied: `npm run migrate -- --list` to confirm, then teach one
+> fact through the card to close row 5's own done-condition.
+
 ### 4.1 The claim it rests on
 
 Two places guess *per application*, and a heuristic cannot know the answer:

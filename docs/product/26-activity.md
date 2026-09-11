@@ -127,11 +127,39 @@ stop, narrowed to an id: a queued job disappears; a claimed one stops at the nex
 (`?worker=state`). A foreign id and a missing one get the same answer — *nothing to cancel* — for the reason
 every other route here does that.
 
+## A fourth card: what MouseFlow has learned
+
+Names of controls, the stable part of a title, where an unnamed press lands — accumulated per application
+rather than re-discovered every run. **Applied only on the path that acts, never on the path that judges**:
+a nightly regression proves something only because the case it checks did not change between being set and
+being run, and memory touching a check or a verdict would make that proof worthless.
+
+Four kinds of fact, shown differently because they are earned differently:
+
+- **built in** — four platform facts (a Windows taskbar button toggles; a bare right-click release opens a
+  context menu; a minimised window's rectangle is a placeholder; MouseFlow is its own front window when
+  Record is pressed) that are code, not data, and are shown read-only for the same reason a constant is not
+  an input field.
+- **derived** — computed from recordings already on the account (the most-pressed named control per
+  application, the part of a window's title that never changes), recomputed rather than stored stale.
+- **taught** — a person's own correction, added and edited on this card. The form's refusal is the same
+  rule that keeps a coordinate, a password field, a query string or an email address out of a recording in
+  the first place — said back in words, not silently swallowed.
+- **learned** — the model's own finding at the end of a run, held for a person to approve or reject before
+  it is trusted. Not built yet: nothing here writes a `learned` fact, so none show up.
+
+Nothing here is used yet: the block reaches a live turn only behind a flag, off until a measurement (steps
+per successful run, before and after) says the extra reading is worth its tokens. Until then, this card is
+truthful about doing nothing rather than pretending to.
+
 ## Where the reasoning is written
 
 | | |
 |---|---|
-| `web/src/features/activity/ActivityView.tsx` | the three sections and why each collapses the way it does |
+| `web/src/features/activity/ActivityView.tsx` | the three run-tracking sections and why each collapses the way it does |
+| `web/src/features/activity/Memory.tsx` | the fourth card — the four kinds of fact, and why only `taught` has edit/delete |
 | `web/src/features/activity/status.ts` | the vocabulary, and why two questions never share a chip |
 | `web/src/lib/live.ts` | one poll, shared |
 | `api/mcp.js` → `?live=1&days=`, `?cancel=` | the queue's history window, and cancelling one |
+| `api/memory.js` | list/teach/forget, session-cookie scoped, redaction from `_memory.mjs` |
+| `api/_memory.mjs`, `docs/MEMORY-PLAN.md` §4 | the module the form and the live turn both call into |

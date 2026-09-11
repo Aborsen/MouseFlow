@@ -3291,9 +3291,14 @@ group('в api/ нет ничего, что не должно быть маршр
   /* cases.js - тест-кейсы. Своя дверь по той же причине, что у schedules.js: у страницы сессионная кука, у
    * MCP токен устройства, и `whoIsCalling` - единственное, что решает, чьи это кейсы. Запросы перечня она
    * ЭКСПОРТИРУЕТ, и тулы в mcp.js берут их оттуда, чтобы «что считается прогоном кейса» был один ответ. */
+  /* memory.js - MEMORY-PLAN.md §4.12/§5 шаг 5, та же причина, что у schedules.js/cases.js: сессионная
+   * кука страницы против токена устройства у MCP, и `whoIsCalling` - единственное, что решает, чей это
+   * аккаунт. Редакцию не повторяет - зовёт writeMemory (api/_memory.mjs), тот же выбор, что у cases.js с
+   * expects через _case.mjs: одна проверка, а не вторая копия того же правила. */
   const expected = ['account.js', 'admin.js', 'artifacts.js', 'auth.js', 'cases.js', 'chat.js', 'chats.js',
-    'claude.js', 'compose.js', 'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'models.js', 'oauth.js',
-    'params.js', 'schedules.js', 'skill-md.js', 'sync.js', 'team.js', 'transcript.js', 'well-known.js'];
+    'claude.js', 'compose.js', 'docs.js', 'gallery.js', 'insights.js', 'mcp.js', 'memory.js', 'models.js',
+    'oauth.js', 'params.js', 'schedules.js', 'skill-md.js', 'sync.js', 'team.js', 'transcript.js',
+    'well-known.js'];
   const unexpected = routes.filter((n) => !expected.includes(n));
   check('и новых маршрутов не появилось незамеченными', unexpected.length === 0, unexpected.join(', '));
   /* И наоборот - что каждый ожидаемый на месте: список, из которого файл пропал, молча перестаёт его

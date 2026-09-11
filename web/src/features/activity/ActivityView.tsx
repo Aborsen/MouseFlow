@@ -38,6 +38,7 @@ import { evidenceOf, verdictKind } from '@/features/create/verdict';
 import { Frames } from '@/features/create/Frames';
 import { stepsOf, titleOf, took, when, wordsOf } from '@/features/create/run-history';
 import { chipClass, dotClass, jobChip, runChips, runTone, scheduleChip, sourceOf } from './status';
+import { Memory } from './Memory';
 
 const LABEL = 'text-[0.7rem] uppercase tracking-wide text-ink-inactive';
 
@@ -450,6 +451,8 @@ export const ActivityView = () => {
           </ul>
         )}
       </section>
+
+      <Memory reloadKey={0} />
     </Page>
   );
 };

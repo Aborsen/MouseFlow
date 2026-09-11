@@ -484,6 +484,45 @@ export const scheduleRemove = (id: string) =>
     method: 'DELETE',
   });
 
+/* ------------------------------------------------------------------ память приложений
+ *
+ * Тонкие обёртки над /api/memory. MEMORY-PLAN.md §4.12, §5 шаг 5. Редакция и форма ключа - на сервере
+ * (writeMemory, api/_memory.mjs) - страница показывает отказ словами, а не пытается решить сама, что можно
+ * запомнить: то же правило в двух местах однажды расходится. */
+export interface AppMemoryEntry {
+  id: string;
+  key: string;
+  provenance: 'derived' | 'taught' | 'learned';
+  body: string;
+  version: number | null;
+  runId: string | null;
+  state: 'pending' | 'live' | 'rejected';
+  createdAt: string;
+  updatedAt: string;
+}
+/** Код, не строки базы - id-less, всегда те же четыре (4.9), и правки/удаления к ним не бывает. */
+export interface BuiltinMemoryEntry {
+  scope: 'platform:win32' | 'platform:darwin' | 'self';
+  body: string;
+  enforcedIn: string;
+}
+
+export const appMemory = () =>
+  call<{ ok: true; entries: AppMemoryEntry[]; builtin: BuiltinMemoryEntry[] }>('/api/memory');
+
+/** Без `id` - новый факт; с ним - правка своей же taught-записи. Отказ - редакция сервера, словами. */
+export const teachMemory = (body: { key: string; body: string; id?: string }) =>
+  call<{ ok: true; entry: AppMemoryEntry }>('/api/memory', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+export const forgetMemory = (id: string) =>
+  call<{ ok: true; deleted: true }>(`/api/memory?memory=${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+
 /* ТЕСТ-КЕЙСЫ: скилл плюс то, что должно быть верно, когда он кончил. См. db/021 и api/_case.mjs.
  *
  * Вердикт приезжает ГОТОВЫМ, посчитанным на сервере одной функцией с тулами: страница, считающая его сама,
