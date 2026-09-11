@@ -3,8 +3,13 @@
 A handover, written to be read on a machine that has never seen this project. It says what changed on
 9–11 September, what is true now, what to do next, and what only the owner can supply.
 
-**Live right now:** app `https://mouseflowapp.vercel.app`, docs site `https://mouse-flow.vercel.app`,
-agents at **0.28.0**. Whole suite green: 1264 source pins, 558 contract checks, 21 executable suites.
+**Live right now:** app `https://mouseflowapp.vercel.app` (commit `741985c`), docs site
+`https://mouse-flow.vercel.app`, agents at **0.29.0**. Whole suite green: **3,065 checks across 26 suites**
+(`npm test`), `tsc --noEmit` clean, `web/` builds, and the agent's C# compiles for real.
+
+**The QA roadmap is closed.** Items 1, 2, 3, 5, 6, 7 and 8 are done and item 4 is parked. What is left of
+that plan is one small lever and one measurement, both named in §4. The work now moves to the **memory of
+applications** and the **split into two products**.
 
 **The four planning documents, and which to read when:**
 
@@ -84,7 +89,7 @@ before they were written down.
 
 ## 2. What shipped on 9–11 September
 
-Twelve commits. Four closed roadmap items; the rest were defects found by *playing recordings back on a real
+Twenty commits over three days. Eight closed roadmap items; the rest were defects found by *playing recordings back on a real
 desktop*, which is the pattern worth keeping — none of them were visible from reading the code.
 
 | commit | what |
@@ -101,7 +106,13 @@ desktop*, which is the pattern worth keeping — none of them were visible from 
 | `4e9f017` | **Roadmap item 5-v2**: a case's check can name the moment it belongs to |
 | `6711318` | **Roadmap item 6, lever 1**: the turn's unchanging prefix is cached; two of the item's five levers dropped on measurement |
 | `86aed7e` | **Roadmap item 6, lever 2**: `click_named` — one action where "find the button, then click it" was two turns. Agents at 0.28.0 |
-| *this one* | …and it may go **second** in a turn, so "type the value, then click Save" is one turn too. The owner's decision; the batch rule's one pressing exception |
+| `0600b31` | …and it may go **second** in a turn, so "type the value, then click Save" is one turn too. The batch rule's one pressing exception |
+| `045a4f4` | **`mouseflow.skill/2`**, tiers 0 and 1: a skill carries a **procedure in words**, so it can say what it does instead of only being able to do it |
+| `c6b4ba1` | **A web recording no longer dies with the worker holding it** — the reported fault, reproduced and fixed |
+| `da714b4` | **Roadmap item 7, part 1**: the agent can demand a pairing key; only `/health` answers without it. Agents at 0.29.0 |
+| `ae315ca` | **Roadmap item 7, parts 2–3**: a case can name the machine it belongs to, and the QA-machine recipe |
+| `e807605` | **The built extension had an import into nothing, and had since item 8** — plus the closure check that will not let it happen again |
+| `741985c` | The build command in this file was written for the wrong shell |
 
 ### The two things worth carrying forward from that work
 
@@ -151,49 +162,43 @@ worth more struck than shipped.
 
 ## 4. What to do next
 
-**Lever 2 of item 6 is done** (this commit) — that was the largest single win available, and it is taken.
-`click_named` in the brain, `action=clickname` in both agents at **0.28.0**, gated on `canClickName`,
-with the flag reaching `toolsFor` on both driver paths. The whole of it, including the one lever
-deliberately left on the table, is written up in [`QA-ROADMAP.md`](QA-ROADMAP.md) §6.
+**The QA roadmap has nothing open left.** Items 1, 2, 3, 5, 6, 7 and 8 are done; 4 is parked as superseded.
+Two small things remain *of that plan*, and neither blocks anything:
 
-**Two things it leaves for whoever comes next, and neither is a loose end by accident:**
+- **Item 6, lever 4** — `claude-haiku-4-5-20251001` for the wave hand-off and the plan preview. Small, and
+  last on purpose: a cheaper model must not be anywhere near a decision that aims a click.
+- **The October measurement.** Item 6's done-condition is the median `model` ms under 4,000, and it cannot
+  be read yet — the thirty-day window still holds mostly runs decided before prompt caching and before
+  `click_named`. Re-run the query in [`QA-ROADMAP.md`](QA-ROADMAP.md) §6 in October, and read **two**
+  numbers: the median (where caching shows) and **steps per successful run** (where `click_named` shows).
 
-- **The measurement, in October.** Item 6's done-condition is the median `model` ms under 4,000, and it
-  cannot be checked today: the thirty-day window still holds mostly runs decided before caching and before
-  `click_named`. Read **two** numbers then — the median (which is where lever 1 shows) and **steps per
-  successful run** (which is where lever 2 shows). Queries are in §6.
-- ~~Whether `click_named` may go second in a turn.~~ **Decided yes, same day, by the owner** — so "type
-  the value, then click Save" is one turn, on every form. It is the only pressing action in `BATCHABLE`,
-  and the reason it belongs there is that the set forbids **aiming** second, not pressing second: a
-  coordinate came from the picture handed out at the start of the turn, while `click_named` resolves its
-  target in the agent at the moment it runs. The remaining risk is semantic and is held where it always
-  was — by the prompt's "no one-way action in a batch", the same rule that has always covered `press_key`
-  with Enter. **The suite says the exception is narrow:** adding `click_named` broke no existing check,
-  while adding `click` to the same set turns thirteen red.
+### The real queue, in order
 
-**Next, in order of value rather than roadmap number:**
-
-1. **`mouseflow.skill/2`** — [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §3. A skill whose body is a procedure in
-   words with the recording as a *pointer*, not a copy. It is what makes the same artifact serve both
-   products, and it is the prerequisite for everything in that plan. Every reader of `skill.events` is
-   already listed there with what each becomes.
-2. **The application memory** — [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §4, built in the order given there:
+1. **The memory of applications** — [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §4, built in the order given there:
    `derived` from the 58 recordings already on the account first, `taught` second, `learned` last or never.
-   Ships behind a flag and is judged by one number — turns per successful run — or rolled back.
-3. **The site pass** — [`SITE-DEBT.md`](SITE-DEBT.md). One entry is a ready-to-paste section plus the stale
-   line it replaces; the other is the positioning the site has not caught up with.
-4. ~~Item 7, isolation~~ — **done.** With it the QA roadmap has **nothing open left**: items 1, 2, 3, 5, 6 and 8 are done, 4 is parked, and what remains of the whole plan is item 6 lever 4 (small, last) plus the October measurement.
-5. **Item 6, lever 4** — haiku for the wave hand-off and the plan preview. Small, and last on purpose: a
-   cheaper model must not be anywhere near a decision that aims a click.
+   Ships behind a flag and is judged by one number — turns per successful run — or is rolled back. This is
+   the next substantial piece of work.
+2. **`mouseflow.skill/2` tier 2** — the recording as a *pointer* rather than a copy. Deliberately split off
+   from tiers 0–1 because it changes the **replay path**, not the artifact. [`MEMORY-PLAN.md`](MEMORY-PLAN.md)
+   §3 names what it needs and the one hazard already found by reading: `mouseflow_run` (`api/mcp.js`, near
+   the `row.kind !== 'created'` branch) answers with `body: null, goal: false` the moment a `/2` skill stops
+   carrying events — an agent reads that as "not a goal, and nothing to do". Today unreachable; reachable
+   the moment tier 2 lands, and it must **refuse with words** rather than quietly do nothing.
+3. **Splitting the product in two** — the owner's decision, 2026-09-11. A documentation product (record work
+   → a process document) and a QA product (goal loop + checks + verdicts), on one engine. `skill/2` was
+   built to serve both: `procedure.steps` read as documentation, `procedure.verification` runs as checks.
+4. **The site pass** — [`SITE-DEBT.md`](SITE-DEBT.md), and the `.mmmacro` positioning question belongs
+   here rather than to an engineering cleanup (§5).
 
-**One thing parked with a diagnosis, not a mystery.** On the owner's machine `TaskbarSwitch` still did not
-raise the terminal or Outlook. A read-only probe showed the taskbar *is* recognised (`GA_ROOT =
-Shell_TrayWnd` under both press points) and that `WindowMatching("Windows PowerShell", "")` returns the
-Windows Terminal process as the only match — very likely the terminal hosting the agent, which `Mine()`
-refuses on purpose. The Outlook case is unexplained. Next diagnostic: log `Activate`'s refusal string from
-inside `TaskbarSwitch`. Do not spend on it before deciding whether coordinate replay matters at all.
+### The extension is being narrowed, not grown
 
----
+**Owner's decision, 2026-09-11: the extension is a tool for recording skills, not a second application.**
+Part of it will be cut. Do not add screens to it. Two consequences for whoever picks this up:
+
+- The **side panel** is the right surface for what remains, and it already exists — a popup closes the
+  moment you click the page, and recording a flow *is* clicking the page. It needed no work, only a build.
+- The recording path is the part that survives the cut, which is why `c6b4ba1` was worth doing properly
+  rather than patching.
 
 ## 5. Open questions that need the owner, not code
 
@@ -207,8 +212,32 @@ inside `TaskbarSwitch`. Do not spend on it before deciding whether coordinate re
 4. **The web memory key** — [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §4.3. Proposed default: two tiers,
    `win32:chrome` for the browser shell and `web:<origin>` for the page. Needs a yes or a different answer
    before that plan's step 3.
-5. **Migration 022** exists only as SQL in [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §4.11 and is **not applied**.
-   It never will be without explicit approval — that is a standing rule.
+5. **Migration `db/022_queue_machine.sql` is approved but NOT YET APPLIED** — the one thing left over from
+   this session, and it needs a machine that has the database.
+
+   The owner approved it on 2026-09-11; it could not be run because this machine has no `.env.local`, which
+   is the connection string and one of the three things a clone does not carry (§1). On a machine that has
+   it, from the repo root:
+
+   ```
+   npm run migrate
+   npm run migrate -- --list
+   ```
+
+   Until it runs, pinning a case to a machine is **inert and says so** when a pinned case is queued — the
+   code was deliberately written to work without the column rather than to require it. Nothing is broken by
+   waiting.
+
+   **The memory plan's own migration was renumbered 022 → `023_app_memory.sql`** because item 7 took 022.
+   Never reuse a number: `migrate.mjs` walks the files in name order and records what it ran by name, so
+   two files sharing one means the second silently never runs.
+6. **`.mmmacro` compatibility** — asked and **answered on 2026-09-11: leave it alone for now**, and revisit
+   it with the site pass rather than as an engineering cleanup. The analysis is in
+   [`SITE-DEBT.md`](SITE-DEBT.md)'s neighbourhood: storage is already JSON, there is exactly one parser, and
+   the five-column wire earns its keep. Two findings from it are still open — `exportMacro` silently drops
+   `role`, `subrole`, `in`, `inName`, `url`, `side` and `near` that `flowBody` sends, so an
+   export→import round trip is lossy today; and the growing `#ctx` sidecar, not Mini Mouse Macro, is the
+   actual design smell.
 
 ---
 
@@ -229,3 +258,26 @@ All of these are load-bearing here, and all were learned the hard way:
   other. Reading a single field silently returns zero on web runs; that was a real defect, fixed in
   `4e9f017`.
 - **Commits here and in MouseLanding are authored as `raudar.aborsen@gmail.com`.**
+- **The shell here is Windows PowerShell 5.1, and `&&` is a parse error in it** — not a chain. Join with
+  `;`, or use two lines. This cost a round trip on 2026-09-11 because a command in this very file was
+  written in bash. Where a root-level npm script exists, use it rather than `cd`-ing: `build:extension`
+  exists at the root precisely so nobody has to.
+- **Chrome loads `extension/dist`, never `extension/`.** The source folder is the hand-written half plus a
+  legacy popup; the panel and the bundled UI only exist after `npm run build:extension`. `extension/dist`
+  is gitignored, so a fresh clone has none of it. **Rebuild after every extension change** — Chrome is
+  running the build, not the files you edited.
+- **The extension build copies its hand-written half BY NAME** (`COPY` in `web/vite.extension.config.ts`).
+  A new file that an already-copied file imports is otherwise shipped nowhere, and it fails in Chrome at
+  module load rather than at build time — which had been true of `checks.js` since roadmap item 8 shipped,
+  meaning the built worker did not start at all. A closure check in `extension/check-extension.mjs` now
+  fails `npm test` if any copied file imports something the build would leave out. Add the name when you
+  add the file.
+- **Read Swift edits twice; compile the C# for real.** `swiftc` does not exist on Windows, so the macOS
+  agent is guarded by text pins only — a second read found a genuine compile error on 2026-09-11
+  (a top-level `var` used above its declaration, which `main.swift` refuses). The Windows agent's C# *can*
+  be compiled, and should be for any non-trivial edit — see [`MEMORY-PLAN.md`](MEMORY-PLAN.md) §0.
+- **A pin that passes with and without the fix is not a pin.** One was written on 2026-09-11 to guard a
+  race the harness cannot reproduce (the old module instance never dies, so the message goes to the old
+  worker either way). It was **removed and replaced by a source pin that says why**, rather than left green
+  for appearance. Two others were caught matching their own explanatory comments — check code, not prose
+  about code.

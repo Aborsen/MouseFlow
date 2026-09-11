@@ -301,7 +301,10 @@ memory that grows without bound stops being read.
 
 ### 4.11 Storage
 
-Migration **`db/022_app_memory.sql`** — applied to production **only on the owner's explicit approval**:
+Migration **`db/023_app_memory.sql`** — applied to production **only on the owner's explicit approval**.
+**Renumbered from 022 on 2026-09-11**: item 7 of the QA roadmap took 022 for `run_queue.machine`, and
+two files sharing a number is the one that gets applied second and silently does not — `migrate.mjs`
+walks them in name order and records what it has run by name.
 
 ```sql
 create table if not exists app_memory (
@@ -352,7 +355,7 @@ reduce the turns, it is not working, and the step is rolled back rather than kep
 | 2 | `api/_memory.mjs` (+ `.d.mts`): key, entry, provenance precedence, budget/eviction, redaction — **pure, no DB, no UI** | `api/_test-memory.mjs`: refuses a coordinate, a 61-char name, a query string, password-field text; evicts `learned` before `taught`; `builtin` never renders | the module has to be right when nobody is looking, like `_anchor.mjs` |
 | 3 | `derived` over existing recordings, computed on read, shown read-only | visible on the ledger; zero writes | first day's value |
 | 4 | the block in `screenMessage()`, behind a flag; both drivers; `_brain.d.mts` | pin: brain not drivers; the 4.8 import pin | **4.13 measured**; else roll back |
-| 5 | migration 022 (approval!), `taught`, the ledger card, the four `builtin` lines | form refuses with words; ledger edits/deletes; route pin | the owner adds one Outlook fact and the next run's block shows it |
+| 5 | migration 023 (approval!), `taught`, the ledger card, the four `builtin` lines | form refuses with words; ledger edits/deletes; route pin | the owner adds one Outlook fact and the next run's block shows it |
 | 6 | `learned` with staging and approval | pending → live/rejected; never bypasses 4.5 | **or never** |
 
 Each step ends the roadmap's way: `npm test` green, `npx tsc --noEmit -p web/tsconfig.json` clean,
